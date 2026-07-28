@@ -275,6 +275,9 @@ func (s *fakeSidekiqStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind
 func (s *fakeSidekiqStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
 	return true, nil
 }
+func (s *fakeSidekiqStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error) {
+	return true, nil
+}
 func (s *fakeSidekiqStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
 	return true, nil
 }

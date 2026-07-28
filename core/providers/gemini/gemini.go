@@ -429,7 +429,7 @@ func HandleGeminiChatCompletionStream(
 
 	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
-	doErr := client.Do(req, resp)
+	doErr := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -934,7 +934,7 @@ func HandleGeminiResponsesStream(
 
 	startTime := time.Now()
 	// Make the request — caller is responsible for passing a streaming-configured client.
-	doErr := client.Do(req, resp)
+	doErr := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1426,7 +1426,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1714,7 +1714,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -4086,7 +4086,16 @@ func (provider *GeminiProvider) Passthrough(
 
 	fasthttpReq.SetBody(req.Body)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	var latency time.Duration
+	var bifrostErr *schemas.BifrostError
+	var wait func()
+	// Google redirects file downloads to /download/v1beta, and only Bifrost holds
+	// the API key that the redirect target requires — so follow it here.
+	if req.Method == http.MethodGet && strings.Contains(req.Path, ":download") {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, fasthttpReq, resp, 5)
+	} else {
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	}
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4162,7 +4171,7 @@ func (provider *GeminiProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
-	err := activeClient.Do(fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

@@ -120,12 +120,147 @@ type mockRotateGovernanceManager struct {
 	reloadErr error
 }
 
+// budgetOverrideTestGovernanceManager records reloads after budget override mutations.
+type budgetOverrideTestGovernanceManager struct {
+	GovernanceManager
+	store     configstore.ConfigStore
+	reloadIDs []string
+}
+
+// ReloadVirtualKey records the reload and returns the current persisted virtual key.
+func (m *budgetOverrideTestGovernanceManager) ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
+	m.reloadIDs = append(m.reloadIDs, id)
+	return m.store.GetVirtualKey(ctx, id)
+}
+
 func (m *mockRotateGovernanceManager) ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
 	m.reloadIDs = append(m.reloadIDs, id)
 	if m.reloadErr != nil {
 		return nil, m.reloadErr
 	}
 	return m.store.GetVirtualKey(ctx, id)
+}
+
+// TestVirtualKeyBudgetOverrideLifecycle verifies finite, replacement, and clear mutations preserve base budget state.
+func TestVirtualKeyBudgetOverrideLifecycle(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	ctx := context.Background()
+
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       "vk-budget-override",
+		Name:     "override-test",
+		Value:    *schemas.NewSecretVar("sk-bf-override-test"),
+		IsActive: &active,
+	}
+	if err := store.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("create virtual key: %v", err)
+	}
+	scopeID := vk.ID
+	modelConfig := &configstoreTables.TableModelConfig{
+		ID:        "mc-budget-override",
+		ModelName: configstoreTables.ModelConfigAllModels,
+		Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+		ScopeID:   &scopeID,
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "budget-override",
+			MaxLimit:      100,
+			CurrentUsage:  40,
+			ResetDuration: "1d",
+		}},
+	}
+	if err := store.CreateModelConfig(ctx, modelConfig); err != nil {
+		t.Fatalf("create model config: %v", err)
+	}
+
+	putCtx := newTestRequestCtx(`{"amount":25,"mode":"cycles","cycles":4}`)
+	putCtx.SetUserValue("vk_id", vk.ID)
+	putCtx.SetUserValue("budget_id", "budget-override")
+	handler.updateVirtualKeyBudgetOverride(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("finite override status=%d body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+
+	budget, err := store.GetBudget(ctx, "budget-override")
+	if err != nil {
+		t.Fatalf("get finite override budget: %v", err)
+	}
+	if budget.MaxLimit != 100 || budget.CurrentUsage != 40 || budget.OverrideAmount != 25 || budget.OverrideMode != configstoreTables.BudgetOverrideModeCycles || budget.OverrideCyclesRemaining != 4 {
+		t.Fatalf("unexpected finite override budget: %+v", budget)
+	}
+
+	replaceCtx := newTestRequestCtx(`{"amount":50,"mode":"forever"}`)
+	replaceCtx.SetUserValue("vk_id", vk.ID)
+	replaceCtx.SetUserValue("budget_id", "budget-override")
+	handler.updateVirtualKeyBudgetOverride(replaceCtx)
+	if replaceCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("forever override status=%d body=%s", replaceCtx.Response.StatusCode(), replaceCtx.Response.Body())
+	}
+
+	deleteCtx := newTestRequestCtx("")
+	deleteCtx.SetUserValue("vk_id", vk.ID)
+	deleteCtx.SetUserValue("budget_id", "budget-override")
+	handler.deleteVirtualKeyBudgetOverride(deleteCtx)
+	if deleteCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("clear override status=%d body=%s", deleteCtx.Response.StatusCode(), deleteCtx.Response.Body())
+	}
+	budget, err = store.GetBudget(ctx, "budget-override")
+	if err != nil {
+		t.Fatalf("get cleared override budget: %v", err)
+	}
+	if budget.OverrideAmount != 0 || budget.OverrideMode != "" || budget.OverrideCyclesRemaining != 0 {
+		t.Fatalf("override was not cleared: %+v", budget)
+	}
+	if len(manager.reloadIDs) != 3 {
+		t.Fatalf("reload calls=%d, want 3", len(manager.reloadIDs))
+	}
+}
+
+// TestVirtualKeyBudgetOverrideRejectsDirectMirrorBudget verifies AP-style direct VK budgets cannot be overridden through the OSS endpoint.
+func TestVirtualKeyBudgetOverrideRejectsDirectMirrorBudget(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &budgetOverrideTestGovernanceManager{store: store}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	ctx := context.Background()
+
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       "vk-ap-managed",
+		Name:     "ap-managed",
+		Value:    *schemas.NewSecretVar("sk-bf-ap-managed"),
+		IsActive: &active,
+	}
+	if err := store.CreateVirtualKey(ctx, vk); err != nil {
+		t.Fatalf("create virtual key: %v", err)
+	}
+	directBudget := &configstoreTables.TableBudget{
+		ID:            "ap-mirror-budget",
+		MaxLimit:      100,
+		ResetDuration: "1d",
+		VirtualKeyID:  &vk.ID,
+	}
+	if err := store.CreateBudget(ctx, directBudget); err != nil {
+		t.Fatalf("create direct budget: %v", err)
+	}
+
+	putCtx := newTestRequestCtx(`{"amount":25,"mode":"forever"}`)
+	putCtx.SetUserValue("vk_id", vk.ID)
+	putCtx.SetUserValue("budget_id", directBudget.ID)
+	handler.updateVirtualKeyBudgetOverride(putCtx)
+	if putCtx.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("status=%d, want 404; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
+	}
+	stored, err := store.GetBudget(ctx, directBudget.ID)
+	if err != nil {
+		t.Fatalf("get direct budget: %v", err)
+	}
+	if stored.OverrideMode != "" {
+		t.Fatalf("direct mirror override changed unexpectedly: %+v", stored)
+	}
 }
 
 type mockComplexityGovernanceManager struct {

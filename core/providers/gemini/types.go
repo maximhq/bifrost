@@ -251,6 +251,40 @@ type ToolConfig struct {
 	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
 	// Optional. Retrieval config.
 	RetrievalConfig *RetrievalConfig `json:"retrievalConfig,omitempty"`
+	// Optional. Allows built-in server-side tools (e.g. Google Search) to run in the
+	// same turn as function declarations. Gemini 3+ rejects the combination without it.
+	IncludeServerSideToolInvocations *bool `json:"includeServerSideToolInvocations,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (t *ToolConfig) UnmarshalJSON(data []byte) error {
+	type Alias ToolConfig
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		FunctionCallingConfigSnake            *FunctionCallingConfig `json:"function_calling_config,omitempty"`
+		RetrievalConfigSnake                  *RetrievalConfig       `json:"retrieval_config,omitempty"`
+		IncludeServerSideToolInvocationsSnake *bool                  `json:"include_server_side_tool_invocations,omitempty"`
+	}{
+		Alias: (*Alias)(t),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Use snake_case if camelCase wasn't provided
+	if t.FunctionCallingConfig == nil && aux.FunctionCallingConfigSnake != nil {
+		t.FunctionCallingConfig = aux.FunctionCallingConfigSnake
+	}
+	if t.RetrievalConfig == nil && aux.RetrievalConfigSnake != nil {
+		t.RetrievalConfig = aux.RetrievalConfigSnake
+	}
+	if t.IncludeServerSideToolInvocations == nil && aux.IncludeServerSideToolInvocationsSnake != nil {
+		t.IncludeServerSideToolInvocations = aux.IncludeServerSideToolInvocationsSnake
+	}
+
+	return nil
 }
 
 // FunctionDeclaration defines a function that the model can generate JSON inputs for.
@@ -964,20 +998,22 @@ type Schema struct {
 	Format string `json:"format,omitempty"`
 	// Optional. SCHEMA FIELDS FOR TYPE ARRAY Schema of the elements of Type.ARRAY.
 	Items *Schema `json:"items,omitempty"`
+	// Integer constraints below marshal as JSON numbers (not the Go SDK's proto-quoted
+	// `,string` form) so they stay valid JSON Schema inside parametersJsonSchema.
 	// Optional. Maximum number of the elements for Type.ARRAY.
-	MaxItems *int64 `json:"maxItems,omitempty,string"`
+	MaxItems *int64 `json:"maxItems,omitempty"`
 	// Optional. Maximum length of the Type.STRING
-	MaxLength *int64 `json:"maxLength,omitempty,string"`
+	MaxLength *int64 `json:"maxLength,omitempty"`
 	// Optional. Maximum number of the properties for Type.OBJECT.
-	MaxProperties *int64 `json:"maxProperties,omitempty,string"`
+	MaxProperties *int64 `json:"maxProperties,omitempty"`
 	// Optional. Maximum value of the Type.INTEGER and Type.NUMBER
 	Maximum *float64 `json:"maximum,omitempty"`
 	// Optional. Minimum number of the elements for Type.ARRAY.
-	MinItems *int64 `json:"minItems,omitempty,string"`
+	MinItems *int64 `json:"minItems,omitempty"`
 	// Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING
-	MinLength *int64 `json:"minLength,omitempty,string"`
+	MinLength *int64 `json:"minLength,omitempty"`
 	// Optional. Minimum number of the properties for Type.OBJECT.
-	MinProperties *int64 `json:"minProperties,omitempty,string"`
+	MinProperties *int64 `json:"minProperties,omitempty"`
 	// Optional. Minimum value of the Type.INTEGER and Type.NUMBER.
 	Minimum *float64 `json:"minimum,omitempty"`
 	// Optional. Indicates if the value may be null.

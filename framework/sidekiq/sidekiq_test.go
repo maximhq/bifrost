@@ -97,6 +97,13 @@ func (f *fakeStore) ClaimSidekiqJob(_ context.Context, id, runnerID string, stal
 	return true, nil
 }
 
+// ClaimPartitionedSidekiqJob: the fake ignores the partitioning guards (no runner
+// test here exercises them) and behaves like ClaimSidekiqJob. The FIFO/exclusion
+// logic is covered against the real store in configstore/sidekiq_test.go.
+func (f *fakeStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, _ string, _ time.Time) (bool, error) {
+	return f.ClaimSidekiqJob(ctx, id, runnerID, staleBefore)
+}
+
 func (f *fakeStore) HeartbeatSidekiqJob(_ context.Context, id, runnerID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -181,6 +188,14 @@ func waitTerminal(t *testing.T, f *fakeStore) string {
 
 func testRunner(store Store) *Runner {
 	return New(store, bifrost.NewDefaultLogger(schemas.LogLevelError), 4, "")
+}
+
+// testRunnerWithID builds a runner that identifies itself. An empty runner ID
+// makes New set staleAfter to 0, so every running job reads as instantly stale
+// and is immediately reclaimable — fine for a lone runner recovering its own
+// leftovers, wrong for any test where two runners contend.
+func testRunnerWithID(store Store, runnerID string) *Runner {
+	return New(store, bifrost.NewDefaultLogger(schemas.LogLevelError), 4, runnerID)
 }
 
 func TestEnqueueRunsHandlerAndCompletes(t *testing.T) {
@@ -312,7 +327,12 @@ func TestRunnerRaceSingleWinner(t *testing.T) {
 	handler := func(_ context.Context, job tables.TableSidekiqJob, _ ProgressFunc) (string, error) {
 		return "done", nil
 	}
-	r1, r2 := testRunner(store), testRunner(store)
+	// Distinct runner IDs, as the doc comment above requires. With the empty ID
+	// testRunner uses, staleAfter is 0, so the loser reads the winner's
+	// microseconds-old claim as stale and re-claims it — the job then runs twice
+	// and the original owner cannot complete it. That is the documented behaviour
+	// of an unidentified runner, not a claim bug, but it makes this test racy.
+	r1, r2 := testRunnerWithID(store, "runner-A"), testRunnerWithID(store, "runner-B")
 	r1.Register("k", handler)
 	r2.Register("k", handler)
 
@@ -449,8 +469,8 @@ func TestConcurrencySemaphoreBound(t *testing.T) {
 	var inFlight sync.WaitGroup
 
 	r.Register("k", func(_ context.Context, _ tables.TableSidekiqJob, _ ProgressFunc) (string, error) {
-		inFlight.Done()   // signal that we entered the handler
-		<-gate            // block until the test releases us
+		inFlight.Done() // signal that we entered the handler
+		<-gate          // block until the test releases us
 		return "", nil
 	})
 
@@ -505,10 +525,10 @@ func TestInflightDedupPreventsDoubleSpawn(t *testing.T) {
 
 	// Release blocker and wait for its slot to free before dispatching again.
 	close(gate)
-	waitTerminal(t, store) // blocker done
+	waitTerminal(t, store)            // blocker done
 	time.Sleep(10 * time.Millisecond) // let deferred semaphore release run
 
-	r.dispatchOnce() // slot is now free — picks up waiter
+	r.dispatchOnce()       // slot is now free — picks up waiter
 	waitTerminal(t, store) // waiter done
 
 	store.mu.Lock()

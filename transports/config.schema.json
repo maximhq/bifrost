@@ -516,10 +516,83 @@
                 "type": "boolean",
                 "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
+              },
+              "override_amount": {
+                "type": "number",
+                "description": "Amount added to max_limit while an override is active",
+                "default": 0
+              },
+              "override_mode": {
+                "type": "string",
+                "enum": ["", "cycles", "forever"],
+                "description": "How long the override stays active: 'cycles' for a finite number of reset windows, 'forever' until explicitly removed, '' for no override",
+                "default": ""
+              },
+              "override_cycles_remaining": {
+                "type": "integer",
+                "description": "Reset windows the current override still covers, including the current one. Derived state: recomputed from override_anchor_reset, override_cycles_total and last_reset, so it is never the source of truth.",
+                "default": 0
+              },
+              "override_cycles_total": {
+                "type": "integer",
+                "description": "Number of reset windows the current finite override was granted for. Immutable for the life of a grant.",
+                "default": 0
+              },
+              "override_anchor_reset": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Window boundary at which the current finite override was granted. Immutable for the life of a grant; absent when there is no finite override."
               }
             },
             "required": ["id", "max_limit", "reset_duration"],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "not": {
+                    "properties": { "override_mode": { "enum": ["cycles", "forever"] } },
+                    "required": ["override_mode"]
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "override_amount": { "const": 0 },
+                    "override_cycles_remaining": { "const": 0 },
+                    "override_cycles_total": { "const": 0 }
+                  },
+                  "not": { "required": ["override_anchor_reset"] }
+                }
+              },
+              {
+                "if": {
+                  "properties": { "override_mode": { "const": "cycles" } },
+                  "required": ["override_mode"]
+                },
+                "then": {
+                  "required": ["override_amount", "override_cycles_remaining", "override_cycles_total", "override_anchor_reset"],
+                  "properties": {
+                    "override_amount": { "exclusiveMinimum": 0 },
+                    "override_cycles_remaining": { "minimum": 1 },
+                    "override_cycles_total": { "minimum": 1 }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": { "override_mode": { "const": "forever" } },
+                  "required": ["override_mode"]
+                },
+                "then": {
+                  "required": ["override_amount"],
+                  "properties": {
+                    "override_amount": { "exclusiveMinimum": 0 },
+                    "override_cycles_remaining": { "const": 0 },
+                    "override_cycles_total": { "const": 0 }
+                  },
+                  "not": { "required": ["override_anchor_reset"] }
+                }
+              }
+            ]
           }
         },
         "rate_limits": {
@@ -3542,6 +3615,13 @@
           "default": 86400,
           "optional": true,
           "minimum": 3600
+        },
+        "live_models_sync_interval": {
+          "type": "integer",
+          "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Without this, a model an upstream starts serving after the gateway booted stays invisible until a restart or a key edit. Set to 0 to disable background refresh. Default is 1 hour; minimum when enabled is 60 seconds.",
+          "default": 3600,
+          "optional": true,
+          "anyOf": [{ "const": 0 }, { "minimum": 60 }]
         }
       },
       "additionalProperties": false
@@ -3890,6 +3970,10 @@
                 "session_name": {
                   "type": "string",
                   "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
+                "batch_role_arn": {
+                  "type": "string",
+                  "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
                 },
                 "project_id": {
                   "type": "string",

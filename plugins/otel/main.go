@@ -747,6 +747,10 @@ func getFloat64Attr(attrs map[string]any, key string) float64 {
 	return 0
 }
 
+// getFloat64AttrOK is getFloat64Attr with presence reporting. Needed where zero
+// is a meaningful value distinct from "absent" — an upstream total of 0 (a cache
+// hit, or a request rejected before any provider call) means all of the elapsed
+// time was Bifrost's, whereas a missing attribute means it was never measured.
 // buildSpanAttrs extracts metric dimension attrs from a single attempt span.
 func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	attrs := span.Attributes

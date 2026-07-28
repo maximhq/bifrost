@@ -815,6 +815,64 @@ func PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, 
 The full working example covering all four MCP hooks (envelope + Connect) lives at [`examples/plugins/mcp-only`](https://github.com/maximhq/bifrost/tree/main/examples/plugins/mcp-only). Use it as a starting point rather than retyping the boilerplate.
 </Tip>
 
+#### Recipe: injecting dynamic headers server-side <sup>v1.5.x+</sup>
+
+[Header forwarding](../mcp/connecting-to-servers#forwarding-request-headers-to-mcp-servers) covers the case where the **caller** supplies per-request header values. Sometimes the value has to be computed server-side instead:
+
+- An **identity header the caller must not control**, like the authenticated user's email for per-user authorization upstream
+- A **dynamic value on a shared MCP connection**, like a short-lived service token or a per-request correlation ID, which the static `headers` field cannot express because it is fixed at configuration time
+
+In both cases, write the header into `BifrostContextKeyMCPExtraHeaders` from `PreMCPHook`. Bifrost re-reads that key on every outgoing wire call over the shared connection, so a single hook covers ping, list_tools, and execute_tool, and refreshed values take effect on the very next call with no reconnect. The example below stamps the signed-in user's email; anything you can compute in the hook (a token fetched from a secrets manager, a tenant ID resolved from the virtual key) is injected the same way.
+
+```go
+const (
+    userEmailHeader = "X-User-Email"
+    targetClient    = "acme_api"
+)
+
+// No IsExecuteTool() early-out here: the header should ride along on pings
+// and tool-list refreshes too, not just tool executions.
+func PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+    // Scope the injection to the client meant to receive identity. The
+    // extra-headers map feeds every outgoing MCP call on this request, so
+    // without this guard any client whose allowed_extra_headers permits the
+    // header (including "*") would receive the user's email.
+    if req.ClientName != targetClient {
+        return req, nil, nil
+    }
+
+    // Populated by the auth middleware when the request carries a signed-in
+    // user; empty otherwise (e.g. an unauthenticated health check).
+    email, _ := ctx.Value(schemas.BifrostContextKeyUserEmail).(string)
+    if email == "" {
+        return req, nil, nil
+    }
+
+    // Merge rather than overwrite: the HTTP transport layer or an earlier
+    // plugin may already have populated this map with caller-forwarded headers.
+    merged := make(map[string][]string)
+    if existing, ok := ctx.Value(schemas.BifrostContextKeyMCPExtraHeaders).(map[string][]string); ok {
+        for k, v := range existing {
+            merged[k] = v
+        }
+    }
+    merged[userEmailHeader] = []string{email}
+    ctx.SetValue(schemas.BifrostContextKeyMCPExtraHeaders, merged)
+
+    return req, nil, nil
+}
+```
+
+<Note>
+`BifrostContextKeyUserEmail` is only populated on Enterprise deployments with [user provisioning (OIDC + SCIM)](../enterprise/user-provisioning) enabled; elsewhere it is always empty, making this exact plugin a no-op. Treat the email header as just one example of the pattern: any header can be injected this way. The inbound request headers are also available on the context under `BifrostContextKeyRequestHeaders` (a `map[string]string` with lowercased keys), so a value the caller sent can be transformed and re-injected too.
+</Note>
+
+Key points:
+- **The per-client allowlist still applies.** At execution time every header in `BifrostContextKeyMCPExtraHeaders` (plugin-injected or caller-forwarded) is checked against the MCP client's `allowed_extra_headers`. Add `X-User-Email` (or `"*"`) to each client that should receive it, otherwise the header is silently dropped on the wire. Note the allowlist is delivery gating, not privacy scoping: a client configured with `"*"` accepts every injected header, so restrict sensitive headers to their intended destination in the hook itself (the `req.ClientName` guard above).
+- **HTTP and SSE only.** STDIO and in-process transports carry no HTTP headers, so the injection is a no-op for them.
+- The Connect hooks are the wrong place for this: Connect runs once per shared transport, before any per-request identity exists, so there is no single caller to stamp. Per-request identity belongs in the envelope hooks.
+- The other MCP hook symbols don't need to be exported for this plugin to load; the loader treats each hook as optional.
+
 #### `Cleanup() error`
 
 Called on Bifrost shutdown. Use this to:

@@ -49,6 +49,7 @@ export default function DashboardPage() {
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			stop_reasons: parseAsSafeArrayOf.withDefault([]),
+			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			missing_cost_only: parseAsBoolean.withDefault(false),
 			metadata_filters: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
@@ -123,6 +124,7 @@ export default function DashboardPage() {
 				routing_engine_used: urlState.routing_engine_used,
 			}),
 			...(urlState.stop_reasons.length > 0 && { stop_reasons: urlState.stop_reasons }),
+			...(urlState.cache_hit_types.length > 0 && { cache_hit_types: urlState.cache_hit_types }),
 			...(urlState.missing_cost_only && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
@@ -149,6 +151,7 @@ export default function DashboardPage() {
 			urlState.routing_rule_ids,
 			urlState.routing_engine_used,
 			urlState.stop_reasons,
+			urlState.cache_hit_types,
 			urlState.missing_cost_only,
 			metadataFilters,
 			urlState.user_ids,
@@ -306,6 +309,7 @@ export default function DashboardPage() {
 				routing_rule_ids: newFilters.routing_rule_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
 				stop_reasons: newFilters.stop_reasons || [],
+				cache_hit_types: newFilters.cache_hit_types || [],
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				metadata_filters:
 					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0

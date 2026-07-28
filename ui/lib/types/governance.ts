@@ -8,6 +8,22 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
+	override_amount?: number;
+	override_mode?: BudgetOverrideMode;
+	override_cycles_remaining?: number;
+}
+
+export type BudgetOverrideMode = "cycles" | "forever";
+
+export interface BudgetOverrideRequest {
+	amount: number;
+	mode: BudgetOverrideMode;
+	cycles?: number;
+}
+
+export interface BudgetOverrideResponse {
+	budget: Budget;
+	effective_max_limit: number;
 }
 
 export interface RateLimit {
@@ -391,6 +407,7 @@ export interface GetModelConfigsParams {
 	offset?: number;
 	search?: string;
 	scope?: string;
+	scope_id?: string;
 	provider?: string;
 }
 
@@ -409,7 +426,10 @@ export type PricingOverrideScopeKind =
 	| "provider_key"
 	| "virtual_key"
 	| "virtual_key_provider"
-	| "virtual_key_provider_key";
+	| "virtual_key_provider_key"
+	| "user"
+	| "user_provider"
+	| "user_provider_key";
 export type PricingOverrideMatchType = "exact" | "wildcard";
 
 export interface PricingOverridePatch {
@@ -502,6 +522,7 @@ export interface PricingOverride {
 	id: string;
 	name: string;
 	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
@@ -517,6 +538,7 @@ export interface PricingOverride {
 export interface CreatePricingOverrideRequest {
 	name: string;
 	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
@@ -529,6 +551,7 @@ export interface CreatePricingOverrideRequest {
 export interface UpdatePricingOverrideRequest {
 	name?: string;
 	scope_kind?: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;

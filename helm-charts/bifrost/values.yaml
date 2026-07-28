@@ -355,6 +355,9 @@ bifrost:
       # mcpLibraryUrl: ""
       # MCP library sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       # mcpLibrarySyncInterval: 86400
+      # How often each provider's model list is re-fetched in the background, in seconds
+      # (default: 3600 = 1 hour, minimum: 60; set to 0 to disable background refresh)
+      # liveModelsSyncInterval: 3600
 
   # Provider configurations (add your provider keys here)
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
@@ -447,6 +450,7 @@ bifrost:
   #         region: "us-east-1"
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         # batch_role_arn: ""  # Optional: service role Bedrock assumes for batch S3 access; takes priority over role_arn sent in the request (can use env. prefix)
   #         project_id: ""  # Optional: Bedrock project ID scoping inference and model listing (can use env. prefix)
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)

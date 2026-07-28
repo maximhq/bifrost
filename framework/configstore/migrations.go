@@ -443,6 +443,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
+	{IDs: []string{"add_sidekiq_partitioning_key_column"}, run: migrationAddSidekiqPartitioningKeyColumn},
 	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
 	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
 	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
@@ -453,6 +454,11 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_webhook_config_client_column"}, run: migrationAddWebhookConfigClientColumn},
 	{IDs: []string{"add_oauth_config_resource_column"}, run: migrationAddOauthConfigResourceColumn},
 	{IDs: []string{"add_use_anthropic_endpoints_column"}, run: migrationAddUseAnthropicEndpointsColumn},
+	{IDs: []string{"add_bedrock_batch_role_arn_column"}, run: migrationAddBedrockBatchRoleARNColumn},
+	{IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
+	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
+	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
+	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -3170,6 +3176,89 @@ func migrationAddUseAnthropicEndpointsColumn(ctx context.Context, db *gorm.DB, l
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_use_anthropic_endpoints_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBudgetOverrideColumns adds additive override state to governance budgets.
+func migrationAddBudgetOverrideColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_override_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_amount"); err != nil {
+				return fmt.Errorf("failed to add override_amount column: %w", err)
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_mode"); err != nil {
+				return fmt.Errorf("failed to add override_mode column: %w", err)
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_cycles_remaining"); err != nil {
+				return fmt.Errorf("failed to add override_cycles_remaining column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_budget_override_columns is non-rollbackable: dropping the override columns would permanently destroy saved budget override state; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBudgetOverrideAnchorColumns adds the immutable grant columns that
+// make finite budget-override consumption a derived value rather than mutable
+// state, and adopts every already-active finite override into that model.
+//
+// Without a grant, the remaining-cycle count is independently mutable, so every
+// cluster node keeps its own tally while only the leader persists one, and any
+// config reload replaying a pre-reset row hands back a cycle the reset path had
+// already spent. Deriving the count from (anchor, total, last_reset) removes both
+// failure modes because all three inputs are either immutable or monotonic.
+func migrationAddBudgetOverrideAnchorColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_override_anchor_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_cycles_total"); err != nil {
+				return fmt.Errorf("failed to add override_cycles_total column: %w", err)
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "override_anchor_reset"); err != nil {
+				return fmt.Errorf("failed to add override_anchor_reset column: %w", err)
+			}
+			// Adopt active finite overrides: re-anchor each at its current window
+			// and re-grant its remaining count from there. Without knowing when the
+			// grant was originally written this is the only available reading, and
+			// it can only be generous by less than one window.
+			//
+			// Required, not optional: validateOverride rejects a cycles override
+			// with no anchor, so an unadopted row would be treated as having no
+			// lifecycle at all.
+			if err := tx.Exec(`
+				UPDATE governance_budgets
+				SET override_cycles_total = override_cycles_remaining,
+				    override_anchor_reset = last_reset
+				WHERE override_mode = 'cycles'
+				  AND override_cycles_remaining > 0
+				  AND override_anchor_reset IS NULL
+			`).Error; err != nil {
+				return fmt.Errorf("failed to backfill budget override grants: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_budget_override_anchor_columns is non-rollbackable: dropping the grant columns would strip every active finite override of the state its remaining-cycle count is derived from; the columns are additive and older binaries safely ignore them")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
 }
@@ -10341,6 +10430,37 @@ func migrationAddMCPLibraryConfigColumns(ctx context.Context, db *gorm.DB, logge
 	return nil
 }
 
+// migrationAddLiveModelsSyncIntervalColumn adds the live_models_sync_interval
+// column to framework_configs. It stores how often each provider's list-models
+// response is re-fetched in the background, in seconds, with 0 meaning the
+// refresher is disabled. Idempotent via HasColumn guards.
+func migrationAddLiveModelsSyncIntervalColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_live_models_sync_interval_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableFrameworkConfig{}, "LiveModelsSyncInterval"); err != nil {
+				return fmt.Errorf("add live_models_sync_interval column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "LiveModelsSyncInterval"); err != nil {
+				return fmt.Errorf("drop live_models_sync_interval column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_live_models_sync_interval_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddMCPLibrarySourceColumns adds the source and deleted_at columns to
 // mcp_library. `source` marks a row as remote-synced or org-internal ("custom")
 // so the sync can protect custom rows; `deleted_at` is a soft-delete tombstone
@@ -10592,6 +10712,32 @@ func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *go
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "tool_execution_timeout")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddSidekiqPartitioningKeyColumn adds the nullable partitioning_key column and
+// its index, enabling cluster-wide FIFO-ordered job execution per key.
+func migrationAddSidekiqPartitioningKeyColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_partitioning_key_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "partitioning_key"); err != nil {
+				return err
+			}
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_partitioning_key ON sidekiq (partitioning_key)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableSidekiqJob{}, "partitioning_key")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -10884,6 +11030,84 @@ func migrationAddWebhookJobsTable(ctx context.Context, db *gorm.DB, logger schem
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running webhook jobs table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBedrockBatchRoleARNColumn adds the bedrock_batch_role_arn column to the config_keys
+// table. It stores the service role passed to Bedrock batch jobs for S3 access, kept separate from
+// the STS AssumeRole identity in bedrock_role_arn.
+func migrationAddBedrockBatchRoleARNColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_bedrock_batch_role_arn_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "bedrock_batch_role_arn")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "bedrock_batch_role_arn")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPricingOverrideUserIDColumn adds the user_id scope column to
+// governance_pricing_overrides and rebuilds the composite scope index so it
+// covers the new column.
+func migrationAddPricingOverrideUserIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_pricing_override_user_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TablePricingOverride{}, "user_id"); err != nil {
+				return fmt.Errorf("failed to add user_id column to governance_pricing_overrides: %w", err)
+			}
+			mgr := tx.Migrator()
+			if mgr.HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope") {
+				if err := mgr.DropIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+					return fmt.Errorf("failed to drop pricing override scope index for rebuild: %w", err)
+				}
+			}
+			if err := mgr.CreateIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+				return fmt.Errorf("failed to recreate pricing override scope index: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			// Drop the rebuilt index first: SQLite refuses to drop an indexed
+			// column, and Postgres would silently drop the index with it.
+			if mgr.HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope") {
+				if err := mgr.DropIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+					return fmt.Errorf("failed to drop pricing override scope index for rollback: %w", err)
+				}
+			}
+			if mgr.HasColumn(&tables.TablePricingOverride{}, "user_id") {
+				if err := mgr.DropColumn(&tables.TablePricingOverride{}, "user_id"); err != nil {
+					return fmt.Errorf("failed to drop user_id column from governance_pricing_overrides: %w", err)
+				}
+			}
+			// Restore the legacy index shape via raw SQL; CreateIndex would use
+			// the current struct tags, which include user_id.
+			if err := tx.Exec("CREATE INDEX idx_pricing_override_scope ON governance_pricing_overrides (scope_kind, virtual_key_id, provider_id, provider_key_id)").Error; err != nil {
+				return fmt.Errorf("failed to restore legacy pricing override scope index: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running pricing override user_id column migration: %s", err.Error())
 	}
 	return nil
 }

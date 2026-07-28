@@ -18,7 +18,7 @@ import (
 
 // TestBuildScopeChain_GlobalOnly tests scope chain with no VirtualKey
 func TestBuildScopeChain_GlobalOnly(t *testing.T) {
-	chain := buildScopeChain(nil)
+	chain := buildScopeChain(nil, "")
 
 	require.Equal(t, 1, len(chain))
 	assert.Equal(t, "global", chain[0].ScopeName)
@@ -32,7 +32,7 @@ func TestBuildScopeChain_VirtualKeyOnly(t *testing.T) {
 		Name: "test-vk",
 	}
 
-	chain := buildScopeChain(vk)
+	chain := buildScopeChain(vk, "")
 
 	require.Equal(t, 2, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -54,7 +54,7 @@ func TestBuildScopeChain_WithTeam(t *testing.T) {
 		Team: team,
 	}
 
-	chain := buildScopeChain(vk)
+	chain := buildScopeChain(vk, "")
 
 	require.Equal(t, 3, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -83,7 +83,7 @@ func TestBuildScopeChain_FullHierarchy(t *testing.T) {
 		Team: team,
 	}
 
-	chain := buildScopeChain(vk)
+	chain := buildScopeChain(vk, "")
 
 	require.Equal(t, 4, len(chain))
 	assert.Equal(t, "virtual_key", chain[0].ScopeName)
@@ -94,6 +94,36 @@ func TestBuildScopeChain_FullHierarchy(t *testing.T) {
 	assert.Equal(t, "cust-789", chain[2].ScopeID)
 	assert.Equal(t, "global", chain[3].ScopeName)
 	assert.Equal(t, "", chain[3].ScopeID)
+}
+
+// TestBuildScopeChain_UserOnly verifies a session-authenticated request with
+// no virtual key still gets a user level ahead of global.
+func TestBuildScopeChain_UserOnly(t *testing.T) {
+	chain := buildScopeChain(nil, "user-1")
+
+	require.Equal(t, 2, len(chain))
+	assert.Equal(t, "user", chain[0].ScopeName)
+	assert.Equal(t, "user-1", chain[0].ScopeID)
+	assert.Equal(t, "global", chain[1].ScopeName)
+}
+
+// TestBuildScopeChain_FullHierarchyWithUser verifies the user level slots
+// between virtual_key and team: VirtualKey > User > Team > Customer > Global.
+func TestBuildScopeChain_FullHierarchyWithUser(t *testing.T) {
+	customer := &configstoreTables.TableCustomer{ID: "cust-789", Name: "acme-corp"}
+	team := &configstoreTables.TableTeam{ID: "team-456", Name: "premium-team", Customer: customer}
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-123", Name: "test-vk", Team: team}
+
+	chain := buildScopeChain(vk, "user-1")
+
+	require.Equal(t, 5, len(chain))
+	assert.Equal(t, "virtual_key", chain[0].ScopeName)
+	assert.Equal(t, "vk-123", chain[0].ScopeID)
+	assert.Equal(t, "user", chain[1].ScopeName)
+	assert.Equal(t, "user-1", chain[1].ScopeID)
+	assert.Equal(t, "team", chain[2].ScopeName)
+	assert.Equal(t, "customer", chain[3].ScopeName)
+	assert.Equal(t, "global", chain[4].ScopeName)
 }
 
 // TestGetDefaultRouting tests getting default routing from context
@@ -1931,4 +1961,151 @@ func getDefaultRouting(ctx *RoutingContext) *RoutingDecision {
 		Fallbacks:     ctx.Fallbacks,
 		MatchedRuleID: "0",
 	}
+}
+
+// TestEvaluateRoutingRules_UserScopedRule verifies a user-scoped rule fires
+// only for the matching resolved user and is skipped for other users and for
+// requests carrying no user identity.
+func TestEvaluateRoutingRules_UserScopedRule(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:            "user-rule-1",
+		Name:          "User Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "user",
+		ScopeID:  bifrost.Ptr("user-1"),
+		Priority: 0,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
+
+	baseCtx := func(userID string) *RoutingContext {
+		return &RoutingContext{
+			Provider:    schemas.OpenAI,
+			Model:       "gpt-4o",
+			UserID:      userID,
+			Headers:     map[string]string{},
+			QueryParams: map[string]string{},
+		}
+	}
+
+	decision, err := engine.EvaluateRoutingRules(bgCtx, baseCtx("user-1"))
+	require.NoError(t, err)
+	require.NotNil(t, decision, "user-scoped rule must fire for the matching user")
+	assert.Equal(t, "user-rule-1", decision.MatchedRuleID)
+	assert.Equal(t, "azure", decision.Provider)
+
+	decision, err = engine.EvaluateRoutingRules(bgCtx, baseCtx("someone-else"))
+	require.NoError(t, err)
+	assert.Nil(t, decision, "user-scoped rule must not fire for a different user")
+
+	decision, err = engine.EvaluateRoutingRules(bgCtx, baseCtx(""))
+	require.NoError(t, err)
+	assert.Nil(t, decision, "user-scoped rule must not fire without user identity")
+}
+
+// TestEvaluateRoutingRules_VirtualKeyPreemptsUser verifies chain precedence:
+// when both a virtual_key-scoped and a user-scoped rule match, the VK rule wins.
+func TestEvaluateRoutingRules_VirtualKeyPreemptsUser(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	userRule := &configstoreTables.TableRoutingRule{
+		ID:            "user-rule",
+		Name:          "User Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4o-mini"), Weight: 1.0},
+		},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "user",
+		ScopeID:  bifrost.Ptr("user-1"),
+		Priority: 0,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), userRule))
+
+	vkRule := &configstoreTables.TableRoutingRule{
+		ID:            "vk-rule",
+		Name:          "VK Rule",
+		CelExpression: "model == 'gpt-4o'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "virtual_key",
+		ScopeID:  bifrost.Ptr("vk-123"),
+		Priority: 10,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), vkRule))
+
+	decision, err := engine.EvaluateRoutingRules(bgCtx, &RoutingContext{
+		VirtualKey:  &configstoreTables.TableVirtualKey{ID: "vk-123", Name: "test-vk"},
+		UserID:      "user-1",
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+		Headers:     map[string]string{},
+		QueryParams: map[string]string{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "vk-rule", decision.MatchedRuleID,
+		"virtual_key scope must preempt user scope in the chain")
+}
+
+// TestEvaluateRoutingRules_UserIDCELVariable verifies rule CEL expressions can
+// target the resolved user via the user_id variable.
+func TestEvaluateRoutingRules_UserIDCELVariable(t *testing.T) {
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
+
+	engine, err := NewRoutingEngine(store, NewMockLogger(), schemas.Ptr(10))
+	require.NoError(t, err)
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:            "cel-user-rule",
+		Name:          "CEL User Rule",
+		CelExpression: "user_id == 'user-1'",
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("azure"), Model: bifrost.Ptr("gpt-4-turbo"), Weight: 1.0},
+		},
+		Enabled:  bifrost.Ptr(true),
+		Scope:    "global",
+		Priority: 0,
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(context.Background(), rule))
+
+	decision, err := engine.EvaluateRoutingRules(bgCtx, &RoutingContext{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+		UserID:      "user-1",
+		Headers:     map[string]string{},
+		QueryParams: map[string]string{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision, "user_id CEL predicate must match the resolved user")
+	assert.Equal(t, "cel-user-rule", decision.MatchedRuleID)
+
+	decision, err = engine.EvaluateRoutingRules(bgCtx, &RoutingContext{
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o",
+		UserID:      "someone-else",
+		Headers:     map[string]string{},
+		QueryParams: map[string]string{},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, decision, "user_id CEL predicate must not match a different user")
 }

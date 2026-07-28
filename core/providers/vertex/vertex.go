@@ -4526,7 +4526,7 @@ func (provider *VertexProvider) PassthroughStream(
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	startTime := time.Now()
-	err := activeClient.Do(fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

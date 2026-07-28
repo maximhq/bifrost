@@ -34,7 +34,7 @@ import {
 } from "@/lib/store";
 import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/lib/utils/governance";
+import { formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -69,11 +69,11 @@ const formatResetDuration = (duration: string) => resetDurationLabels[duration] 
 
 type ExportScope = "current_page" | "all";
 
-function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, string> = {}): string {
+function virtualKeysToCSV(vks: VirtualKey[]): string {
 	const headers = ["Name", "Status", "Assigned To", "Budget Limit", "Budget Spent", "Budget Reset", "Description", "Created At"];
 	const rows = vks.map((vk) => {
 		const isExhausted =
-			vk.budgets?.some((b) => b.current_usage >= b.max_limit) ||
+			vk.budgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ||
 			(vk.rate_limit?.token_current_usage &&
 				vk.rate_limit?.token_max_limit &&
 				vk.rate_limit.token_current_usage >= vk.rate_limit.token_max_limit) ||
@@ -83,7 +83,7 @@ function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, 
 		const isExpired = !!vk.expires_at && Date.now() >= new Date(vk.expires_at).getTime();
 		const status = !vk.is_active ? "Inactive" : isExpired ? "Expired" : isExhausted ? "Exhausted" : "Active";
 		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : "";
-		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.max_limit)).join("; ") : "";
+		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(getEffectiveBudgetLimit(b))).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
 		return [vk.name, status, assignedTo, budgetLimit, budgetSpent, budgetReset, vk.description || "", vk.created_at];

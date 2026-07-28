@@ -34,6 +34,57 @@ func TestSSEDataReader_DataLinesAndDone(t *testing.T) {
 	}
 }
 
+// [DONE] and a bare body EOF both surface as io.EOF from ReadDataLine, so the
+// reader must record which one it was — that flag is the only way a provider
+// loop can tell a finished stream from a dead upstream connection.
+func TestSSEDataReader_SawDoneMarkerOnDone(t *testing.T) {
+	reader := newDefaultSSEDataReader(strings.NewReader("data: {\"a\":1}\n\ndata: [DONE]\n\n"))
+	drainSSEDataReader(t, reader)
+	if !reader.SawDoneMarker() {
+		t.Error("expected SawDoneMarker to be true after reading [DONE]")
+	}
+	if !SSEStreamEndedOnMarker(reader) {
+		t.Error("expected SSEStreamEndedOnMarker to be true after reading [DONE]")
+	}
+}
+
+// A stream that just stops (upstream connection died on a chunk boundary) ends
+// with the same io.EOF but no marker.
+func TestSSEDataReader_SawDoneMarkerAbsentOnBareEOF(t *testing.T) {
+	reader := newDefaultSSEDataReader(strings.NewReader("data: {\"a\":1}\n\n"))
+	drainSSEDataReader(t, reader)
+	if reader.SawDoneMarker() {
+		t.Error("expected SawDoneMarker to be false when the body ended without [DONE]")
+	}
+	if SSEStreamEndedOnMarker(reader) {
+		t.Error("expected SSEStreamEndedOnMarker to be false when the body ended without [DONE]")
+	}
+}
+
+// A reader with no bytes at all (upstream died before its first byte) must also
+// report no marker.
+func TestSSEDataReader_SawDoneMarkerAbsentOnEmptyStream(t *testing.T) {
+	reader := newDefaultSSEDataReader(strings.NewReader(""))
+	drainSSEDataReader(t, reader)
+	if SSEStreamEndedOnMarker(reader) {
+		t.Error("expected SSEStreamEndedOnMarker to be false for an empty stream")
+	}
+}
+
+// stubSSEDataReader stands in for an enterprise-injected reader that predates
+// SSEStreamTerminator.
+type stubSSEDataReader struct{}
+
+func (stubSSEDataReader) ReadDataLine() ([]byte, error) { return nil, io.EOF }
+
+// Readers that cannot report a marker must be assumed to have terminated
+// normally: reporting them as truncated would fail every enterprise stream.
+func TestSSEStreamEndedOnMarker_UnknownReaderDefaultsTrue(t *testing.T) {
+	if !SSEStreamEndedOnMarker(stubSSEDataReader{}) {
+		t.Error("expected SSEStreamEndedOnMarker to default to true for readers without SSEStreamTerminator")
+	}
+}
+
 func TestSSEDataReader_SingleLineRawJSONFallback(t *testing.T) {
 	stream := `{"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}` + "\n"
 	payloads := drainSSEDataReader(t, newDefaultSSEDataReader(strings.NewReader(stream)))

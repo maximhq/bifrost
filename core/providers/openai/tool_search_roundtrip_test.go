@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
 
@@ -100,4 +101,112 @@ func TestResponsesInputRoundTripsAdditionalToolsItems(t *testing.T) {
 		t.Fatalf("plain user message broke: %q", got)
 	}
 	t.Logf("round-trip OK:\n%s", out)
+}
+
+// codexAdditionalToolsInput is the shape codex sends on its first request for
+// code-mode models: every tool it owns is declared inside the input array.
+const codexAdditionalToolsInput = `[
+	{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"exec","description":"Run JavaScript","format":{"type":"grammar","syntax":"lark","definition":"start: pragma_source"}},{"type":"function","name":"wait","description":"Waits on a cell","parameters":{"type":"object","properties":{"cell_id":{"type":"string"}},"required":["cell_id"],"additionalProperties":false}},{"type":"namespace","name":"collaboration","description":"Sub-agent tools","tools":[{"type":"function","name":"spawn_agent","description":"Spawn an agent","parameters":{"type":"object","properties":{"task_name":{"type":"string"}},"required":["task_name"]}}]}]},
+	{"role":"user","content":[{"type":"input_text","text":"Reply exactly with OK."}]}
+]`
+
+func codexAdditionalToolsRequest(t *testing.T, provider schemas.ModelProvider) []byte {
+	t.Helper()
+
+	var input OpenAIResponsesRequestInput
+	if err := input.UnmarshalJSON([]byte(codexAdditionalToolsInput)); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    "gpt-5.6-sol",
+		Input:    input.OpenAIResponsesRequestInputArray,
+	})
+	if req == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+	out, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	return out
+}
+
+// TestBedrockMantleHoistsAdditionalTools verifies that codex `additional_tools`
+// items are lifted into the top-level tools param for Bedrock Mantle, which
+// rejects the item type with "Invalid 'input': value did not match any expected
+// variant", and that the nested tool shapes survive the hoist intact.
+func TestBedrockMantleHoistsAdditionalTools(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle} {
+		t.Run(string(provider), func(t *testing.T) {
+			out := codexAdditionalToolsRequest(t, provider)
+
+			// The rejected item must be gone, leaving only the user message.
+			if got := gjson.GetBytes(out, "input.#").Int(); got != 1 {
+				t.Fatalf("expected 1 input item after hoist, got %d: %s", got, gjson.GetBytes(out, "input").Raw)
+			}
+			if got := gjson.GetBytes(out, "input.0.role").String(); got != "user" {
+				t.Fatalf("wrong item survived: %s", gjson.GetBytes(out, "input.0").Raw)
+			}
+
+			// All three tools must land at the top level with their discriminators.
+			if got := gjson.GetBytes(out, "tools.#").Int(); got != 3 {
+				t.Fatalf("expected 3 hoisted tools, got %d: %s", got, gjson.GetBytes(out, "tools").Raw)
+			}
+			for i, want := range []string{"custom", "function", "namespace"} {
+				if got := gjson.GetBytes(out, fmt.Sprintf("tools.%d.type", i)).String(); got != want {
+					t.Fatalf("tools[%d].type = %q, want %q (full: %s)", i, got, want, gjson.GetBytes(out, "tools").Raw)
+				}
+			}
+			// The custom tool's lark grammar must survive.
+			if got := gjson.GetBytes(out, "tools.0.format.syntax").String(); got != "lark" {
+				t.Fatalf("custom tool grammar lost: %s", gjson.GetBytes(out, "tools.0").Raw)
+			}
+			// Function parameters must survive, and strict must be false, not null —
+			// strict-pydantic upstreams reject an explicit null.
+			if !gjson.GetBytes(out, "tools.1.parameters").IsObject() {
+				t.Fatalf("function parameters lost: %s", gjson.GetBytes(out, "tools.1").Raw)
+			}
+			if got := gjson.GetBytes(out, "tools.1.strict"); got.Type != gjson.False {
+				t.Fatalf("hoisted function strict = %s, want false", got.Raw)
+			}
+			// The namespace's nested tool list must survive.
+			if got := gjson.GetBytes(out, "tools.2.tools.#").Int(); got != 1 {
+				t.Fatalf("namespace nested tools lost: %s", gjson.GetBytes(out, "tools.2").Raw)
+			}
+		})
+	}
+}
+
+// TestOpenAIKeepsAdditionalToolsItem guards the native path: OpenAI accepts the
+// item, so it must stay in input verbatim and must not be hoisted.
+func TestOpenAIKeepsAdditionalToolsItem(t *testing.T) {
+	out := codexAdditionalToolsRequest(t, schemas.OpenAI)
+
+	if got := gjson.GetBytes(out, "input.#").Int(); got != 2 {
+		t.Fatalf("expected 2 input items, got %d: %s", got, gjson.GetBytes(out, "input").Raw)
+	}
+	if got := gjson.GetBytes(out, "input.0.type").String(); got != "additional_tools" {
+		t.Fatalf("additional_tools item not preserved: %s", gjson.GetBytes(out, "input.0").Raw)
+	}
+	if got := gjson.GetBytes(out, "input.0.tools.#").Int(); got != 3 {
+		t.Fatalf("nested tools not preserved verbatim: %s", gjson.GetBytes(out, "input.0").Raw)
+	}
+	if gjson.GetBytes(out, "tools").Exists() {
+		t.Fatalf("tools must not be hoisted for OpenAI: %s", gjson.GetBytes(out, "tools").Raw)
+	}
+}
+
+// TestUnlistedProviderKeepsAdditionalToolsItem verifies the fail-open default:
+// providers absent from ProviderFeatures are left untouched.
+func TestUnlistedProviderKeepsAdditionalToolsItem(t *testing.T) {
+	out := codexAdditionalToolsRequest(t, schemas.Groq)
+
+	if got := gjson.GetBytes(out, "input.#").Int(); got != 2 {
+		t.Fatalf("expected 2 input items for unlisted provider, got %d", got)
+	}
+	if gjson.GetBytes(out, "tools").Exists() {
+		t.Fatalf("unlisted provider must not hoist: %s", gjson.GetBytes(out, "tools").Raw)
+	}
 }

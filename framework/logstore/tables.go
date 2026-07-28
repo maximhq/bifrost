@@ -1,6 +1,7 @@
 package logstore
 
 import (
+	"database/sql/driver"
 	"strings"
 	"time"
 
@@ -1198,6 +1199,12 @@ const (
 	// WebhookDeliveryOutcomeExhausted means the final allowed attempt failed.
 	WebhookDeliveryOutcomeExhausted WebhookDeliveryOutcome = "exhausted"
 )
+
+// Value implements driver.Valuer so database drivers that append typed column
+// values (e.g. clickhouse-go batch inserts) can serialize the type.
+func (o WebhookDeliveryOutcome) Value() (driver.Value, error) {
+	return string(o), nil
+}
 
 // WebhookDelivery records one webhook delivery attempt. Rows are insert-only
 // — every attempt appends a new record and existing rows are never updated —

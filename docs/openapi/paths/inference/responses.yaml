@@ -116,6 +116,11 @@ responses-by-id:
       description: Whether to include obfuscation on the response
       schema:
         type: boolean
+    - name: stream
+      in: query
+      description: When `true`, replays the stored response as SSE events instead of a single JSON object
+      schema:
+        type: boolean
     responses:
       '200':
         description: Successful response
@@ -123,6 +128,9 @@ responses-by-id:
           application/json:
             schema:
               $ref: '../../schemas/inference/responses.yaml#/ResponsesResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/responses.yaml#/ResponsesStreamResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':

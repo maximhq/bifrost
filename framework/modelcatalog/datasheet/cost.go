@@ -167,7 +167,58 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		requestType = normalizeStreamRequestType(requestType)
 	}
 
+	// Azure Model Router bills a flat per-input-token surcharge on top of the
+	// real cost of whatever underlying model Azure actually routed to. The
+	// response's own model field carries that real model, distinct from the
+	// "model-router" deployment name on RoutingInfo.Model.
+	if result.PassthroughResponse == nil && routingInfo.Provider == schemas.Azure && schemas.IsAzureModelRouter(routingInfo.Model) &&
+		(requestType == schemas.TextCompletionRequest || requestType == schemas.ChatCompletionRequest || requestType == schemas.ResponsesRequest) {
+		return s.calculateAzureModelRouterCost(result, input, routingInfo, requestType, scopes)
+	}
+
 	return s.computeCostFromInput(input, routingInfo, requestType, scopes)
+}
+
+// calculateAzureModelRouterCost bills the Model Router deployment's own
+// pricing row (the flat per-input-token surcharge) plus the real cost of the
+// model it actually routed to, looked up fresh under the served model name so
+// regular per-token/tiered pricing applies to it exactly as if it had been
+// called directly.
+func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) float64 {
+	pricingRequestType := requestType
+	if pricingRequestType == schemas.TextCompletionRequest {
+		pricingRequestType = schemas.ChatCompletionRequest
+	}
+
+	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
+
+	if servedModel := azureModelRouterServedModel(result); servedModel != "" && servedModel != routingInfo.Model {
+		underlyingRoutingInfo := schemas.RoutingInfo{
+			Provider: routingInfo.Provider,
+			Model:    servedModel,
+		}
+		cost += s.computeCostFromInput(input, underlyingRoutingInfo, pricingRequestType, scopes)
+	}
+
+	return cost
+}
+
+// azureModelRouterServedModel reads the model Azure Model Router actually
+// routed to off the response body's own model field separate from the "model-router"
+// deployment name carried on RoutingInfo.Model.
+func azureModelRouterServedModel(result *schemas.BifrostResponse) string {
+	switch {
+	case result.ChatResponse != nil:
+		return result.ChatResponse.Model
+	case result.ResponsesResponse != nil:
+		return result.ResponsesResponse.Model
+	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil:
+		return result.ResponsesStreamResponse.Response.Model
+	case result.TextCompletionResponse != nil:
+		return result.TextCompletionResponse.Model
+	default:
+		return ""
+	}
 }
 
 // computeCostFromInput resolves pricing for the given routing info + request
