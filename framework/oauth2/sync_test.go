@@ -26,14 +26,14 @@ type testConfigStore struct {
 
 	mu           sync.Mutex
 	oauthConfigs map[string]*tables.TableOauthConfig
-	oauthTokens  map[string]*tables.TableOauthToken
+	oauthTokens  map[string]*tables.TableMCPOauthToken
 	clientConfig *configstore.ClientConfig
 }
 
 func newTestConfigStore() *testConfigStore {
 	return &testConfigStore{
 		oauthConfigs: make(map[string]*tables.TableOauthConfig),
-		oauthTokens:  make(map[string]*tables.TableOauthToken),
+		oauthTokens:  make(map[string]*tables.TableMCPOauthToken),
 	}
 }
 
@@ -65,7 +65,7 @@ func (s *testConfigStore) UpdateOauthConfig(_ context.Context, cfg *tables.Table
 	return nil
 }
 
-func (s *testConfigStore) GetOauthTokenByID(_ context.Context, id string) (*tables.TableOauthToken, error) {
+func (s *testConfigStore) GetOauthTokenByID(_ context.Context, id string) (*tables.TableMCPOauthToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	token := s.oauthTokens[id]
@@ -75,7 +75,7 @@ func (s *testConfigStore) GetOauthTokenByID(_ context.Context, id string) (*tabl
 	return bifrost.Ptr(*token), nil
 }
 
-func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.TableOauthToken) error {
+func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.TableMCPOauthToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.oauthTokens[token.ID] = bifrost.Ptr(*token)
@@ -91,10 +91,10 @@ func (s *testConfigStore) GetClientConfig(_ context.Context) (*configstore.Clien
 	return bifrost.Ptr(*s.clientConfig), nil
 }
 
-func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
+func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.Time) ([]*tables.TableMCPOauthToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var expiring []*tables.TableOauthToken
+	var expiring []*tables.TableMCPOauthToken
 	for _, token := range s.oauthTokens {
 		if token.ExpiresAt != nil && token.ExpiresAt.Before(before) {
 			expiring = append(expiring, bifrost.Ptr(*token))
@@ -109,7 +109,7 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 	t.Helper()
 
 	tokenID := "test-token-id"
-	store.oauthTokens[tokenID] = &tables.TableOauthToken{
+	store.oauthTokens[tokenID] = &tables.TableMCPOauthToken{
 		ID:           tokenID,
 		AccessToken:  "old-access-token",
 		RefreshToken: "refresh-token",
@@ -146,7 +146,7 @@ func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
 		now := time.Now()
 		before := now.Add(5 * time.Minute)
 
-		store.oauthTokens["nil-expiry"] = &tables.TableOauthToken{
+		store.oauthTokens["nil-expiry"] = &tables.TableMCPOauthToken{
 			ID:           "nil-expiry",
 			AccessToken:  "access-token",
 			RefreshToken: "refresh-token",
@@ -154,7 +154,7 @@ func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
 			ExpiresAt:    nil,
 			Scopes:       "[]",
 		}
-		store.oauthTokens["expiring"] = &tables.TableOauthToken{
+		store.oauthTokens["expiring"] = &tables.TableMCPOauthToken{
 			ID:           "expiring",
 			AccessToken:  "access-token-2",
 			RefreshToken: "refresh-token-2",
