@@ -3623,11 +3623,10 @@ var allowedKeyPairColumns = map[string]struct{}{
 // GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.
 // idCol and nameCol must be valid column names (e.g., "selected_key_id", "selected_key_name").
 //
-// Matview path is DAC-aware: each per-dimension matview carries the
-// visibility columns (user_id, team_id, virtual_key_id), so a
-// QueryScope on ctx applies on the matview directly. Until
-// matViewsReady the raw-table fallback (also ScopedDB-aware) serves
-// requests.
+// Matview path is DAC-aware: each per-dimension matview carries every
+// visibility column a scope can predicate on (see scopeProjection), so a
+// QueryScope on ctx applies on the matview directly. Until matViewsReady
+// the raw-table fallback (also ScopedDB-aware) serves requests.
 func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
 		results, served, err := s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol, limit, query)

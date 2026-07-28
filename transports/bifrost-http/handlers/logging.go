@@ -79,10 +79,36 @@ const filterDataFanOutLimit = 4
 
 const defaultFilterDataLimit = 1000
 
-// shouldUseFilterDataCache reports whether a filterdata response can be shared
-// across callers without bypassing DAC-scoped query constraints.
+// shouldUseFilterDataCache reports whether a filterdata response is cacheable
+// at all. Text-search responses are not (unbounded key space), nor are ones
+// already carrying an explicit query scope.
+//
+// Note this is NOT what makes the cache DAC-safe: row visibility is resolved
+// deeper in the store, so no QueryScope is on the request context yet at this
+// point. Sharing across callers is prevented by filterDataCacheIdentity, which
+// partitions the cache key per caller.
 func shouldUseFilterDataCache(ctx context.Context, query string) bool {
 	return strings.TrimSpace(query) == "" && queryscope.FromContext(ctx) == nil
+}
+
+// filterDataCacheIdentity returns the cache-key fragment that partitions
+// filterdata responses per caller.
+//
+// Filter dropdowns are row-visibility-scoped in enterprise builds: two users
+// hitting the same dimensions legitimately get different values. The cache key
+// therefore carries the caller's user and role, so a narrowly-scoped user's
+// response can never be served to anyone else — and a role change (which
+// changes visibility) misses the cache immediately rather than after the TTL.
+//
+// Requests with no user identity (OSS deployments, local-admin sessions) share
+// a single "anon" partition, which is exactly the pre-DAC behaviour.
+func filterDataCacheIdentity(ctx *fasthttp.RequestCtx) string {
+	userID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
+	if userID == "" {
+		return "anon"
+	}
+	roleID, _ := ctx.UserValue(schemas.BifrostContextKeyUserRoleID).(uint)
+	return fmt.Sprintf("%s/%d", userID, roleID)
 }
 
 // Filter dimension names accepted by the ?dimensions= query param on
