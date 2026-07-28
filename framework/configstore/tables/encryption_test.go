@@ -39,6 +39,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&SessionsTable{},
 		&TableOauthConfig{},
 		&TableOauthToken{},
+		&TableMCPOauthFlow{},
 		&TableVectorStoreConfig{},
 		&TableWebhookEndpoint{},
 	)
@@ -503,9 +504,6 @@ func TestTableOauthConfig_EncryptDecrypt(t *testing.T) {
 		ClientID:     schemas.NewSecretVar("client-id-public"),
 		ClientSecret: schemas.NewSecretVar("super-secret-client-secret"),
 		RedirectURI:  "https://example.com/callback",
-		State:        "csrf-state-token",
-		CodeVerifier: "pkce-code-verifier-secret",
-		ExpiresAt:    time.Now().Add(15 * time.Minute),
 	}
 
 	require.NoError(t, db.Create(config).Error)
@@ -513,12 +511,10 @@ func TestTableOauthConfig_EncryptDecrypt(t *testing.T) {
 	raw := rawRow(t, db, "oauth_configs", "oauth-cfg-1")
 	assert.Equal(t, "encrypted", raw["encryption_status"])
 	assert.NotEqual(t, "super-secret-client-secret", raw["client_secret"])
-	assert.NotEqual(t, "pkce-code-verifier-secret", raw["code_verifier"])
 
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-1").Error)
 	assert.Equal(t, "super-secret-client-secret", found.ClientSecret.GetValue())
-	assert.Equal(t, "pkce-code-verifier-secret", found.CodeVerifier)
 	// Non-sensitive fields should be unchanged
 	assert.Equal(t, "client-id-public", found.ClientID.GetValue())
 	assert.Equal(t, "https://example.com/callback", found.RedirectURI)
@@ -530,8 +526,6 @@ func TestTableOauthConfig_EmptySecret_NoError(t *testing.T) {
 	config := &TableOauthConfig{
 		ID:          "oauth-cfg-empty",
 		RedirectURI: "https://example.com/callback",
-		State:       "csrf-state-2",
-		ExpiresAt:   time.Now().Add(15 * time.Minute),
 	}
 
 	require.NoError(t, db.Create(config).Error)
@@ -539,6 +533,54 @@ func TestTableOauthConfig_EmptySecret_NoError(t *testing.T) {
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-empty").Error)
 	assert.Equal(t, "", found.ClientSecret.GetValue())
+}
+
+// TestTableMCPOauthFlow_EncryptDecrypt covers the CodeVerifier encrypt/decrypt
+// round trip that TestTableOauthConfig_EncryptDecrypt used to exercise before
+// PKCE fields moved off TableOauthConfig onto TableMCPOauthFlow (see that
+// migration).
+func TestTableMCPOauthFlow_EncryptDecrypt(t *testing.T) {
+	db := setupTestDB(t)
+
+	flow := &TableMCPOauthFlow{
+		ID:            "flow-1",
+		MCPClientID:   "mcp-1",
+		OauthConfigID: "oauth-cfg-1",
+		State:         "csrf-state-token",
+		CodeVerifier:  "pkce-code-verifier-secret",
+		FlowMode:      "admin",
+		ExpiresAt:     time.Now().Add(15 * time.Minute),
+	}
+
+	require.NoError(t, db.Create(flow).Error)
+
+	raw := rawRow(t, db, "mcp_oauth_flows", "flow-1")
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotEqual(t, "pkce-code-verifier-secret", raw["code_verifier"])
+
+	var found TableMCPOauthFlow
+	require.NoError(t, db.First(&found, "id = ?", "flow-1").Error)
+	assert.Equal(t, "pkce-code-verifier-secret", found.CodeVerifier)
+	// Non-sensitive fields should be unchanged
+	assert.Equal(t, "csrf-state-token", found.State)
+}
+
+func TestTableMCPOauthFlow_EmptyCodeVerifier_NoError(t *testing.T) {
+	db := setupTestDB(t)
+
+	flow := &TableMCPOauthFlow{
+		ID:            "flow-empty",
+		MCPClientID:   "mcp-1",
+		OauthConfigID: "oauth-cfg-1",
+		State:         "csrf-state-empty",
+		FlowMode:      "admin",
+		ExpiresAt:     time.Now().Add(15 * time.Minute),
+	}
+
+	require.NoError(t, db.Create(flow).Error)
+
+	var found TableMCPOauthFlow
+	require.NoError(t, db.First(&found, "id = ?", "flow-empty").Error)
 	assert.Equal(t, "", found.CodeVerifier)
 }
 
@@ -958,8 +1000,6 @@ func TestTableOauthConfig_UpdatePreservesDecryption(t *testing.T) {
 		ID:           "oauth-cfg-update",
 		ClientSecret: schemas.NewSecretVar("original-secret"),
 		RedirectURI:  "https://example.com/callback",
-		State:        "csrf-update",
-		ExpiresAt:    time.Now().Add(15 * time.Minute),
 	}
 	require.NoError(t, db.Create(config).Error)
 
@@ -1416,11 +1456,8 @@ func TestTableOauthConfig_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	cfg := &TableOauthConfig{
 		ID:           "cfg-dis-1",
 		ClientSecret: schemas.NewSecretVar("client-secret-plain"),
-		CodeVerifier: "verifier-plain",
 		RedirectURI:  "https://example.com/cb",
-		State:        "csrf-state",
 		Status:       "pending",
-		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 
 	require.NoError(t, db.Create(cfg).Error)
@@ -1430,12 +1467,39 @@ func TestTableOauthConfig_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	db.Table("oauth_configs").Where("id = ?", "cfg-dis-1").Take(&raw)
 	assert.Equal(t, "plain_text", raw["encryption_status"])
 	assert.Equal(t, "client-secret-plain", raw["client_secret"])
-	assert.Equal(t, "verifier-plain", raw["code_verifier"])
 
 	// GORM read should return same plaintext
 	var found TableOauthConfig
 	require.NoError(t, db.Where("id = ?", "cfg-dis-1").First(&found).Error)
 	assert.Equal(t, "client-secret-plain", found.ClientSecret.GetValue())
+}
+
+func TestTableMCPOauthFlow_EncryptionDisabled_StoresPlaintext(t *testing.T) {
+	disableEncryption(t)
+	db := setupTestDB(t)
+
+	flow := &TableMCPOauthFlow{
+		ID:            "flow-dis-1",
+		MCPClientID:   "mcp-1",
+		OauthConfigID: "oauth-cfg-1",
+		State:         "csrf-state",
+		CodeVerifier:  "verifier-plain",
+		FlowMode:      "admin",
+		Status:        "pending",
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}
+
+	require.NoError(t, db.Create(flow).Error)
+
+	// Raw DB should have plaintext
+	var raw map[string]any
+	db.Table("mcp_oauth_flows").Where("id = ?", "flow-dis-1").Take(&raw)
+	assert.Equal(t, "plain_text", raw["encryption_status"])
+	assert.Equal(t, "verifier-plain", raw["code_verifier"])
+
+	// GORM read should return same plaintext
+	var found TableMCPOauthFlow
+	require.NoError(t, db.Where("id = ?", "flow-dis-1").First(&found).Error)
 	assert.Equal(t, "verifier-plain", found.CodeVerifier)
 }
 

@@ -220,7 +220,7 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 	// matching token/header credential exists) needs that data.
 	var (
 		tokens      []tables.TableMCPOauthToken
-		flows       []tables.TableOauthUserSession
+		flows       []tables.TableMCPOauthFlow
 		headerCreds []tables.TableMCPPerUserHeaderCredential
 		headerFlows []tables.TableMCPPerUserHeaderFlow
 		err         error
@@ -353,7 +353,7 @@ func bindingKeyFromToken(t tables.TableMCPOauthToken) sessionBindingKey {
 	return k
 }
 
-func bindingKeyFromFlow(f tables.TableOauthUserSession) sessionBindingKey {
+func bindingKeyFromFlow(f tables.TableMCPOauthFlow) sessionBindingKey {
 	k := sessionBindingKey{Mode: f.FlowMode, MCPClientID: f.MCPClientID}
 	switch schemas.MCPAuthMode(f.FlowMode) {
 	case schemas.MCPAuthModeUser:
@@ -813,7 +813,7 @@ func (h *MCPSessionsHandler) flowStart(ctx *fasthttp.RequestCtx) {
 // GetOauthUserSessionByID: if the caller is not allowed to see this row,
 // the store returns (nil, nil) and we surface 404. Writes the appropriate
 // HTTP error response and returns a sentinel error on failure.
-func (h *MCPSessionsHandler) loadAuthorizedFlow(ctx *fasthttp.RequestCtx, flowID string) (*tables.TableOauthUserSession, error) {
+func (h *MCPSessionsHandler) loadAuthorizedFlow(ctx *fasthttp.RequestCtx, flowID string) (*tables.TableMCPOauthFlow, error) {
 	flow, err := h.store.ConfigStore.GetOauthUserSessionByID(ctx, flowID)
 	if err != nil {
 		logger.Error("[mcp/sessions] load flow failed: flow=%s err=%v", flowID, err)
@@ -919,7 +919,7 @@ func tokenRow(t tables.TableMCPOauthToken) mcpSessionRow {
 }
 
 // flowRow maps an oauth_user_sessions (pending flow) row to the wire shape.
-func flowRow(f tables.TableOauthUserSession) mcpSessionRow {
+func flowRow(f tables.TableMCPOauthFlow) mcpSessionRow {
 	exp := f.ExpiresAt.UTC().Format(rfc3339Nano)
 	row := mcpSessionRow{
 		ID:            f.ID,
