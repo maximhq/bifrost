@@ -42,7 +42,7 @@ type RoutingContext struct {
 	UserID                   string                              // Resolved calling user id; empty when the request carries no user identity
 	Provider                 schemas.ModelProvider               // Current provider
 	Model                    string                              // Current model
-	RequestType              string                              // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
+	RequestType              string                              // Request type (e.g., "chat_completion", "embedding"); streaming requests carry a distinct "_stream" suffix (e.g., "chat_completion_stream")
 	Fallbacks                []string                            // Fallback chain: ["provider/model", ...]
 	Headers                  map[string]string                   // Request headers for dynamic routing
 	QueryParams              map[string]string                   // Query parameters for dynamic routing
@@ -460,7 +460,7 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 	// Basic request context
 	variables["model"] = ctx.Model
 	variables["provider"] = string(ctx.Provider)
-	variables["request_type"] = ctx.RequestType // Normalized request type (e.g., "chat_completion", "embedding")
+	variables["request_type"] = ctx.RequestType // Request type as-is; streaming variants keep their "_stream" suffix (e.g., "chat_completion_stream")
 
 	// Headers and params - normalize headers to lowercase keys for case-insensitive CEL matching
 	// This allows CEL expressions like headers["content-type"] to work regardless of how the header was sent
@@ -658,7 +658,7 @@ func createCELEnvironment() (*cel.Env, error) {
 		// Basic request context
 		cel.Variable("model", cel.StringType),
 		cel.Variable("provider", cel.StringType),
-		cel.Variable("request_type", cel.StringType), // Normalized request type (e.g., "chat_completion", "embedding", "text_completion")
+		cel.Variable("request_type", cel.StringType), // Request type (e.g., "chat_completion", "embedding"); streaming variants are distinct values with a "_stream" suffix
 
 		// Headers and params (dynamic from request)
 		cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)),
