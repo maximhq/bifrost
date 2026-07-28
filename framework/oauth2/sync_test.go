@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"gorm.io/gorm"
 )
 
 // testConfigStore is a minimal in-memory implementation of configstore.ConfigStore
@@ -58,7 +59,7 @@ func (s *testConfigStore) GetOauthConfigByTokenID(_ context.Context, tokenID str
 	return nil, nil
 }
 
-func (s *testConfigStore) UpdateOauthConfig(_ context.Context, cfg *tables.TableOauthConfig) error {
+func (s *testConfigStore) UpdateOauthConfig(_ context.Context, cfg *tables.TableOauthConfig, _ ...*gorm.DB) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.oauthConfigs[cfg.ID] = bifrost.Ptr(*cfg)
@@ -127,7 +128,6 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 		Scopes:      `["read"]`,
 		Status:      "authorized",
 		TokenID:     new(tokenID),
-		ExpiresAt:   time.Now().Add(24 * time.Hour),
 	}
 
 	return oauthConfigID
