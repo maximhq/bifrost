@@ -291,7 +291,7 @@ func (h *WSListenHandler) runListenSession(
 	applyRealtimeRawStorageContext(bifrostCtx, h.client.ComputeRawStorageForProvider(bifrostCtx, providerKey))
 
 	upstreamQuery := rewriteListenModelQuery(rawQuery, model)
-	wsURL := listenProvider.ListenWebSocketURL(upstreamQuery)
+	wsURL := listenProvider.ListenWebSocketURL(key, upstreamQuery)
 	headers, headerErr := listenProvider.ListenHeaders(bifrostCtx, key)
 	if headerErr != nil {
 		logger.Warn("listen websocket headers failed for %s/%s: %v", providerKey, model, headerErr)
@@ -396,14 +396,13 @@ func (h *WSListenHandler) finalizeListenSession(
 	latency := time.Since(startedAt).Milliseconds()
 
 	durationCopy := duration
-	secondsInt := int(duration + 0.5)
 	usage := &schemas.TranscriptionUsage{
 		Type:    "duration",
-		Seconds: &secondsInt,
+		Seconds: &durationCopy,
 	}
 	if billing, ok := h.client.GetProviderByKey(providerKey).(schemas.ListenBillingProvider); ok {
 		language := listenLanguageFromQuery(rawQuery)
-		if cost, ok := billing.ListenCostUSD(model, duration, language); ok && cost > 0 {
+		if cost, ok := billing.ListenCostUSD(model, duration, language); ok {
 			usage.Cost = &schemas.BifrostCost{TotalCost: cost}
 		}
 	}

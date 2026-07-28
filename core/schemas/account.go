@@ -744,8 +744,11 @@ type VLLMKeyConfig struct {
 }
 
 
+// DeepgramKeyConfig represents the Deepgram-specific key configuration.
+// It allows each key to target a different Deepgram server URL,
+// enabling per-key routing across Deepgram endpoints (or self-hosted).
 type DeepgramKeyConfig struct {
-	URL SecretVar `json:"url"` // Deepgram server base URL (required, supports env. prefix)
+	URL SecretVar `json:"url"` // Deepgram server base URL (optional; falls back to network_config.base_url, supports env. prefix)
 }
 
 // ReplicateKeyConfig represents the Replicate-specific key configuration.

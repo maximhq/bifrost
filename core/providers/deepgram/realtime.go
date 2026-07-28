@@ -40,8 +40,8 @@ func (provider *DeepgramProvider) SupportsListenWebSocket() bool {
 // as-is. Bifrost does not whitelist or rewrite listen query keys.
 //
 // Format: wss://api.deepgram.com/v1/listen?<rawQuery>
-func (provider *DeepgramProvider) ListenWebSocketURL(rawQuery string) string {
-	base := provider.networkConfig.BaseURL
+func (provider *DeepgramProvider) ListenWebSocketURL(key schemas.Key, rawQuery string) string {
+	base := provider.getBaseURL(key)
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
 	url := base + "/v1/listen"

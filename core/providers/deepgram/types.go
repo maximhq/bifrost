@@ -7,7 +7,7 @@ type DeepgramSpeechRequest struct {
 	Model string `json:"model"`
 	Text  string `json:"text"`
 
-	Encoding   string  `json:"json:"encoding,omitempty"`
+	Encoding   string  `json:"encoding,omitempty"`
 	Container  string  `json:"container,omitempty"`
 	SampleRate int     `json:"sample_rate,omitempty"`
 	Speed      float64 `json:"speed,omitempty"`
@@ -24,55 +24,57 @@ func (r *DeepgramSpeechRequest) GetExtraParams() map[string]interface{} {
 
 // TRANSCRIPTION TYPES
 type DeepgramTranscriptionRequest struct {
-	File                []byte `form:"file"`
-	Filename            string
+	File     []byte `form:"file"`
+	Filename string
 
-	Model               string `form:"model"`
+	Model string `form:"model"`
 
-	SmartFormat    		bool   `form:"smart_format,omitempty"`
-    Punctuate      		bool   `form:"punctuate,omitempty"`
-    Diarize        		bool   `form:"diarize,omitempty"`
-    Paragraphs     		bool   `form:"paragraphs,omitempty"`
-    Utterances     		bool   `form:"utterances,omitempty"`
-    Numerals       		bool   `form:"numerals,omitempty"`
-    DetectLanguage 		bool   `form:"detect_language,omitempty"`
-    Language       		string `form:"language,omitempty"`
-    Keywords       		[]string `form:"keywords,omitempty"`
-    Replace        		[]string `form:"replace,omitempty"`
-    Redact         		string `form:"redact,omitempty"`
-    Search         		[]string `form:"search,omitempty"`
-    Summarize      		bool `form:"summarize,omitempty"`
-    Topics         		bool   `form:"topics,omitempty"`
-    Intents        		bool   `form:"intents,omitempty"`
-    Sentiment      		bool   `form:"sentiment,omitempty"`
+	// Booleans are pointers so unset values are omitted and Deepgram server-side
+	// defaults (e.g. smart_format/punctuate enabled) are preserved.
+	SmartFormat    *bool    `form:"smart_format,omitempty"`
+	Punctuate      *bool    `form:"punctuate,omitempty"`
+	Diarize        *bool    `form:"diarize,omitempty"`
+	Paragraphs     *bool    `form:"paragraphs,omitempty"`
+	Utterances     *bool    `form:"utterances,omitempty"`
+	Numerals       *bool    `form:"numerals,omitempty"`
+	DetectLanguage *bool    `form:"detect_language,omitempty"`
+	Language       string   `form:"language,omitempty"`
+	Keywords       []string `form:"keywords,omitempty"`
+	Replace        []string `form:"replace,omitempty"`
+	Redact         string   `form:"redact,omitempty"`
+	Search         []string `form:"search,omitempty"`
+	Summarize      *bool    `form:"summarize,omitempty"`
+	Topics         *bool    `form:"topics,omitempty"`
+	Intents        *bool    `form:"intents,omitempty"`
+	Sentiment      *bool    `form:"sentiment,omitempty"`
 }
 
 type DeepgramMetadata struct {
-    Duration float64 `json:"duration"`
+	Duration float64 `json:"duration"`
 }
 
 type DeepgramWord struct {
-    Word       string  `json:"word"`
-    Start      float64 `json:"start"`
-    End        float64 `json:"end"`
-    Confidence float64 `json:"confidence"`
-	Speaker    int 	   `json:"speaker,omitempty"`
+	Word       string  `json:"word"`
+	Start      float64 `json:"start"`
+	End        float64 `json:"end"`
+	Confidence float64 `json:"confidence"`
+	Speaker    *int    `json:"speaker,omitempty"`
 }
 type DeepgramAlternative struct {
-    Transcript string                 `json:"transcript"`
-    Confidence float64                `json:"confidence"`
-    Words      []DeepgramWord         `json:"words"`
+	Transcript string         `json:"transcript"`
+	Confidence float64        `json:"confidence"`
+	Words      []DeepgramWord `json:"words"`
 }
 type DeepgramChannel struct {
-    Alternatives []DeepgramAlternative `json:"alternatives"`
+	Alternatives []DeepgramAlternative `json:"alternatives"`
 }
 
 type DeepgramResults struct {
-    Channels []DeepgramChannel `json:"channels"`
+	Channels []DeepgramChannel `json:"channels"`
 }
 type DeepgramTranscriptionResponse struct {
-    Metadata DeepgramMetadata `json:"metadata"`
-    Results  DeepgramResults  `json:"results"`
+	Metadata DeepgramMetadata `json:"metadata"`
+	Results  DeepgramResults  `json:"results"`
 }
 
 
@@ -87,24 +89,24 @@ type DeepgramAdditionalFormatResponse struct {
 
 // ERROR TYPES
 type DeepgramError struct {
-	ErrCode   string `json:"err_code,omitempty"`
-	ErrMsg    string `json:"err_msg,omitempty"`
+	ErrCode string `json:"err_code,omitempty"`
+	ErrMsg  string `json:"err_msg,omitempty"`
 
-	Category  string `json:"category,omitempty"`
-	Message   string `json:"message,omitempty"`
-	Details   string `json:"details,omitempty"`
+	Category string `json:"category,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Details  string `json:"details,omitempty"`
 
 	RequestID string `json:"request_id,omitempty"`
 }
 
 // MODEL TYPES
 type DeepgramModel struct {
-	Name            string   `json:"name"`
-	CanonicalName   string   `json:"canonical_name"`
-	Architecture    string   `json:"architecture"`
-	Languages       []string `json:"languages"`
-	Version         string   `json:"version"`
-	UUID            string   `json:"uuid"`
+	Name          string   `json:"name"`
+	CanonicalName string   `json:"canonical_name"`
+	Architecture  string   `json:"architecture"`
+	Languages     []string `json:"languages"`
+	Version       string   `json:"version"`
+	UUID          string   `json:"uuid"`
 
 	// STT only
 	Batch           bool `json:"batch,omitempty"`

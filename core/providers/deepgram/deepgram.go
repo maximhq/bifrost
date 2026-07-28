@@ -73,6 +73,15 @@ func (provider *DeepgramProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Deepgram, provider.customProviderConfig)
 }
 
+// getBaseURL resolves the base URL for a request from the per-key deepgram_key_config.
+// Falls back to provider-level network_config.base_url when the key URL is unset.
+func (provider *DeepgramProvider) getBaseURL(key schemas.Key) string {
+	if key.DeepgramKeyConfig != nil && key.DeepgramKeyConfig.URL.GetValue() != "" {
+		return strings.TrimRight(key.DeepgramKeyConfig.URL.GetValue(), "/")
+	}
+	return strings.TrimRight(provider.networkConfig.BaseURL, "/")
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *DeepgramProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -86,7 +95,7 @@ func (provider *DeepgramProvider) listModelsByKey(ctx *schemas.BifrostContext, k
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL using centralized URL construction
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
+	req.SetRequestURI(provider.getBaseURL(key) + providerUtils.GetPathFromContext(ctx, "/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
@@ -213,7 +222,7 @@ func (provider *DeepgramProvider) Speech(ctx *schemas.BifrostContext, key schema
 
 	endpoint = "/v1/speak"
 
-	requestURL := provider.buildBaseSpeechRequestURL(ctx, endpoint, schemas.SpeechRequest, request)
+	requestURL := provider.buildBaseSpeechRequestURL(ctx, key, endpoint, schemas.SpeechRequest, request)
 	req.SetRequestURI(requestURL)
 
 	req.Header.SetMethod(http.MethodPost)
@@ -325,6 +334,7 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 
 	req.SetRequestURI(provider.buildBaseSpeechRequestURL(
 		ctx,
+		key,
 		"/v1/speak",
 		schemas.SpeechStreamRequest,
 		request,
@@ -345,8 +355,6 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 
 	// Make request
 	startTime := time.Now()
-	provider.logger.Info("REQUEST: %s", string(jsonBody))
-	
 	err := provider.streamingClient.Do(req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
@@ -376,9 +384,10 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.BodyStream())
-    	provider.logger.Info("deepgram error status=%d body=%s", resp.StatusCode(), string(bodyBytes))
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if bodyBytes, readErr := io.ReadAll(resp.BodyStream()); readErr == nil {
+			resp.SetBodyRaw(bodyBytes)
+		}
 		return nil, providerUtils.EnrichError(ctx, parseDeepgramError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
@@ -386,11 +395,8 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	provider.logger.Info("starting stream goroutine")
 	go func() {
-		provider.logger.Info("inside stream goroutine")
 		defer func() {
-			provider.logger.Info("goroutine exiting")
 			if ctx.Err() == context.Canceled {
 				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 			} else if ctx.Err() == context.DeadlineExceeded {
@@ -406,14 +412,6 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 		// Wrap reader with idle timeout to detect stalled streams.
 		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
 		defer stopIdleTimeout()
-
-		provider.logger.Info(
-			"status=%d content-type=%s content-encoding=%s transfer=%s",
-			resp.StatusCode(),
-			string(resp.Header.Peek("Content-Type")),
-			string(resp.Header.Peek("Content-Encoding")),
-			string(resp.Header.Peek("Transfer-Encoding")),
-		)
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
 		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
@@ -433,9 +431,7 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 			if ctx.Err() != nil {
 				return
 			}
-			provider.logger.Info("waiting for stream data...")
 			n, err := bodyStream.Read(buffer)
-			provider.logger.Info("read returned n=%d err=%v", n, err)
 			if err != nil {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
@@ -451,7 +447,6 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 			}
 
 			if n > 0 {
-				provider.logger.Info("read returned n=%d err=%v", n, err)
 				chunkIndex++
 				audioChunk := make([]byte, n)
 				copy(audioChunk, buffer[:n])
@@ -470,11 +465,6 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 					response.ExtraFields.RawResponse = audioChunk
 				}
-				provider.logger.Info(
-					"sending chunk %d size=%d",
-					chunkIndex,
-					len(audioChunk),
-				)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 		}
@@ -494,14 +484,8 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 			providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-		// provider.logger.Info(
-		// 	"sending chunk %d size=%d",
-		// 	chunkIndex,
-		// 	len(audioChunk),
-		// )
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, finalResponse, nil, nil), responseChan, postHookSpanFinalizer)
 	}()
-	provider.logger.Debug("RETURNING RESPONSE CHANNEL")
 	return responseChan, nil
 }
 
@@ -562,7 +546,7 @@ func (provider *DeepgramProvider) Transcription(
 	if isCompleteURL {
 		requestURL = requestPath
 	} else {
-		requestURL = provider.networkConfig.BaseURL + requestPath
+		requestURL = provider.getBaseURL(key) + requestPath
 	}
 
 	req.SetRequestURI(requestURL)
@@ -615,12 +599,10 @@ func (provider *DeepgramProvider) Transcription(
 	}
 
 	response := ToBifrostTranscriptionResponse(parsedResp)
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = reqBody
-	}
-	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		Latency:                 latency.Milliseconds(),
-		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -657,49 +639,75 @@ func writeTranscriptionMultipart(
 		return providerUtils.NewBifrostOperationError("failed to write file", err)
 	}
 
-		// --- Booleans ---
+	// --- Booleans (only write when explicitly set) ---
 
-	if err := writer.WriteField("smart_format", strconv.FormatBool(reqBody.SmartFormat)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write smart_format", err)
+	if reqBody.SmartFormat != nil {
+		if err := writer.WriteField("smart_format", strconv.FormatBool(*reqBody.SmartFormat)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write smart_format", err)
+		}
 	}
 
-	if err := writer.WriteField("punctuate", strconv.FormatBool(reqBody.Punctuate)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write punctuate", err)
+	if reqBody.Punctuate != nil {
+		if err := writer.WriteField("punctuate", strconv.FormatBool(*reqBody.Punctuate)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write punctuate", err)
+		}
 	}
 
-	if err := writer.WriteField("diarize", strconv.FormatBool(reqBody.Diarize)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write diarize", err)
+	if reqBody.Diarize != nil {
+		if err := writer.WriteField("diarize", strconv.FormatBool(*reqBody.Diarize)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write diarize", err)
+		}
 	}
 
-	if err := writer.WriteField("paragraphs", strconv.FormatBool(reqBody.Paragraphs)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write paragraphs", err)
+	if reqBody.Paragraphs != nil {
+		if err := writer.WriteField("paragraphs", strconv.FormatBool(*reqBody.Paragraphs)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write paragraphs", err)
+		}
 	}
 
-	if err := writer.WriteField("utterances", strconv.FormatBool(reqBody.Utterances)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write utterances", err)
+	if reqBody.Utterances != nil {
+		if err := writer.WriteField("utterances", strconv.FormatBool(*reqBody.Utterances)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write utterances", err)
+		}
 	}
 
-	if err := writer.WriteField("numerals", strconv.FormatBool(reqBody.Numerals)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write numerals", err)
+	if reqBody.Numerals != nil {
+		if err := writer.WriteField("numerals", strconv.FormatBool(*reqBody.Numerals)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write numerals", err)
+		}
 	}
 
-	if err := writer.WriteField("detect_language", strconv.FormatBool(reqBody.DetectLanguage)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write detect_language", err)
+	if reqBody.DetectLanguage != nil {
+		if err := writer.WriteField("detect_language", strconv.FormatBool(*reqBody.DetectLanguage)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write detect_language", err)
+		}
 	}
 
-	if err := writer.WriteField("topics", strconv.FormatBool(reqBody.Topics)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write topics", err)
+	if reqBody.Topics != nil {
+		if err := writer.WriteField("topics", strconv.FormatBool(*reqBody.Topics)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write topics", err)
+		}
 	}
 
-	if err := writer.WriteField("intents", strconv.FormatBool(reqBody.Intents)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write intents", err)
+	if reqBody.Intents != nil {
+		if err := writer.WriteField("intents", strconv.FormatBool(*reqBody.Intents)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write intents", err)
+		}
 	}
 
-	if err := writer.WriteField("sentiment", strconv.FormatBool(reqBody.Sentiment)); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write sentiment", err)
+	if reqBody.Sentiment != nil {
+		if err := writer.WriteField("sentiment", strconv.FormatBool(*reqBody.Sentiment)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write sentiment", err)
+		}
 	}
 
-	// --- Strings / Text Fields ---
+	if reqBody.Summarize != nil {
+		if err := writer.WriteField("summarize", strconv.FormatBool(*reqBody.Summarize)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write summarize", err)
+		}
+	}
+
+	// --- Strings / List Fields ---
 
 	if reqBody.Language != "" {
 		if err := writer.WriteField("language", reqBody.Language); err != nil {
@@ -707,14 +715,14 @@ func writeTranscriptionMultipart(
 		}
 	}
 
-	if len(reqBody.Keywords) > 0  {
-		if err := writer.WriteField("keywords", strings.Join(reqBody.Keywords, ",")); err != nil {
+	for _, keyword := range reqBody.Keywords {
+		if err := writer.WriteField("keywords", keyword); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write keywords", err)
 		}
 	}
 
-	if len(reqBody.Replace) > 0{
-		if err := writer.WriteField("replace", strings.Join(reqBody.Replace, ",")); err != nil {
+	for _, replace := range reqBody.Replace {
+		if err := writer.WriteField("replace", replace); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write replace", err)
 		}
 	}
@@ -725,21 +733,14 @@ func writeTranscriptionMultipart(
 		}
 	}
 
-	if len(reqBody.Search) > 0 {
-		if err := writer.WriteField("search", strings.Join(reqBody.Search, ",")); err != nil {
+	for _, search := range reqBody.Search {
+		if err := writer.WriteField("search", search); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write search", err)
-		}
-	}
-
-	if reqBody.Summarize {
-		if err := writer.WriteField("summarize", "true"); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write summarize", err)
 		}
 	}
 
 	return nil
 }
-
 
 // TranscriptionStream is not supported by the Deepgram provider
 func (provider *DeepgramProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -802,8 +803,8 @@ func (provider *DeepgramProvider) VideoRemix(_ *schemas.BifrostContext, _ schema
 }
 
 // buildSpeechRequestURL constructs the full request URL using the provider's configuration for speech.
-func (provider *DeepgramProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
-	baseURL := provider.networkConfig.BaseURL
+func (provider *DeepgramProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, key schemas.Key, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
+	baseURL := provider.getBaseURL(key)
 	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 
 	var finalURL string

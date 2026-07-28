@@ -184,18 +184,20 @@ type ListenWebSocketProvider interface {
 	SupportsListenWebSocket() bool
 	// ListenWebSocketURL builds the upstream WSS URL. rawQuery is the client
 	// request query string without a leading '?', forwarded unchanged.
-	ListenWebSocketURL(rawQuery string) string
+	// key is used to resolve per-key base URLs when configured.
+	ListenWebSocketURL(key Key, rawQuery string) string
 	ListenHeaders(ctx *BifrostContext, key Key) (map[string]string, *BifrostError)
 }
 
 // ListenBillingProvider is an optional interface for listen WebSocket providers
 // that bill differently from the datasheet's default (usually pre-recorded)
 // audio_transcription rates. Checked via type assertion; when ok is true,
-// CalculateCost trusts the returned USD amount via TranscriptionUsage.Cost.
+// CalculateCost trusts the returned USD amount via TranscriptionUsage.Cost
+// (including an explicit zero).
 type ListenBillingProvider interface {
 	// ListenCostUSD returns the live-session cost in USD for the given model,
-	// audio duration, and language query value. ok=false means fall back to
-	// datasheet pricing.
+	// audio duration, and language query value. ok=true means use the returned
+	// USD amount as-is (including 0); ok=false means fall back to datasheet pricing.
 	ListenCostUSD(model string, seconds float64, language string) (cost float64, ok bool)
 }
 
