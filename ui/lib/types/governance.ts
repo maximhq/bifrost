@@ -58,6 +58,9 @@ export interface Customer {
 	name: string;
 	rate_limit_id?: string;
 	calendar_aligned?: boolean;
+	// Number of virtual keys owned by this customer (server-computed; the list
+	// endpoint reports this instead of embedding the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	teams?: Team[];
 	budgets?: Budget[];
