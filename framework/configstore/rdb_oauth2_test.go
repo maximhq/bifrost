@@ -74,11 +74,14 @@ func seedExpiringTokenFixtures(t *testing.T, s *RDBConfigStore) (mkToken func(id
 			ExpiresAt: &past, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}).Error)
 	}
+	// state is accepted for readability at call sites (mirrors each fixture's
+	// intent, e.g. "state-live") but no longer stored — state moved off
+	// TableOauthConfig onto TableMCPOauthFlow and isn't part of what this
+	// fixture set (GetExpiringOauthTokens) exercises.
 	mkConfig = func(id, tokenID, status, state string) {
 		require.NoError(t, s.DB().Create(&tables.TableOauthConfig{
-			ID: id, RedirectURI: "http://127.0.0.1/cb", State: state, Status: status,
+			ID: id, RedirectURI: "http://127.0.0.1/cb", Status: status,
 			TokenID: &tokenID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
-			ExpiresAt: time.Now().Add(time.Hour),
 		}).Error)
 	}
 	mkClient = func(name, oauthConfigID string, disabled bool) {

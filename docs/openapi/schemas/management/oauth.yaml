@@ -86,10 +86,6 @@ OAuthConfigStatus:
       type: string
       format: date-time
       description: When this OAuth config was created
-    expires_at:
-      type: string
-      format: date-time
-      description: When this OAuth config expires (becomes invalid if not completed)
     token_id:
       type: string
       description: ID of the associated OAuth token (only present if status is authorized)
