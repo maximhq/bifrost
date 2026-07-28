@@ -894,10 +894,9 @@ bifrost:
       #   simple_medium: 0.20   # Scores below this are SIMPLE
       #   medium_complex: 0.40  # Scores below this (and >= simple_medium) are MEDIUM; at or above are COMPLEX
       # keywords:
-      #   code_keywords: ["function", "class", "api", "debug", "deploy"]
-      #   reasoning_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
-      #   technical_keywords: ["architecture", "kubernetes", "latency", "authentication"]
       #   simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
+      #   medium_keywords: ["function", "api", "debug", "architecture", "kubernetes", "latency"]
+      #   complex_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
     authConfig:
       adminUsername: ""
       adminPassword: ""

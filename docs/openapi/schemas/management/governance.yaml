@@ -2026,33 +2026,26 @@ ComplexityTierBoundaries:
 ComplexityKeywordConfig:
   type: object
   description: |
-    Editable keyword lists used by the complexity analyzer. Only the four user-facing
-    dimensions are exposed; `reasoning_keywords` entries drive the override that
-    promotes requests to the COMPLEX tier. Matching is normalized to lowercase and
-    duplicates are removed on save.
+    Editable scoring signals used by the complexity analyzer. Medium entries raise
+    the score gradually. One Complex match guarantees at least MEDIUM and two force
+    COMPLEX. Matching is normalized to lowercase and duplicates are removed on save.
   additionalProperties: false
   required:
-    - code_keywords
-    - reasoning_keywords
-    - technical_keywords
     - simple_keywords
+    - medium_keywords
+    - complex_keywords
   properties:
-    code_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
-    reasoning_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
-    technical_keywords:
-      type: array
-      items:
-        type: string
-      minItems: 1
     simple_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    medium_keywords:
+      type: array
+      items:
+        type: string
+      minItems: 1
+    complex_keywords:
       type: array
       items:
         type: string

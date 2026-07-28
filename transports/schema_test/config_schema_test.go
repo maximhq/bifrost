@@ -397,6 +397,49 @@ func TestSchemaGuardrailRuleTarget(t *testing.T) {
 	}
 }
 
+func TestSchemaComplexityAnalyzerKeywordCompatibility(t *testing.T) {
+	compiled := compileSchema(t)
+	prefix := `{"governance":{"complexity_analyzer_config":{"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4},"keywords":`
+	suffix := `}}}`
+
+	tests := []struct {
+		name      string
+		keywords  string
+		wantError bool
+	}{
+		{
+			name:     "canonical three-list shape",
+			keywords: `{"simple_keywords":["hello"],"medium_keywords":["api"],"complex_keywords":["tradeoffs"]}`,
+		},
+		{
+			name:     "legacy four-list shape",
+			keywords: `{"simple_keywords":["hello"],"code_keywords":["api"],"technical_keywords":["latency"],"reasoning_keywords":["tradeoffs"]}`,
+		},
+		{
+			name:      "mixed canonical and legacy shape",
+			keywords:  `{"simple_keywords":["hello"],"medium_keywords":["api"],"complex_keywords":["tradeoffs"],"code_keywords":["debug"]}`,
+			wantError: true,
+		},
+		{
+			name:      "unknown keyword field",
+			keywords:  `{"simple_keywords":["hello"],"medium_keywords":["api"],"complex_keywords":["tradeoffs"],"other_keywords":["unknown"]}`,
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, prefix+tt.keywords+suffix)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaSCIMConfigValidation(t *testing.T) {
 	compiled := compileSchema(t)
 

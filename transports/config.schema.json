@@ -3550,33 +3550,25 @@
     },
     "complexity_analyzer_keywords": {
       "type": "object",
-      "description": "User-editable keyword lists for complexity analysis",
+      "description": "User-editable keyword scoring signals. The legacy four-list shape remains accepted for config.json compatibility.",
       "properties": {
-        "code_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "reasoning_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "technical_keywords": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
         "simple_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "medium_keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "complex_keywords": {
           "type": "array",
           "minItems": 1,
           "items": {
@@ -3585,13 +3577,42 @@
           }
         }
       },
-      "required": [
-        "code_keywords",
-        "reasoning_keywords",
-        "technical_keywords",
-        "simple_keywords"
+      "oneOf": [
+        {
+          "required": ["simple_keywords", "medium_keywords", "complex_keywords"]
+        },
+        {
+          "deprecated": true,
+          "properties": {
+            "code_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "reasoning_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "technical_keywords": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": ["code_keywords", "reasoning_keywords", "technical_keywords", "simple_keywords"]
+        }
       ],
-      "additionalProperties": false
+      "unevaluatedProperties": false
     },
     "complexity_analyzer_config": {
       "type": "object",
