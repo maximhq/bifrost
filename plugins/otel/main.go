@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -40,6 +42,25 @@ type Protocol string
 const (
 	ProtocolHTTP Protocol = "http" // default
 	ProtocolGRPC Protocol = "grpc"
+)
+
+const (
+	// DefaultExportTimeout bounds a single trace export when export_timeout is unset.
+	// Kept short deliberately: traces are best-effort telemetry, and a slow export
+	// holds a goroutine plus a full trace snapshot for its whole duration.
+	DefaultExportTimeout = 5 * time.Second
+	// MaxExportTimeout caps what an operator may configure.
+	MaxExportTimeout = 60 * time.Second
+
+	// breakerFailureThreshold is how many consecutive export failures open the circuit.
+	breakerFailureThreshold = 5
+	// breakerCooldown is how long exports stay suppressed once the circuit is open.
+	breakerCooldown = 30 * time.Second
+
+	// exportLogThrottle limits how often repeated export failures are logged. A failing
+	// collector fails once per request; logging each one makes the logging itself a load
+	// source on top of the outage.
+	exportLogThrottle = 500
 )
 
 // PluginSpanFilter, its mode type, and the include/exclude constants are shared across
@@ -73,6 +94,12 @@ type Profile struct {
 	Protocol     Protocol           `json:"protocol"`
 	TLSCACert    string             `json:"tls_ca_cert,omitempty"`
 	Insecure     bool               `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+
+	// ExportTimeout bounds a single trace export, in seconds (default 5, max 60).
+	// This is the only deadline on the export: the caller passes context.Background(),
+	// and a gRPC export otherwise has no timeout at all, so an endpoint that completes
+	// a TCP handshake but never replies would block forever.
+	ExportTimeout int `json:"export_timeout,omitempty"`
 
 	// Metrics push configuration
 	MetricsEnabled      bool               `json:"metrics_enabled"`
@@ -218,6 +245,7 @@ type profileForStorage struct {
 	Protocol               Protocol          `json:"protocol"`
 	TLSCACert              string            `json:"tls_ca_cert,omitempty"`
 	Insecure               bool              `json:"insecure"`
+	ExportTimeout          int               `json:"export_timeout,omitempty"`
 	MetricsEnabled         bool              `json:"metrics_enabled"`
 	MetricsEndpoint        string            `json:"metrics_endpoint,omitempty"`
 	MetricsPushInterval    int               `json:"metrics_push_interval,omitempty"`
@@ -255,6 +283,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			Protocol:               p.Protocol,
 			TLSCACert:              p.TLSCACert,
 			Insecure:               p.Insecure,
+			ExportTimeout:          p.ExportTimeout,
 			MetricsEnabled:         p.MetricsEnabled,
 			MetricsEndpoint:        schemas.SecretVarAsString(p.MetricsEndpoint),
 			MetricsPushInterval:    p.MetricsPushInterval,
@@ -334,6 +363,54 @@ type otelTarget struct {
 	disableContentLogging  bool
 	groupTracesBySession   bool
 	disableRootSpanContent bool
+
+	// exportTimeout bounds a single Emit. See Profile.ExportTimeout.
+	exportTimeout time.Duration
+
+	// Circuit breaker. A misconfigured endpoint fails identically for every trace, so
+	// after breakerFailureThreshold consecutive failures the target stops dialling until
+	// breakerCooldown has elapsed. Without this, a permanently wrong endpoint costs a
+	// full exportTimeout on every single request forever.
+	consecutiveFailures atomic.Int64
+	breakerOpenUntil    atomic.Int64 // UnixNano; exports are skipped until this instant
+	suppressedExports   atomic.Int64
+	failedExports       atomic.Int64
+}
+
+// tripBreaker records a failed export and opens the circuit once the failure threshold
+// is reached.
+func (t *otelTarget) tripBreaker() {
+	t.failedExports.Add(1)
+	if t.consecutiveFailures.Add(1) >= breakerFailureThreshold {
+		t.breakerOpenUntil.Store(time.Now().Add(breakerCooldown).UnixNano())
+	}
+}
+
+// resetBreaker records a successful export, closing the circuit.
+func (t *otelTarget) resetBreaker() {
+	t.consecutiveFailures.Store(0)
+	t.breakerOpenUntil.Store(0)
+}
+
+// breakerOpen reports whether exports to this target are currently suppressed.
+// Exactly one probe is allowed through once the cooldown expires: the goroutine that
+// wins the CAS pushes the window forward by another cooldown and dials for real, so
+// concurrent callers and anyone arriving while that probe is in flight stay suppressed.
+// The probe then resets the breaker on success or re-arms it on failure; if it somehow
+// does neither, the pushed-forward window expires on its own and the next caller probes.
+func (t *otelTarget) breakerOpen() bool {
+	openUntil := t.breakerOpenUntil.Load()
+	if openUntil == 0 {
+		return false
+	}
+	if time.Now().UnixNano() >= openUntil {
+		next := time.Now().Add(breakerCooldown).UnixNano()
+		if t.breakerOpenUntil.CompareAndSwap(openUntil, next) {
+			return false
+		}
+	}
+	t.suppressedExports.Add(1)
+	return true
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -449,6 +526,11 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		return nil, fmt.Errorf("profile %d: %w", index, err)
 	}
 
+	exportTimeout, err := resolveExportTimeout(profile.ExportTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("profile %d: %w", index, err)
+	}
+
 	url := profile.CollectorURL.GetValue()
 	target := &otelTarget{
 		serviceName:            serviceName,
@@ -458,14 +540,16 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		disableContentLogging:  profile.DisableContentLogging,
 		groupTracesBySession:   profile.GroupTracesBySession,
 		disableRootSpanContent: profile.DisableRootSpanContent,
+		exportTimeout:          exportTimeout,
 	}
 
-	var err error
 	switch profile.Protocol {
 	case ProtocolGRPC:
+		// gRPC has no client-side timeout of its own; the per-export context deadline
+		// applied in Inject is what bounds it.
 		target.client, err = NewOtelClientGRPC(url, headers, profile.TLSCACert, profile.Insecure)
 	case ProtocolHTTP:
-		target.client, err = NewOtelClientHTTP(url, headers, profile.TLSCACert, profile.Insecure)
+		target.client, err = NewOtelClientHTTP(url, headers, profile.TLSCACert, profile.Insecure, exportTimeout)
 	default:
 		return nil, fmt.Errorf("profile %d: invalid protocol type %q", index, profile.Protocol)
 	}
@@ -507,6 +591,18 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	return target, nil
+}
+
+// resolveExportTimeout validates a configured export_timeout (in seconds) and returns
+// the duration to use, falling back to DefaultExportTimeout when unset.
+func resolveExportTimeout(seconds int) (time.Duration, error) {
+	if seconds == 0 {
+		return DefaultExportTimeout, nil
+	}
+	if seconds < 0 || time.Duration(seconds)*time.Second > MaxExportTimeout {
+		return 0, fmt.Errorf("export_timeout must be between 1 and %d seconds, got %d", int(MaxExportTimeout/time.Second), seconds)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 // GetName function for the OTEL plugin
@@ -668,20 +764,46 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 		wg.Add(1)
 		go func(t *otelTarget) {
 			defer wg.Done()
-			if t.client != nil {
-				resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent)
-				if err := t.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
-					logger.Error("failed to emit trace %s to %s: %v", trace.TraceID, t.url, err)
-				}
-			}
+			// Metrics first: they are SDK-buffered and never touch the network here, so
+			// they still get recorded even when the trace endpoint is broken.
 			if t.metricsExporter != nil {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace)
 				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
+			if t.client == nil || t.breakerOpen() {
+				return
+			}
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, trace, t.requestHeaders, t.disableContentLogging, t.groupTracesBySession, t.disableRootSpanContent)
+			// The caller passes context.Background(), so this deadline is the only bound
+			// on the export — and the only bound at all on the gRPC path.
+			emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
+			defer cancel()
+			if err := t.client.Emit(emitCtx, []*ResourceSpan{resourceSpan}); err != nil {
+				t.tripBreaker()
+				if n := t.failedExports.Load(); n == 1 || n%exportLogThrottle == 0 {
+					logger.Error("failed to emit trace %s to %s: %v (%d failed exports so far)", trace.TraceID, t.url, err, n)
+				}
+				return
+			}
+			t.resetBreaker()
 		}(t)
 	}
 	wg.Wait()
 	return nil
+}
+
+// ExportStats reports per-target export health: how many exports failed and how many
+// were suppressed by an open circuit breaker. A rising suppressed count means the
+// target's endpoint is being treated as dead — usually a misconfigured collector URL.
+func (p *OtelPlugin) ExportStats() map[string]struct{ Failed, Suppressed int64 } {
+	stats := make(map[string]struct{ Failed, Suppressed int64 }, len(p.targets))
+	for _, t := range p.targets {
+		stats[t.url] = struct{ Failed, Suppressed int64 }{
+			Failed:     t.failedExports.Load(),
+			Suppressed: t.suppressedExports.Load(),
+		}
+	}
+	return stats
 }
 
 // RequestHeaderPatterns returns the deduplicated union of request-header name patterns

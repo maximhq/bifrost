@@ -4829,6 +4829,13 @@
           "minimum": 1,
           "maximum": 300
         },
+        "export_timeout": {
+          "type": "integer",
+          "description": "Maximum time in seconds for a single trace export. Bounds how long a slow or unreachable collector can hold an export goroutine; gRPC exports have no other timeout.",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {
