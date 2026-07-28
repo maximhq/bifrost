@@ -1,6 +1,9 @@
 package vertex
 
 import (
+	"context"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -115,5 +118,133 @@ func TestBuildResponseFromConfigWildcardAllowlistDeploymentsOnly(t *testing.T) {
 	ids := modelIDs(result)
 	if len(ids) != 1 || ids[0] != "vertex/my-pro" {
 		t.Errorf("expected only deployment vertex/my-pro, got %v", ids)
+	}
+}
+
+// garbageServiceAccountJSON parses as a valid service_account credential (so
+// getAuthTokenSource succeeds) but carries an unparseable private key, so the
+// token source fails at Token() without any network access.
+const garbageServiceAccountJSON = `{"type":"service_account","project_id":"p","private_key_id":"x","private_key":"-----BEGIN PRIVATE KEY-----\ngarbage\n-----END PRIVATE KEY-----\n","client_email":"a@b.iam.gserviceaccount.com","token_uri":"https://oauth2.googleapis.com/token"}`
+
+// TestListModelsByKeyAuthFallback exercises listModelsByKey end to end for the
+// paths that never reach the Model Garden API: the restricted-allowlist fast
+// path (auth is irrelevant) and the deployments fallback when Model Garden
+// credentials are unavailable (token source creation or token acquisition
+// fails). Unfiltered requests must keep surfacing the auth error rather than
+// silently degrading to config-only output.
+func TestListModelsByKeyAuthFallback(t *testing.T) {
+	t.Parallel()
+
+	deployments := schemas.KeyAliases{
+		"my-pro": {ModelID: "gemini-2.5-pro"},
+	}
+
+	tests := []struct {
+		name        string
+		key         schemas.Key
+		request     *schemas.BifrostListModelsRequest
+		wantModels  []string
+		wantErrPart string
+	}{
+		{
+			name: "restricted allowlist skips auth entirely",
+			key: schemas.Key{
+				Models:  schemas.WhiteList{"my-pro", "gemini-2.0-flash"},
+				Aliases: deployments,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					Region: *schemas.NewSecretVar("us-central1"),
+					// Invalid credentials must not matter: the fast path
+					// returns before any token source is created.
+					AuthCredentials: *schemas.NewSecretVar("restricted-not-json"),
+				},
+			},
+			request:    &schemas.BifrostListModelsRequest{Provider: schemas.Vertex},
+			wantModels: []string{"vertex/gemini-2.0-flash", "vertex/my-pro"},
+		},
+		{
+			name: "wildcard deployments fall back when token source creation fails",
+			key: schemas.Key{
+				Models:  schemas.WhiteList{"*"},
+				Aliases: deployments,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					Region:          *schemas.NewSecretVar("us-central1"),
+					AuthCredentials: *schemas.NewSecretVar("wildcard-source-not-json"),
+				},
+			},
+			request:    &schemas.BifrostListModelsRequest{Provider: schemas.Vertex},
+			wantModels: []string{"vertex/my-pro"},
+		},
+		{
+			name: "wildcard deployments fall back when token acquisition fails",
+			key: schemas.Key{
+				Models:  schemas.WhiteList{"*"},
+				Aliases: deployments,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					Region:          *schemas.NewSecretVar("us-central1"),
+					AuthCredentials: *schemas.NewSecretVar(garbageServiceAccountJSON),
+				},
+			},
+			request:    &schemas.BifrostListModelsRequest{Provider: schemas.Vertex},
+			wantModels: []string{"vertex/my-pro"},
+		},
+		{
+			name: "unfiltered preserves the auth error instead of falling back",
+			key: schemas.Key{
+				Models:  schemas.WhiteList{"*"},
+				Aliases: deployments,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					Region:          *schemas.NewSecretVar("us-central1"),
+					AuthCredentials: *schemas.NewSecretVar("unfiltered-not-json"),
+				},
+			},
+			request:     &schemas.BifrostListModelsRequest{Provider: schemas.Vertex, Unfiltered: true},
+			wantErrPart: "error creating auth token source",
+		},
+		{
+			name: "wildcard without deployments preserves the auth error",
+			key: schemas.Key{
+				Models: schemas.WhiteList{"*"},
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					Region:          *schemas.NewSecretVar("us-central1"),
+					AuthCredentials: *schemas.NewSecretVar("no-deployments-not-json"),
+				},
+			},
+			request:     &schemas.BifrostListModelsRequest{Provider: schemas.Vertex},
+			wantErrPart: "error creating auth token source",
+		},
+	}
+
+	// A zero-value provider suffices: every case returns (or fails) before the
+	// Model Garden fetch, so the HTTP client and logger are never touched.
+	provider := &VertexProvider{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+
+			response, bifrostErr := provider.listModelsByKey(ctx, tt.key, tt.request)
+
+			if tt.wantErrPart != "" {
+				if bifrostErr == nil {
+					t.Fatalf("expected error containing %q, got response %v", tt.wantErrPart, modelIDs(response))
+				}
+				if !strings.Contains(bifrostErr.Error.Message, tt.wantErrPart) {
+					t.Errorf("expected error containing %q, got %q", tt.wantErrPart, bifrostErr.Error.Message)
+				}
+				return
+			}
+
+			if bifrostErr != nil {
+				t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+			}
+			got := modelIDs(response)
+			slices.Sort(got)
+			if !slices.Equal(got, tt.wantModels) {
+				t.Errorf("expected models %v, got %v", tt.wantModels, got)
+			}
+		})
 	}
 }
