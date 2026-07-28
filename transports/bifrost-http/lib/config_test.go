@@ -1417,10 +1417,6 @@ func (m *MockConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.Table
 
 // OAuth config
 
-func (m *MockConfigStore) GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error) {
-	return nil, nil
-}
-
 func (m *MockConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error) {
 	return nil, nil
 }
@@ -1429,7 +1425,7 @@ func (m *MockConfigStore) CreateOauthConfig(ctx context.Context, config *tables.
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -1442,7 +1438,7 @@ func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before tim
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
+func (m *MockConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -1454,24 +1450,36 @@ func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error
 	return nil
 }
 
-// Per-user OAuth session CRUD
-func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableOauthUserSession, error) {
-	return nil, nil
-}
-
-func (m *MockConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableOauthUserSession, error) {
-	return nil, nil
-}
-
-func (m *MockConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableOauthUserSession, error) {
-	return nil, nil
-}
-
-func (m *MockConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+func (m *MockConfigStore) DeleteOauthTokensByConfigAndMode(ctx context.Context, oauthConfigID, authMode string, tx ...*gorm.DB) error {
 	return nil
 }
 
-func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableOauthUserSession) error {
+// Flow-row CRUD (mcp_oauth_flows / TableMCPOauthFlow)
+func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableMCPOauthFlow, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimOauthUserSessionByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) ClaimOauthFlowByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthFlow, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *tables.TableMCPOauthFlow) error {
 	return nil
 }
 
@@ -1512,7 +1520,7 @@ func (m *MockConfigStore) ListOauthUserTokens(ctx context.Context, params config
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListPendingOauthUserSessions(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableOauthUserSession, error) {
+func (m *MockConfigStore) ListPendingOauthUserSessions(ctx context.Context, params configstore.MCPSessionsFilterParams) ([]tables.TableMCPOauthFlow, error) {
 	return nil, nil
 }
 
