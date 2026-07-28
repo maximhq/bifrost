@@ -3069,12 +3069,60 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 		}
 		return prefix + name
 	}
+	return preloadCustomerRelationsWithoutVirtualKeys(db, prefix).
+		Preload(relation("VirtualKeys"))
+}
+
+// preloadCustomerRelationsWithoutVirtualKeys preloads every customer relation
+// except VirtualKeys. The paginated list path uses this and reports
+// VirtualKeyCount instead, so a customer with thousands of keys doesn't drag
+// them all into a page of 25 rows.
+func preloadCustomerRelationsWithoutVirtualKeys(db *gorm.DB, prefix string) *gorm.DB {
+	relation := func(name string) string {
+		if prefix == "" {
+			return name
+		}
+		return prefix + name
+	}
 	return db.
 		Preload(relation("Teams")).
 		Preload(relation("Teams.Budgets")).
 		Preload(relation("Budgets")).
-		Preload(relation("RateLimit")).
-		Preload(relation("VirtualKeys"))
+		Preload(relation("RateLimit"))
+}
+
+// attachCustomerVirtualKeyCounts populates VirtualKeyCount on each customer
+// using a single grouped count, avoiding an N+1 over the customers in a page.
+// The customers passed in have already been narrowed by any QueryScope on ctx,
+// so counting their keys unscoped exposes nothing the caller can't already see.
+func (s *RDBConfigStore) attachCustomerVirtualKeyCounts(ctx context.Context, customers []tables.TableCustomer) error {
+	if len(customers) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(customers))
+	for i := range customers {
+		ids = append(ids, customers[i].ID)
+	}
+	var rows []struct {
+		CustomerID string
+		Count      int
+	}
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableVirtualKey{}).
+		Select("customer_id, COUNT(*) AS count").
+		Where("customer_id IN ?", ids).
+		Group("customer_id").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	countByCustomer := make(map[string]int, len(rows))
+	for _, row := range rows {
+		countByCustomer[row.CustomerID] = row.Count
+	}
+	for i := range customers {
+		customers[i].VirtualKeyCount = countByCustomer[customers[i].ID]
+	}
+	return nil
 }
 
 // preloadVirtualKeyBaseRelations preloads the base relationships for a virtual key.
@@ -4134,6 +4182,9 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 		Find(&customers).Error; err != nil {
 		return nil, err
 	}
+	for i := range customers {
+		customers[i].VirtualKeyCount = len(customers[i].VirtualKeys)
+	}
 	return customers, nil
 }
 
@@ -4163,10 +4214,13 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 		offset = 0
 	}
 	var customers []tables.TableCustomer
-	if err := preloadCustomerRelations(baseQuery, "").
+	if err := preloadCustomerRelationsWithoutVirtualKeys(baseQuery, "").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&customers).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachCustomerVirtualKeyCounts(ctx, customers); err != nil {
 		return nil, 0, err
 	}
 	return customers, totalCount, nil
@@ -4187,6 +4241,7 @@ func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.Ta
 		}
 		return nil, err
 	}
+	customer.VirtualKeyCount = len(customer.VirtualKeys)
 	return &customer, nil
 }
 
