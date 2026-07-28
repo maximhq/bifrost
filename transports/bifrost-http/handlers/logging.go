@@ -79,6 +79,65 @@ const filterDataFanOutLimit = 4
 
 const defaultFilterDataLimit = 1000
 
+// filterDataMatViewBackedDims lists the dimensions served by a per-dimension
+// materialized view (see framework/logstore filterMatViews). Those reads are
+// small indexed lookups, so caching them buys little — the cache exists for the
+// dimensions that still hit the raw logs table.
+//
+// metadata_keys is the notable absentee: it has no matview and scans up to
+// maxMetadataRows recent rows, JSON-parsing each, on every dialect. It is also
+// the one dimension the logs page requests unconditionally on mount.
+var filterDataMatViewBackedDims = map[string]struct{}{
+	filterDimModels:         {},
+	filterDimAliases:        {},
+	filterDimSelectedKeys:   {},
+	filterDimVirtualKeys:    {},
+	filterDimRoutingRules:   {},
+	filterDimRoutingEngines: {},
+	filterDimStopReasons:    {},
+	filterDimTeams:          {},
+	filterDimCustomers:      {},
+	filterDimUsers:          {},
+	filterDimBusinessUnits:  {},
+}
+
+// shouldCacheFilterDimensions reports whether the requested dimensions are
+// expensive enough to be worth a cache entry.
+//
+// Caching is not free here: entries are partitioned per caller (see
+// filterDataCacheIdentity) because dropdown values are row-visibility-scoped,
+// so a cached response serves exactly one user. Spending that memory on a
+// single indexed matview read is a poor trade; spending it on a raw-table scan
+// is a good one.
+//
+// Without matviews (SQLite, or any non-Postgres store) every dimension is a raw
+// scan, so everything stays cacheable. This deliberately does not track
+// matViewsReady: that flag lives inside the store and flips on shape errors, and
+// the decision has to be made before the single-flight lock is taken — deciding
+// after the fetch would serialize concurrent callers behind each other. The cost
+// of getting it wrong during a self-heal window is a few uncached matview reads.
+func (h *LoggingHandler) shouldCacheFilterDimensions(dims []string) bool {
+	if !h.logStoreServesMatViews() {
+		return true
+	}
+	for _, dim := range dims {
+		if _, backed := filterDataMatViewBackedDims[dim]; !backed {
+			return true
+		}
+	}
+	return false
+}
+
+// logStoreServesMatViews reports whether the configured logs store is one that
+// builds the filter matviews at all. Conservative: an unknown/absent config
+// reports false, so the cache stays on rather than silently dropping it.
+func (h *LoggingHandler) logStoreServesMatViews() bool {
+	if h == nil || h.config == nil || h.config.LogsStoreConfig == nil {
+		return false
+	}
+	return h.config.LogsStoreConfig.Type == logstore.LogStoreTypePostgres
+}
+
 // shouldUseFilterDataCache reports whether a filterdata response is cacheable
 // at all. Text-search responses are not (unbounded key space), nor are ones
 // already carrying an explicit query scope.
@@ -1482,11 +1541,11 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := shouldUseFilterDataCache(ctx, query)
+	useCache := shouldUseFilterDataCache(ctx, query) && h.shouldCacheFilterDimensions(dims)
 
 	var entry *filterDataCacheEntry
 	if useCache {
-		cacheKey := fmt.Sprintf("hide_deleted=%v|dims=%s", hideDeletedVirtualKeys, strings.Join(dims, ","))
+		cacheKey := fmt.Sprintf("who=%s|hide_deleted=%v|dims=%s", filterDataCacheIdentity(ctx), hideDeletedVirtualKeys, strings.Join(dims, ","))
 		var cached map[string]interface{}
 		var ok bool
 		entry, cached, ok = h.filterDataCache.load(cacheKey)
@@ -2404,11 +2463,14 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allMCPFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
+	// Not narrowed by dimension like the LLM endpoint above: no mv_filter_* view
+	// covers mcp_tool_logs, so every MCP dimension is a raw DISTINCT over the
+	// 30-day window and all of them are worth caching.
 	useCache := shouldUseFilterDataCache(ctx, query)
 
 	var entry *filterDataCacheEntry
 	if useCache {
-		cacheKey := fmt.Sprintf("hide_deleted=%v|dims=%s", hideDeletedVirtualKeys, strings.Join(dims, ","))
+		cacheKey := fmt.Sprintf("who=%s|hide_deleted=%v|dims=%s", filterDataCacheIdentity(ctx), hideDeletedVirtualKeys, strings.Join(dims, ","))
 		var cached map[string]interface{}
 		var ok bool
 		entry, cached, ok = h.mcpFilterDataCache.load(cacheKey)
