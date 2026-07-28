@@ -90,10 +90,17 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
 				return &gemini.GeminiBatchCreateRequest{}
 			}
+			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.CountTokensRequest {
+				return &gemini.GeminiCountTokensRequest{}
+			}
 			return &gemini.GeminiGenerationRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
-			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
+			if countTokensReq, ok := req.(*gemini.GeminiCountTokensRequest); ok {
+				return &schemas.BifrostRequest{
+					CountTokensRequest: countTokensReq.ToGeminiGenerationRequest().ToBifrostResponsesRequest(ctx),
+				}, nil
+			} else if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
 				if geminiReq.IsCountTokens {
 					return &schemas.BifrostRequest{
 						CountTokensRequest: geminiReq.ToBifrostResponsesRequest(ctx),
@@ -1486,6 +1493,15 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		}
 
+		return nil
+	case *gemini.GeminiCountTokensRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
+		if explicitGemini {
+			setGenAIRawRequestBodyFromRequest(ctx, bifrostCtx)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
 		return nil
 	case *gemini.GeminiEmbeddingRequest:
 		if modelStr != "" {
