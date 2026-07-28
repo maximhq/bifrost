@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/temptoken"
+	"gorm.io/gorm"
 )
 
 const (
@@ -316,8 +317,15 @@ func (p *OAuth2Provider) StorePendingMCPClient(oauthConfigID string, mcpClientCo
 	return nil
 }
 
-// GetPendingMCPClient retrieves an MCP client config by oauth_config_id
-// Returns nil if no pending config is found or if the oauth config has expired
+// GetPendingMCPClient retrieves an MCP client config by oauth_config_id.
+// Returns nil if no pending config is found. Unlike before PKCE/expiry
+// fields moved off TableOauthConfig, this no longer applies its own expiry
+// gate: the only caller (completeMCPClientOAuth) already requires
+// oauthConfig.Status=="authorized" before reaching this call, which is a
+// stronger, more truthful signal than a raw timestamp comparison — a config
+// row that reached "authorized" represents a real completed OAuth exchange
+// regardless of how much wall-clock time has passed since the bootstrap
+// stash was written.
 func (p *OAuth2Provider) GetPendingMCPClient(oauthConfigID string) (*schemas.MCPClientConfig, error) {
 	ctx := context.Background()
 
@@ -326,11 +334,6 @@ func (p *OAuth2Provider) GetPendingMCPClient(oauthConfigID string) (*schemas.MCP
 		return nil, fmt.Errorf("failed to get oauth config: %w", err)
 	}
 	if oauthConfig == nil {
-		return nil, nil
-	}
-
-	// Check if expired
-	if time.Now().After(oauthConfig.ExpiresAt) {
 		return nil, nil
 	}
 
@@ -344,36 +347,6 @@ func (p *OAuth2Provider) GetPendingMCPClient(oauthConfigID string) (*schemas.MCP
 	}
 
 	return &config, nil
-}
-
-// GetPendingMCPClientByState retrieves an MCP client config by OAuth state token
-// This is useful when the callback only has the state parameter
-func (p *OAuth2Provider) GetPendingMCPClientByState(state string) (*schemas.MCPClientConfig, string, error) {
-	ctx := context.Background()
-
-	oauthConfig, err := p.configStore.GetOauthConfigByState(ctx, state)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to get oauth config by state: %w", err)
-	}
-	if oauthConfig == nil {
-		return nil, "", nil
-	}
-
-	// Check if expired
-	if time.Now().After(oauthConfig.ExpiresAt) {
-		return nil, "", nil
-	}
-
-	if oauthConfig.MCPClientConfigJSON == nil || *oauthConfig.MCPClientConfigJSON == "" {
-		return nil, oauthConfig.ID, nil
-	}
-
-	var config schemas.MCPClientConfig
-	if err := json.Unmarshal([]byte(*oauthConfig.MCPClientConfigJSON), &config); err != nil {
-		return nil, oauthConfig.ID, fmt.Errorf("failed to unmarshal MCP client config: %w", err)
-	}
-
-	return &config, oauthConfig.ID, nil
 }
 
 // RemovePendingMCPClient clears the pending MCP client config from the oauth config
@@ -529,7 +502,14 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		return nil, fmt.Errorf("failed to serialize scopes: %w", err)
 	}
 
-	// Create oauth_config record (using dynamically registered or user-provided client_id)
+	// Create oauth_config record (using dynamically registered or user-provided client_id).
+	// This row is a pure registration/credential template past this point —
+	// State/CodeVerifier/RedirectURI/ExpiresAt live on the flow row created
+	// below instead (FlowMode='admin'), not here. CodeChallenge is used only
+	// to build the authorize URL below and is never persisted at all — the
+	// per-user flow (InitiateUserOAuthFlow) has never stored it either, since
+	// it's recomputed deterministically from CodeVerifier when needed again
+	// (see BuildUpstreamAuthorizeURL).
 	expiresAt := time.Now().Add(15 * time.Minute)
 	oauthConfigRecord := &tables.TableOauthConfig{
 		ID:              oauthConfigID,
@@ -541,17 +521,53 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		RedirectURI:     config.RedirectURI,
 		Scopes:          string(scopesJSON),
 		Resource:        resource,
-		State:           state,
-		CodeVerifier:    codeVerifier,
-		CodeChallenge:   codeChallenge,
 		Status:          "pending",
 		ServerURL:       config.ServerURL,
 		UseDiscovery:    config.UseDiscovery,
-		ExpiresAt:       expiresAt,
 	}
 
-	if err := p.configStore.CreateOauthConfig(ctx, oauthConfigRecord); err != nil {
-		return nil, fmt.Errorf("failed to create oauth config: %w", err)
+	// MCPClientID: best-effort, same lookup CompleteOAuthFlow uses at
+	// callback time (see the comment there). Nothing has linked
+	// config_mcp_clients.oauth_config_id to this row yet at this point in
+	// either caller (the link is established after this function returns —
+	// initiateMCPClientVerification for a re-authorizing client, or the
+	// StorePendingMCPClient bootstrap path for one still being created), so
+	// this is expected to resolve empty in the common case — same
+	// tolerated-empty shape as TableMCPOauthToken's MCPClientID (see its
+	// field comment).
+	//
+	// The config row and its flow row are created in one transaction: before
+	// PKCE/state moved onto a separate flow row, this was a single INSERT and
+	// therefore atomic by construction. A partial failure here (config
+	// committed, flow row not) would otherwise leak a permanently orphaned
+	// 'pending' oauth_configs row — nothing sweeps stale configs the way
+	// DeleteExpiredOauthUserSessions sweeps stale flows.
+	flowRow := &tables.TableMCPOauthFlow{
+		ID:            uuid.New().String(),
+		OauthConfigID: oauthConfigID,
+		State:         state,
+		RedirectURI:   config.RedirectURI,
+		CodeVerifier:  codeVerifier,
+		FlowMode:      "admin",
+		Status:        "pending",
+		ExpiresAt:     expiresAt,
+	}
+	if err := p.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		if err := tx.Create(oauthConfigRecord).Error; err != nil {
+			return fmt.Errorf("failed to create oauth config: %w", err)
+		}
+		var mcpClient tables.TableMCPClient
+		if err := tx.Where("oauth_config_id = ?", oauthConfigID).First(&mcpClient).Error; err == nil {
+			flowRow.MCPClientID = mcpClient.ClientID
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to look up mcp client for oauth config: %w", err)
+		}
+		if err := tx.Create(flowRow).Error; err != nil {
+			return fmt.Errorf("failed to create oauth flow: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	// Resolve env var reference to actual value for use in the authorize URL.
@@ -580,22 +596,43 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 }
 
 // CompleteOAuthFlow handles the OAuth callback and exchanges code for tokens
-// Supports PKCE verification
+// Supports PKCE verification. Handles the admin-mode flow — the shared
+// client's production authorize and a per-user client's bootstrap-test
+// authorize alike (see the FlowMode field comment on TableMCPOauthFlow).
 func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code string) error {
-	// Lookup oauth_config by state
-	oauthConfig, err := p.configStore.GetOauthConfigByState(ctx, state)
+	// Atomically claim the admin-mode flow row by state. Scoped to
+	// FlowMode='admin' so this can never claim a per-identity flow row out
+	// from under CompleteUserOAuthFlow's own claim on the same table (see
+	// ClaimOauthFlowByState).
+	flow, err := p.configStore.ClaimOauthFlowByState(ctx, state)
 	if err != nil {
-		return fmt.Errorf("failed to lookup oauth config: %w", err)
+		return fmt.Errorf("failed to claim oauth flow: %w", err)
 	}
-	if oauthConfig == nil {
+	if flow == nil {
 		return fmt.Errorf("invalid state token")
 	}
 
+	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, flow.OauthConfigID)
+	if err != nil {
+		p.cleanupFlow(ctx, flow.ID)
+		return fmt.Errorf("failed to lookup oauth config: %w", err)
+	}
+	if oauthConfig == nil {
+		p.cleanupFlow(ctx, flow.ID)
+		return fmt.Errorf("oauth config not found for flow %s", flow.ID)
+	}
+
 	// Check expiry
-	if time.Now().After(oauthConfig.ExpiresAt) {
+	if time.Now().After(flow.ExpiresAt) {
 		oauthConfig.Status = "expired"
 		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
+		p.cleanupFlow(ctx, flow.ID)
 		return fmt.Errorf("oauth flow expired")
+	}
+
+	redirectURI := flow.RedirectURI
+	if redirectURI == "" {
+		redirectURI = oauthConfig.RedirectURI
 	}
 
 	// Log token exchange attempt for debugging
@@ -603,7 +640,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		"token_url", oauthConfig.TokenURL,
 		"client_id", oauthConfig.GetResolvedClientID(),
 		"has_client_secret", oauthConfig.GetResolvedClientSecret() != "",
-		"has_pkce_verifier", oauthConfig.CodeVerifier != "")
+		"has_pkce_verifier", flow.CodeVerifier != "")
 
 	// Exchange code for tokens with PKCE verifier
 	tokenResponse, err := p.exchangeCodeForTokensWithPKCE(
@@ -612,8 +649,8 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		code,
 		oauthConfig.GetResolvedClientID(),
 		oauthConfig.GetResolvedClientSecret(),
-		oauthConfig.RedirectURI,
-		oauthConfig.CodeVerifier, // PKCE verifier
+		redirectURI,
+		flow.CodeVerifier, // PKCE verifier
 		strings.TrimSpace(oauthConfig.Resource),
 	)
 	if err != nil {
@@ -623,6 +660,7 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 			"error", err.Error(),
 			"client_id", oauthConfig.GetResolvedClientID(),
 			"token_url", oauthConfig.TokenURL)
+		p.cleanupFlow(ctx, flow.ID)
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
 
@@ -652,36 +690,57 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		Scopes:        string(scopesJSON),
 	}
 
-	// MCPClientID: unlike the per-user flow's session row (which stores
-	// mcp_client_id at InitiateUserOAuthFlow time — see
-	// CompleteUserOAuthFlow), the shared flow's oauth_configs row carries no
-	// client reference of its own. For a client re-authorizing an existing
-	// credential, initiateMCPClientVerification links
-	// config_mcp_clients.oauth_config_id to this row's ID before the browser
-	// ever leaves for the upstream provider, so the client is derivable by
-	// walking that link backwards. For a client still being created (the
-	// StorePendingMCPClient bootstrap path, where the config_mcp_clients row
-	// isn't inserted until after this callback completes), no such row
-	// exists yet — GetMCPClientByOauthConfigID returns ErrNotFound and
-	// MCPClientID is left as "", the same tolerated-empty shape the
-	// migration backfill uses for the equivalent case (see the MCPClientID
-	// field comment on TableMCPOauthToken).
+	// MCPClientID: seeded from the flow row (populated best-effort at
+	// InitiateOAuthFlow time), then re-resolved here — for a client
+	// re-authorizing an existing credential, initiateMCPClientVerification
+	// links config_mcp_clients.oauth_config_id to this row's ID before the
+	// browser ever leaves for the upstream provider, which happens AFTER
+	// InitiateOAuthFlow returns, so the flow row's own MCPClientID is stale
+	// (empty) for that case even though the link exists by the time we get
+	// here. For a client still being created (the StorePendingMCPClient
+	// bootstrap path, where the config_mcp_clients row isn't inserted until
+	// after this callback completes), no such row exists yet either way —
+	// GetMCPClientByOauthConfigID returns ErrNotFound and MCPClientID stays
+	// "", the same tolerated-empty shape the migration backfill uses for the
+	// equivalent case (see the MCPClientID field comment on
+	// TableMCPOauthToken).
+	tokenRecord.MCPClientID = flow.MCPClientID
 	if mcpClient, err := p.configStore.GetMCPClientByOauthConfigID(ctx, oauthConfig.ID); err == nil {
 		tokenRecord.MCPClientID = mcpClient.ClientID
 	} else if !errors.Is(err, configstore.ErrNotFound) {
+		p.cleanupFlow(ctx, flow.ID)
 		return fmt.Errorf("failed to look up mcp client for oauth config: %w", err)
 	}
 
-	if err := p.configStore.CreateOauthToken(ctx, tokenRecord); err != nil {
-		return fmt.Errorf("failed to create oauth token: %w", err)
-	}
-
-	// Update oauth_config: link token and set status="authorized"
+	// Replace the shared credential atomically: delete any existing
+	// auth_mode="shared" rows for this oauth_config_id (a reauth otherwise
+	// leaves the old token orphaned once oauth_configs.token_id repoints to
+	// the new one), insert the new token, and link it on oauth_configs — all
+	// in one transaction, so a failure partway through never leaves an
+	// unlinked or stale token row behind.
 	oauthConfig.TokenID = &tokenID
 	oauthConfig.Status = "authorized"
-	if err := p.configStore.UpdateOauthConfig(ctx, oauthConfig); err != nil {
-		return fmt.Errorf("failed to update oauth config: %w", err)
+	if err := p.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		if err := p.configStore.DeleteOauthTokensByConfigAndMode(ctx, tokenRecord.OauthConfigID, "shared", tx); err != nil {
+			return err
+		}
+		if err := p.configStore.CreateOauthToken(ctx, tokenRecord, tx); err != nil {
+			return fmt.Errorf("failed to create oauth token: %w", err)
+		}
+		if err := p.configStore.UpdateOauthConfig(ctx, oauthConfig, tx); err != nil {
+			return fmt.Errorf("failed to update oauth config: %w", err)
+		}
+		return nil
+	}); err != nil {
+		p.cleanupFlow(ctx, flow.ID)
+		return err
 	}
+
+	// Flow row's purpose ends here — same reasoning as CompleteUserOAuthFlow
+	// (see cleanupFlow): the token row is the durable record now. Harmless
+	// no-op for the temp-token half of cleanupFlow, since admin flows never
+	// mint one (only InitiateUserOAuthFlow does).
+	p.cleanupFlow(ctx, flow.ID)
 
 	logger.Debug("OAuth flow completed successfully", "oauth_config_id", oauthConfig.ID)
 
@@ -1025,7 +1084,7 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	//    state/PKCE here would invalidate that callback's state token and
 	//    leave the user with an "OAuth flow not found" error. Falling through
 	//    to insert a fresh row lets both flows complete independently.
-	var existing *tables.TableOauthUserSession
+	var existing *tables.TableMCPOauthFlow
 	found, lookupErr := p.configStore.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, flowMode, lookupID, mcpClientID)
 	if lookupErr != nil {
 		return nil, "", fmt.Errorf("failed to look up existing flow row: %w", lookupErr)
@@ -1053,7 +1112,7 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		// session-mode (the caller's x-bf-mcp-session-id); vk/user-mode rows
 		// have an empty SessionID — their identity lives in virtual_key_id /
 		// user_id.
-		row := &tables.TableOauthUserSession{
+		row := &tables.TableMCPOauthFlow{
 			ID:            uuid.New().String(),
 			MCPClientID:   mcpClientID,
 			OauthConfigID: oauthConfigID,

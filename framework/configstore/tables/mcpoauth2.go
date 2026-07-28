@@ -9,30 +9,32 @@ import (
 	"gorm.io/gorm"
 )
 
-// TableOauthConfig represents an OAuth configuration in the database
-// This stores the OAuth client configuration and flow state
+// TableOauthConfig represents an OAuth configuration in the database. Past
+// the bootstrap flow, this is a pure registration/credential template row —
+// client_id/client_secret/endpoints/scopes plus the bootstrap lifecycle
+// Status ("pending"/"authorized"/"failed"). CSRF state and PKCE fields
+// (state, code_verifier, code_challenge) and the flow's own expiry live on
+// TableMCPOauthFlow instead — one config row is a durable, reusable
+// credential template, while a flow row is scoped to a single authorize
+// attempt and is disposed of once that attempt completes.
 type TableOauthConfig struct {
-	ID                  string             `gorm:"type:varchar(255);primaryKey" json:"id"`          // UUID
-	ClientID            *schemas.SecretVar `gorm:"type:varchar(512)" json:"client_id"`              // OAuth provider's client ID (optional for public clients)
-	ClientSecret        *schemas.SecretVar `gorm:"type:text" json:"-"`                              // Encrypted OAuth client secret (optional for public clients)
-	AuthorizeURL        string             `gorm:"type:text" json:"authorize_url"`                  // Provider's authorization endpoint (optional, can be discovered)
-	TokenURL            string             `gorm:"type:text" json:"token_url"`                      // Provider's token endpoint (optional, can be discovered)
-	RegistrationURL     *string            `gorm:"type:text" json:"registration_url,omitempty"`     // Provider's dynamic registration endpoint (optional, can be discovered)
-	RedirectURI         string             `gorm:"type:text;not null" json:"redirect_uri"`          // Callback URL
-	Scopes              string             `gorm:"type:text" json:"scopes"`                         // JSON array of scopes (optional, can be discovered)
-	State               string             `gorm:"type:varchar(255);uniqueIndex;not null" json:"-"` // CSRF state token
-	CodeVerifier        string             `gorm:"type:text" json:"-"`                              // PKCE code verifier (generated, kept secret)
-	CodeChallenge       string             `gorm:"type:varchar(255)" json:"code_challenge"`         // PKCE code challenge (sent to provider)
-	Status              string             `gorm:"type:varchar(50);not null;index" json:"status"`   // "pending", "authorized", "failed", "expired", "revoked"
-	TokenID             *string            `gorm:"type:varchar(255);index" json:"token_id"`         // Foreign key to mcp_oauth_tokens.ID (set after callback)
-	ServerURL           string             `gorm:"type:text" json:"server_url"`                     // MCP server URL for OAuth discovery
-	Resource            string             `gorm:"type:text" json:"resource,omitempty"`             // OAuth resource indicator (RFC 8707), typically the MCP server URL
-	UseDiscovery        bool               `gorm:"default:false" json:"use_discovery"`              // Flag to enable OAuth discovery
-	MCPClientConfigJSON *string            `gorm:"type:text" json:"-"`                              // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
+	ID                  string             `gorm:"type:varchar(255);primaryKey" json:"id"`         // UUID
+	ClientID            *schemas.SecretVar `gorm:"type:varchar(512)" json:"client_id"`             // OAuth provider's client ID (optional for public clients)
+	ClientSecret        *schemas.SecretVar `gorm:"type:text" json:"-"`                             // Encrypted OAuth client secret (optional for public clients)
+	AuthorizeURL        string             `gorm:"type:text" json:"authorize_url"`                 // Provider's authorization endpoint (optional, can be discovered)
+	TokenURL            string             `gorm:"type:text" json:"token_url"`                     // Provider's token endpoint (optional, can be discovered)
+	RegistrationURL     *string            `gorm:"type:text" json:"registration_url,omitempty"`    // Provider's dynamic registration endpoint (optional, can be discovered)
+	RedirectURI         string             `gorm:"type:text;not null" json:"redirect_uri"`         // Callback URL
+	Scopes              string             `gorm:"type:text" json:"scopes"`                        // JSON array of scopes (optional, can be discovered)
+	Status              string             `gorm:"type:varchar(50);not null;index" json:"status"`  // "pending", "authorized", "failed", "expired", "revoked"
+	TokenID             *string            `gorm:"type:varchar(255);index" json:"token_id"`        // Foreign key to mcp_oauth_tokens.ID (set after callback)
+	ServerURL           string             `gorm:"type:text" json:"server_url"`                    // MCP server URL for OAuth discovery
+	Resource            string             `gorm:"type:text" json:"resource,omitempty"`            // OAuth resource indicator (RFC 8707), typically the MCP server URL
+	UseDiscovery        bool               `gorm:"default:false" json:"use_discovery"`             // Flag to enable OAuth discovery
+	MCPClientConfigJSON *string            `gorm:"type:text" json:"-"`                             // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
 	EncryptionStatus    string             `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	CreatedAt           time.Time          `gorm:"index;not null" json:"created_at"`
 	UpdatedAt           time.Time          `gorm:"index;not null" json:"updated_at"`
-	ExpiresAt           time.Time          `gorm:"index;not null" json:"expires_at"` // State expiry (15 min)
 }
 
 // TableName sets the table name
@@ -48,20 +50,10 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if encrypt.IsEnabled() {
-		encrypted := false
 		if c.ClientSecret != nil && !c.ClientSecret.IsFromSecret() && c.ClientSecret.Val != "" {
 			if err := encryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
 			}
-			encrypted = true
-		}
-		if c.CodeVerifier != "" {
-			if err := encryptString(&c.CodeVerifier); err != nil {
-				return fmt.Errorf("failed to encrypt oauth code verifier: %w", err)
-			}
-			encrypted = true
-		}
-		if encrypted {
 			c.EncryptionStatus = EncryptionStatusEncrypted
 		}
 	}
@@ -76,9 +68,6 @@ func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
 			if err := decryptString(&c.ClientSecret.Val); err != nil {
 				return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
 			}
-		}
-		if err := decryptString(&c.CodeVerifier); err != nil {
-			return fmt.Errorf("failed to decrypt oauth code verifier: %w", err)
 		}
 	}
 	return nil
@@ -257,11 +246,102 @@ func (t *TableMCPOauthToken) AfterFind(tx *gorm.DB) error {
 	return nil
 }
 
-// ---------- Per-User OAuth Tables ----------
+// TableMCPOauthFlow tracks a single in-flight OAuth authorize attempt — the
+// CSRF state token, PKCE verifier, originating identity, and expiry for the
+// duration of that attempt. Covers every flow kind that lands on the
+// /api/oauth/callback redirect_uri: per-identity flows ('user' | 'vk' |
+// 'session', formerly the entire contents of this table's predecessor) and
+// 'admin' flows (the one-time shared-client production authorize, and a
+// per-user client's admin bootstrap-test authorize — indistinguishable at
+// this layer; the keep-vs-discard-token decision downstream branches on the
+// MCP client's AuthType, not on anything here). A config row
+// (TableOauthConfig) is a durable, reusable credential template; a flow row
+// is scoped to one authorize attempt and is deleted once that attempt
+// reaches a terminal state.
+//
+// Lives in mcp_oauth_flows, a table created fresh by the migration that
+// introduced this struct — it does not alter or extend oauth_user_sessions,
+// this type's predecessor's table. See that migration for why the old table
+// is left in place unused.
+type TableMCPOauthFlow struct {
+	ID            string `gorm:"type:varchar(255);primaryKey" json:"id"`                  // Flow UUID
+	MCPClientID   string `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`   // Which MCP server this auth is for
+	OauthConfigID string `gorm:"type:varchar(255);not null;index" json:"oauth_config_id"` // Template OAuth config (holds client_id, token_url, etc.)
+	// State carries a plain (non-unique) index in the struct tag rather than
+	// uniqueIndex: the migration that creates this table needs to run its
+	// oauth_user_sessions backfill before a unique index on state exists (a
+	// gorm-tag-driven uniqueIndex would instead be created as part of
+	// CreateTable, ahead of the backfill) — see that migration for the
+	// ordering rationale. The real uniqueness is enforced there via a raw
+	// CREATE UNIQUE INDEX issued after the backfill completes.
+	State            string    `gorm:"type:varchar(255);index;not null" json:"-"`               // CSRF state token sent to OAuth provider
+	RedirectURI      string    `gorm:"type:text" json:"-"`                                      // Per-request redirect URI used in authorize step
+	CodeVerifier     string    `gorm:"type:text" json:"-"`                                      // PKCE code verifier (kept secret)
+	SessionID        string    `gorm:"type:varchar(255);index" json:"session_id,omitempty"`     // Session-mode identity: client-asserted x-bf-mcp-session-id. Empty for admin/vk/user mode rows. Stored plaintext (not a bearer credential; same trust model as a VK value).
+	VirtualKeyID     *string   `gorm:"type:varchar(255);index" json:"virtual_key_id"`           // VK identity (propagated to mcp_oauth_tokens)
+	UserID           *string   `gorm:"type:varchar(255);index" json:"user_id"`                  // User identity (propagated to mcp_oauth_tokens); populated only for user-mode rows, nil otherwise
+	FlowMode         string    `gorm:"type:varchar(20);not null;default:'vk'" json:"flow_mode"` // 'user' | 'vk' | 'session' | 'admin' — mirrors the eventual token row's AuthMode; immutable after creation; no DB-level CHECK constraint, validated at the application layer only (same reasoning as TableMCPOauthToken.AuthMode)
+	Status           string    `gorm:"type:varchar(50);not null;index" json:"status"`           // "pending", "authorized", "failed", "expired" (plus a transient "claiming" between an atomic claim-by-state and the token exchange it guards)
+	EncryptionStatus string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	ExpiresAt        time.Time `gorm:"index;not null" json:"expires_at"` // Flow expiration (15 min)
+	CreatedAt        time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
+
+	// Display-only relations (no DB-level FK constraint; preloaded for
+	// sessions/admin UI). "-:migration" is load-bearing, not decorative — see
+	// the matching comment on TableMCPOauthToken.MCPClient/VirtualKey above
+	// for the full reasoning: a flow row is written before its MCP client row
+	// exists (the client is only persisted once the admin completes OAuth
+	// consent), and the oauth_user_sessions backfill this table's migration
+	// runs can carry the same orphaned-client-id hazard, so a real FK here
+	// would reject inserts a plain "constraint:-" doesn't reliably prevent.
+	MCPClient  *TableMCPClient  `gorm:"-:migration;foreignKey:MCPClientID;references:ClientID" json:"-"`
+	VirtualKey *TableVirtualKey `gorm:"-:migration;foreignKey:VirtualKeyID;references:ID" json:"-"`
+
+	// User mirrors TableOauthUserSession.User — see OauthUserSummary below.
+	User *OauthUserSummary `gorm:"-" json:"-"`
+}
+
+// TableName sets the table name
+func (TableMCPOauthFlow) TableName() string {
+	return "mcp_oauth_flows"
+}
+
+func (s *TableMCPOauthFlow) BeforeSave(tx *gorm.DB) error {
+	if s.Status == "" {
+		s.Status = "pending"
+	}
+	if encrypt.IsEnabled() {
+		if s.CodeVerifier != "" {
+			if err := encryptString(&s.CodeVerifier); err != nil {
+				return fmt.Errorf("failed to encrypt oauth flow code verifier: %w", err)
+			}
+		}
+		s.EncryptionStatus = EncryptionStatusEncrypted
+	}
+	return nil
+}
+
+func (s *TableMCPOauthFlow) AfterFind(tx *gorm.DB) error {
+	if s.EncryptionStatus == EncryptionStatusEncrypted && s.CodeVerifier != "" {
+		if err := decryptString(&s.CodeVerifier); err != nil {
+			return fmt.Errorf("failed to decrypt oauth flow code verifier: %w", err)
+		}
+	}
+	return nil
+}
+
+// ---------- Per-User OAuth Tables (deprecated) ----------
 
 // TableOauthUserSession tracks pending per-user OAuth flows.
 // Each record maps an OAuth state token to a specific MCP client, allowing
 // the callback to associate the resulting tokens with the correct user session.
+//
+// Deprecated: no longer read or written by any application code as of the
+// TableMCPOauthFlow merge; this type exists only so the migration that
+// introduced TableMCPOauthFlow can reference its table (oauth_user_sessions)
+// via normal GORM model access. Both this type and its backing table will be
+// removed in the next major version.
 type TableOauthUserSession struct {
 	ID               string    `gorm:"type:varchar(255);primaryKey" json:"id"`                  // Session UUID
 	MCPClientID      string    `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`   // Which MCP server this auth is for

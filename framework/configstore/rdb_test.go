@@ -58,6 +58,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableOauthUserToken{},
 		&tables.TableOauthToken{},
 		&tables.TableMCPOauthToken{},
+		&tables.TableMCPOauthFlow{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
 		&tables.TableOAuth2RefreshToken{},
