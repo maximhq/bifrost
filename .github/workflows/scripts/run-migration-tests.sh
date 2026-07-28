@@ -808,6 +808,7 @@ append_dynamic_mcp_clients_insert() {
     past="NOW() - INTERVAL '1 day'"
     generate_mcp_clients_insert_postgres "$now" "$faker_sql"
     generate_async_jobs_insert_postgres "$now" "$future" "$faker_sql"
+    generate_webhook_tables_insert_postgres "$now" "$future" "$faker_sql"
     generate_prompt_repo_tables_insert_postgres "$now" "$faker_sql"
     generate_per_user_oauth_tables_insert_postgres "$now" "$faker_sql"
     generate_mcp_per_user_headers_insert_postgres "$now" "$faker_sql"
@@ -828,6 +829,7 @@ append_dynamic_mcp_clients_insert() {
     generate_v163_config_store_insert_sqlite "$faker_sql" "$config_db"
     generate_v163_oauth2_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_async_jobs_insert_sqlite "$now" "$future" "$faker_sql"
+    generate_webhook_tables_insert_sqlite "$now" "$future" "$faker_sql" "$config_db"
     generate_prompt_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_per_user_oauth_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_mcp_per_user_headers_insert_sqlite "$now" "$faker_sql" "$config_db"
@@ -2076,6 +2078,60 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.6.5 columns - config store / webhooks / log store tables
+  # -------------------------------------------------------------------------
+
+  # config_client.retain_content_in_object_storage (added via add_retain_content_in_object_storage_column)
+  if column_exists_postgres "config_client" "retain_content_in_object_storage"; then
+    echo "UPDATE config_client SET retain_content_in_object_storage = false WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_client.dual_credential_conflict_behavior (added via add_dual_credential_conflict_behavior_column)
+  if column_exists_postgres "config_client" "dual_credential_conflict_behavior"; then
+    echo "UPDATE config_client SET dual_credential_conflict_behavior = 'prefer_idp' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_client.webhook_config_json (added via add_webhook_config_client_column)
+  # Seeded as '' rather than NULL: BeforeSave writes '' for a nil WebhookConfig, so '' is stable either way.
+  if column_exists_postgres "config_client" "webhook_config_json"; then
+    echo "UPDATE config_client SET webhook_config_json = '' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_keys.use_anthropic_endpoints (added via add_use_anthropic_endpoints_column)
+  if column_exists_postgres "config_keys" "use_anthropic_endpoints"; then
+    echo "UPDATE config_keys SET use_anthropic_endpoints = false WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET use_anthropic_endpoints = true WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # oauth_configs.resource (added via add_oauth_config_resource_column)
+  if column_exists_postgres "oauth_configs" "resource"; then
+    echo "UPDATE oauth_configs SET resource = 'https://mcp.example.com' WHERE id = 'oauth-config-migration-test-001';" >> "$output_file"
+    echo "UPDATE oauth_configs SET resource = NULL WHERE id = 'oauth-config-migration-test-002';" >> "$output_file"
+  fi
+
+  # async_jobs.request_id, webhook_endpoint_id (added via async_jobs_add_request_id_column,
+  # async_jobs_add_webhook_endpoint_id_column)
+  if column_exists_postgres "async_jobs" "request_id"; then
+    echo "UPDATE async_jobs SET request_id = 'req-async-migration-test-001' WHERE id = 'async-job-migration-test-001';" >> "$output_file"
+  fi
+  if column_exists_postgres "async_jobs" "webhook_endpoint_id"; then
+    echo "UPDATE async_jobs SET webhook_endpoint_id = NULL WHERE id = 'async-job-migration-test-001';" >> "$output_file"
+  fi
+
+  # logs.content_hidden, server_side_fallback_model (added via logs_add_content_hidden_column,
+  # logs_add_server_side_fallback_model_column)
+  if column_exists_postgres "logs" "content_hidden"; then
+    echo "UPDATE logs SET content_hidden = false WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET content_hidden = false WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET content_hidden = true WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  if column_exists_postgres "logs" "server_side_fallback_model"; then
+    echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET server_side_fallback_model = 'gpt-4-turbo' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -3204,6 +3260,62 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.6.5 columns - config store / webhooks / log store tables
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # config_client.retain_content_in_object_storage (added via add_retain_content_in_object_storage_column)
+    if column_exists_sqlite "$config_db" "config_client" "retain_content_in_object_storage"; then
+      echo "UPDATE config_client SET retain_content_in_object_storage = 0 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.dual_credential_conflict_behavior (added via add_dual_credential_conflict_behavior_column)
+    if column_exists_sqlite "$config_db" "config_client" "dual_credential_conflict_behavior"; then
+      echo "UPDATE config_client SET dual_credential_conflict_behavior = 'prefer_idp' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.webhook_config_json (added via add_webhook_config_client_column)
+    # Seeded as '' rather than NULL: BeforeSave writes '' for a nil WebhookConfig, so '' is stable either way.
+    if column_exists_sqlite "$config_db" "config_client" "webhook_config_json"; then
+      echo "UPDATE config_client SET webhook_config_json = '' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_keys.use_anthropic_endpoints (added via add_use_anthropic_endpoints_column)
+    if column_exists_sqlite "$config_db" "config_keys" "use_anthropic_endpoints"; then
+      echo "UPDATE config_keys SET use_anthropic_endpoints = 0 WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET use_anthropic_endpoints = 1 WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
+    # oauth_configs.resource (added via add_oauth_config_resource_column)
+    if column_exists_sqlite "$config_db" "oauth_configs" "resource"; then
+      echo "UPDATE oauth_configs SET resource = 'https://mcp.example.com' WHERE id = 'oauth-config-migration-test-001';" >> "$output_file"
+      echo "UPDATE oauth_configs SET resource = NULL WHERE id = 'oauth-config-migration-test-002';" >> "$output_file"
+    fi
+  fi
+
+  # async_jobs.request_id, webhook_endpoint_id (added via async_jobs_add_request_id_column,
+  # async_jobs_add_webhook_endpoint_id_column)
+  if column_exists_sqlite "$logs_db" "async_jobs" "request_id"; then
+    echo "UPDATE async_jobs SET request_id = 'req-async-migration-test-001' WHERE id = 'async-job-migration-test-001';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$logs_db" "async_jobs" "webhook_endpoint_id"; then
+    echo "UPDATE async_jobs SET webhook_endpoint_id = NULL WHERE id = 'async-job-migration-test-001';" >> "$output_file"
+  fi
+
+  # logs.content_hidden, server_side_fallback_model (added via logs_add_content_hidden_column,
+  # logs_add_server_side_fallback_model_column)
+  if column_exists_sqlite "$logs_db" "logs" "content_hidden"; then
+    echo "UPDATE logs SET content_hidden = 0 WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET content_hidden = 0 WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET content_hidden = 1 WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$logs_db" "logs" "server_side_fallback_model"; then
+    echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET server_side_fallback_model = 'gpt-4-turbo' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
 }
 
 # ============================================================================
@@ -3653,6 +3765,69 @@ generate_async_jobs_insert_sqlite() {
   echo "" >> "$output_file"
   echo "-- async_jobs (async job tracking table - added in v1.4.8)" >> "$output_file"
   echo "INSERT INTO async_jobs (id, status, request_type, response, status_code, error, virtual_key_id, result_ttl, expires_at, created_at, completed_at) VALUES ('async-job-migration-test-001', 'completed', 'chat_completion', '{\"id\":\"resp-async-001\"}', 200, '', 'vk-migration-test-1', 3600, $future, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate webhook tables INSERTs for PostgreSQL
+# config_webhook_endpoints + webhook_jobs (config store, added via add_webhook_endpoints_table /
+# add_webhook_jobs_table) and webhook_deliveries (log store, added via webhook_deliveries_init).
+# Each table is guarded individually rather than assuming presence of one implies the others.
+generate_webhook_tables_insert_postgres() {
+  local now="$1"
+  local future="$2"
+  local output_file="$3"
+
+  if column_exists_postgres "config_webhook_endpoints" "id"; then
+    echo "" >> "$output_file"
+    echo "-- config_webhook_endpoints (webhook endpoint registry - added in v1.6.5, dynamically generated)" >> "$output_file"
+    # secret/headers_json stay NULL: both are encrypted at rest, so a seeded value could be rewritten.
+    echo "INSERT INTO config_webhook_endpoints (id, name, url, secret, events_json, headers_json, include_response, allow_private_network, max_retries, retry_backoff_initial_seconds, retry_backoff_max_seconds, attempt_timeout_seconds, max_response_payload_kbs, max_concurrent_deliveries, disabled, consecutive_failures, last_success_at, last_failure_at, config_hash, encryption_status, created_at, updated_at) VALUES ('webhook-endpoint-migration-test-001', 'Migration Test Webhook', 'https://webhook.example.com/bifrost', NULL, '[\"async_job.completed\",\"async_job.failed\"]', NULL, false, false, 4, 30, 1800, 10, 256, 10, false, 0, NULL, NULL, 'webhook-endpoint-hash-001', 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+
+  if column_exists_postgres "webhook_jobs" "id"; then
+    echo "" >> "$output_file"
+    echo "-- webhook_jobs (delivery work queue - added in v1.6.5)" >> "$output_file"
+    # next_attempt_at must stay in the future: the dispatcher's first scan runs immediately at
+    # startup and would claim, deliver and delete a due job before the post-migration snapshot.
+    echo "INSERT INTO webhook_jobs (id, endpoint_id, async_job_id, event, attempt_count, next_attempt_at, claimed_by, claimed_until, created_at) VALUES ('webhook-job-migration-test-001', 'webhook-endpoint-migration-test-001', 'async-job-migration-test-001', 'async_job.completed', 0, $future, '', NULL, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+
+  if column_exists_postgres "webhook_deliveries" "id"; then
+    echo "" >> "$output_file"
+    echo "-- webhook_deliveries (delivery history - added in v1.6.5, lives in the log store)" >> "$output_file"
+    # expires_at must stay in the future: DeleteExpiredWebhookDeliveries prunes history rows whose expiry passed.
+    echo "INSERT INTO webhook_deliveries (id, webhook_id, endpoint_id, async_job_id, request_id, event, attempt_no, outcome, status_code, error, created_at, expires_at) VALUES ('webhook-delivery-migration-test-001', 'webhook-migration-test-001', 'webhook-endpoint-migration-test-001', 'async-job-migration-test-001', 'req-async-migration-test-001', 'async_job.completed', 1, 'delivered', 200, '', $now, $future) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+}
+
+# Generate webhook tables INSERTs for SQLite. config_webhook_endpoints and webhook_jobs live in
+# config_db; webhook_deliveries lives in logs_db.
+generate_webhook_tables_insert_sqlite() {
+  local now="$1"
+  local future="$2"
+  local output_file="$3"
+  local config_db="$4"
+
+  if column_exists_sqlite "$config_db" "config_webhook_endpoints" "id"; then
+    echo "" >> "$output_file"
+    echo "-- config_webhook_endpoints (webhook endpoint registry - added in v1.6.5)" >> "$output_file"
+    # secret/headers_json stay NULL: both are encrypted at rest, so a seeded value could be rewritten.
+    echo "INSERT INTO config_webhook_endpoints (id, name, url, secret, events_json, headers_json, include_response, allow_private_network, max_retries, retry_backoff_initial_seconds, retry_backoff_max_seconds, attempt_timeout_seconds, max_response_payload_kbs, max_concurrent_deliveries, disabled, consecutive_failures, last_success_at, last_failure_at, config_hash, encryption_status, created_at, updated_at) VALUES ('webhook-endpoint-migration-test-001', 'Migration Test Webhook', 'https://webhook.example.com/bifrost', NULL, '[\"async_job.completed\",\"async_job.failed\"]', NULL, 0, 0, 4, 30, 1800, 10, 256, 10, 0, 0, NULL, NULL, 'webhook-endpoint-hash-001', 'plain_text', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+
+  if column_exists_sqlite "$config_db" "webhook_jobs" "id"; then
+    echo "" >> "$output_file"
+    echo "-- webhook_jobs (delivery work queue - added in v1.6.5)" >> "$output_file"
+    # next_attempt_at must stay in the future: the dispatcher's first scan runs immediately at
+    # startup and would claim, deliver and delete a due job before the post-migration snapshot.
+    echo "INSERT INTO webhook_jobs (id, endpoint_id, async_job_id, event, attempt_count, next_attempt_at, claimed_by, claimed_until, created_at) VALUES ('webhook-job-migration-test-001', 'webhook-endpoint-migration-test-001', 'async-job-migration-test-001', 'async_job.completed', 0, $future, '', NULL, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
+
+  if column_exists_sqlite "$logs_db" "webhook_deliveries" "id"; then
+    echo "" >> "$output_file"
+    echo "-- webhook_deliveries (delivery history - added in v1.6.5, lives in logs_db)" >> "$output_file"
+    # expires_at must stay in the future: DeleteExpiredWebhookDeliveries prunes history rows whose expiry passed.
+    echo "INSERT INTO webhook_deliveries (id, webhook_id, endpoint_id, async_job_id, request_id, event, attempt_no, outcome, status_code, error, created_at, expires_at) VALUES ('webhook-delivery-migration-test-001', 'webhook-migration-test-001', 'webhook-endpoint-migration-test-001', 'async-job-migration-test-001', 'req-async-migration-test-001', 'async_job.completed', 1, 'delivered', 200, '', $now, $future) ON CONFLICT DO NOTHING;" >> "$output_file"
+  fi
 }
 
 # Generate prompt repository tables INSERTs for PostgreSQL
