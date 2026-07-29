@@ -9059,7 +9059,7 @@ func migrationAddOAuthAuthModeColumns(ctx context.Context, db *gorm.DB, logger s
 // on session_token_hash was conflating "uniqueness of token value" with
 // "uniqueness of binding" — the latter is now enforced at the application
 // layer by the (mode, identity, mcp_client_id) lookup in
-// InitiateUserOAuthFlow and CreateOauthUserToken.
+// InitiateUserOAuthFlow and CreateOauthToken.
 //
 // Order: add SessionID first, then drop the legacy columns + their indexes.
 // No data backfill: existing rows are dev-only test data; production hasn't

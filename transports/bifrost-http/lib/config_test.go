@@ -1493,6 +1493,10 @@ func (m *MockConfigStore) GetOauthUserSessionByID(ctx context.Context, id string
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetOauthFlowByID(ctx context.Context, id string) (*tables.TableMCPOauthFlow, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetOauthUserSessionByState(ctx context.Context, state string) (*tables.TableMCPOauthFlow, error) {
 	return nil, nil
 }
@@ -1520,10 +1524,6 @@ func (m *MockConfigStore) UpdateOauthUserSession(ctx context.Context, session *t
 // Per-user OAuth token CRUD
 func (m *MockConfigStore) GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
-}
-
-func (m *MockConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
-	return nil
 }
 
 func (m *MockConfigStore) UpdateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {

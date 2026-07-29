@@ -29,6 +29,7 @@ type testConfigStore struct {
 	mu           sync.Mutex
 	oauthConfigs map[string]*tables.TableOauthConfig
 	oauthTokens  map[string]*tables.TableMCPOauthToken
+	oauthFlows   map[string]*tables.TableMCPOauthFlow
 	clientConfig *configstore.ClientConfig
 }
 
@@ -36,6 +37,7 @@ func newTestConfigStore() *testConfigStore {
 	return &testConfigStore{
 		oauthConfigs: make(map[string]*tables.TableOauthConfig),
 		oauthTokens:  make(map[string]*tables.TableMCPOauthToken),
+		oauthFlows:   make(map[string]*tables.TableMCPOauthFlow),
 	}
 }
 
@@ -157,6 +159,77 @@ func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.
 		}
 	}
 	return expiring, nil
+}
+
+// CreateOauthUserSession is the test-double equivalent of the real store's
+// flow-row insert (any flow_mode, including 'admin').
+func (s *testConfigStore) CreateOauthUserSession(_ context.Context, session *tables.TableMCPOauthFlow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.oauthFlows[session.ID] = bifrost.Ptr(*session)
+	return nil
+}
+
+// UpdateOauthUserSession is the test-double equivalent of the real store's
+// in-place flow-row update, used by InitiateUserOAuthFlow's reauth path.
+func (s *testConfigStore) UpdateOauthUserSession(_ context.Context, session *tables.TableMCPOauthFlow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.oauthFlows[session.ID] = bifrost.Ptr(*session)
+	return nil
+}
+
+// GetOauthUserSessionByModeIdentityAndMCPClient is the test-double
+// equivalent of the real store's canonical flow-row lookup by binding. Mirrors
+// the real implementation's admin carve-out: admin mode matches on
+// (flow_mode='admin', mcp_client_id) alone, every other mode requires a
+// non-empty identity and matches on its own identity column.
+func (s *testConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthFlow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if mcpClientID == "" {
+		return nil, nil
+	}
+	if mode != schemas.MCPAuthModeAdmin && identity == "" {
+		return nil, nil
+	}
+	for _, flow := range s.oauthFlows {
+		if flow.MCPClientID != mcpClientID {
+			continue
+		}
+		switch mode {
+		case schemas.MCPAuthModeUser:
+			if flow.UserID != nil && *flow.UserID == identity {
+				return bifrost.Ptr(*flow), nil
+			}
+		case schemas.MCPAuthModeVK:
+			if flow.VirtualKeyID != nil && *flow.VirtualKeyID == identity {
+				return bifrost.Ptr(*flow), nil
+			}
+		case schemas.MCPAuthModeSession:
+			if flow.SessionID == identity {
+				return bifrost.Ptr(*flow), nil
+			}
+		case schemas.MCPAuthModeAdmin:
+			if flow.FlowMode == "admin" {
+				return bifrost.Ptr(*flow), nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+// GetOauthFlowByID is the test-double equivalent of the real store's
+// admin-mode-only flow lookup by ID: only ever returns a flow_mode='admin'
+// row, mirroring the security boundary the real implementation enforces.
+func (s *testConfigStore) GetOauthFlowByID(_ context.Context, id string) (*tables.TableMCPOauthFlow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	flow := s.oauthFlows[id]
+	if flow == nil || flow.FlowMode != "admin" {
+		return nil, nil
+	}
+	return bifrost.Ptr(*flow), nil
 }
 
 // seedFixtures inserts an authorized oauth_config + shared-mode token pair
@@ -767,4 +840,80 @@ func TestTokenRefreshWorker_400UnauthorizedClient_MarksNeedsReauth(t *testing.T)
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
 	assert.Equal(t, "needs_reauth", token.Status, "400 unauthorized_client must mark token needs_reauth")
+}
+
+// seedAdminOauthConfig inserts a minimal authorized oauth_config row —
+// enough for InitiateUserOAuthFlow's admin-mode path, which never reaches
+// the fields (token URL, scopes) only needed once a flow reaches token
+// exchange or upstream-URL construction.
+func seedAdminOauthConfig(store *testConfigStore, oauthConfigID string) {
+	store.oauthConfigs[oauthConfigID] = &tables.TableOauthConfig{
+		ID:          oauthConfigID,
+		ClientID:    schemas.NewSecretVar("test-client-id"),
+		RedirectURI: "http://localhost/callback",
+		Status:      "authorized",
+	}
+}
+
+// TestInitiateUserOAuthFlow_AdminMode_CreatesFlowWithNoIdentity covers the
+// MCPAuthModeAdmin branch: unlike user/vk/session mode, the created row must
+// carry no identity at all — no user_id, virtual_key_id, or session_id — since
+// an admin-mode flow belongs to the MCP client's shared credential itself,
+// not any caller.
+func TestInitiateUserOAuthFlow_AdminMode_CreatesFlowWithNoIdentity(t *testing.T) {
+	store := newTestConfigStore()
+	oauthConfigID := "admin-oauth-config"
+	seedAdminOauthConfig(store, oauthConfigID)
+
+	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	ctx := context.Background()
+
+	initiation, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	require.NoError(t, err)
+	require.NotEmpty(t, flowID)
+	require.NotNil(t, initiation)
+
+	flow := store.oauthFlows[flowID]
+	require.NotNil(t, flow, "flow row must be created")
+	assert.Equal(t, "admin", flow.FlowMode)
+	assert.Equal(t, "mcp-client-1", flow.MCPClientID)
+	assert.Equal(t, oauthConfigID, flow.OauthConfigID)
+	assert.Empty(t, flow.SessionID, "admin-mode flow must have no session identity")
+	assert.Nil(t, flow.UserID, "admin-mode flow must have no user identity")
+	assert.Nil(t, flow.VirtualKeyID, "admin-mode flow must have no vk identity")
+	assert.Equal(t, "pending", flow.Status)
+}
+
+// TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow mirrors the per-user
+// modes' reuse-in-place behavior (InitiateUserOAuthFlow's doc comment: "there
+// is exactly one flow row per binding... Reauth never duplicates rows"):
+// calling InitiateUserOAuthFlow again for the same (oauthConfigID,
+// mcpClientID) while the first admin flow is still 'pending' must update the
+// existing row rather than insert a second one.
+func TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow(t *testing.T) {
+	store := newTestConfigStore()
+	oauthConfigID := "admin-oauth-config"
+	seedAdminOauthConfig(store, oauthConfigID)
+
+	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	ctx := context.Background()
+
+	_, flowID1, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	require.NoError(t, err)
+	require.Len(t, store.oauthFlows, 1, "exactly one flow row after first initiation")
+	firstState := store.oauthFlows[flowID1].State
+
+	_, flowID2, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	require.NoError(t, err)
+
+	assert.Equal(t, flowID1, flowID2, "second initiation for the same binding while pending must reuse the same row")
+	assert.Len(t, store.oauthFlows, 1, "must not insert a duplicate row")
+	assert.NotEqual(t, firstState, store.oauthFlows[flowID2].State, "reused row's CSRF state must still rotate on each initiation")
+
+	// A different mcp_client_id is a different binding — it must get its own
+	// row, not reuse mcp-client-1's.
+	_, flowID3, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-2", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	require.NoError(t, err)
+	assert.NotEqual(t, flowID1, flowID3, "a different mcp_client_id must not reuse another client's admin flow row")
+	assert.Len(t, store.oauthFlows, 2)
 }
