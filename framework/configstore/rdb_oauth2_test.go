@@ -62,26 +62,25 @@ func makeRefreshToken(id, familyID, clientID, hash string) *tables.TableOAuth2Re
 
 // seedExpiringTokenFixtures installs the token/config/client helpers shared by
 // the GetExpiringOauthTokens tests. Every token is created already-expired so
-// only the config/client conditions decide whether it is selected.
-func seedExpiringTokenFixtures(t *testing.T, s *RDBConfigStore) (mkToken func(id string), mkConfig func(id, tokenID, status, state string), mkClient func(name, oauthConfigID string, disabled bool)) {
+// only the token-status/client conditions decide whether it is selected.
+// Tokens link to their owning config via OauthConfigID — the replacement for
+// the retired TableOauthConfig.TokenID FK shortcut.
+func seedExpiringTokenFixtures(t *testing.T, s *RDBConfigStore) (mkToken func(id, oauthConfigID, status string), mkConfig func(id string), mkClient func(name, oauthConfigID string, disabled bool)) {
 	t.Helper()
 	require.NoError(t, s.DB().AutoMigrate(&tables.TableOauthConfig{}, &tables.TableMCPOauthToken{}, &tables.TableMCPClient{}))
 	past := time.Now().Add(-time.Hour)
 
-	mkToken = func(id string) {
+	mkToken = func(id, oauthConfigID, status string) {
 		require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
-			ID: id, AuthMode: "shared", AccessToken: "at-" + id, TokenType: "Bearer",
+			ID: id, AuthMode: "shared", OauthConfigID: oauthConfigID, Status: status,
+			AccessToken: "at-" + id, TokenType: "Bearer",
 			ExpiresAt: &past, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}).Error)
 	}
-	// state is accepted for readability at call sites (mirrors each fixture's
-	// intent, e.g. "state-live") but no longer stored — state moved off
-	// TableOauthConfig onto TableMCPOauthFlow and isn't part of what this
-	// fixture set (GetExpiringOauthTokens) exercises.
-	mkConfig = func(id, tokenID, status, state string) {
+	mkConfig = func(id string) {
 		require.NoError(t, s.DB().Create(&tables.TableOauthConfig{
-			ID: id, RedirectURI: "http://127.0.0.1/cb", Status: status,
-			TokenID: &tokenID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			ID: id, RedirectURI: "http://127.0.0.1/cb", Status: "authorized",
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}).Error)
 	}
 	mkClient = func(name, oauthConfigID string, disabled bool) {
@@ -105,28 +104,26 @@ func expiringTokenIDs(t *testing.T, s *RDBConfigStore) map[string]bool {
 	return ids
 }
 
-// TestGetExpiringOauthTokens_ExcludesTerminalConfigs verifies the refresh worker
-// query skips tokens whose oauth_config is already terminal (expired/revoked), so
-// a permanently-dead grant is not retried — and re-logged — on every tick. Each
-// config gets an enabled MCP client so status is the only deciding condition.
-func TestGetExpiringOauthTokens_ExcludesTerminalConfigs(t *testing.T) {
+// TestGetExpiringOauthTokens_ExcludesNonActiveTokens verifies the refresh
+// worker query skips tokens whose own status is already 'needs_reauth', so a
+// permanently-dead grant is not retried — and re-logged — on every tick. Each
+// config gets an enabled MCP client so token status is the only deciding
+// condition.
+func TestGetExpiringOauthTokens_ExcludesNonActiveTokens(t *testing.T) {
 	s := setupRDBTestStore(t)
 	mkToken, mkConfig, mkClient := seedExpiringTokenFixtures(t, s)
 
-	mkToken("tok-live")
-	mkConfig("cfg-live", "tok-live", "authorized", "state-live")
+	mkConfig("cfg-live")
+	mkToken("tok-live", "cfg-live", "active")
 	mkClient("client-live", "cfg-live", false)
-	mkToken("tok-expired")
-	mkConfig("cfg-expired", "tok-expired", "expired", "state-expired")
-	mkClient("client-expired", "cfg-expired", false)
-	mkToken("tok-revoked")
-	mkConfig("cfg-revoked", "tok-revoked", "revoked", "state-revoked")
-	mkClient("client-revoked", "cfg-revoked", false)
+
+	mkConfig("cfg-needs-reauth")
+	mkToken("tok-needs-reauth", "cfg-needs-reauth", "needs_reauth")
+	mkClient("client-needs-reauth", "cfg-needs-reauth", false)
 
 	ids := expiringTokenIDs(t, s)
-	assert.True(t, ids["tok-live"], "token with an authorized config and enabled client should be refreshed")
-	assert.False(t, ids["tok-expired"], "token with an expired config must be excluded")
-	assert.False(t, ids["tok-revoked"], "token with a revoked config must be excluded")
+	assert.True(t, ids["tok-live"], "active token with an enabled client should be refreshed")
+	assert.False(t, ids["tok-needs-reauth"], "token already marked needs_reauth must be excluded")
 }
 
 // TestGetExpiringOauthTokens_RequiresEnabledClient verifies the refresh worker
@@ -137,23 +134,23 @@ func TestGetExpiringOauthTokens_RequiresEnabledClient(t *testing.T) {
 	s := setupRDBTestStore(t)
 	mkToken, mkConfig, mkClient := seedExpiringTokenFixtures(t, s)
 
-	mkToken("tok-enabled")
-	mkConfig("cfg-enabled", "tok-enabled", "authorized", "state-enabled")
+	mkConfig("cfg-enabled")
+	mkToken("tok-enabled", "cfg-enabled", "active")
 	mkClient("client-enabled", "cfg-enabled", false)
 
-	mkToken("tok-disabled")
-	mkConfig("cfg-disabled", "tok-disabled", "authorized", "state-disabled")
+	mkConfig("cfg-disabled")
+	mkToken("tok-disabled", "cfg-disabled", "active")
 	mkClient("client-disabled", "cfg-disabled", true)
 
-	mkToken("tok-shared")
-	mkConfig("cfg-shared", "tok-shared", "authorized", "state-shared")
+	mkConfig("cfg-shared")
+	mkToken("tok-shared", "cfg-shared", "active")
 	mkClient("client-shared-off", "cfg-shared", true)
 	mkClient("client-shared-on", "cfg-shared", false)
 
-	mkToken("tok-no-client")
-	mkConfig("cfg-no-client", "tok-no-client", "authorized", "state-no-client")
+	mkConfig("cfg-no-client")
+	mkToken("tok-no-client", "cfg-no-client", "active")
 
-	mkToken("tok-orphan") // no owning config at all
+	mkToken("tok-orphan", "", "active") // no owning config at all
 
 	ids := expiringTokenIDs(t, s)
 	assert.True(t, ids["tok-enabled"], "token with an enabled client should be refreshed")
