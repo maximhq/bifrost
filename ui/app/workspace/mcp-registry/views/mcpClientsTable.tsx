@@ -63,6 +63,7 @@ function MCPClientActionsMenu({
 	onReconnect,
 	onAuthorize,
 	onReauthorize,
+	onRefreshHeaders,
 	onDelete,
 }: {
 	client: MCPClient;
@@ -76,6 +77,7 @@ function MCPClientActionsMenu({
 	onReconnect: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
 	onReauthorize: (client: MCPClient) => void;
+	onRefreshHeaders: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
@@ -160,7 +162,7 @@ function MCPClientActionsMenu({
 				{hasUpdateAccess &&
 					client.state !== "pending_verification" &&
 					client.state !== "disabled" &&
-					client.config.auth_type === "oauth" && (
+					(client.config.auth_type === "oauth" || client.config.auth_type === "per_user_oauth") && (
 						<DropdownMenuItem
 							className="cursor-pointer"
 							disabled={isReauthorizing}
@@ -172,7 +174,24 @@ function MCPClientActionsMenu({
 							}}
 						>
 							<KeyRound className="h-4 w-4" />
-							Reauthorize
+							{client.config.auth_type === "per_user_oauth" ? "Refresh admin credential" : "Reauthorize"}
+						</DropdownMenuItem>
+					)}
+				{hasUpdateAccess &&
+					client.state !== "pending_verification" &&
+					client.state !== "disabled" &&
+					client.config.auth_type === "per_user_headers" && (
+						<DropdownMenuItem
+							className="cursor-pointer"
+							data-testid={`mcp-client-refresh-headers-${client.config.client_id}-menu-item`}
+							onSelect={(e) => {
+								e.preventDefault();
+								onRefreshHeaders(client);
+								setIsOpen(false);
+							}}
+						>
+							<KeyRound className="h-4 w-4" />
+							Refresh admin credential
 						</DropdownMenuItem>
 					)}
 				{hasDeleteAccess && (
@@ -252,7 +271,19 @@ export default function MCPClientsTable({
 	const [bootstrapHeadersClient, setBootstrapHeadersClient] = useState<MCPClient | null>(null);
 	// Drives the OAuth2Authorizer dialog for a client redoing consent via
 	// POST /reauthorize, triggered from the row actions menu.
-	const [reauthorizeFlow, setReauthorizeFlow] = useState<{ authorizeUrl: string; oauthConfigId: string; mcpClientId: string } | null>(null);
+	const [reauthorizeFlow, setReauthorizeFlow] = useState<{
+		authorizeUrl: string;
+		oauthConfigId: string;
+		mcpClientId: string;
+		isPerUserOauth: boolean;
+	} | null>(null);
+	// Drives the MCPHeadersAuthorizer dialog for a per_user_headers client
+	// refreshing its admin discovery credential, triggered from the row
+	// actions menu (mirrors reauthorizeFlow above for per_user_oauth).
+	const [headersRefreshFlow, setHeadersRefreshFlow] = useState<{
+		mcpClientId: string;
+		perUserHeaderKeys: string[];
+	} | null>(null);
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
@@ -341,6 +372,7 @@ export default function MCPClientsTable({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
 					mcpClientId: client.config.client_id,
+					isPerUserOauth: client.config.auth_type === "per_user_oauth",
 				});
 			} else {
 				toast({
@@ -354,6 +386,17 @@ export default function MCPClientsTable({
 		} finally {
 			setReauthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
+	};
+
+	// Opens the MCPHeadersAuthorizer to refresh a per_user_headers client's
+	// admin discovery credential. Unlike OAuth's reauthorize, there's no
+	// server round-trip to kick off first — the dialog collects sample values
+	// itself and posts them directly to verify-headers.
+	const handleRefreshHeaders = (client: MCPClient) => {
+		setHeadersRefreshFlow({
+			mcpClientId: client.config.client_id,
+			perUserHeaderKeys: client.config.per_user_header_keys ?? [],
+		});
 	};
 
 	const handleDelete = async (client: MCPClient) => {
@@ -724,15 +767,21 @@ export default function MCPClientsTable({
 												{isPerUserAuth ? (
 													// Per-user clients never hold a shared upstream connection, so a
 													// connection-state badge here would be misleading: point to the
-													// per-user sessions this client actually has instead.
-													<Link
-														to="/workspace/mcp-sessions"
-														search={{ mcp_client_id: [c.config.client_id] }}
-														className="text-primary text-xs font-medium hover:underline"
-														data-testid={`mcp-client-view-sessions-${c.config.client_id}`}
-													>
-														View sessions
-													</Link>
+													// per-user sessions this client actually has instead. The one
+													// exception is needs_reauth, which for per-user clients means the
+													// retained admin discovery credential needs repair: surface that
+													// badge next to the link so the admin can act on it.
+													<span className="flex items-center gap-2">
+														<Link
+															to="/workspace/mcp-sessions"
+															search={{ mcp_client_id: [c.config.client_id] }}
+															className="text-primary text-xs font-medium hover:underline"
+															data-testid={`mcp-client-view-sessions-${c.config.client_id}`}
+														>
+															View sessions
+														</Link>
+														{c.state === "needs_reauth" && <Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>}
+													</span>
 												) : (
 													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
 												)}
@@ -789,6 +838,7 @@ export default function MCPClientsTable({
 													onReconnect={(client) => void handleReconnect(client)}
 													onAuthorize={(client) => void handleStartBootstrap(client)}
 													onReauthorize={(client) => void handleReauthorize(client)}
+													onRefreshHeaders={handleRefreshHeaders}
 													onDelete={setClientToDelete}
 												/>
 											</TableCell>
@@ -847,7 +897,12 @@ export default function MCPClientsTable({
 					open={!!reauthorizeFlow}
 					onClose={() => setReauthorizeFlow(null)}
 					onSuccess={() => {
-						toast({ title: "Success", description: "MCP client re-authorized successfully" });
+						toast({
+							title: "Success",
+							description: reauthorizeFlow.isPerUserOauth
+								? "Admin discovery credential refreshed successfully."
+								: "MCP client re-authorized successfully",
+						});
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
@@ -859,13 +914,49 @@ export default function MCPClientsTable({
 						// status polling both call complete-oauth) or this was a
 						// double submit. Either way the credential is already live
 						// server-side, so treat it as success rather than an error.
-						toast({ title: "Success", description: "MCP client re-authorized successfully" });
+						toast({
+							title: "Success",
+							description: reauthorizeFlow.isPerUserOauth
+								? "Admin discovery credential refreshed successfully."
+								: "MCP client re-authorized successfully",
+						});
 						setReauthorizeFlow(null);
 						if (refetch) void refetch();
 					}}
 					authorizeUrl={reauthorizeFlow.authorizeUrl}
 					oauthConfigId={reauthorizeFlow.oauthConfigId}
 					mcpClientId={reauthorizeFlow.mcpClientId}
+					isPerUserOauth={reauthorizeFlow.isPerUserOauth}
+					isReauthorize
+				/>
+			)}
+			{headersRefreshFlow && (
+				<MCPHeadersAuthorizer
+					open={!!headersRefreshFlow}
+					onClose={() => setHeadersRefreshFlow(null)}
+					onSuccess={() => {
+						toast({ title: "Success", description: "Admin discovery credential refreshed successfully." });
+						setHeadersRefreshFlow(null);
+						if (refetch) void refetch();
+					}}
+					onError={() => {
+						/* error state rendered by the dialog itself */
+					}}
+					onConflict={(error) => {
+						// 409: the flow's completion raced (double submit / concurrent
+						// verification) or the credential no longer needed a refresh;
+						// either way the client is fine, so treat it as success.
+						toast({ title: "Already verified", description: error });
+						setHeadersRefreshFlow(null);
+						if (refetch) void refetch();
+					}}
+					perUserHeaderKeys={headersRefreshFlow.perUserHeaderKeys}
+					submitHandler={async (values) => {
+						await verifyMCPClientHeaders({
+							id: headersRefreshFlow.mcpClientId,
+							userHeaders: values,
+						}).unwrap();
+					}}
 				/>
 			)}
 		</div>

@@ -22,6 +22,10 @@ interface OAuth2AuthorizerProps {
 	// window.open itself — a fresh window.open after an awaited network
 	// round-trip risks the browser blocking it outright.
 	initialPopup?: Window | null;
+	// True when this dialog is redoing consent for an already-verified client
+	// (the "Refresh admin credential" action), as opposed to the first-time
+	// bootstrap verification. Only affects the confirm-step copy.
+	isReauthorize?: boolean;
 }
 
 type Status = "confirm" | "polling" | "blocked" | "success" | "failed";
@@ -119,6 +123,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	oauthConfigId,
 	isPerUserOauth,
 	initialPopup,
+	isReauthorize,
 }) => {
 	const [status, setStatus] = useState<Status>(isPerUserOauth ? "confirm" : "polling");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -308,8 +313,10 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		onClose();
 	};
 
+	const isPerUserReauth = isPerUserOauth && isReauthorize;
+
 	const titles: Record<Status, string> = {
-		confirm: "Authorize connection",
+		confirm: isPerUserReauth ? "Refresh admin credential" : "Authorize connection",
 		polling: "Waiting for authorization",
 		blocked: "Popup blocked",
 		success: "Connection authorized",
@@ -317,7 +324,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	};
 
 	const subtitles: Record<Status, string> = {
-		confirm: "Sign in to verify the OAuth setup and discover available tools.",
+		confirm: isPerUserReauth
+			? "Sign in again to renew Bifrost's own discovery credential."
+			: "Sign in to verify the OAuth setup and discover available tools.",
 		polling: "Complete sign-in in the popup window to continue.",
 		blocked: "Allow popups for this site, then try again.",
 		success: "OAuth authorization completed successfully.",
@@ -360,11 +369,13 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 						<>
 							<InfoBox icon={<KeyRound className="size-4" />}>
 								<p>
-									We'll open <strong>{authorizationHost}</strong> to verify the OAuth setup and discover available tools.
+									We'll open <strong>{authorizationHost}</strong> to {isPerUserReauth ? "renew" : "verify"} the OAuth setup
+									{isPerUserReauth ? "" : " and discover available tools"}.
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
-									Bifrost keeps this sign-in on file to periodically refresh the available tool list. Each user still
-									authenticates individually when they use this server; this credential is never used for their requests.
+									{isPerUserReauth
+										? "This only affects Bifrost's own sign-in used for periodic tool discovery. Each end user's OAuth session is separate and unaffected; you only need to do this if the admin credential badge shows it's expired, but re-running it any time is safe."
+										: "Bifrost keeps this sign-in on file to periodically refresh the available tool list. Each user still authenticates individually when they use this server; this credential is never used for their requests."}
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
