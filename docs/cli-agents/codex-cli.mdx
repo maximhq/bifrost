@@ -96,3 +96,59 @@ Bifrost supports the following providers with the `provider/model-name` format:
 <Warning>
 Non-OpenAI models **must support tool use** for Codex CLI to work properly. Codex CLI relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
 </Warning>
+
+## Listing Non-OpenAI Models in the Model Picker
+
+You can always start or switch to a non-OpenAI model by passing it explicitly (`codex --model bedrock/...` or `/model bedrock/...`). However, these models do not appear in the `/models` picker by default, and selecting them logs a warning like:
+
+```
+⚠ Model metadata for `bedrock/anthropic.claude-haiku-4-5` not found.
+  Defaulting to fallback metadata; this can degrade performance and cause issues.
+```
+
+This happens because Codex CLI builds its model picker from its own catalogue i.e. a list bundled into the Codex binary plus a refresh tied to your OpenAI account. Bifrost sits on the inference path, not Codex's model-discovery path, so Codex never learns about your non-OpenAI models. The fallback metadata also assigns a conservative context window, which can trigger premature history compaction.
+
+To make non-OpenAI models show up in `/models` and carry correct metadata, create a local model catalog file and reference it from `config.toml`.
+
+### 1. Create a model catalog file
+
+Create `~/.codex/bifrost_catalog.json` with one entry per model you want listed. At minimum, set the `slug` (the `provider/model` string you pass to Codex), a `display_name`, and the `context_window`:
+
+```json
+{
+  "models": [
+    {
+      "slug": "bedrock/anthropic.claude-haiku-4-5",
+      "display_name": "Claude Haiku 4.5 (Bifrost)",
+      "description": "Served via Bifrost gateway",
+      "context_window": 200000,
+      "max_context_window": 200000,
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balances speed and reasoning depth" },
+        { "effort": "high", "description": "Greater reasoning depth for complex problems" }
+      ],
+      "visibility": "list"
+    }
+  ]
+}
+```
+
+<Note>
+The catalog JSON schema is internal to Codex and its full entry shape (35+ fields) can change between Codex versions. The most reliable way to build valid entries is to copy an existing entry from `~/.codex/models_cache.json` (Codex's own cached catalog) and override `slug`, `display_name`, and `context_window`. Drop reasoning levels that the target model doesn't support — non-OpenAI models generally accept only `low`/`medium`/`high`.
+</Note>
+
+### 2. Reference it from config.toml
+
+Add the `model_catalog_json` key to your `~/.codex/config.toml`, pointing at the file:
+
+```toml
+model_catalog_json = "/Users/<you>/.codex/bifrost_catalog.json"
+```
+
+Restart Codex and run `/models` — your Bifrost models now appear in the picker, and the metadata warning is gone.
+
+<Warning>
+This makes non-OpenAI models appear in the **Codex CLI** picker only. The Codex desktop app's model dropdown is populated from your OpenAI account's catalogue and does **not** merge the local `model_catalog_json` file. Non-OpenAI models won't appear there. In the app, select them with the in-session `/model bedrock/...` command instead.
+</Warning>
