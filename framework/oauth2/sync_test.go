@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -111,11 +112,14 @@ func (s *testConfigStore) GetClientConfig(_ context.Context) (*configstore.Clien
 	return bifrost.Ptr(*s.clientConfig), nil
 }
 
-func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.Time) ([]*tables.TableMCPOauthToken, error) {
+func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var expiring []*tables.TableMCPOauthToken
 	for _, token := range s.oauthTokens {
+		if !slices.Contains(authModes, token.AuthMode) {
+			continue
+		}
 		if token.ExpiresAt != nil && token.ExpiresAt.Before(before) {
 			expiring = append(expiring, bifrost.Ptr(*token))
 		}
@@ -236,6 +240,7 @@ func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
 
 		store.oauthTokens["nil-expiry"] = &tables.TableMCPOauthToken{
 			ID:           "nil-expiry",
+			AuthMode:     "shared",
 			AccessToken:  "access-token",
 			RefreshToken: "refresh-token",
 			TokenType:    "bearer",
@@ -244,6 +249,7 @@ func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
 		}
 		store.oauthTokens["expiring"] = &tables.TableMCPOauthToken{
 			ID:           "expiring",
+			AuthMode:     "shared",
 			AccessToken:  "access-token-2",
 			RefreshToken: "refresh-token-2",
 			TokenType:    "bearer",
@@ -251,11 +257,90 @@ func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
 			Scopes:       "[]",
 		}
 
-		tokens, err := store.GetExpiringOauthTokens(context.Background(), before)
+		tokens, err := store.GetExpiringOauthTokens(context.Background(), before, []string{"shared"})
 		require.NoError(t, err)
 		require.Len(t, tokens, 1)
 		assert.Equal(t, "expiring", tokens[0].ID)
 	})
+
+	t.Run("filters by the given auth modes", func(t *testing.T) {
+		store := newTestConfigStore()
+		now := time.Now()
+		before := now.Add(5 * time.Minute)
+
+		store.oauthTokens["shared-tok"] = &tables.TableMCPOauthToken{
+			ID:           "shared-tok",
+			AuthMode:     "shared",
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			TokenType:    "bearer",
+			ExpiresAt:    bifrost.Ptr(now.Add(1 * time.Minute)),
+			Scopes:       "[]",
+		}
+		store.oauthTokens["user-tok"] = &tables.TableMCPOauthToken{
+			ID:           "user-tok",
+			AuthMode:     "user",
+			AccessToken:  "access-token-2",
+			RefreshToken: "refresh-token-2",
+			TokenType:    "bearer",
+			ExpiresAt:    bifrost.Ptr(now.Add(1 * time.Minute)),
+			Scopes:       "[]",
+		}
+
+		tokens, err := store.GetExpiringOauthTokens(context.Background(), before, []string{"shared"})
+		require.NoError(t, err)
+		require.Len(t, tokens, 1)
+		assert.Equal(t, "shared-tok", tokens[0].ID)
+
+		tokens, err = store.GetExpiringOauthTokens(context.Background(), before, []string{"shared", "user"})
+		require.NoError(t, err)
+		assert.Len(t, tokens, 2)
+	})
+}
+
+// TestTokenRefreshWorker_DefaultAuthModes_ExcludesUserModeTokens confirms the
+// worker's default AuthModes ({"shared"}) leaves a per-user (auth_mode=
+// "user") token that's expiring untouched — the same coverage the previous
+// hardcoded `auth_mode = 'shared'` SQL filter gave for free, now that the
+// scoping lives in the worker's configurable field instead.
+func TestTokenRefreshWorker_DefaultAuthModes_ExcludesUserModeTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "new-access-token",
+			"token_type":   "bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	oauthConfigID, sharedTokenID := seedFixtures(t, store, server.URL+"/token")
+
+	userTokenID := "test-user-token-id"
+	store.oauthTokens[userTokenID] = &tables.TableMCPOauthToken{
+		ID:            userTokenID,
+		AuthMode:      "user",
+		OauthConfigID: oauthConfigID,
+		Status:        "active",
+		AccessToken:   "old-user-access-token",
+		RefreshToken:  "user-refresh-token",
+		TokenType:     "bearer",
+		ExpiresAt:     bifrost.Ptr(time.Now().Add(1 * time.Minute)),
+		Scopes:        "[]",
+	}
+
+	worker := newTestWorker(store)
+	assert.Equal(t, []string{"shared"}, worker.AuthModes, "constructor must default AuthModes to shared-only")
+	worker.refreshExpiredTokens(context.Background())
+
+	sharedToken, err := store.GetOauthTokenByID(context.Background(), sharedTokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-access-token", sharedToken.AccessToken, "shared token must be refreshed under the default auth modes")
+
+	userToken, err := store.GetOauthTokenByID(context.Background(), userTokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "old-user-access-token", userToken.AccessToken, "user-mode token must not be picked up under the default auth modes")
 }
 
 func TestMCPTempTokenAuthEnabled(t *testing.T) {
