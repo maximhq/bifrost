@@ -2470,8 +2470,11 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	if file.FileData != nil && *file.FileData != "" {
 		fileData := *file.FileData
 
-		// Check if it's plain text based on file type
-		if file.FileType != nil && (*file.FileType == "text/plain" || *file.FileType == "txt") {
+		// A data URL must be decoded as base64 even when its declared media type is
+		// text/plain. Only raw file_data values use Anthropic's text source shape.
+		if !strings.HasPrefix(fileData, "data:") &&
+			file.FileType != nil &&
+			(*file.FileType == "text/plain" || *file.FileType == "txt") {
 			documentBlock.Source.SourceObj.Type = "text"
 			documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")
 			documentBlock.Source.SourceObj.Data = &fileData
@@ -2546,8 +2549,11 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	if fileBlock.FileData != nil && *fileBlock.FileData != "" {
 		fileData := *fileBlock.FileData
 
-		// Check if it's plain text based on file type
-		if fileBlock.FileType != nil && (*fileBlock.FileType == "text/plain" || *fileBlock.FileType == "txt") {
+		// A data URL must be decoded as base64 even when its declared media type is
+		// text/plain. Only raw file_data values use Anthropic's text source shape.
+		if !strings.HasPrefix(fileData, "data:") &&
+			fileBlock.FileType != nil &&
+			(*fileBlock.FileType == "text/plain" || *fileBlock.FileType == "txt") {
 			documentBlock.Source.SourceObj.Type = "text"
 			documentBlock.Source.SourceObj.Data = &fileData
 			documentBlock.Source.SourceObj.MediaType = schemas.Ptr("text/plain")

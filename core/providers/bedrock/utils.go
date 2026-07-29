@@ -3,7 +3,6 @@ package bedrock
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -188,46 +187,64 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
-func bedrockDocumentFormat(fileType string) (format string, isText bool) {
+type bedrockDocumentTextHandling uint8
+
+const (
+	// Chat file_data is documented as base64. Preserve the historical chat
+	// behavior that treated only the explicitly supported text formats as raw
+	// text; other text/* payloads remain encoded bytes.
+	bedrockDocumentKnownTextOnly bedrockDocumentTextHandling = iota
+	// Responses historically treated every text/* file_data value as raw text.
+	bedrockDocumentAllTextMediaTypes
+)
+
+func normalizeBedrockDocumentType(fileType string) string {
 	normalized := strings.ToLower(strings.TrimSpace(fileType))
 	if mediaType, _, err := mime.ParseMediaType(normalized); err == nil {
 		normalized = mediaType
 	}
+	return normalized
+}
 
+func bedrockDocumentFormat(fileType string) (format string, isText bool, matched bool) {
+	normalized := normalizeBedrockDocumentType(fileType)
 	switch {
 	case normalized == "text/markdown" || normalized == "md":
-		return "md", true
+		return "md", true, true
 	case normalized == "text/html" || normalized == "html":
-		return "html", true
+		return "html", true, true
 	case normalized == "text/csv" || normalized == "csv":
-		return "csv", true
-	case strings.HasPrefix(normalized, "text/") || normalized == "txt":
-		return "txt", true
+		return "csv", true, true
+	case normalized == "text/plain" || normalized == "txt":
+		return "txt", true, true
+	case strings.HasPrefix(normalized, "text/"):
+		return "txt", false, true
 	case normalized == "application/msword" || normalized == "doc":
-		return "doc", false
+		return "doc", false, true
 	case strings.Contains(normalized, "wordprocessingml") || normalized == "docx":
-		return "docx", false
+		return "docx", false, true
 	case normalized == "application/vnd.ms-excel" || normalized == "xls":
-		return "xls", false
+		return "xls", false, true
 	case strings.Contains(normalized, "spreadsheetml") || normalized == "xlsx":
-		return "xlsx", false
+		return "xlsx", false, true
 	case strings.Contains(normalized, "pdf") || normalized == "pdf":
-		return "pdf", false
+		return "pdf", false, true
 	default:
-		return "pdf", false
+		return "pdf", false, false
 	}
 }
 
 // materializeBedrockDocument converts the canonical Bifrost file representation
 // into the inline document shape required by Bedrock Converse. Remote documents
 // use the shared bounded, SSRF-safe fetcher; inline data URLs are reduced to their
-// base64 payload before emission.
+// payload before emission.
 func materializeBedrockDocument(
 	ctx context.Context,
 	fileData *string,
 	fileURL *string,
 	filename *string,
 	fileType *string,
+	textHandling bedrockDocumentTextHandling,
 ) (*BedrockDocumentSource, error) {
 	document := &BedrockDocumentSource{
 		Name:   "document",
@@ -239,8 +256,17 @@ func materializeBedrockDocument(
 	}
 
 	isText := false
-	if fileType != nil {
-		document.Format, isText = bedrockDocumentFormat(*fileType)
+	hasDeclaredType := fileType != nil && strings.TrimSpace(*fileType) != ""
+	declaredFormatMatched := false
+	if hasDeclaredType {
+		format, knownText, matched := bedrockDocumentFormat(*fileType)
+		if matched {
+			document.Format = format
+			declaredFormatMatched = true
+		}
+		isText = knownText ||
+			(textHandling == bedrockDocumentAllTextMediaTypes &&
+				strings.HasPrefix(normalizeBedrockDocumentType(*fileType), "text/"))
 	}
 
 	if fileURL != nil && *fileURL != "" {
@@ -252,7 +278,13 @@ func materializeBedrockDocument(
 			return nil, err
 		}
 		if fetchedMediaType != "" {
-			document.Format, _ = bedrockDocumentFormat(fetchedMediaType)
+			if format, _, matched := bedrockDocumentFormat(fetchedMediaType); matched {
+				document.Format = format
+			} else if !declaredFormatMatched {
+				return nil, fmt.Errorf("unsupported Bedrock document format %q", fetchedMediaType)
+			}
+		} else if hasDeclaredType && !declaredFormatMatched {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", *fileType)
 		}
 		document.Source.Bytes = &fetchedBase64
 		return document, nil
@@ -269,16 +301,25 @@ func materializeBedrockDocument(
 			return nil, fmt.Errorf("invalid document data URL")
 		}
 		if urlInfo.MediaType != nil && *urlInfo.MediaType != "" {
-			document.Format, _ = bedrockDocumentFormat(*urlInfo.MediaType)
+			if !declaredFormatMatched {
+				if format, _, matched := bedrockDocumentFormat(*urlInfo.MediaType); matched {
+					document.Format = format
+				} else {
+					return nil, fmt.Errorf("unsupported Bedrock document format %q", *urlInfo.MediaType)
+				}
+			}
+		} else if hasDeclaredType && !declaredFormatMatched {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", *fileType)
 		}
 		document.Source.Bytes = urlInfo.DataURLWithoutPrefix
 		return document, nil
 	}
 
+	if hasDeclaredType && !declaredFormatMatched {
+		return nil, fmt.Errorf("unsupported Bedrock document format %q", *fileType)
+	}
 	if isText {
 		document.Source.Text = &data
-		encoded := base64.StdEncoding.EncodeToString([]byte(data))
-		document.Source.Bytes = &encoded
 	} else {
 		document.Source.Bytes = &data
 	}
@@ -1280,6 +1321,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			block.File.FileURL,
 			block.File.Filename,
 			block.File.FileType,
+			bedrockDocumentKnownTextOnly,
 		)
 		if err != nil {
 			return nil, err

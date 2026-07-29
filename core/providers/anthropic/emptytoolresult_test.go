@@ -73,3 +73,31 @@ func TestConvertToolResultWithDocumentBlock(t *testing.T) {
 		t.Fatalf("converted messages must marshal, got: %v", err)
 	}
 }
+
+func TestConvertToolResultDropsUnsupportedContentBlock(t *testing.T) {
+	role := schemas.ResponsesInputMessageRoleUser
+	blocks := []AnthropicContentBlock{
+		{
+			Type:      AnthropicContentBlockTypeToolResult,
+			ToolUseID: schemas.Ptr("toolu_unsupported"),
+			Content: &AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{Type: AnthropicContentBlockTypeThinking},
+			}},
+		},
+	}
+
+	msgs := convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &role, false)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 converted message, got %d", len(msgs))
+	}
+	output := msgs[0].Output
+	if output == nil {
+		t.Fatal("expected non-nil tool message output")
+	}
+	if len(output.ResponsesFunctionToolCallOutputBlocks) != 0 {
+		t.Fatalf("expected unsupported block to be dropped, got %#v", output.ResponsesFunctionToolCallOutputBlocks)
+	}
+	if _, err := schemas.MarshalSorted(msgs); err != nil {
+		t.Fatalf("converted messages must marshal, got: %v", err)
+	}
+}

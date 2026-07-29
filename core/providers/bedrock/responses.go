@@ -3454,7 +3454,14 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeFile &&
 								block.ResponsesInputMessageContentBlockFile != nil {
 								file := block.ResponsesInputMessageContentBlockFile
-								document, err := materializeBedrockDocument(ctx, file.FileData, file.FileURL, file.Filename, file.FileType)
+								document, err := materializeBedrockDocument(
+									ctx,
+									file.FileData,
+									file.FileURL,
+									file.Filename,
+									file.FileType,
+									bedrockDocumentAllTextMediaTypes,
+								)
 								if err != nil {
 									return nil, nil, fmt.Errorf("bedrock: converting tool result document: %w", err)
 								}
@@ -4637,7 +4644,14 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 			case schemas.ResponsesInputMessageContentBlockTypeFile:
 				if block.ResponsesInputMessageContentBlockFile != nil {
 					file := block.ResponsesInputMessageContentBlockFile
-					document, err := materializeBedrockDocument(ctx, file.FileData, file.FileURL, file.Filename, file.FileType)
+					document, err := materializeBedrockDocument(
+						ctx,
+						file.FileData,
+						file.FileURL,
+						file.Filename,
+						file.FileType,
+						bedrockDocumentAllTextMediaTypes,
+					)
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert document in responses content block: %w", err)
 					}

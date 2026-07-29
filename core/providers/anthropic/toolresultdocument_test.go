@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -18,7 +19,8 @@ func convertToolResultDocumentBlocksForTest(grouped bool, content []AnthropicCon
 	if grouped {
 		return convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &role, false)
 	}
-	return convertAnthropicContentBlocksToResponsesMessages(nil, blocks, &role, false, "")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	return convertAnthropicContentBlocksToResponsesMessages(ctx, blocks, &role, false, "")
 }
 
 func requireToolResultDocumentBlocks(t *testing.T, messages []schemas.ResponsesMessage) []schemas.ResponsesMessageContentBlock {
@@ -116,5 +118,62 @@ func TestToolResultDocumentBase64Preserved(t *testing.T) {
 				t.Fatalf("expected application/pdf file type, got %#v", file.FileType)
 			}
 		})
+	}
+}
+
+func TestBase64TextDocumentRoundTripPreservesBase64Source(t *testing.T) {
+	block := AnthropicContentBlock{
+		Type: AnthropicContentBlockTypeDocument,
+		Source: &AnthropicBlockSource{SourceObj: &AnthropicSource{
+			Type:      "base64",
+			MediaType: schemas.Ptr("text/plain"),
+			Data:      schemas.Ptr("SGVsbG8="),
+		}},
+	}
+
+	canonical := block.toBifrostResponsesDocumentBlock()
+	roundTripped := ConvertResponsesFileBlockToAnthropic(
+		canonical.ResponsesInputMessageContentBlockFile,
+		canonical.FileID,
+		canonical.CacheControl,
+		canonical.Citations,
+	)
+	if roundTripped.Source == nil || roundTripped.Source.SourceObj == nil {
+		t.Fatal("expected Anthropic document source")
+	}
+	source := roundTripped.Source.SourceObj
+	if source.Type != "base64" {
+		t.Fatalf("expected base64 source, got %q", source.Type)
+	}
+	if source.Data == nil || *source.Data != "SGVsbG8=" {
+		t.Fatalf("expected original base64 payload, got %#v", source.Data)
+	}
+	if source.MediaType == nil || *source.MediaType != "text/plain" {
+		t.Fatalf("expected text/plain media type, got %#v", source.MediaType)
+	}
+}
+
+func TestChatDataURLTextDocumentPreservesBase64Source(t *testing.T) {
+	dataURL := "data:text/plain;base64,SGVsbG8="
+	block := ConvertToAnthropicDocumentBlock(schemas.ChatContentBlock{
+		Type: schemas.ChatContentBlockTypeFile,
+		File: &schemas.ChatInputFile{
+			FileData: &dataURL,
+			FileType: schemas.Ptr("text/plain"),
+		},
+	})
+
+	if block.Source == nil || block.Source.SourceObj == nil {
+		t.Fatal("expected Anthropic document source")
+	}
+	source := block.Source.SourceObj
+	if source.Type != "base64" {
+		t.Fatalf("expected base64 source, got %q", source.Type)
+	}
+	if source.Data == nil || *source.Data != "SGVsbG8=" {
+		t.Fatalf("expected original base64 payload, got %#v", source.Data)
+	}
+	if source.MediaType == nil || *source.MediaType != "text/plain" {
+		t.Fatalf("expected text/plain media type, got %#v", source.MediaType)
 	}
 }

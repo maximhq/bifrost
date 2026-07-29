@@ -79,6 +79,119 @@ func TestToolResultDocumentInlinePreserved(t *testing.T) {
 	}
 }
 
+func TestToolResultDocumentUnknownDataURLTypePreservesDeclaredFormat(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		toolResultDocumentMessage([]schemas.ResponsesMessageContentBlock{
+			{
+				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					FileData: schemas.Ptr("data:application/octet-stream;base64,QQ=="),
+					Filename: schemas.Ptr("report.csv"),
+					FileType: schemas.Ptr("text/csv"),
+				},
+			},
+		}),
+	}
+
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	if err != nil {
+		t.Fatalf("unexpected conversion error: %v", err)
+	}
+	toolResult := requireBedrockToolResultDocument(t, messages)
+	if len(toolResult.Content) != 1 || toolResult.Content[0].Document == nil {
+		t.Fatalf("expected one document block, got %#v", toolResult.Content)
+	}
+	document := toolResult.Content[0].Document
+	if document.Format != "csv" {
+		t.Fatalf("expected declared csv format to survive unknown data URL type, got %q", document.Format)
+	}
+	if document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != "QQ==" {
+		t.Fatalf("expected original inline bytes, got %#v", document.Source)
+	}
+}
+
+func TestChatDocumentGenericTextTypeKeepsRawBase64(t *testing.T) {
+	rawBase64 := "PHJvb3QvPg=="
+	blocks, err := convertContentBlock(context.Background(), schemas.ChatContentBlock{
+		Type: schemas.ChatContentBlockTypeFile,
+		File: &schemas.ChatInputFile{
+			FileData: &rawBase64,
+			Filename: schemas.Ptr("document.xml"),
+			FileType: schemas.Ptr("text/xml"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected conversion error: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Document == nil {
+		t.Fatalf("expected one document block, got %#v", blocks)
+	}
+	document := blocks[0].Document
+	if document.Format != "txt" {
+		t.Fatalf("expected Bedrock txt format, got %q", document.Format)
+	}
+	if document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != rawBase64 {
+		t.Fatalf("expected raw base64 bytes to remain unchanged, got %#v", document.Source)
+	}
+	if document.Source.Text != nil {
+		t.Fatalf("expected raw base64 not to be treated as literal text, got %q", *document.Source.Text)
+	}
+}
+
+func TestToolResultTextDocumentUsesSingleSourceMember(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		toolResultDocumentMessage([]schemas.ResponsesMessageContentBlock{
+			{
+				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					FileData: schemas.Ptr("Hello from the tool"),
+					Filename: schemas.Ptr("result.txt"),
+					FileType: schemas.Ptr("text/plain"),
+				},
+			},
+		}),
+	}
+
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	if err != nil {
+		t.Fatalf("unexpected conversion error: %v", err)
+	}
+	toolResult := requireBedrockToolResultDocument(t, messages)
+	if len(toolResult.Content) != 1 || toolResult.Content[0].Document == nil {
+		t.Fatalf("expected one document block, got %#v", toolResult.Content)
+	}
+	source := toolResult.Content[0].Document.Source
+	if source == nil || source.Text == nil || *source.Text != "Hello from the tool" {
+		t.Fatalf("expected plain text document source, got %#v", source)
+	}
+	if source.Bytes != nil {
+		t.Fatalf("expected DocumentSource union to contain only text, got bytes %#v", source.Bytes)
+	}
+}
+
+func TestToolResultDocumentUnsupportedFileTypeRejected(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		toolResultDocumentMessage([]schemas.ResponsesMessageContentBlock{
+			{
+				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					FileData: schemas.Ptr("e30="),
+					Filename: schemas.Ptr("result.json"),
+					FileType: schemas.Ptr("application/json"),
+				},
+			},
+		}),
+	}
+
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+	if err == nil {
+		t.Fatalf("expected unsupported-format error, got messages %#v", messages)
+	}
+	if !strings.Contains(err.Error(), `unsupported Bedrock document format "application/json"`) {
+		t.Fatalf("expected explicit unsupported-format error, got %v", err)
+	}
+}
+
 func TestToolResultDocumentURLFetchErrorReturned(t *testing.T) {
 	input := []schemas.ResponsesMessage{
 		toolResultDocumentMessage([]schemas.ResponsesMessageContentBlock{
