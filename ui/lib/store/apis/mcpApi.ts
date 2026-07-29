@@ -259,6 +259,17 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 		}),
 
+		// Redo the OAuth consent dance for an already-authorized shared
+		// (auth_type 'oauth') MCP client sitting in needs_reauth — without
+		// delete-and-recreate. Same response shape as initiateMCPClientVerification;
+		// the caller drives the same OAuth2Authorizer dialog.
+		reauthorizeMCPClient: builder.mutation<InitiateMCPClientVerificationResponse, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/reauthorize`,
+				method: "POST",
+			}),
+		}),
+
 		// Verify a pending_verification per_user_headers MCP client by submitting
 		// admin sample header values. Backend runs verify + discover synchronously,
 		// persists DiscoveredTools, and reconnects.
@@ -291,5 +302,6 @@ export const {
 	useLazyGetOAuthConfigStatusQuery,
 	useCompleteOAuthFlowMutation,
 	useInitiateMCPClientVerificationMutation,
+	useReauthorizeMCPClientMutation,
 	useVerifyMCPClientHeadersMutation,
 } = mcpApi;

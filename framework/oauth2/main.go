@@ -918,11 +918,42 @@ func (p *OAuth2Provider) BuildUpstreamAuthorizeURL(ctx context.Context, flowID s
 	if flow == nil {
 		return "", schemas.ErrOAuth2NotPerUserSession
 	}
+	return p.buildUpstreamAuthorizeURLForFlow(ctx, flow)
+}
+
+// BuildAdminUpstreamAuthorizeURL is BuildUpstreamAuthorizeURL's admin-mode
+// counterpart: reconstructs the upstream provider authorization URL for a
+// pending flow_mode='admin' row, used by the MCP client reauthorize endpoint
+// to hand OAuth2Authorizer's popup a real provider URL to open directly
+// (unlike the per-user page-based flow, which navigates to a Bifrost page
+// that itself resolves the upstream URL later). Reads through GetOauthFlowByID
+// rather than widening BuildUpstreamAuthorizeURL's own GetOauthUserSessionByID
+// call: that lookup is deliberately scoped away from admin-mode rows (see its
+// doc comment) so a caller-supplied flow ID from a per-user-facing endpoint
+// can never reach an admin flow's PKCE state.
+func (p *OAuth2Provider) BuildAdminUpstreamAuthorizeURL(ctx context.Context, flowID string) (string, error) {
+	flow, err := p.configStore.GetOauthFlowByID(ctx, flowID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load pending oauth flow: %w", err)
+	}
+	if flow == nil {
+		return "", fmt.Errorf("oauth flow not found")
+	}
+	return p.buildUpstreamAuthorizeURLForFlow(ctx, flow)
+}
+
+// buildUpstreamAuthorizeURLForFlow is the shared core of
+// BuildUpstreamAuthorizeURL and BuildAdminUpstreamAuthorizeURL: given an
+// already-loaded, already-mode-scoped flow row, validate it's still usable
+// and reconstruct the upstream authorize URL. The code_challenge is
+// recomputed deterministically from the stored verifier so we don't have to
+// persist it separately.
+func (p *OAuth2Provider) buildUpstreamAuthorizeURLForFlow(ctx context.Context, flow *tables.TableMCPOauthFlow) (string, error) {
 	if flow.Status != "pending" {
-		return "", fmt.Errorf("oauth flow %s is %s: %w", flowID, flow.Status, schemas.ErrOAuth2FlowNotPending)
+		return "", fmt.Errorf("oauth flow %s is %s: %w", flow.ID, flow.Status, schemas.ErrOAuth2FlowNotPending)
 	}
 	if time.Now().After(flow.ExpiresAt) {
-		return "", fmt.Errorf("oauth flow %s: %w", flowID, schemas.ErrOAuth2FlowExpired)
+		return "", fmt.Errorf("oauth flow %s: %w", flow.ID, schemas.ErrOAuth2FlowExpired)
 	}
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, flow.OauthConfigID)
 	if err != nil {
@@ -938,7 +969,7 @@ func (p *OAuth2Provider) BuildUpstreamAuthorizeURL(ctx context.Context, flowID s
 	var scopes []string
 	if templateConfig.Scopes != "" {
 		if err := json.Unmarshal([]byte(templateConfig.Scopes), &scopes); err != nil {
-			return "", fmt.Errorf("failed to parse oauth scopes for flow %s: %w", flowID, err)
+			return "", fmt.Errorf("failed to parse oauth scopes for flow %s: %w", flow.ID, err)
 		}
 	}
 	redirectURI := flow.RedirectURI
@@ -1202,6 +1233,12 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 		}
 		sessionID = v
 		lookupID = v
+	case schemas.MCPAuthModeAdmin:
+		// No identity dimension, a shared credential's reauth is scoped to
+		// the MCP client alone (see GetOauthUserSessionByModeIdentityAndMCPClient's
+		// admin branch). lookupID stays "" and vkId/uid/sessionID all stay
+		// nil/empty; the row this creates/reuses is found again purely by
+		// (flow_mode='admin', mcp_client_id).
 	default:
 		return nil, "", fmt.Errorf("unknown auth mode for flow: %s", flowMode)
 	}
@@ -1297,7 +1334,12 @@ func (p *OAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigI
 	// bypasses cookie resolution, leaving caller user_id empty and the gate
 	// would 403 even legitimate users. VK and session-mode flows are
 	// intentionally shareable and continue to mint.
-	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) && flowMode != schemas.MCPAuthModeUser {
+	//
+	// Admin-mode flows skip the mint too: this flow is always admin-initiated
+	// from an authenticated dashboard session (the MCP client reauthorize
+	// endpoint), never a shareable magic link, there is no
+	// caller-without-a-session case to support here, unlike vk/session-mode.
+	if svc := p.tempTokenService(); svc != nil && p.mcpTempTokenAuthEnabled(ctx) && flowMode != schemas.MCPAuthModeUser && flowMode != schemas.MCPAuthModeAdmin {
 		ttl := time.Until(expiresAt)
 		if ttl > 0 {
 			plaintext, mintErr := svc.Mint(ctx, temptoken.MCPAuthScopeName, sessionID, ttl)
@@ -1439,7 +1481,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		AuthMode:      string(flowMode),
 		Status:        "active",
 	}
-	if err := p.configStore.CreateOauthUserToken(ctx, tokenRecord); err != nil {
+	if err := p.configStore.CreateOauthToken(ctx, tokenRecord); err != nil {
 		// The flow row has already been claimed and the auth code has been
 		// exchanged; leaving the row in 'claiming' state would block the
 		// next initiation for this binding indefinitely. Drop it so the
