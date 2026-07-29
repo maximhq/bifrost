@@ -3,6 +3,13 @@
 access-profiles:
   get:
     operationId: listAccessProfiles
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List access profiles
     description: Returns access profiles visible to the caller.
     tags:
@@ -43,6 +50,13 @@ access-profiles:
 
   post:
     operationId: createAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create access profile
     description: |
       Creates a new access profile template. The profile is inactive until attached to a role.
@@ -74,6 +88,13 @@ access-profiles:
 access-profiles-by-id:
   get:
     operationId: getAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get access profile by ID
     description: Returns the profile plus its role attachments and the count of users holding a copy.
     tags:
@@ -100,6 +121,13 @@ access-profiles-by-id:
 
   put:
     operationId: updateAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Update access profile
     description: |
       Partial update. Omitted fields preserve the current value.
@@ -139,6 +167,13 @@ access-profiles-by-id:
 
   delete:
     operationId: deleteAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete access profile
     description: Blocked with 409 if any users still hold copies. Detach role attachments or remove user assignments first.
     tags:
@@ -168,6 +203,13 @@ access-profiles-by-id:
 access-profiles-activate:
   put:
     operationId: activateAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Activate access profile
     description: Sets the profile active. Idempotent.
     tags:
@@ -195,6 +237,13 @@ access-profiles-activate:
 access-profiles-deactivate:
   put:
     operationId: deactivateAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Deactivate access profile
     description: Sets the profile inactive. Idempotent. User copies are preserved; the profile is hidden from selection menus.
     tags:
@@ -222,6 +271,13 @@ access-profiles-deactivate:
 access-profiles-clone:
   post:
     operationId: cloneAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Clone an access profile
     description: Creates a fresh copy of the profile under a new name. The clone has no role attachments or user copies.
     tags:
@@ -259,6 +315,13 @@ access-profiles-clone:
 access-profiles-propagate:
   post:
     operationId: propagateAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Propagate template changes to user copies
     description: |
       Pushes selected fields from the template to every user that holds a copy.
@@ -296,6 +359,13 @@ access-profiles-propagate:
 access-profiles-roles:
   post:
     operationId: attachRolesToAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Attach roles to access profile
     description: |
       Attaches one or more roles. Setting `is_default: true` makes the profile the role's default
@@ -333,6 +403,13 @@ access-profiles-roles:
 access-profiles-role-by-id:
   delete:
     operationId: detachRoleFromAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Detach role from access profile
     tags:
       - Access Profiles
@@ -364,6 +441,13 @@ access-profiles-role-by-id:
 access-profiles-versions:
   get:
     operationId: listAccessProfileVersions
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List version snapshots for an access profile
     tags:
       - Access Profiles
@@ -388,6 +472,13 @@ access-profiles-versions:
 access-profiles-version-by-number:
   get:
     operationId: getAccessProfileVersion
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get a single version snapshot
     tags:
       - Access Profiles
@@ -419,6 +510,13 @@ access-profiles-version-by-number:
 access-profiles-audit-logs-by-id:
   get:
     operationId: listAccessProfileAuditLogsById
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List audit log entries for a single profile
     tags:
       - Access Profiles
@@ -460,6 +558,13 @@ access-profiles-audit-logs-by-id:
 access-profiles-audit-logs-all:
   get:
     operationId: listAccessProfileAuditLogs
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List workspace-wide audit log entries
     tags:
       - Access Profiles
@@ -495,6 +600,13 @@ access-profiles-audit-logs-all:
 users-access-profiles:
   get:
     operationId: listUserAccessProfiles
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List access profiles held by a user
     tags:
       - Access Profiles
@@ -519,6 +631,13 @@ users-access-profiles:
 users-access-profile-by-id:
   delete:
     operationId: detachUserAccessProfile
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Detach a user's access profile
     description: Removes the profile from the user and deletes every virtual key it produced. Fails closed if a virtual key cannot be deleted.
     tags:
@@ -551,6 +670,13 @@ users-access-profile-by-id:
 users-access-profile-virtual-keys:
   post:
     operationId: addUserAccessProfileVirtualKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Add an extra virtual key under a user's access profile
     tags:
       - Access Profiles
@@ -588,6 +714,13 @@ users-access-profile-virtual-keys:
 users-access-profile-virtual-key-by-id:
   delete:
     operationId: deleteUserAccessProfileVirtualKey
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete a virtual key from a user's access profile
     tags:
       - Access Profiles

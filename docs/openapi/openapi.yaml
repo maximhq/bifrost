@@ -952,6 +952,87 @@ paths:
   /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id'
 
+  # Deprecated Governance aliases (Enterprise compatibility; remove in the following major release)
+  /api/virtual-keys/{vk_id}/users:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-virtual-key-users'
+  /api/virtual-keys/{vk_id}/users/{user_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-virtual-key-user'
+  /api/teams/{team_id}/customers:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-team-customers'
+  /api/teams/{team_id}/customers/{customer_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-team-customer'
+  /api/customers/{customer_id}/teams:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-customer-teams'
+  /api/roles:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-roles'
+  /api/roles/{role_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-roles-by-id'
+  /api/roles/{role_id}/permissions:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-role-permissions'
+  /api/resources:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-resources'
+  /api/operations:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-operations'
+  /api/permissions:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-permissions'
+  /api/users:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users'
+  /api/users/{user_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-by-id'
+  /api/users/me/permissions:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-me-permissions'
+  /api/users/{user_id}/role:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-role'
+  /api/users/{user_id}/teams:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-teams'
+  /api/users/email/{email}/virtual-keys:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-email-virtual-keys'
+  /api/users/email/{email}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-by-email'
+  /api/teams:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-teams'
+  /api/teams/{team_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-teams-by-id'
+  /api/teams/{team_id}/members:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-team-members'
+  /api/teams/{team_id}/members/{user_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-team-member-by-id'
+  /api/access-profiles:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles'
+  /api/access-profiles/{profile_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-by-id'
+  /api/access-profiles/{profile_id}/activate:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-activate'
+  /api/access-profiles/{profile_id}/deactivate:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-deactivate'
+  /api/access-profiles/{profile_id}/clone:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-clone'
+  /api/access-profiles/{profile_id}/propagate:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-propagate'
+  /api/access-profiles/{profile_id}/roles:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-roles'
+  /api/access-profiles/{profile_id}/roles/{role_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-role-by-id'
+  /api/access-profiles/{profile_id}/versions:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-versions'
+  /api/access-profiles/{profile_id}/versions/{version}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-version-by-number'
+  /api/access-profiles/{profile_id}/audit-logs:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-audit-logs-by-id'
+  /api/access-profiles/audit-logs:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-access-profiles-audit-logs-all'
+  /api/users/{user_id}/access-profiles:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-access-profiles'
+  /api/users/{user_id}/virtual-keys:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-user-virtual-keys'
+  /api/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-user-access-profile-budget-override'
+  /api/users/{user_id}/access-profiles/{profile_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-access-profile-by-id'
+  /api/users/{user_id}/access-profiles/{profile_id}/virtual-keys:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-access-profile-virtual-keys'
+  /api/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
+    $ref: './paths/management/governancelegacy.yaml#/legacy-users-access-profile-virtual-key-by-id'
   # Audit Logs
   /api/audit-logs:
     $ref: './paths/management/auditlogs.yaml#/audit-logs'

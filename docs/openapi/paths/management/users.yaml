@@ -1,6 +1,13 @@
 users:
   get:
     operationId: listUsers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List users
     description: Returns a paginated list of users with optional search.
     tags:
@@ -40,6 +47,13 @@ users:
 
   post:
     operationId: createUser
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create user
     description: Manually creates a new user in the organization.
     tags:
@@ -73,6 +87,13 @@ users:
 users-email-virtual-keys:
   get:
     operationId: getUserVirtualKeysByEmail
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get user's virtual keys by email
     description: >
       **Enterprise only.**
@@ -184,6 +205,13 @@ users-by-id:
 
   delete:
     operationId: deleteUser
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete user
     description: >
       Permanently removes a user from the organization. This cascades to delete
@@ -225,6 +253,13 @@ users-by-id:
 users-me-permissions:
   get:
     operationId: getCurrentUserPermissions
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get current user permissions
     description: >
       Returns the RBAC permissions for the authenticated user. When SCIM is not
@@ -259,6 +294,13 @@ users-me-permissions:
 users-role:
   put:
     operationId: assignUserRole
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Assign role to user
     description: >
       Assigns an RBAC role to a user. This also auto-assigns the default
@@ -301,6 +343,13 @@ users-role:
 users-teams:
   get:
     operationId: getUserTeams
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get user's teams
     description: Returns the list of teams a user belongs to, including the membership source.
     tags:
@@ -334,6 +383,13 @@ users-teams:
 
   put:
     operationId: updateUserTeams
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Update user's team assignments
     description: >
       Replaces the user's manual team assignments. Synced team memberships
@@ -496,6 +552,13 @@ users-governance:
 team-members:
   get:
     operationId: getTeamMembers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List team members
     description: Returns all members of a team with their user details and membership source.
     tags:
@@ -529,6 +592,13 @@ team-members:
 
   post:
     operationId: addTeamMember
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Add team member
     description: Adds a user to a team. Both the team and user must exist.
     tags:
@@ -573,6 +643,13 @@ team-members:
 team-member-by-id:
   delete:
     operationId: removeTeamMember
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Remove team member
     description: Removes a user from a team.
     tags:
