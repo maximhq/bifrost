@@ -87,6 +87,7 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
 	r.POST("/api/mcp/client/{id}/initiate-verification", lib.ChainMiddlewares(h.initiateMCPClientVerification, middlewares...))
+	r.POST("/api/mcp/client/{id}/reauthorize", lib.ChainMiddlewares(h.reauthorizeMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/verify-headers", lib.ChainMiddlewares(h.verifyMCPClientHeaders, middlewares...))
 }
 
@@ -137,6 +138,91 @@ type MCPVKConfigResponse struct {
 	VirtualKeyID   string            `json:"virtual_key_id"`
 	VirtualKeyName string            `json:"virtual_key_name"`
 	ToolsToExecute schemas.WhiteList `json:"tools_to_execute"`
+}
+
+// reauthorizeMCPClient handles POST /api/mcp/client/{id}/reauthorize.
+//
+// Redoes the OAuth consent dance for an already-authorized shared
+// (auth_type='oauth') MCP client, without delete-and-recreate. Serves two
+// cases with one endpoint: a standalone admin-triggered reauth (e.g. the
+// upstream provider revoked the credential) and the follow-up to rotating
+// client_id/client_secret (which cascades every bound token to
+// needs_reauth; this is how an admin actually redoes consent afterward).
+// Always redoes consent against whatever credentials are currently stored
+// on the oauth_configs row, no mode flag, no branching on why the token
+// needs it. per_user_oauth clients are out of scope: their admin flow is a
+// one-time bootstrap-test, not a repeatable reauth surface.
+func (h *MCPHandler) reauthorizeMCPClient(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+	id, err := getIDFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid mcp client id: %v", err))
+		return
+	}
+
+	clientConfig, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("MCP client '%s' not found", id))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
+		return
+	}
+	if clientConfig.AuthType != schemas.MCPAuthTypeOauth {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("reauthorize only applies to shared OAuth clients (auth_type 'oauth'), got %q", clientConfig.AuthType))
+		return
+	}
+	if clientConfig.OauthConfigID == nil || *clientConfig.OauthConfigID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has not completed initial OAuth authorization yet; use initiate-verification instead")
+		return
+	}
+	if clientConfig.PendingOAuthConfig != nil {
+		// A config.json-bootstrapped client links OauthConfigID before the
+		// admin ever completes consent (see InitiateOAuthFlow), so the check
+		// above alone doesn't catch this case. Reauthorizing here would
+		// resolve to the same flow_mode='admin' + mcp_client_id lookup as
+		// the in-flight bootstrap flow and rotate its state/code_verifier,
+		// breaking the bootstrap authorize URL the admin already has open.
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has not completed initial OAuth authorization yet; use initiate-verification instead")
+		return
+	}
+	if h.store.OAuthProvider == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider not configured")
+		return
+	}
+
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	flowInitiation, flowID, err := h.store.OAuthProvider.InitiateUserOAuthFlow(ctx, *clientConfig.OauthConfigID, clientConfig.ID, redirectURI, schemas.MCPAuthModeAdmin)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate reauthorization: %v", err))
+		return
+	}
+	authorizeURL, err := h.store.OAuthProvider.BuildAdminUpstreamAuthorizeURL(ctx, flowID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to build authorize URL: %v", err))
+		return
+	}
+
+	completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
+	statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
+	SendJSON(ctx, map[string]any{
+		"status":          "pending_oauth",
+		"oauth_config_id": flowInitiation.OauthConfigID,
+		"authorize_url":   authorizeURL,
+		"expires_at":      flowInitiation.ExpiresAt,
+		"mcp_client_id":   clientConfig.ID,
+		"complete_url":    completeURL,
+		"status_url":      statusURL,
+		"next_steps": []string{
+			"1. Open authorize_url in a browser to approve access",
+			"2. Poll status_url to check when status becomes 'authorized'",
+			"3. POST complete_url to reconnect the MCP client",
+		},
+	})
 }
 
 // initiateMCPClientVerification handles
@@ -2193,7 +2279,29 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if dbClient.PendingOAuthConfigJSON == nil || *dbClient.PendingOAuthConfigJSON == "" {
-			SendError(ctx, fasthttp.StatusConflict, "OAuth flow has already been completed for this MCP client")
+			// Not a bootstrap completion. Two possibilities: a genuine
+			// replay (client already active, this exact oauth_config_id's
+			// flow completed long ago, nothing new happened) or a pure
+			// reauth (client already active, a fresh admin flow via
+			// POST /reauthorize just replaced its token). Only auth_type
+			// 'oauth' supports reauth, per_user_oauth's admin flow is a
+			// one-time bootstrap test with no reauth trigger, so any hit
+			// here for that type is always a genuine replay.
+			if dbClient.AuthType != string(schemas.MCPAuthTypeOauth) {
+				SendError(ctx, fasthttp.StatusConflict, "OAuth flow has already been completed for this MCP client")
+				return
+			}
+			reauthClientConfig, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, dbClient.ClientID)
+			if err != nil || reauthClientConfig == nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
+				return
+			}
+			if err := h.updateMCPClientConnectionWithRetry(bifrostCtx, reauthClientConfig.ID, reauthClientConfig); err != nil {
+				logger.Error(fmt.Sprintf("Failed to reconnect MCP client after reauthorization for client %s: %v", reauthClientConfig.ID, err))
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth credentials refreshed but reconnecting the client failed: %v", err))
+				return
+			}
+			SendJSON(ctx, map[string]any{"status": "success", "message": "MCP client re-authorized and reconnected successfully"})
 			return
 		}
 		mcpClientConfig, err = h.store.ConfigStore.GetMCPClientConfigByID(ctx, dbClient.ClientID)

@@ -6509,15 +6509,83 @@ func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.T
 	return nil
 }
 
-// CreateOauthToken creates a new OAuth token
+// CreateOauthToken creates or replaces an MCP OAuth token row, any auth_mode
+// alike (shared/user/vk/session/admin). Upserts by looking up any existing
+// row for the same binding and reusing its ID, mirroring reconcileVKDirectTokensDB's
+// row-locked read-then-write discipline against the same table:
+//   - shared: (auth_mode='shared', mcp_client_id) — matches the
+//     idx_mcp_oauth_tokens_shared_mcp partial unique index. A shared row with
+//     no mcp_client_id yet (still-linking bootstrap) always inserts fresh —
+//     that empty-mcp_client_id case is deliberately excluded from the index
+//     too, so multiple such rows can coexist without a collision.
+//   - per-identity: (auth_mode, identity_column, mcp_client_id) — matches
+//     idx_mcp_oauth_tokens_{user,vk,session}_mcp.
+//
+// Was two separate methods (a plain-insert CreateOauthToken for the shared
+// flow, an upserting CreateOauthUserToken for per-identity) until the shared
+// flow gained its own upsert need: reauthorizing an already-authorized
+// shared client must update its existing token row, not insert a duplicate
+// that would violate the partial unique index above.
+//
+// SELECT + CREATE/UPDATE must be atomic under concurrent same-binding races,
+// so this always runs inside a transaction: its own (opened here) when
+// called standalone, or the caller-supplied tx when it needs to participate
+// in a larger atomic operation — same tx ...*gorm.DB convention as
+// DeleteVirtualKeyMCPConfig.
 func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error {
-	db := s.DB()
-	if len(tx) > 0 {
-		db = tx[0]
+	if len(tx) == 0 {
+		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			return s.CreateOauthToken(ctx, token, transaction)
+		})
 	}
-	result := db.WithContext(ctx).Create(token)
-	if result.Error != nil {
-		return fmt.Errorf("failed to create oauth token: %w", result.Error)
+	txDB := tx[0]
+
+	var existing tables.TableMCPOauthToken
+	var lookupErr error
+	switch {
+	case token.AuthMode == "shared" && token.MCPClientID != "":
+		lookupErr = dbForUpdate(txDB).
+			Where("auth_mode = ? AND mcp_client_id = ?", "shared", token.MCPClientID).
+			First(&existing).Error
+	case token.AuthMode == "admin" && token.MCPClientID != "":
+		lookupErr = dbForUpdate(txDB).
+			Where("auth_mode = ? AND mcp_client_id = ?", "admin", token.MCPClientID).
+			First(&existing).Error
+	case token.UserID != nil && *token.UserID != "":
+		lookupErr = dbForUpdate(txDB).
+			Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", token.AuthMode, *token.UserID, token.MCPClientID).
+			First(&existing).Error
+	case token.VirtualKeyID != nil && *token.VirtualKeyID != "":
+		lookupErr = dbForUpdate(txDB).
+			Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", token.AuthMode, *token.VirtualKeyID, token.MCPClientID).
+			First(&existing).Error
+	case token.SessionID != "":
+		lookupErr = dbForUpdate(txDB).
+			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", token.AuthMode, token.SessionID, token.MCPClientID).
+			First(&existing).Error
+	default:
+		lookupErr = gorm.ErrRecordNotFound
+	}
+
+	if lookupErr == nil {
+		token.ID = existing.ID // reuse the row so the unique index sees an UPDATE, not INSERT
+		// Preserve the original binding's creation time; the row
+		// represents the binding, not the individual credential, so a
+		// re-auth shouldn't move CreatedAt forward.
+		token.CreatedAt = existing.CreatedAt
+		// Stamp LastRefreshedAt so the dashboard surfaces "refreshed Xm
+		// ago" after a successful re-auth (this path is only hit on
+		// upsert, which always means new credentials replacing old).
+		now := time.Now()
+		token.LastRefreshedAt = &now
+		return txDB.Save(token).Error
+	}
+	if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("failed to query oauth token: %w", lookupErr)
+	}
+
+	if err := txDB.Create(token).Error; err != nil {
+		return fmt.Errorf("failed to create oauth token: %w", err)
 	}
 	return nil
 }
@@ -6675,6 +6743,29 @@ func (s *RDBConfigStore) GetOauthUserSessionByID(ctx context.Context, id string)
 	return &flow, nil
 }
 
+// GetOauthFlowByID is GetOauthUserSessionByID's admin-mode counterpart:
+// looks up a flow_mode='admin' row by its own ID. Kept as a separate,
+// separately-scoped method rather than widening GetOauthUserSessionByID's
+// filter, the same reason ClaimOauthFlowByState is kept separate from
+// ClaimOauthUserSessionByState (see that pair's doc comments): a
+// caller-supplied flow ID fed to a per-user-facing endpoint must never be
+// able to reach an admin-mode row's PKCE/state by guessing or reusing its
+// ID. This method exists for the reverse direction: an admin-facing
+// endpoint (MCP client reauthorize) building the real upstream authorize
+// URL for an admin-mode row, and must never be called from anywhere a
+// caller-supplied ID could originate from an untrusted per-user context.
+func (s *RDBConfigStore) GetOauthFlowByID(ctx context.Context, id string) (*tables.TableMCPOauthFlow, error) {
+	var flow tables.TableMCPOauthFlow
+	result := s.DB().WithContext(ctx).Where("id = ? AND flow_mode = ?", id, "admin").First(&flow)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth flow: %w", result.Error)
+	}
+	return &flow, nil
+}
+
 // GetOauthUserSessionByState is a non-mutating lookup by state token, any
 // status or flow_mode. Used by callback-error handling to classify and mark
 // a flow failed without consuming it the way Claim*ByState does.
@@ -6754,13 +6845,17 @@ func (s *RDBConfigStore) claimOauthFlowByStateAndModes(ctx context.Context, stat
 // bound to (mode, identity, mcp_client_id). This is the canonical lookup at
 // flow-init time: there's exactly one flow row per binding, and reauth always
 // updates it in place rather than inserting a new one. mode is always one of
-// the per-identity modes here (the admin flow has no identity binding to
-// look up by — every InitiateOAuthFlow call mints a fresh row instead).
+// the per-identity modes here (including MCPAuthModeAdmin as of the MCP client
+// reauthorize endpoint: scoped by flow_mode='admin' + mcp_client_id alone,
+// no identity column).
 //
 // identity per mode: AuthModeUser=user_id, AuthModeVK=virtual_key_id,
 // AuthModeSession=raw session token (hashed for the lookup column).
 func (s *RDBConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthFlow, error) {
-	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
+	if strings.TrimSpace(mcpClientID) == "" {
+		return nil, nil
+	}
+	if mode != schemas.MCPAuthModeAdmin && strings.TrimSpace(identity) == "" {
 		return nil, nil
 	}
 	q := s.DB().WithContext(ctx).Where("mcp_client_id = ?", mcpClientID)
@@ -6771,6 +6866,8 @@ func (s *RDBConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx conte
 		q = q.Where("virtual_key_id = ?", identity)
 	case schemas.MCPAuthModeSession:
 		q = q.Where("session_id = ?", identity)
+	case schemas.MCPAuthModeAdmin:
+		q = q.Where("flow_mode = ?", "admin")
 	default:
 		return nil, fmt.Errorf("unknown auth mode: %s", mode)
 	}
@@ -6813,61 +6910,6 @@ var perUserOauthAuthModes = []string{
 	string(schemas.MCPAuthModeUser),
 	string(schemas.MCPAuthModeVK),
 	string(schemas.MCPAuthModeSession),
-}
-
-// CreateOauthUserToken creates or replaces a per-user OAuth token. Looks up
-// any existing row matching the populated identity column + MCP client and
-// reuses its ID, ensuring the partial-unique index never trips. SessionToken's
-// hash is set in BeforeSave; the upsert lookup uses the hash column to match
-// the unique index. Wrapped in a transaction so SELECT + CREATE/UPDATE is
-// atomic under concurrent same-identity races. Every lookup branch also
-// pins auth_mode = token.AuthMode: shared-mode rows never populate an
-// identity column so they couldn't match anyway, but this keeps the upsert
-// from ever reusing a row of a different mode if that invariant is ever
-// violated (same defense-in-depth convention as reconcileVKDirectTokensDB).
-func (s *RDBConfigStore) CreateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing tables.TableMCPOauthToken
-		var lookupErr error
-		switch {
-		case token.UserID != nil && *token.UserID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", token.AuthMode, *token.UserID, token.MCPClientID).
-				First(&existing).Error
-		case token.VirtualKeyID != nil && *token.VirtualKeyID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND virtual_key_id = ? AND mcp_client_id = ?", token.AuthMode, *token.VirtualKeyID, token.MCPClientID).
-				First(&existing).Error
-		case token.SessionID != "":
-			lookupErr = dbForUpdate(tx).
-				Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ?", token.AuthMode, token.SessionID, token.MCPClientID).
-				First(&existing).Error
-		default:
-			lookupErr = gorm.ErrRecordNotFound
-		}
-
-		if lookupErr == nil {
-			token.ID = existing.ID // reuse the row so unique index sees an UPDATE, not INSERT
-			// Preserve the original binding's creation time; the row represents
-			// the (identity, mcp_client) link, not the individual credential, so
-			// a re-auth shouldn't move CreatedAt forward.
-			token.CreatedAt = existing.CreatedAt
-			// Stamp LastRefreshedAt so the dashboard surfaces "refreshed Xm ago"
-			// after a successful re-auth (this path is only hit on upsert, which
-			// always means new credentials replacing old).
-			now := time.Now()
-			token.LastRefreshedAt = &now
-			return tx.Save(token).Error
-		}
-		if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("failed to query oauth user token: %w", lookupErr)
-		}
-
-		if err := tx.Create(token).Error; err != nil {
-			return fmt.Errorf("failed to create oauth user token: %w", err)
-		}
-		return nil
-	})
 }
 
 // UpdateOauthUserToken updates an existing per-user OAuth token. Rejects
@@ -7332,8 +7374,8 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, 
 }
 
 // UpsertMCPPerUserHeaderCredential atomically inserts or updates a credential
-// row keyed by (auth_mode, identity, mcp_client_id). Mirrors
-// CreateOauthUserToken — the row represents the (identity, mcp_client)
+// row keyed by (auth_mode, identity, mcp_client_id). Mirrors CreateOauthToken's
+// per-identity upsert branches — the row represents the (identity, mcp_client)
 // binding, so a re-submit preserves CreatedAt.
 func (s *RDBConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
