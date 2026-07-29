@@ -47,7 +47,7 @@
 		"@tanstack/react-router": "1.168.10",
 		"@tanstack/react-table": "8.21.3",
 		"@xyflow/react": "12.10.1",
-		"axios": "1.16.1",
+		"axios": "1.18.1",
 		"canvas-confetti": "1.9.3",
 		"class-variance-authority": "0.7.1",
 		"clsx": "2.1.1",
