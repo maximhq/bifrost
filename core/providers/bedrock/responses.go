@@ -1235,7 +1235,9 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				// Handle signature deltas
 				if reasoningDelta.Signature != nil {
 					// Record the signature so the terminal events and the final
-					// snapshot can carry it for replay.
+					// snapshot can carry it for replay. The Converse delta union
+					// carries the signature as one value, so this assigns rather
+					// than accumulates.
 					state.ReasoningSignatures[outputIndex] = *reasoningDelta.Signature
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
