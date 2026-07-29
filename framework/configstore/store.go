@@ -495,8 +495,9 @@ type ConfigStore interface {
 	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error
 
 	// OAuth token CRUD. TableMCPOauthToken now holds every holder of an MCP
-	// OAuth credential (auth_mode 'shared' | 'user' | 'vk' | 'session'), not
-	// just the shared-client credential the method names below still imply.
+	// OAuth credential (auth_mode 'shared' | 'user' | 'vk' | 'session' |
+	// 'admin'), not just the shared-client credential the method names below
+	// still imply.
 	//
 	// GetOauthTokenByID is not filtered by auth_mode: callers always feed it
 	// an ID already resolved from a trusted internal lookup (a token row just
@@ -518,6 +519,19 @@ type ConfigStore interface {
 	// shared-only — per-user tokens otherwise refresh lazily/inline on
 	// lookup via GetOauthUserTokenByMode).
 	GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error)
+	// CreateOauthToken creates or replaces an MCP OAuth token row, any
+	// auth_mode alike (shared/user/vk/session/admin). Upserts by looking up
+	// any existing row for the same binding (mcp_client_id alone for shared
+	// and admin; identity column + mcp_client_id for per-identity modes) and
+	// reusing its ID, matching this table's partial unique indexes. Was two separate
+	// methods (a plain-insert CreateOauthToken for the shared flow, an
+	// upserting CreateOauthUserToken for per-identity) until the shared flow
+	// gained its own upsert need too: reauthorizing an already-authorized
+	// shared client must update its existing token row, not insert a
+	// duplicate. Accepts an optional caller-supplied transaction (tx) so it
+	// can participate atomically in a larger operation (e.g. CompleteOAuthFlow
+	// linking the new/updated token to its oauth_config in the same
+	// transaction) instead of always committing on its own.
 	CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error
 	UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error
 	// RefreshOauthTokenFieldsIfActive persists a successful refresh's new
@@ -544,6 +558,11 @@ type ConfigStore interface {
 	// used for the token-table merge (GetOauthTokenByID etc. kept their
 	// names when retargeted to the unified table).
 	GetOauthUserSessionByID(ctx context.Context, id string) (*tables.TableMCPOauthFlow, error)
+	// GetOauthFlowByID is GetOauthUserSessionByID's admin-mode counterpart:
+	// looks up a flow_mode='admin' row by its own ID. See GetOauthUserSessionByID's
+	// implementation doc for why these stay separate (a per-user-facing
+	// caller-supplied-ID lookup must never reach an admin-mode row).
+	GetOauthFlowByID(ctx context.Context, id string) (*tables.TableMCPOauthFlow, error)
 	// GetOauthUserSessionByState is a non-mutating lookup by state, any
 	// status or flow_mode. Unlike ClaimOauthUserSessionByState /
 	// ClaimOauthFlowByState it does not gate on status='pending' or flip it
@@ -578,15 +597,6 @@ type ConfigStore interface {
 	// AuthModeUser, the VK row ID for AuthModeVK, and the session ID for
 	// AuthModeSession.
 	GetOauthUserTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPOauthToken, error)
-	// CreateOauthUserToken creates or replaces a per-user OAuth token row.
-	// Deliberately kept separate from CreateOauthToken (used by the shared
-	// flow) rather than merged into one method: it upserts by looking up any
-	// existing row for the same (identity, mcp_client) binding and reusing
-	// its ID, while CreateOauthToken is (and, for this table merge, remains)
-	// a plain insert — the shared flow has never needed upsert semantics.
-	// Folding them into one function would silently give the shared path
-	// upsert behavior it doesn't ask for.
-	CreateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error
 	UpdateOauthUserToken(ctx context.Context, token *tables.TableMCPOauthToken) error
 	DeleteOauthUserToken(ctx context.Context, id string) error
 	// DeleteOauthUserSession hard-deletes a single flow row by primary key.
