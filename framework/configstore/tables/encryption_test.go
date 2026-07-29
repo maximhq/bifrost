@@ -1664,10 +1664,6 @@ func forEachDB(t *testing.T) []namedDB {
 // text type which has no length limit.
 // ============================================================================
 
-func TestEncryptedColumns_AzureAPIVersion_FitsAfterWidening(t *testing.T) {
-	t.Skip("azure_api_version column has been removed from AzureKeyConfig")
-}
-
 func TestEncryptedColumns_VertexRegion_FitsAfterWidening(t *testing.T) {
 	// "northamerica-northeast1" is 23 chars — encrypts to ~68 chars.
 	// Longer regions would have overflowed the old varchar(100).
