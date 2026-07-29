@@ -2186,57 +2186,41 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 
 // ResetExpiredBudgets checks and resets budgets that have exceeded their reset duration in database
 func (gs *LocalGovernanceStore) ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error {
-	// Persist to database if any resets occurred using direct UPDATE to avoid overwriting config fields
-	if len(resetBudgets) > 0 && gs.configStore != nil {
+	// Persist to database if any resets occurred using direct UPDATE to avoid
+	// overwriting config fields. Both statements share the strict "<" guard so a
+	// snapshot that lost the override race cannot advance last_reset on its own.
+	if gs.configStore == nil {
+		return nil
+	}
+	rows := make([]budgetDumpRow, 0, len(resetBudgets))
+	for _, budget := range resetBudgets {
+		if budget == nil {
+			continue
+		}
+		rows = append(rows, budgetDumpRow{
+			ID:                      budget.ID,
+			CurrentUsage:            budget.CurrentUsage,
+			LastReset:               budget.LastReset,
+			OverrideAmount:          budget.OverrideAmount,
+			OverrideMode:            budget.OverrideMode,
+			OverrideCyclesRemaining: budget.OverrideCyclesRemaining,
+			OverrideCyclesTotal:     budget.OverrideCyclesTotal,
+			OverrideAnchorReset:     budget.OverrideAnchorReset,
+		})
+	}
+	// Stable ID order keeps concurrent writers taking row locks in the same
+	// sequence, which is what keeps them deadlock-free rather than merely lucky.
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+
+	// Chunked so row locks are released between batches instead of being held
+	// for every reset row at once, and so each batch costs one round trip
+	// rather than two per row. A batch that fails leaves earlier batches
+	// committed, which is safe: every write is guarded and monotonic, so the
+	// next sweep re-applies whatever did not land.
+	for start := 0; start < len(rows); start += dumpBatchSize {
+		end := min(start+dumpBatchSize, len(rows))
 		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for _, budget := range resetBudgets {
-				// Persist the finite-override lifecycle first, guarded on last_reset:
-				// a snapshot that lost the persistence race to a newer reset must not
-				// restore older lifecycle state (extra override cycles would survive a
-				// restart otherwise). This must run BEFORE the usage write below, which
-				// advances last_reset and would close the guard within this transaction.
-				overrideResult := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableBudget{}).
-					Where("id = ? AND last_reset < ?", budget.ID, budget.LastReset).
-					Updates(map[string]interface{}{
-						"override_amount":           budget.OverrideAmount,
-						"override_mode":             budget.OverrideMode,
-						"override_cycles_remaining": budget.OverrideCyclesRemaining,
-						"override_cycles_total":     budget.OverrideCyclesTotal,
-						"override_anchor_reset":     budget.OverrideAnchorReset,
-					})
-
-				if overrideResult.Error != nil {
-					return fmt.Errorf("failed to reset budget override lifecycle %s: %w", budget.ID, overrideResult.Error)
-				}
-				if overrideResult.RowsAffected == 0 {
-					gs.logger.Debug("skipping stale override reset persistence for budget %s: database already holds newer reset state", budget.ID)
-				}
-
-				// Direct UPDATE only resets current_usage and last_reset
-				// This prevents overwriting max_limit or reset_duration that may have been changed by other nodes/requests
-				//
-				// Guarded on last_reset for the same reason as the override write
-				// above, and the two guards must match: without it a snapshot
-				// that lost the override race still advanced last_reset, leaving
-				// the row with a newer boundary but older override state, which
-				// is precisely the split that lets a window's override cycle go
-				// unspent. Either both statements land or neither does.
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableBudget{}).
-					Where("id = ? AND last_reset < ?", budget.ID, budget.LastReset).
-					Updates(map[string]interface{}{
-						"current_usage": budget.CurrentUsage,
-						"last_reset":    budget.LastReset,
-					})
-
-				if result.Error != nil {
-					return fmt.Errorf("failed to reset budget %s: %w", budget.ID, result.Error)
-				}
-			}
-			return nil
+			return gs.writeBudgetBatch(ctx, tx, rows[start:end], "<")
 		}); err != nil {
 			return fmt.Errorf("failed to persist budget resets to database: %w", err)
 		}
@@ -2247,53 +2231,276 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgets(ctx context.Context, resetBu
 
 // ResetExpiredRateLimits performs background reset of expired rate limits for both provider-level and VK-level in database
 func (gs *LocalGovernanceStore) ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error {
-	if len(resetRateLimits) > 0 && gs.configStore != nil {
-		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for _, rateLimit := range resetRateLimits {
-				// Each dimension is written by its own statement guarded on its
-				// own boundary column. Deciding what to write by testing whether
-				// the in-memory counter is still zero was wrong: under sustained
-				// traffic a request bumps the counter back above zero between the
-				// in-memory reset and this write, so the whole field pair was
-				// dropped, including the boundary column. The database boundary
-				// then never advanced and the counter read as perpetually due on
-				// the next restart.
-				//
-				// The boundary guard is the correct expression of "this snapshot
-				// advanced the window", and it holds regardless of racing usage.
-				// A dimension that was not reset in this sweep is a no-op because
-				// its in-memory boundary already equals the persisted one.
-				writeDimension := func(durationSet bool, usageColumn, boundaryColumn string, boundary time.Time) error {
-					if !durationSet {
-						return nil
-					}
-					// Direct UPDATE only resets usage and last_reset fields
-					// This prevents overwriting max_limit or reset_duration that may have been changed by other nodes/requests
-					result := tx.WithContext(ctx).
-						Session(&gorm.Session{SkipHooks: true}).
-						Model(&configstoreTables.TableRateLimit{}).
-						Where("id = ? AND "+boundaryColumn+" < ?", rateLimit.ID, boundary).
-						Updates(map[string]interface{}{
-							usageColumn:    0,
-							boundaryColumn: boundary,
-						})
-					if result.Error != nil {
-						return fmt.Errorf("failed to reset rate limit %s %s: %w", rateLimit.ID, boundaryColumn, result.Error)
-					}
-					return nil
-				}
-
-				if err := writeDimension(rateLimit.TokenResetDuration != nil, "token_current_usage", "token_last_reset", rateLimit.TokenLastReset); err != nil {
-					return err
-				}
-				if err := writeDimension(rateLimit.RequestResetDuration != nil, "request_current_usage", "request_last_reset", rateLimit.RequestLastReset); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			return fmt.Errorf("failed to persist rate limit resets to database: %w", err)
+	if gs.configStore == nil {
+		return nil
+	}
+	// Token and request counters expire independently, so the batches are built
+	// per dimension. A rate limit with no duration configured for a dimension
+	// contributes nothing to that dimension's batch.
+	var tokenRows, requestRows []rateLimitBoundaryRow
+	for _, rateLimit := range resetRateLimits {
+		if rateLimit == nil {
+			continue
 		}
+		if rateLimit.TokenResetDuration != nil {
+			tokenRows = append(tokenRows, rateLimitBoundaryRow{ID: rateLimit.ID, Boundary: rateLimit.TokenLastReset})
+		}
+		if rateLimit.RequestResetDuration != nil {
+			requestRows = append(requestRows, rateLimitBoundaryRow{ID: rateLimit.ID, Boundary: rateLimit.RequestLastReset})
+		}
+	}
+	// Stable ID order within each dimension, and a fixed dimension order, so
+	// concurrent writers acquire row locks in the same sequence.
+	sort.Slice(tokenRows, func(i, j int) bool { return tokenRows[i].ID < tokenRows[j].ID })
+	sort.Slice(requestRows, func(i, j int) bool { return requestRows[i].ID < requestRows[j].ID })
+
+	dimensions := []struct {
+		usageColumn    string
+		boundaryColumn string
+		rows           []rateLimitBoundaryRow
+	}{
+		{"token_current_usage", "token_last_reset", tokenRows},
+		{"request_current_usage", "request_last_reset", requestRows},
+	}
+	for _, dimension := range dimensions {
+		for start := 0; start < len(dimension.rows); start += dumpBatchSize {
+			end := min(start+dumpBatchSize, len(dimension.rows))
+			batch := dimension.rows[start:end]
+			if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+				return gs.resetRateLimitDimensionBatch(ctx, tx, dimension.usageColumn, dimension.boundaryColumn, batch)
+			}); err != nil {
+				return fmt.Errorf("failed to persist rate limit resets to database: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// dumpBatchSize bounds both how many rows one batched UPDATE folds together and
+// how many rows a single dump transaction covers.
+//
+// The dump used to issue one statement per row inside one transaction spanning
+// the whole table. That cost a network round trip per row, which is invisible
+// against a local database and ruinous when the leader and the database sit in
+// different regions, and it held every row lock until the sweep committed, so an
+// interactive virtual key save could block for the length of the entire sweep.
+// Batching collapses the round trips; chunking bounds how long any row stays
+// locked.
+const dumpBatchSize = 500
+
+// rateLimitDumpRow is one rate limit's persisted counter state for a dump write.
+type rateLimitDumpRow struct {
+	ID                  string
+	TokenCurrentUsage   int64
+	TokenLastReset      time.Time
+	RequestCurrentUsage int64
+	RequestLastReset    time.Time
+}
+
+// budgetDumpRow is one budget's persisted usage and override state for a dump write.
+type budgetDumpRow struct {
+	ID                      string
+	CurrentUsage            float64
+	LastReset               time.Time
+	OverrideAmount          float64
+	OverrideMode            configstoreTables.BudgetOverrideMode
+	OverrideCyclesRemaining int
+	OverrideCyclesTotal     int
+	OverrideAnchorReset     *time.Time
+}
+
+// isDumpDeadlock reports whether a dump error is a database deadlock. In a
+// multi-node setup that simply means another node wrote the same rows first;
+// this node's usage is still held in memory and in the gossip baselines, so the
+// next cycle persists it.
+func isDumpDeadlock(err error) bool {
+	errStr := err.Error()
+	return strings.Contains(errStr, "deadlock") ||
+		strings.Contains(errStr, "40P01") ||
+		strings.Contains(errStr, "1213")
+}
+
+// supportsBatchedDump reports whether the dialect supports the
+// UPDATE ... FROM (VALUES ...) form the batched writes use. Only PostgreSQL
+// does here; every other dialect takes the per-row fallback.
+func supportsBatchedDump(tx *gorm.DB) bool {
+	return tx.Dialector.Name() == "postgres"
+}
+
+// dumpRateLimitBatch persists one batch of rate-limit counters, as a single
+// multi-row statement on PostgreSQL and as per-row updates elsewhere.
+func (gs *LocalGovernanceStore) dumpRateLimitBatch(ctx context.Context, tx *gorm.DB, batch []rateLimitDumpRow) error {
+	if !supportsBatchedDump(tx) {
+		for _, row := range batch {
+			// Direct UPDATE only touches usage fields, so a concurrent config
+			// change to max_limit or reset_duration is never clobbered.
+			if err := tx.WithContext(ctx).
+				Session(&gorm.Session{SkipHooks: true}).
+				Model(&configstoreTables.TableRateLimit{}).
+				Where("id = ?", row.ID).
+				Updates(map[string]interface{}{
+					"token_current_usage":   row.TokenCurrentUsage,
+					"token_last_reset":      row.TokenLastReset,
+					"request_current_usage": row.RequestCurrentUsage,
+					"request_last_reset":    row.RequestLastReset,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to dump rate limit %s: %w", row.ID, err)
+			}
+		}
+		return nil
+	}
+
+	var sb strings.Builder
+	args := make([]any, 0, len(batch)*5)
+	sb.WriteString("UPDATE " + configstoreTables.TableRateLimit{}.TableName() + " AS t SET " +
+		"token_current_usage = v.tcu, token_last_reset = v.tlr, " +
+		"request_current_usage = v.rcu, request_last_reset = v.rlr FROM (VALUES ")
+	for i, row := range batch {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString("(?::varchar,?::bigint,?::timestamptz,?::bigint,?::timestamptz)")
+		args = append(args, row.ID, row.TokenCurrentUsage, row.TokenLastReset, row.RequestCurrentUsage, row.RequestLastReset)
+	}
+	sb.WriteString(") AS v(id, tcu, tlr, rcu, rlr) WHERE t.id = v.id")
+	if err := tx.WithContext(ctx).Exec(sb.String(), args...).Error; err != nil {
+		return fmt.Errorf("failed to dump %d rate limits: %w", len(batch), err)
+	}
+	return nil
+}
+
+// writeBudgetBatch persists one batch of budget override state and usage counters.
+//
+// The override write runs first and is guarded on a strictly older last_reset,
+// exactly as the per-row path was: it must only fire when this node performed a
+// reset the database has not seen. The usage write advances last_reset and so
+// would close that guard if it ran first.
+//
+// usageGuard is the comparison the usage write comes under and differs by
+// caller. The dump passes "<=" because in steady state the persisted boundary
+// equals the in-memory one, and "<" would match zero rows so usage would never
+// persist at all. The reset path passes "<" so that its two statements share one
+// guard: a snapshot that lost the override race must not advance last_reset on
+// its own, which is exactly the split that lets a window's override cycle go
+// unspent.
+func (gs *LocalGovernanceStore) writeBudgetBatch(ctx context.Context, tx *gorm.DB, batch []budgetDumpRow, usageGuard string) error {
+	if !supportsBatchedDump(tx) {
+		for _, row := range batch {
+			if err := tx.WithContext(ctx).
+				Session(&gorm.Session{SkipHooks: true}).
+				Model(&configstoreTables.TableBudget{}).
+				Where("id = ? AND last_reset < ?", row.ID, row.LastReset).
+				Updates(map[string]interface{}{
+					"override_amount":           row.OverrideAmount,
+					"override_mode":             row.OverrideMode,
+					"override_cycles_remaining": row.OverrideCyclesRemaining,
+					"override_cycles_total":     row.OverrideCyclesTotal,
+					"override_anchor_reset":     row.OverrideAnchorReset,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to update budget override lifecycle %s: %w", row.ID, err)
+			}
+			if err := tx.WithContext(ctx).
+				Session(&gorm.Session{SkipHooks: true}).
+				Model(&configstoreTables.TableBudget{}).
+				Where("id = ? AND last_reset "+usageGuard+" ?", row.ID, row.LastReset).
+				Updates(map[string]interface{}{
+					"current_usage": row.CurrentUsage,
+					"last_reset":    row.LastReset,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to update budget %s: %w", row.ID, err)
+			}
+		}
+		return nil
+	}
+
+	table := configstoreTables.TableBudget{}.TableName()
+
+	var overrideSQL strings.Builder
+	overrideArgs := make([]any, 0, len(batch)*7)
+	overrideSQL.WriteString("UPDATE " + table + " AS t SET " +
+		"override_amount = v.oa, override_mode = v.om, override_cycles_remaining = v.ocr, " +
+		"override_cycles_total = v.oct, override_anchor_reset = v.oar FROM (VALUES ")
+	for i, row := range batch {
+		if i > 0 {
+			overrideSQL.WriteString(",")
+		}
+		overrideSQL.WriteString("(?::varchar,?::double precision,?::varchar,?::integer,?::integer,?::timestamptz,?::timestamptz)")
+		overrideArgs = append(overrideArgs, row.ID, row.OverrideAmount, string(row.OverrideMode),
+			row.OverrideCyclesRemaining, row.OverrideCyclesTotal, row.OverrideAnchorReset, row.LastReset)
+	}
+	overrideSQL.WriteString(") AS v(id, oa, om, ocr, oct, oar, lr) WHERE t.id = v.id AND t.last_reset < v.lr")
+	if err := tx.WithContext(ctx).Exec(overrideSQL.String(), overrideArgs...).Error; err != nil {
+		return fmt.Errorf("failed to update budget override lifecycle for %d budgets: %w", len(batch), err)
+	}
+
+	var usageSQL strings.Builder
+	usageArgs := make([]any, 0, len(batch)*3)
+	usageSQL.WriteString("UPDATE " + table + " AS t SET current_usage = v.cu, last_reset = v.lr FROM (VALUES ")
+	for i, row := range batch {
+		if i > 0 {
+			usageSQL.WriteString(",")
+		}
+		usageSQL.WriteString("(?::varchar,?::double precision,?::timestamptz)")
+		usageArgs = append(usageArgs, row.ID, row.CurrentUsage, row.LastReset)
+	}
+	usageSQL.WriteString(") AS v(id, cu, lr) WHERE t.id = v.id AND t.last_reset " + usageGuard + " v.lr")
+	if err := tx.WithContext(ctx).Exec(usageSQL.String(), usageArgs...).Error; err != nil {
+		return fmt.Errorf("failed to update %d budgets: %w", len(batch), err)
+	}
+	return nil
+}
+
+// rateLimitBoundaryRow is one rate limit's new boundary for a single counter
+// dimension. Token and request counters expire independently, so a reset batch
+// is built per dimension rather than per row.
+type rateLimitBoundaryRow struct {
+	ID       string
+	Boundary time.Time
+}
+
+// resetRateLimitDimensionBatch zeroes one counter dimension for a batch of rate
+// limits and advances its boundary column.
+//
+// The guard is the boundary column rather than a test of whether the in-memory
+// counter is still zero: under sustained traffic a request bumps the counter
+// back above zero between the in-memory reset and this write, which used to drop
+// the whole field pair including the boundary. A dimension that was not reset in
+// this sweep is a no-op because its in-memory boundary already equals the
+// persisted one.
+func (gs *LocalGovernanceStore) resetRateLimitDimensionBatch(ctx context.Context, tx *gorm.DB, usageColumn, boundaryColumn string, batch []rateLimitBoundaryRow) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	if !supportsBatchedDump(tx) {
+		for _, row := range batch {
+			if err := tx.WithContext(ctx).
+				Session(&gorm.Session{SkipHooks: true}).
+				Model(&configstoreTables.TableRateLimit{}).
+				Where("id = ? AND "+boundaryColumn+" < ?", row.ID, row.Boundary).
+				Updates(map[string]interface{}{
+					usageColumn:    0,
+					boundaryColumn: row.Boundary,
+				}).Error; err != nil {
+				return fmt.Errorf("failed to reset rate limit %s %s: %w", row.ID, boundaryColumn, err)
+			}
+		}
+		return nil
+	}
+
+	var sb strings.Builder
+	args := make([]any, 0, len(batch)*2)
+	sb.WriteString("UPDATE " + configstoreTables.TableRateLimit{}.TableName() + " AS t SET " +
+		usageColumn + " = 0, " + boundaryColumn + " = v.b FROM (VALUES ")
+	for i, row := range batch {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString("(?::varchar,?::timestamptz)")
+		args = append(args, row.ID, row.Boundary)
+	}
+	sb.WriteString(") AS v(id, b) WHERE t.id = v.id AND t." + boundaryColumn + " < v.b")
+	if err := tx.WithContext(ctx).Exec(sb.String(), args...).Error; err != nil {
+		return fmt.Errorf("failed to reset %s for %d rate limits: %w", boundaryColumn, len(batch), err)
 	}
 	return nil
 }
@@ -2314,20 +2521,13 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 	// This covers rate limits from every source: virtual keys, model configs,
 	// providers, teams, customers, AND access profiles — whose IDs were
 	// previously missing, causing AP rate-limit usage to never reach the DB.
-	type rateLimitUpdate struct {
-		ID                  string
-		TokenCurrentUsage   int64
-		TokenLastReset      time.Time
-		RequestCurrentUsage int64
-		RequestLastReset    time.Time
-	}
-	var rateLimitUpdates []rateLimitUpdate
+	var rateLimitUpdates []rateLimitDumpRow
 	gs.rateLimits.Range(func(key, value interface{}) bool {
 		rateLimit, ok := value.(*configstoreTables.TableRateLimit)
 		if !ok || rateLimit == nil {
 			return true
 		}
-		update := rateLimitUpdate{
+		update := rateLimitDumpRow{
 			ID:                  rateLimit.ID,
 			TokenCurrentUsage:   rateLimit.TokenCurrentUsage,
 			TokenLastReset:      rateLimit.TokenLastReset,
@@ -2347,40 +2547,22 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 		return rateLimitUpdates[i].ID < rateLimitUpdates[j].ID
 	})
 
-	// Save all updated rate limits to database using direct UPDATE to avoid overwriting config fields
-	if len(rateLimitUpdates) > 0 && gs.configStore != nil {
+	// Save all updated rate limits to database using direct UPDATE to avoid overwriting config fields.
+	// Written in batches so row locks are released between chunks rather than
+	// held for the whole sweep, and so each chunk costs one round trip instead
+	// of one per row.
+	for start := 0; start < len(rateLimitUpdates); start += dumpBatchSize {
+		end := min(start+dumpBatchSize, len(rateLimitUpdates))
+		batch := rateLimitUpdates[start:end]
 		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			for _, update := range rateLimitUpdates {
-				// Direct UPDATE only updates usage fields
-				// This prevents overwriting max_limit or reset_duration that may have been changed by other nodes/requests
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableRateLimit{}).
-					Where("id = ?", update.ID).
-					Updates(map[string]interface{}{
-						"token_current_usage":   update.TokenCurrentUsage,
-						"token_last_reset":      update.TokenLastReset,
-						"request_current_usage": update.RequestCurrentUsage,
-						"request_last_reset":    update.RequestLastReset,
-					})
-
-				if result.Error != nil {
-					return fmt.Errorf("failed to dump rate limit %s: %w", update.ID, result.Error)
-				}
-			}
-			return nil
+			return gs.dumpRateLimitBatch(ctx, tx, batch)
 		}); err != nil {
-			// Check if error is a deadlock (SQLSTATE 40P01 for PostgreSQL, 1213 for MySQL)
-			errStr := err.Error()
-			isDeadlock := strings.Contains(errStr, "deadlock") ||
-				strings.Contains(errStr, "40P01") ||
-				strings.Contains(errStr, "1213")
-
-			if isDeadlock {
-				// Deadlock means another node is updating the same rows - this is fine!
-				// Our usage data will be synced via gossip and written in the next dump cycle
-				gs.logger.Debug("Rate limit dump encountered deadlock (another node is updating) - will retry next cycle")
-				return nil // Not a real error in multi-node setup
+			if isDumpDeadlock(err) {
+				// Another node wrote these rows first. Our usage is still in
+				// memory and in the gossip baselines, so skip this chunk and let
+				// the next cycle persist it.
+				gs.logger.Debug("Rate limit dump chunk encountered deadlock (another node is updating) - will retry next cycle")
+				continue
 			}
 			return fmt.Errorf("failed to dump rate limits to database: %w", err)
 		}
@@ -2408,92 +2590,44 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 		}
 		return true // continue iteration
 	})
-	if len(budgets) > 0 && gs.configStore != nil {
-		budgetIDs := make([]string, 0, len(budgets))
-		for id := range budgets {
-			budgetIDs = append(budgetIDs, id)
+	rows := make([]budgetDumpRow, 0, len(budgets))
+	for _, budget := range budgets {
+		// Fold this node's view of remote usage in before writing so every node
+		// persists the same cluster-wide total.
+		newUsage := budget.CurrentUsage
+		if baseline, exists := baselines[budget.ID]; exists {
+			newUsage += baseline
 		}
-		sort.Strings(budgetIDs)
+		rows = append(rows, budgetDumpRow{
+			ID:                      budget.ID,
+			CurrentUsage:            newUsage,
+			LastReset:               budget.LastReset,
+			OverrideAmount:          budget.OverrideAmount,
+			OverrideMode:            budget.OverrideMode,
+			OverrideCyclesRemaining: budget.OverrideCyclesRemaining,
+			OverrideCyclesTotal:     budget.OverrideCyclesTotal,
+			OverrideAnchorReset:     budget.OverrideAnchorReset,
+		})
+	}
+	// Stable ID order keeps concurrent dumpers taking row locks in the same
+	// sequence, which is what keeps them deadlock-free rather than merely lucky.
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+
+	// Written in batches so row locks are released between chunks rather than
+	// held for the whole sweep, and so each chunk costs one round trip instead
+	// of two per row.
+	for start := 0; start < len(rows); start += dumpBatchSize {
+		end := min(start+dumpBatchSize, len(rows))
+		batch := rows[start:end]
 		if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-			// Update each budget atomically using direct UPDATE to avoid deadlocks
-			// (SELECT + Save pattern causes deadlocks when multiple instances run concurrently)
-			for _, budgetID := range budgetIDs {
-				inMemoryBudget := budgets[budgetID]
-				// Calculate the new usage value
-				newUsage := inMemoryBudget.CurrentUsage
-				if baseline, exists := baselines[inMemoryBudget.ID]; exists {
-					newUsage += baseline
-				}
-
-				// The override state is flushed first under a monotonic last_reset
-				// guard: it only fires when this node performed a reset the database
-				// has not seen, which is exactly when its override snapshot is
-				// authoritative. An unguarded write would let a node with a stale
-				// in-memory override clobber a newer admin update every dump cycle.
-				// This must run BEFORE the usage write below, which advances
-				// last_reset and would close the guard within this transaction.
-				//
-				// The grant columns travel with the derived remaining count so a
-				// reader can never see one without the other, which would let it
-				// re-derive a different count from a half-written row.
-				overrideResult := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableBudget{}).
-					Where("id = ? AND last_reset < ?", inMemoryBudget.ID, inMemoryBudget.LastReset).
-					Updates(map[string]interface{}{
-						"override_amount":           inMemoryBudget.OverrideAmount,
-						"override_mode":             inMemoryBudget.OverrideMode,
-						"override_cycles_remaining": inMemoryBudget.OverrideCyclesRemaining,
-						"override_cycles_total":     inMemoryBudget.OverrideCyclesTotal,
-						"override_anchor_reset":     inMemoryBudget.OverrideAnchorReset,
-					})
-
-				if overrideResult.Error != nil {
-					return fmt.Errorf("failed to update budget override lifecycle %s: %w", inMemoryBudget.ID, overrideResult.Error)
-				}
-
-				// Direct UPDATE avoids read-then-write lock escalation that causes deadlocks
-				// Use Session with SkipHooks to avoid triggering BeforeSave hook validation
-				//
-				// Guarded so a stale snapshot cannot move the persisted boundary
-				// backwards. This statement writes last_reset, and the derived override
-				// count is a function of (anchor, last_reset), so a rewind re-opens a
-				// window the cluster already spent. Reachable on leader change: the old
-				// leader dumps boundary N+1, dies, and a follower still on N takes over
-				// and dumps before its own sweep catches up.
-				//
-				// The comparison must be <=, not <. In steady state the persisted
-				// boundary equals the in-memory one, so < would match zero rows and
-				// usage would never be persisted at all. <= lets an unchanged boundary
-				// through while still rejecting a rewind. A skipped write costs one dump
-				// tick: usage stays in memory and in the gossip baselines, and the next
-				// tick persists it once this node has swept to the newer boundary.
-				result := tx.WithContext(ctx).
-					Session(&gorm.Session{SkipHooks: true}).
-					Model(&configstoreTables.TableBudget{}).
-					Where("id = ? AND last_reset <= ?", inMemoryBudget.ID, inMemoryBudget.LastReset).
-					Updates(map[string]interface{}{
-						"current_usage": newUsage,
-						"last_reset":    inMemoryBudget.LastReset,
-					})
-
-				if result.Error != nil {
-					return fmt.Errorf("failed to update budget %s: %w", inMemoryBudget.ID, result.Error)
-				}
-			}
-			return nil
+			return gs.writeBudgetBatch(ctx, tx, batch, "<=")
 		}); err != nil {
-			// Check if error is a deadlock (SQLSTATE 40P01 for PostgreSQL, 1213 for MySQL)
-			errStr := err.Error()
-			isDeadlock := strings.Contains(errStr, "deadlock") ||
-				strings.Contains(errStr, "40P01") ||
-				strings.Contains(errStr, "1213")
-
-			if isDeadlock {
-				// Deadlock means another node is updating the same rows - this is fine!
-				// Our usage data will be synced via gossip and written in the next dump cycle
-				gs.logger.Debug("Budget dump encountered deadlock (another node is updating) - will retry next cycle")
-				return nil // Not a real error in multi-node setup
+			if isDumpDeadlock(err) {
+				// Another node wrote these rows first. Our usage is still in
+				// memory and in the gossip baselines, so skip this chunk and let
+				// the next cycle persist it.
+				gs.logger.Debug("Budget dump chunk encountered deadlock (another node is updating) - will retry next cycle")
+				continue
 			}
 			return fmt.Errorf("failed to dump budgets to database: %w", err)
 		}
