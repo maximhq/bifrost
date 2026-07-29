@@ -495,9 +495,8 @@ type ConfigStore interface {
 	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error
 
 	// OAuth token CRUD. TableMCPOauthToken now holds every holder of an MCP
-	// OAuth credential (auth_mode 'shared' | 'user' | 'vk' | 'session' |
-	// 'admin'), not just the shared-client credential the method names below
-	// still imply.
+	// OAuth credential (auth_mode 'shared' | 'user' | 'vk' | 'session' | 'admin'),
+	// not just the shared-client credential the method names below still imply.
 	//
 	// GetOauthTokenByID is not filtered by auth_mode: callers always feed it
 	// an ID already resolved from a trusted internal lookup (a token row just
@@ -513,10 +512,14 @@ type ConfigStore interface {
 	// needs to reach the row regardless of status to delete it. Returns
 	// (nil, nil) when no shared token exists for this config.
 	GetSharedOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error)
+	// GetAdminOauthTokenByConfigID is GetSharedOauthTokenByConfigID's
+	// admin-mode counterpart — resolves the retained bootstrap-verification
+	// token for a per_user_oauth client's periodic tool-discovery refresh.
+	GetAdminOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error)
 	// GetExpiringOauthTokens is filtered to authModes via `auth_mode IN
 	// (...)`. Backs TokenRefreshWorker, whose AuthModes field decides which
-	// holder types get proactive background refresh (defaults to
-	// shared-only — per-user tokens otherwise refresh lazily/inline on
+	// holder types get proactive background refresh (defaults to shared +
+	// admin — other per-user tokens otherwise refresh lazily/inline on
 	// lookup via GetOauthUserTokenByMode).
 	GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error)
 	// CreateOauthToken creates or replaces an MCP OAuth token row, any
@@ -551,6 +554,11 @@ type ConfigStore interface {
 	// leave a duplicate row behind (see GetSharedOauthTokenByConfigID's doc
 	// comment for why more than one can otherwise exist).
 	DeleteSharedOauthTokensByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error
+	// DeleteAdminOauthTokenByMCPClientID deletes the retained admin-mode
+	// token row for mcpClientID, if one exists — must run before retagging a
+	// fresh bootstrap-verification row to 'admin' for a client that already
+	// has one, so the retag can't collide with idx_mcp_oauth_tokens_admin_mcp.
+	DeleteAdminOauthTokenByMCPClientID(ctx context.Context, mcpClientID string) error
 
 	// Flow-row CRUD (mcp_oauth_flows / TableMCPOauthFlow). Method names keep
 	// their historical "OauthUserSession" naming even though the backing

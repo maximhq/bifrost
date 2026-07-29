@@ -179,7 +179,7 @@ func (t *TableOauthToken) AfterFind(tx *gorm.DB) error {
 // unused.
 type TableMCPOauthToken struct {
 	ID       string `gorm:"type:varchar(255);primaryKey" json:"id"`     // UUID
-	AuthMode string `gorm:"type:varchar(20);not null" json:"auth_mode"` // 'shared' | 'user' | 'vk' | 'session' — no DB-level CHECK constraint; validated at the application layer only, so adding a new mode later is a pure data change, not a migration
+	AuthMode string `gorm:"type:varchar(20);not null" json:"auth_mode"` // 'shared' | 'user' | 'vk' | 'session' | 'admin' — no DB-level CHECK constraint; validated at the application layer only, so adding a new mode later is a pure data change, not a migration
 	// MCPClientID and OauthConfigID are not DB-level NOT NULL: rows written by
 	// current code always populate both, but a pre-existing row whose owning
 	// oauth_config was deleted before the orphan-cleanup fix (see

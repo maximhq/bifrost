@@ -1,6 +1,8 @@
 package credstore
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -42,4 +44,10 @@ func (r *sharedOAuthResolver) ForceRefresh(ctx *schemas.BifrostContext, config *
 		return schemas.ErrOAuth2ProviderNotAvailable
 	}
 	return r.provider.ForceRefreshAccessToken(ctx, config)
+}
+
+// AdminConnectionHeaders is not supported for this auth type — there is no
+// separate "admin" credential distinct from the one used for real calls.
+func (r *sharedOAuthResolver) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+	return nil, fmt.Errorf("admin connection headers not supported for auth_type %q", "oauth")
 }
