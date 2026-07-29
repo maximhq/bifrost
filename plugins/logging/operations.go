@@ -1563,6 +1563,7 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 					ImageTokens:       usage.PromptTokensDetails.ImageTokens,
 					CachedReadTokens:  usage.PromptTokensDetails.CachedReadTokens,
 					CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
+					CachedWriteTokenDetails: usage.PromptTokensDetails.CachedWriteTokenDetails,
 				}
 			}
 			if usage.CompletionTokensDetails != nil {
