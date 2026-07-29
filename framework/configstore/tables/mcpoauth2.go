@@ -172,6 +172,16 @@ func (t *TableOauthToken) AfterFind(tx *gorm.DB) error {
 // populated per row, and AuthMode records which one (or 'shared', which
 // populates none of them).
 //
+// Mode nuance for per-user OAuth clients: 'admin' is their retained
+// client-level discovery credential, and a 'shared' row on such a client is
+// NOT a shared-client credential but a transient staging state. The OAuth
+// callback (CompleteOAuthFlow) writes every admin-consent token as 'shared'
+// because at that point the token is unverified and, during initial
+// creation, the MCP client row may not exist yet; the complete-oauth step
+// then either promotes it to 'admin' (PromoteSharedOauthTokenToAdmin) or
+// revokes it. Outside that seconds-long window, per-user clients hold no
+// 'shared' rows.
+//
 // Lives in mcp_oauth_tokens, a table created fresh by the migration that
 // introduced this struct — it does not alter or extend either of the two
 // tables ('oauth_tokens', 'oauth_user_tokens') this type's predecessors used
