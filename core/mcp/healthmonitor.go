@@ -257,7 +257,16 @@ func (chm *ClientHealthMonitor) updateClientState(state schemas.MCPConnectionSta
 	// Never overwrite a disabled state. DisableClient is authoritative: a health
 	// check tick or reconnect callback that races with DisableClient must not
 	// flip the client back to Disconnected/Connected.
-	if clientState.State == schemas.MCPConnectionStateDisabled {
+	//
+	// Same treatment for NeedsReauth: it means connectToMCPClient already
+	// determined the failure is a dead OAuth2 credential, not a routine
+	// connectivity blip. A ping success/failure on the same dead connection
+	// (or the Disconnected write performHealthCheck makes right before kicking
+	// off a reconnect attempt) must not silently flip that back to
+	// Connected/Disconnected — only a human reauthorizing the client (or a
+	// reconnect that succeeds because the credential was fixed) should move it
+	// out of this state.
+	if clientState.State == schemas.MCPConnectionStateDisabled || clientState.State == schemas.MCPConnectionStateNeedsReauth {
 		chm.manager.mu.Unlock()
 		return
 	}
