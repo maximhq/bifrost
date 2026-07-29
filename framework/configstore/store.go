@@ -512,12 +512,12 @@ type ConfigStore interface {
 	// needs to reach the row regardless of status to delete it. Returns
 	// (nil, nil) when no shared token exists for this config.
 	GetSharedOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error)
-	// GetExpiringOauthTokens is filtered to auth_mode='shared'. It backs the
-	// shared-only TokenRefreshWorker; per-user tokens refresh lazily/inline
-	// on lookup (GetOauthUserTokenByMode), and folding them into this
-	// proactive sweep is a deliberate later change, not a side effect of
-	// this table merge.
-	GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableMCPOauthToken, error)
+	// GetExpiringOauthTokens is filtered to authModes via `auth_mode IN
+	// (...)`. Backs TokenRefreshWorker, whose AuthModes field decides which
+	// holder types get proactive background refresh (defaults to
+	// shared-only — per-user tokens otherwise refresh lazily/inline on
+	// lookup via GetOauthUserTokenByMode).
+	GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error)
 	CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error
 	UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error
 	DeleteOauthToken(ctx context.Context, id string) error
