@@ -3695,9 +3695,57 @@
         },
         "keywords": {
           "$ref": "#/$defs/complexity_analyzer_keywords"
+        },
+        "semantic": {
+          "$ref": "#/$defs/complexity_semantic_config"
         }
       },
       "required": ["tier_boundaries", "keywords"],
+      "additionalProperties": false
+    },
+    "complexity_semantic_config": {
+      "type": "object",
+      "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the semantic classifier. The classifier embeds the analyzer's shared per-tier keyword lists as its exemplars.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider used to generate embeddings for complexity classification"
+        },
+        "embedding_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model used to generate embeddings for complexity classification"
+        },
+        "timeout": {
+          "description": "Per-request embedding timeout (duration string like '100ms', or milliseconds as a number; default: 100ms). On timeout the fallback classifier is used.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$"
+            },
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          ]
+        },
+        "fallback": {
+          "type": "string",
+          "enum": ["lexical", "none"],
+          "description": "Classifier used when semantic classification is unavailable or exceeds its timeout (default: lexical)"
+        },
+        "count_toward_budgets": {
+          "type": "boolean",
+          "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"
+        },
+        "vector_store": {
+          "type": "string",
+          "enum": ["auto", "embedded", "external"],
+          "description": "Where exemplar embeddings are stored: 'embedded' uses the built-in chromem store, 'external' requires the configured vector_store section, 'auto' picks external when configured and embedded otherwise (default: embedded)"
+        }
+      },
+      "required": ["provider", "embedding_model"],
       "additionalProperties": false
     },
     "auth_config": {
