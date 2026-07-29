@@ -117,7 +117,7 @@ function MCPClientActionsMenu({
 				{hasUpdateAccess && (
 					<DropdownMenuItem
 						className="cursor-pointer"
-						disabled={isPerUserAuth || client.config.disabled || isReconnecting || client.state === "pending_verification"}
+						disabled={isPerUserAuth || client.config.disabled || isReconnecting || client.state === "pending_verification" || client.state === "needs_reauth"}
 						onSelect={(e) => {
 							e.preventDefault();
 							onReconnect(client);
@@ -644,8 +644,22 @@ export default function MCPClientsTable({
 													"-"
 												)}
 											</TableCell>
-											<TableCell>
-												<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
+											<TableCell onClick={(e) => e.stopPropagation()}>
+												{isPerUserAuth ? (
+													// Per-user clients never hold a shared upstream connection, so a
+													// connection-state badge here would be misleading: point to the
+													// per-user sessions this client actually has instead.
+													<Link
+														to="/workspace/mcp-sessions"
+														search={{ mcp_client_id: [c.config.client_id] }}
+														className="text-primary text-xs font-medium hover:underline"
+														data-testid={`mcp-client-view-sessions-${c.config.client_id}`}
+													>
+														View sessions
+													</Link>
+												) : (
+													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
+												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<Switch
