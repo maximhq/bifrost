@@ -70,12 +70,25 @@ function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): n
 	while ((match = re.exec(v)) !== null) {
 		const n = parseFloat(match[1]);
 		switch (match[2]) {
-			case "ns": total += n / 1e9; break;
-			case "us": case "µs": total += n / 1e6; break;
-			case "ms": total += n / 1e3; break;
-			case "s": total += n; break;
-			case "m": total += n * 60; break;
-			case "h": total += n * 3600; break;
+			case "ns":
+				total += n / 1e9;
+				break;
+			case "us":
+			case "µs":
+				total += n / 1e6;
+				break;
+			case "ms":
+				total += n / 1e3;
+				break;
+			case "s":
+				total += n;
+				break;
+			case "m":
+				total += n * 60;
+				break;
+			case "h":
+				total += n * 3600;
+				break;
 		}
 	}
 	return Math.ceil(total);
@@ -113,12 +126,7 @@ export default function MCPClientSheet({
 	const [vkConfigsDirty, setVKConfigsDirty] = useState(false);
 	const [allowedExtraHeadersRaw, setAllowedExtraHeadersRaw] = useState<string>((mcpClient.config.allowed_extra_headers || []).join(", "));
 	const [perUserHeaderKeysRaw, setPerUserHeaderKeysRaw] = useState<string>((mcpClient.config.per_user_header_keys || []).join(", "));
-	const [oauthFlow, setOauthFlow] = useState<{
-		authorizeUrl: string;
-		oauthConfigId: string;
-		mcpClientId: string;
-		isPerUserOauth?: boolean;
-	} | null>(null);
+	const [oauthScopesRaw, setOauthScopesRaw] = useState<string>((mcpClient.config.oauth_scopes || []).join(", "));
 	// Persists names for newly added VKs so they survive search result changes
 	const [localVKNames, setLocalVKNames] = useState<Record<string, string>>({});
 
@@ -138,6 +146,10 @@ export default function MCPClientSheet({
 		setPerUserHeaderKeysRaw((mcpClient.config.per_user_header_keys || []).join(", "));
 	}, [mcpClient.config.per_user_header_keys]);
 
+	useEffect(() => {
+		setOauthScopesRaw((mcpClient.config.oauth_scopes || []).join(", "));
+	}, [mcpClient.config.oauth_scopes]);
+
 	// Name lookup: server response names → names captured when a key was picked.
 	// Every row is one or the other, so the selector's results aren't needed here.
 	const vkNameByID = useMemo<Record<string, string>>(() => {
@@ -156,8 +168,7 @@ export default function MCPClientSheet({
 		],
 		[allToolNames],
 	);
-	const supportsOAuthCredentialUpdate = false;
-	// mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
+	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
 	const addVKConfig = ({ value: vkId, label }: { value: string; label: string }) => {
 		setLocalVKNames((prev) => ({ ...prev, [vkId]: label }));
@@ -205,7 +216,14 @@ export default function MCPClientSheet({
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
-				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
+				? {
+					client_id: mcpClient.config.oauth_client_id,
+					client_secret: mcpClient.config.oauth_client_secret,
+					authorize_url: mcpClient.config.oauth_authorize_url,
+					token_url: mcpClient.config.oauth_token_url,
+					registration_url: mcpClient.config.oauth_registration_url,
+					resource: mcpClient.config.oauth_resource,
+				}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
@@ -234,7 +252,14 @@ export default function MCPClientSheet({
 			tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
-				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
+				? {
+					client_id: mcpClient.config.oauth_client_id,
+					client_secret: mcpClient.config.oauth_client_secret,
+					authorize_url: mcpClient.config.oauth_authorize_url,
+					token_url: mcpClient.config.oauth_token_url,
+					registration_url: mcpClient.config.oauth_registration_url,
+					resource: mcpClient.config.oauth_resource,
+				}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
@@ -243,9 +268,25 @@ export default function MCPClientSheet({
 				}
 				: undefined,
 		});
-	}, [form, mcpClient]);
+	}, [form, mcpClient, supportsOAuthCredentialUpdate]);
 
-	const isDirty = form.formState.isDirty || vkConfigsDirty;
+	const initialOauthScopesRaw = (mcpClient.config.oauth_scopes || []).join(", ");
+	const oauthScopesDirty = oauthScopesRaw !== initialOauthScopesRaw;
+	const isDirty = form.formState.isDirty || vkConfigsDirty || oauthScopesDirty;
+	// dirtyFields tracks deep changes vs. the pre-populated default values —
+	// used both to gate the rotation warning below and, in onSubmit, to only
+	// rotate when the user actually changed a field. Every oauth_config field
+	// triggers the same rotation and reauth cascade server-side (not just
+	// client_id/client_secret), so any of them counts as "dirty" here.
+	const oauthCredentialsDirty = !!(
+		form.formState.dirtyFields.oauth_config?.client_id ||
+		form.formState.dirtyFields.oauth_config?.client_secret ||
+		form.formState.dirtyFields.oauth_config?.authorize_url ||
+		form.formState.dirtyFields.oauth_config?.token_url ||
+		form.formState.dirtyFields.oauth_config?.registration_url ||
+		form.formState.dirtyFields.oauth_config?.resource ||
+		oauthScopesDirty
+	);
 
 	const handleNavigate = useCallback(
 		(direction: "prev" | "next") => {
@@ -277,11 +318,26 @@ export default function MCPClientSheet({
 			}
 			const oauthClientID = data.oauth_config?.client_id;
 			const oauthClientSecret = data.oauth_config?.client_secret;
-			// Only rotate when the user actually changed a credential field.
-			// dirtyFields tracks deep changes vs. the pre-populated default values.
-			const oauthDirty = !!(form.formState.dirtyFields.oauth_config?.client_id || form.formState.dirtyFields.oauth_config?.client_secret);
-			const shouldRotateOAuthCredentials = supportsOAuthCredentialUpdate && oauthDirty;
-			const response = await updateMCPClient({
+			// Omitted (undefined) preserves the stored scopes; an explicit
+			// empty array clears them. Only send either when the user
+			// actually touched this field — otherwise an untouched-but-empty
+			// initial value would clear scopes nobody asked to change.
+			const oauthScopes = !oauthScopesDirty
+				? undefined
+				: oauthScopesRaw.trim()
+					? oauthScopesRaw
+						.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean)
+					: [];
+			// Only rotate when the user actually changed a field, and never
+			// alongside a disable (the backend rejects that combination
+			// outright — disabling and rotating credentials must be two
+			// separate requests). The oauth_config draft itself is left in
+			// form state either way, so re-enabling before a later save still
+			// submits the edited values.
+			const shouldRotateOAuthCredentials = supportsOAuthCredentialUpdate && !data.disabled && oauthCredentialsDirty;
+			await updateMCPClient({
 				id: mcpClient.config.client_id,
 				data: {
 					name: data.name,
@@ -301,6 +357,11 @@ export default function MCPClientSheet({
 						? {
 							client_id: oauthClientID,
 							client_secret: oauthClientSecret,
+							authorize_url: data.oauth_config?.authorize_url || undefined,
+							token_url: data.oauth_config?.token_url || undefined,
+							registration_url: data.oauth_config?.registration_url || undefined,
+							scopes: oauthScopes,
+							resource: data.oauth_config?.resource || undefined,
 						}
 						: undefined,
 					tls_config:
@@ -313,16 +374,6 @@ export default function MCPClientSheet({
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
 			}).unwrap();
-
-			if (response.status === "pending_oauth" && response.authorize_url) {
-				setOauthFlow({
-					authorizeUrl: response.authorize_url,
-					oauthConfigId: response.oauth_config_id,
-					mcpClientId: response.mcp_client_id,
-					isPerUserOauth: mcpClient.config.auth_type === "per_user_oauth",
-				});
-				return;
-			}
 
 			toast({
 				title: "Success",
@@ -444,7 +495,7 @@ export default function MCPClientSheet({
 
 	return (
 		<>
-			<Sheet open onOpenChange={(open) => !open && !oauthFlow && onClose()}>
+			<Sheet open onOpenChange={(open) => !open && onClose()}>
 				<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-[60%]">
 					<SheetHeader className="w-full p-0 px-8 py-4" showCloseButton={false} headerClassName="mb-0 sticky -top-4 bg-card z-10">
 						<div className="flex w-full items-center justify-between">
@@ -673,9 +724,6 @@ export default function MCPClientSheet({
 														checked={field.value === true}
 														onCheckedChange={(checked) => {
 															field.onChange(checked);
-															if (checked) {
-																form.setValue("oauth_config", undefined);
-															}
 														}}
 														data-testid="mcpclient-disabled-switch"
 													/>
@@ -808,8 +856,8 @@ export default function MCPClientSheet({
 																	</TooltipTrigger>
 																	<TooltipContent className="max-w-xs">
 																		<p>
-																			Override the global tool execution timeout for this server. Leave empty or set to 0 to use
-																			the global setting.
+																			Override the global tool execution timeout for this server. Leave empty or set to 0 to use the global
+																			setting.
 																		</p>
 																	</TooltipContent>
 																</Tooltip>
@@ -962,64 +1010,171 @@ export default function MCPClientSheet({
 									/>
 								</div>
 								{supportsOAuthCredentialUpdate ? (
-									<div className="space-y-4">
-										<h3 className="font-semibold">OAuth Credentials</h3>
-										{isDisabled ? (
-											<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-												<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-												<p>OAuth credentials cannot be rotated while the client is disabled. Re-enable the client to update credentials.</p>
-											</div>
-										) : (
-											<p className="text-muted-foreground text-sm">
-												Update OAuth client credentials only. Connection type, auth type, and connection URL cannot be changed.
-											</p>
-										)}
-										<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-											<FormField
-												control={form.control}
-												name="oauth_config.client_id"
-												render={({ field }) => (
-													<FormItem className="flex flex-col gap-2">
-														<FormLabel>Client ID</FormLabel>
-														<FormControl>
-															<SecretVarInput
-																data-testid="mcpclient-input-oauth-client-id"
-																placeholder="Enter new OAuth client ID"
-																disabled={isDisabled}
-																value={field.value}
-																onChange={field.onChange}
-															/>
-														</FormControl>
-														{!isDisabled && (
-															<p className="text-muted-foreground text-xs">Leave empty to keep existing credentials unchanged.</p>
+									<Accordion type="single" collapsible className="w-full">
+										<AccordionItem value="oauth-advanced" className="border-b-0">
+											<AccordionTrigger className="py-0" data-testid="oauth-advanced-trigger">
+												<span className="text-sm font-medium">OAuth Client Advanced Settings</span>
+											</AccordionTrigger>
+											<AccordionContent className="space-y-4 pt-4 pb-0">
+												{isDisabled ? (
+													<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+														<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+														<p>OAuth config cannot be rotated while the client is disabled. Re-enable the client to update it.</p>
+													</div>
+												) : (
+													<>
+														<p className="text-muted-foreground text-sm">
+															Connection type, auth type, and connection URL cannot be changed. Leave any field empty to keep its stored
+															value.
+														</p>
+														{oauthCredentialsDirty && (
+															<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+																<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+																<p>
+																	Changing any OAuth config field immediately signs out every current session on this MCP client, shared and
+																	per-user alike. Everyone will need to re-authenticate.
+																</p>
+															</div>
 														)}
-														<FormMessage />
-													</FormItem>
+													</>
 												)}
-											/>
-											<FormField
-												control={form.control}
-												name="oauth_config.client_secret"
-												render={({ field }) => (
+												<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+													<FormField
+														control={form.control}
+														name="oauth_config.client_id"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Client ID</FormLabel>
+																<FormControl>
+																	<SecretVarInput
+																		data-testid="mcpclient-input-oauth-client-id"
+																		placeholder="Enter new OAuth client ID"
+																		disabled={isDisabled || !hasUpdateMCPClientAccess}
+																		value={field.value}
+																		onChange={field.onChange}
+																	/>
+																</FormControl>
+																{!isDisabled && (
+																	<p className="text-muted-foreground text-xs">Leave empty to keep existing credentials unchanged.</p>
+																)}
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="oauth_config.client_secret"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Client Secret</FormLabel>
+																<FormControl>
+																	<SecretVarInput
+																		data-testid="mcpclient-input-oauth-client-secret"
+																		placeholder="Enter new OAuth client secret"
+																		disabled={isDisabled || !hasUpdateMCPClientAccess}
+																		hideValueWhenEnv
+																		maskNonEnvValue
+																		value={field.value}
+																		onChange={field.onChange}
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="oauth_config.authorize_url"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Authorization URL</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		disabled={isDisabled || !hasUpdateMCPClientAccess}
+																		placeholder="https://provider.com/oauth/authorize"
+																		data-testid="mcpclient-input-oauth-authorize-url"
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="oauth_config.token_url"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Token URL</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		disabled={isDisabled || !hasUpdateMCPClientAccess}
+																		placeholder="https://provider.com/oauth/token"
+																		data-testid="mcpclient-input-oauth-token-url"
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="oauth_config.registration_url"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Registration URL</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		disabled={isDisabled || !hasUpdateMCPClientAccess}
+																		placeholder="https://provider.com/oauth/register"
+																		data-testid="mcpclient-input-oauth-registration-url"
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
 													<FormItem className="flex flex-col gap-2">
-														<FormLabel>Client Secret</FormLabel>
+														<FormLabel>Scopes</FormLabel>
 														<FormControl>
-															<SecretVarInput
-																data-testid="mcpclient-input-oauth-client-secret"
-																placeholder="Enter new OAuth client secret"
-																disabled={isDisabled}
-																hideValueWhenEnv
-																maskNonEnvValue
-																value={field.value}
-																onChange={field.onChange}
+															<Input
+																value={oauthScopesRaw}
+																disabled={isDisabled || !hasUpdateMCPClientAccess}
+																onChange={(e) => setOauthScopesRaw(e.target.value)}
+																placeholder="read, write, admin"
+																data-testid="mcpclient-input-oauth-scopes"
 															/>
 														</FormControl>
-														<FormMessage />
+														<p className="text-muted-foreground text-xs">Comma-separated.</p>
 													</FormItem>
-												)}
-											/>
-										</div>
-									</div>
+													<FormField
+														control={form.control}
+														name="oauth_config.resource"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Resource</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		disabled={isDisabled || !hasUpdateMCPClientAccess}
+																		placeholder="https://provider.example.com/mcp or urn:example:mcp"
+																		data-testid="mcpclient-input-oauth-resource"
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+												</div>
+											</AccordionContent>
+										</AccordionItem>
+									</Accordion>
 								) : null}
 								{/* Tools Section */}
 								<div className="space-y-4 pb-10">
@@ -1422,7 +1577,7 @@ export default function MCPClientSheet({
 								</Button>
 								<Button
 									type="submit"
-									disabled={isUpdating || (!form.formState.isDirty && !vkConfigsDirty) || !hasUpdateMCPClientAccess}
+									disabled={isUpdating || !isDirty || !hasUpdateMCPClientAccess}
 									isLoading={isUpdating}
 								>
 									Save Changes
@@ -1431,24 +1586,6 @@ export default function MCPClientSheet({
 						</form>
 					</Form>
 				</SheetContent>
-				{oauthFlow && (
-					<OAuth2Authorizer
-						open={!!oauthFlow}
-						onClose={() => setOauthFlow(null)}
-						onSuccess={() => {
-							toast({ title: "Success", description: "MCP client OAuth credentials updated successfully" });
-							onSubmitSuccess();
-							onClose();
-						}}
-						onError={(error) => {
-							toast({ title: "Error", description: error, variant: "destructive" });
-						}}
-						authorizeUrl={oauthFlow.authorizeUrl}
-						oauthConfigId={oauthFlow.oauthConfigId}
-						mcpClientId={oauthFlow.mcpClientId}
-						isPerUserOauth={oauthFlow.isPerUserOauth}
-					/>
-				)}
 			</Sheet>
 			<AlertDialog open={!!pendingNavDirection} onOpenChange={(open) => !open && setPendingNavDirection(null)}>
 				<AlertDialogContent>

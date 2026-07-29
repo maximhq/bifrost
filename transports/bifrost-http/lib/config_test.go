@@ -397,6 +397,16 @@ type MockConfigStore struct {
 	logsConfig       *logstore.Config
 	plugins          []*tables.TablePlugin
 
+	// oauthConfigsByID/oauthTokensByConfigID back GetOauthConfigByID,
+	// CreateOauthConfig, UpdateOauthConfig, and MarkTokensNeedsReauthByConfigID
+	// with real in-memory state (rather than no-op stubs), following the
+	// testConfigStore shape in framework/oauth2/sync_test.go, so tests can
+	// assert that a credential-rotation call path actually wrote through:
+	// the oauth_configs row was updated and bound tokens were cascaded to
+	// needs_reauth, not just that no panic occurred.
+	oauthConfigsByID      map[string]*tables.TableOauthConfig
+	oauthTokensByConfigID map[string][]*tables.TableMCPOauthToken
+
 	// Track update calls for verification
 	clientConfigUpdated    bool
 	providersConfigUpdated bool
@@ -419,13 +429,21 @@ type MockConfigStore struct {
 		budgets []tables.TableBudget
 	}
 	flushSessionsCalled bool
+
+	// updateOauthConfigCalls/markTokensNeedsReauthCalls record the oauth
+	// config IDs passed to each call, in call order, for tests to assert a
+	// rotation call path was (or was not) actually exercised.
+	updateOauthConfigCalls     []string
+	markTokensNeedsReauthCalls []string
 }
 
 // NewMockConfigStore creates a new mock config store
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
-		providers:     make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		configEntries: make(map[string]string),
+		providers:             make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		configEntries:         make(map[string]string),
+		oauthConfigsByID:      make(map[string]*tables.TableOauthConfig),
+		oauthTokensByConfigID: make(map[string][]*tables.TableMCPOauthToken),
 	}
 }
 
@@ -500,7 +518,10 @@ func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *go
 }
 
 func (m *MockConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
-	return nil, nil
+	if m.oauthConfigsByID == nil {
+		return nil, nil
+	}
+	return m.oauthConfigsByID[id], nil
 }
 
 func (m *MockConfigStore) GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error) {
@@ -1418,10 +1439,19 @@ func (m *MockConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.Table
 // OAuth config
 
 func (m *MockConfigStore) CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	if m.oauthConfigsByID == nil {
+		m.oauthConfigsByID = make(map[string]*tables.TableOauthConfig)
+	}
+	m.oauthConfigsByID[config.ID] = config
 	return nil
 }
 
 func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error {
+	if m.oauthConfigsByID == nil {
+		m.oauthConfigsByID = make(map[string]*tables.TableOauthConfig)
+	}
+	m.oauthConfigsByID[config.ID] = config
+	m.updateOauthConfigCalls = append(m.updateOauthConfigCalls, config.ID)
 	return nil
 }
 
@@ -1444,6 +1474,10 @@ func (m *MockConfigStore) CreateOauthToken(ctx context.Context, token *tables.Ta
 
 func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error {
 	return nil
+}
+
+func (m *MockConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
+	return true, nil
 }
 
 func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
@@ -1510,6 +1544,55 @@ func (m *MockConfigStore) DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx 
 
 func (m *MockConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error {
 	return nil
+}
+
+func (m *MockConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error {
+	m.markTokensNeedsReauthCalls = append(m.markTokensNeedsReauthCalls, oauthConfigID)
+	for _, tok := range m.oauthTokensByConfigID[oauthConfigID] {
+		tok.Status = "needs_reauth"
+	}
+	return nil
+}
+
+// RotateMCPOAuthConfig mirrors the real RDBConfigStore implementation's
+// diff-then-apply-then-cascade behavior on top of this mock's own in-memory
+// state, so rotation-path tests can assert on actual writes (via
+// updateOauthConfigCalls/markTokensNeedsReauthCalls and the mutated
+// oauthConfigsByID/oauthTokensByConfigID entries) rather than "no panic
+// occurred". Unlike RDBConfigStore, no SecretVar cloning is needed here:
+// this mock's UpdateOauthConfig is a plain map write with no GORM Save/
+// BeforeSave encryption hook to alias against.
+func (m *MockConfigStore) RotateMCPOAuthConfig(ctx context.Context, existingOauthConfig *tables.TableOauthConfig, fields configstore.MCPOAuthConfigFields) (bool, error) {
+	if existingOauthConfig == nil {
+		return false, fmt.Errorf("oauth config is nil")
+	}
+	if !fields.DiffersFrom(existingOauthConfig) {
+		return false, nil
+	}
+	existingOauthConfig.ClientID = fields.ClientID
+	existingOauthConfig.ClientSecret = fields.ClientSecret
+	existingOauthConfig.AuthorizeURL = fields.AuthorizeURL
+	existingOauthConfig.TokenURL = fields.TokenURL
+	if fields.RegistrationURL == "" {
+		existingOauthConfig.RegistrationURL = nil
+	} else {
+		registrationURL := fields.RegistrationURL
+		existingOauthConfig.RegistrationURL = &registrationURL
+	}
+	existingOauthConfig.Resource = fields.Resource
+	scopesJSON, err := json.Marshal(fields.Scopes)
+	if err != nil {
+		return false, fmt.Errorf("failed to encode scopes: %w", err)
+	}
+	existingOauthConfig.Scopes = string(scopesJSON)
+
+	if err := m.UpdateOauthConfig(ctx, existingOauthConfig); err != nil {
+		return false, err
+	}
+	if err := m.MarkTokensNeedsReauthByConfigID(ctx, existingOauthConfig.ID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *MockConfigStore) GetOauthUserTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
@@ -3048,7 +3131,7 @@ func TestPinMCPClientImmutableFields(t *testing.T) {
 			ConnectionString: schemas.NewSecretVar("https://elsewhere.example.com"),
 			AuthType:         schemas.MCPAuthTypePerUserOauth,
 		}
-		changed := pinMCPClientImmutableFields(fileClient, existing, nil)
+		changed := pinMCPClientImmutableFields(fileClient, existing)
 		require.ElementsMatch(t, []string{"auth_type", "connection_type", "connection_string"}, changed)
 		require.Equal(t, existing.ConnectionType, fileClient.ConnectionType)
 		require.True(t, fileClient.ConnectionString.Equals(existing.ConnectionString))
@@ -3059,40 +3142,25 @@ func TestPinMCPClientImmutableFields(t *testing.T) {
 
 	t.Run("unchanged entry reports nothing", func(t *testing.T) {
 		existing := baseExisting()
-		require.Empty(t, pinMCPClientImmutableFields(fileClientFor(existing), existing, nil))
+		require.Empty(t, pinMCPClientImmutableFields(fileClientFor(existing), existing))
 	})
 
-	t.Run("pending stash edits are detected and the stored stash kept", func(t *testing.T) {
+	t.Run("pending stash is always preserved regardless of file edits", func(t *testing.T) {
+		// pinMCPClientImmutableFields no longer detects or reports oauth_config
+		// drift itself (see TestRotateMCPOAuthConfigFromFile_* below for that,
+		// applied via the shared configstore.RotateMCPOAuthConfig instead of
+		// pinned-and-warned) — it unconditionally keeps the stored
+		// PendingOAuthConfig for a still-unauthorized client, since the pending
+		// stash feeds an in-flight OAuth flow that a config.json edit must not
+		// perturb mid-flight.
 		existing := baseExisting()
 		existing.OauthConfigID = nil
 		existing.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "abc", Scopes: []string{"read"}}
 		fileClient := fileClientFor(existing)
 		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "xyz", Scopes: []string{"read"}}
-		changed := pinMCPClientImmutableFields(fileClient, existing, nil)
-		require.Equal(t, []string{"oauth_config"}, changed)
+		changed := pinMCPClientImmutableFields(fileClient, existing)
+		require.Empty(t, changed, "oauth_config is no longer part of the immutable-fields report")
 		require.Equal(t, "abc", fileClient.PendingOAuthConfig.ClientID)
-	})
-
-	t.Run("authorized oauth drift detected via oauth row, absent fields not drift", func(t *testing.T) {
-		existing := baseExisting()
-		row := &tables.TableOauthConfig{
-			ID:           oauthID,
-			ClientID:     schemas.NewSecretVar("dcr-client"),
-			AuthorizeURL: "https://auth.example.com/authorize",
-			Scopes:       `["read","write"]`,
-		}
-
-		// File omits client_id (DCR-provisioned) and reorders scopes — not drift.
-		fileClient := fileClientFor(existing)
-		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{Scopes: []string{"write", "read"}}
-		require.Empty(t, pinMCPClientImmutableFields(fileClient, existing, row))
-		require.Nil(t, fileClient.PendingOAuthConfig, "authorized client keeps a cleared stash")
-
-		// An explicitly different client_id is drift.
-		fileClient = fileClientFor(existing)
-		fileClient.PendingOAuthConfig = &schemas.OAuth2Config{ClientID: "different"}
-		require.Equal(t, []string{"oauth_config"}, pinMCPClientImmutableFields(fileClient, existing, row))
-		require.Nil(t, fileClient.PendingOAuthConfig)
 	})
 
 	t.Run("per_user_headers key schema cannot be emptied", func(t *testing.T) {
@@ -3102,9 +3170,353 @@ func TestPinMCPClientImmutableFields(t *testing.T) {
 		existing.DiscoveredTools = nil
 		existing.PerUserHeaderKeys = []string{"x-api-key"}
 		fileClient := fileClientFor(existing)
-		require.Empty(t, pinMCPClientImmutableFields(fileClient, existing, nil))
+		require.Empty(t, pinMCPClientImmutableFields(fileClient, existing))
 		require.Equal(t, []string{"x-api-key"}, fileClient.PerUserHeaderKeys)
 	})
+}
+
+// mergeMCPConfigOauthDriftFixture builds the shared shape both
+// TestMergeMCPConfig_OauthCredentialDriftTriggersRotation and
+// TestMergeMCPConfig_OauthNonCredentialDriftDoesNotTriggerRotation exercise:
+// a store already holding an authorized oauth_configs row plus an MCP client
+// bound to it (PendingOAuthConfig nil — verification complete), so the
+// config.json edit under test is the only variable between the two cases.
+func mergeMCPConfigOauthDriftFixture(t *testing.T, oauthID string) (*MockConfigStore, *schemas.MCPClientConfig) {
+	t.Helper()
+	store := NewMockConfigStore()
+	store.oauthConfigsByID[oauthID] = &configstoreTables.TableOauthConfig{
+		ID:           oauthID,
+		ClientID:     schemas.NewSecretVar("stored-client-id"),
+		ClientSecret: schemas.NewSecretVar("stored-client-secret"),
+		AuthorizeURL: "https://auth.example.com/authorize",
+		TokenURL:     "https://auth.example.com/token",
+		Scopes:       `["read"]`,
+		Status:       "authorized",
+	}
+
+	existing := &schemas.MCPClientConfig{
+		ID:               "mcp-existing-" + oauthID,
+		Name:             "notion-" + oauthID,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+		AuthType:         schemas.MCPAuthTypeOauth,
+		OauthConfigID:    &oauthID,
+		// PendingOAuthConfig left nil: verification already completed, so
+		// authorizedOauthRowForComparison compares against the stored
+		// oauth_configs row above rather than a pending stash.
+	}
+	existingTable, err := mcpClientConfigToTable(existing)
+	require.NoError(t, err)
+	existingHash, err := configstore.GenerateMCPClientHash(existingTable)
+	require.NoError(t, err)
+	existing.ConfigHash = existingHash
+
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	return store, existing
+}
+
+// TestMergeMCPConfig_OauthCredentialDriftTriggersRotation exercises the real
+// config.json sync call path (mergeMCPConfig, as loadConfig calls it — the
+// same function TestMergeMCPConfig_HashReconciliationUpdatesAndCreates
+// exercises) end to end: when the file's inline oauth_config declares a
+// client_id that differs from the authorized oauth_configs row backing an
+// existing client, the sync must actually call through (rotateMCPOauthConfigFromFile
+// -> configstore.RotateMCPOAuthConfig) and rotate it — not just log a
+// warning — leaving the oauth_configs row updated and every bound token
+// cascaded to needs_reauth.
+func TestMergeMCPConfig_OauthCredentialDriftTriggersRotation(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	const oauthID = "oauth-rotate-1"
+	store, existing := mergeMCPConfigOauthDriftFixture(t, oauthID)
+
+	// A pre-existing token bound to this config, so the cascade has
+	// something concrete to flip.
+	store.oauthTokensByConfigID[oauthID] = []*tables.TableMCPOauthToken{
+		{ID: "tok-1", OauthConfigID: oauthID, AuthMode: "shared", Status: "active"},
+	}
+
+	fileMCP := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				Name:             existing.Name,
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+				AuthType:         schemas.MCPAuthTypeOauth,
+				PendingOAuthConfig: &schemas.OAuth2Config{
+					ClientID: "new-client-id",
+				},
+			},
+		},
+	}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+	require.Contains(t, store.updateOauthConfigCalls, oauthID, "rotation must actually write the oauth_configs row, not just warn")
+	require.Contains(t, store.markTokensNeedsReauthCalls, oauthID, "rotation must cascade bound tokens to needs_reauth")
+
+	updated := store.oauthConfigsByID[oauthID]
+	require.NotNil(t, updated)
+	assert.Equal(t, "new-client-id", updated.GetResolvedClientID(), "stored client_id must reflect the file's new value")
+	assert.Equal(t, "stored-client-secret", updated.GetResolvedClientSecret(), "client_secret omitted from the file must be preserved, not cleared")
+	assert.Equal(t, "needs_reauth", store.oauthTokensByConfigID[oauthID][0].Status, "the bound token must be cascaded")
+}
+
+// TestMergeMCPConfig_OauthSecondaryFieldDriftTriggersRotation is the
+// companion case for the fields that used to be pin-and-warn-only:
+// authorize_url/token_url/scopes/resource/registration_url drift (with
+// client_id/client_secret unchanged from the file's perspective) now rotates
+// exactly like client_id/client_secret drift does — any oauth_config field
+// changing is treated as security-relevant and cascades needs_reauth, since
+// a changed authorize_url/token_url can point at a different identity
+// provider and changed scopes/resource mean already-issued tokens were
+// consented under permissions that no longer apply.
+func TestMergeMCPConfig_OauthSecondaryFieldDriftTriggersRotation(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	const oauthID = "oauth-rotate-2"
+	store, existing := mergeMCPConfigOauthDriftFixture(t, oauthID)
+
+	store.oauthTokensByConfigID[oauthID] = []*tables.TableMCPOauthToken{
+		{ID: "tok-2", OauthConfigID: oauthID, AuthMode: "shared", Status: "active"},
+		{ID: "tok-2-user", OauthConfigID: oauthID, AuthMode: "user", Status: "active"},
+	}
+
+	registrationURL := "https://auth.example.com/register"
+	fileMCP := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				Name:             existing.Name,
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+				AuthType:         schemas.MCPAuthTypeOauth,
+				PendingOAuthConfig: &schemas.OAuth2Config{
+					// client_id/client_secret omitted (unchanged); every other
+					// field differs from what's stored.
+					AuthorizeURL:    "https://auth.example.com/v2/authorize",
+					TokenURL:        "https://auth.example.com/v2/token",
+					Scopes:          []string{"read", "write"},
+					Resource:        "https://mcp.notion.so",
+					RegistrationURL: &registrationURL,
+				},
+			},
+		},
+	}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+	require.Contains(t, store.updateOauthConfigCalls, oauthID, "secondary-field drift must now rotate too, not just warn")
+	require.Contains(t, store.markTokensNeedsReauthCalls, oauthID, "rotation must cascade every bound token regardless of auth_mode")
+
+	stored := store.oauthConfigsByID[oauthID]
+	require.NotNil(t, stored)
+	assert.Equal(t, "stored-client-id", stored.GetResolvedClientID(), "client_id omitted from the file must be preserved")
+	assert.Equal(t, "https://auth.example.com/v2/authorize", stored.AuthorizeURL)
+	assert.Equal(t, "https://auth.example.com/v2/token", stored.TokenURL)
+	assert.Equal(t, "https://mcp.notion.so", stored.Resource)
+	require.NotNil(t, stored.RegistrationURL)
+	assert.Equal(t, registrationURL, *stored.RegistrationURL)
+	assert.Equal(t, "needs_reauth", store.oauthTokensByConfigID[oauthID][0].Status, "shared token must be cascaded")
+	assert.Equal(t, "needs_reauth", store.oauthTokensByConfigID[oauthID][1].Status, "per-user token must be cascaded too")
+}
+
+// TestMergeMCPConfig_OauthNoDriftDoesNotTriggerRotation confirms a file
+// entry that matches the stored oauth_configs row exactly (or omits every
+// field) never rotates — the write and the reauth cascade only ever happen
+// when something actually changed.
+func TestMergeMCPConfig_OauthNoDriftDoesNotTriggerRotation(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	const oauthID = "oauth-rotate-3"
+	store, existing := mergeMCPConfigOauthDriftFixture(t, oauthID)
+	store.oauthTokensByConfigID[oauthID] = []*tables.TableMCPOauthToken{
+		{ID: "tok-3", OauthConfigID: oauthID, AuthMode: "shared", Status: "active"},
+	}
+
+	fileMCP := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				Name:             existing.Name,
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+				AuthType:         schemas.MCPAuthTypeOauth,
+				PendingOAuthConfig: &schemas.OAuth2Config{
+					ClientID:     "stored-client-id",
+					AuthorizeURL: "https://auth.example.com/authorize",
+					TokenURL:     "https://auth.example.com/token",
+					Scopes:       []string{"read"},
+				},
+			},
+		},
+	}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+	assert.Empty(t, store.updateOauthConfigCalls, "identical values must not rotate")
+	assert.Empty(t, store.markTokensNeedsReauthCalls, "no tokens should be cascaded when nothing changed")
+	assert.Equal(t, "active", store.oauthTokensByConfigID[oauthID][0].Status)
+}
+
+// TestMergeMCPConfig_UnresolvedSecretRefDoesNotCheckpointConfigHash covers
+// the case rotateMCPOauthConfigFromFile's incomplete return exists for: the
+// file declares a client_id via an env./vault. reference that doesn't
+// resolve on this boot (e.g. the env var isn't set yet). The stored
+// client_id must be preserved (already covered elsewhere), but critically
+// the persisted ConfigHash must NOT advance to this boot's file hash —
+// otherwise an identical file on the next boot would hash-match and skip
+// reconciliation forever, even after the env var becomes available.
+func TestMergeMCPConfig_UnresolvedSecretRefDoesNotCheckpointConfigHash(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	const oauthID = "oauth-rotate-unresolved"
+	store, existing := mergeMCPConfigOauthDriftFixture(t, oauthID)
+	originalHash := existing.ConfigHash
+
+	fileMCP := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				Name:             existing.Name,
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+				AuthType:         schemas.MCPAuthTypeOauth,
+				PendingOAuthConfig: &schemas.OAuth2Config{
+					ClientID: "env.BIFROST_TEST_UNSET_CLIENT_ID_XYZ",
+				},
+			},
+		},
+	}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+	require.Len(t, store.mcpClientConfigUpdates, 1, "the hash mismatch must still trigger a sync attempt")
+	assert.Equal(t, originalHash, store.mcpClientConfigUpdates[0].Config.ConfigHash,
+		"ConfigHash must not advance past an unresolved secret reference, or the next boot's identical file would skip reconciliation forever")
+
+	stored := store.oauthConfigsByID[oauthID]
+	require.NotNil(t, stored)
+	assert.Equal(t, "stored-client-id", stored.GetResolvedClientID(), "unresolved client_id reference must not overwrite the stored value")
+}
+
+// TestMergeMCPConfig_MalformedStoredScopesDoesNotCheckpointConfigHash covers
+// the other incomplete-rotation source: the stored row's scopes column isn't
+// valid JSON (e.g. a pre-existing bad row from a manual edit or migration
+// bug, not something this rotation path itself could write). Decoding it
+// must not silently collapse to "no scopes" — which would look identical to
+// a file that never mentions scopes at all and falsely trigger a rotation +
+// needs_reauth cascade — and must not checkpoint ConfigHash either, so a
+// later boot retries once the row is repaired.
+func TestMergeMCPConfig_MalformedStoredScopesDoesNotCheckpointConfigHash(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	const oauthID = "oauth-rotate-malformed-scopes"
+	store, existing := mergeMCPConfigOauthDriftFixture(t, oauthID)
+	originalHash := existing.ConfigHash
+	store.oauthConfigsByID[oauthID].Scopes = `not valid json`
+
+	fileMCP := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				Name:               existing.Name,
+				ConnectionType:     schemas.MCPConnectionTypeHTTP,
+				ConnectionString:   schemas.NewSecretVar("https://mcp.notion.so/sse"),
+				AuthType:           schemas.MCPAuthTypeOauth,
+				PendingOAuthConfig: &schemas.OAuth2Config{}, // declares nothing about scopes
+			},
+		},
+	}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+
+	assert.Empty(t, store.updateOauthConfigCalls, "a scopes decode failure must skip rotation entirely, not just some fields")
+	require.Len(t, store.mcpClientConfigUpdates, 1, "the hash mismatch must still trigger a sync attempt")
+	assert.Equal(t, originalHash, store.mcpClientConfigUpdates[0].Config.ConfigHash,
+		"ConfigHash must not advance past a scopes decode failure, or the next boot's identical file would skip reconciliation forever")
+}
+
+// TestSyncMCPConfigFromFile_OauthCredentialDriftTriggersRotation exercises
+// the OTHER config.json call site (syncMCPConfigFromFile, taken when
+// config.json is the declared source of truth — see
+// isConfigJSONSourceOfTruth) via the real dispatch path in loadMCPConfig,
+// mirroring TestMergeMCPConfig_OauthCredentialDriftTriggersRotation for the
+// non-source-of-truth call site. Both call sites wire the same
+// rotateMCPOauthConfigFromFile function, which is already covered in depth
+// by the mergeMCPConfig tests above; this test exists to catch a
+// wiring-only bug at this second call site (e.g. the rotation call being
+// dropped or misordered relative to pinMCPClientImmutableFields), not to
+// re-verify the shared logic itself.
+func TestSyncMCPConfigFromFile_OauthCredentialDriftTriggersRotation(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	oauthID := "oauth_rotate_sync_1"
+	// Not reusing mergeMCPConfigOauthDriftFixture's "notion-<id>" naming here:
+	// this test drives the real loadMCPConfig entry point (unlike the
+	// mergeMCPConfig tests above, which call mergeMCPConfig directly), and
+	// loadMCPConfig validates file-declared names via
+	// mcp.ValidateMCPClientName before syncMCPConfigFromFile ever sees them —
+	// which rejects hyphens. A hyphenated name would be silently skipped
+	// ("skipping MCP client config..."), and the test would wrongly appear to
+	// prove no rotation occurred.
+	const clientName = "notion_rotate_sync_1"
+	store := NewMockConfigStore()
+	store.oauthConfigsByID[oauthID] = &configstoreTables.TableOauthConfig{
+		ID:           oauthID,
+		ClientID:     schemas.NewSecretVar("stored-client-id"),
+		ClientSecret: schemas.NewSecretVar("stored-client-secret"),
+		AuthorizeURL: "https://auth.example.com/authorize",
+		TokenURL:     "https://auth.example.com/token",
+		Scopes:       `["read"]`,
+		Status:       "authorized",
+	}
+	existing := &schemas.MCPClientConfig{
+		ID:               "mcp-existing-" + oauthID,
+		Name:             clientName,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+		AuthType:         schemas.MCPAuthTypeOauth,
+		OauthConfigID:    &oauthID,
+	}
+	existingTable, err := mcpClientConfigToTable(existing)
+	require.NoError(t, err)
+	existingHash, err := configstore.GenerateMCPClientHash(existingTable)
+	require.NoError(t, err)
+	existing.ConfigHash = existingHash
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	store.oauthTokensByConfigID[oauthID] = []*tables.TableMCPOauthToken{
+		{ID: "tok-sync-1", OauthConfigID: oauthID, AuthMode: "shared", Status: "active"},
+	}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		MCP: &schemas.MCPConfig{
+			ClientConfigs: []*schemas.MCPClientConfig{
+				{
+					Name:             clientName,
+					ConnectionType:   schemas.MCPConnectionTypeHTTP,
+					ConnectionString: schemas.NewSecretVar("https://mcp.notion.so/sse"),
+					AuthType:         schemas.MCPAuthTypeOauth,
+					PendingOAuthConfig: &schemas.OAuth2Config{
+						ClientID: "new-client-id-sync",
+					},
+				},
+			},
+		},
+	}
+
+	loadMCPConfig(ctx, cfg, configData)
+
+	require.Contains(t, store.updateOauthConfigCalls, oauthID, "syncMCPConfigFromFile must actually write the oauth_configs row, not just warn")
+	require.Contains(t, store.markTokensNeedsReauthCalls, oauthID, "syncMCPConfigFromFile must cascade bound tokens to needs_reauth")
+
+	updated := store.oauthConfigsByID[oauthID]
+	require.NotNil(t, updated)
+	assert.Equal(t, "new-client-id-sync", updated.GetResolvedClientID(), "stored client_id must reflect the file's new value")
+	assert.Equal(t, "needs_reauth", store.oauthTokensByConfigID[oauthID][0].Status, "the bound token must be cascaded")
 }
 
 // TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched verifies missing mcp does not prune DB MCP clients.
