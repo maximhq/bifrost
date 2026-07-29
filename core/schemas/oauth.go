@@ -10,9 +10,6 @@ type OAuth2Provider interface {
 	// GetAccessToken retrieves the access token for a given oauth_config_id (server-level OAuth)
 	GetAccessToken(ctx context.Context, oauthConfigID string) (string, error)
 
-	// RefreshAccessToken refreshes the access token for a given oauth_config_id
-	RefreshAccessToken(ctx context.Context, oauthConfigID string) error
-
 	// ValidateToken checks if the token is still valid
 	ValidateToken(ctx context.Context, oauthConfigID string) (bool, error)
 
@@ -43,9 +40,12 @@ type OAuth2Provider interface {
 	// empty otherwise).
 	CompleteUserOAuthFlow(ctx context.Context, state string, code string) (string, error)
 
-	// RefreshUserAccessToken refreshes a per-user OAuth access token, looked up
-	// by the token row's primary-key ID.
-	RefreshUserAccessToken(ctx context.Context, tokenID string) error
+	// RefreshAccessToken refreshes any MCP OAuth token — the single shared
+	// client credential or a per-identity credential alike — looked up by the
+	// token row's own primary-key ID. The one refresh path for every kind of
+	// MCP OAuth credential; GetAccessToken and GetUserAccessTokenByMode both
+	// funnel their lazy pre-flight refresh through this.
+	RefreshAccessToken(ctx context.Context, tokenID string) error
 }
 
 // OauthConfig represents OAuth client configuration

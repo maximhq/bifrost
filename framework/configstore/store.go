@@ -491,7 +491,6 @@ type ConfigStore interface {
 	// OAuth config CRUD
 	GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error)
 	GetOauthConfigsByIDs(ctx context.Context, ids []string) (map[string]*tables.TableOauthConfig, error)
-	GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error)
 	CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
 	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig, tx ...*gorm.DB) error
 
@@ -499,14 +498,20 @@ type ConfigStore interface {
 	// OAuth credential (auth_mode 'shared' | 'user' | 'vk' | 'session'), not
 	// just the shared-client credential the method names below still imply.
 	//
-	// GetOauthTokenByID and GetOauthConfigByTokenID are not filtered by
-	// auth_mode: both are looked up exclusively via TableOauthConfig.TokenID,
-	// which only the shared-client flow ever populates, so the ID handed in
-	// is already guaranteed to resolve to a 'shared' row (or nothing) — a
-	// primary-key lookup, already unambiguous. An auth_mode filter here
-	// would be inert, unlike GetOauthUserTokenByID below, which a caller
-	// does feed an arbitrary externally-sourced ID.
+	// GetOauthTokenByID is not filtered by auth_mode: callers always feed it
+	// an ID already resolved from a trusted internal lookup (a token row just
+	// loaded, or GetSharedOauthTokenByConfigID's result), never an arbitrary
+	// externally-sourced ID — a primary-key lookup, already unambiguous. An
+	// auth_mode filter here would be inert, unlike GetOauthUserTokenByID
+	// below, which a caller does feed an arbitrary externally-sourced ID.
 	GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error)
+	// GetSharedOauthTokenByConfigID resolves the single shared-mode token row
+	// for a config, the replacement for the retired TableOauthConfig.TokenID
+	// FK shortcut. Not filtered by status — callers that only want a usable
+	// credential (GetAccessToken) check token.Status themselves; RevokeToken
+	// needs to reach the row regardless of status to delete it. Returns
+	// (nil, nil) when no shared token exists for this config.
+	GetSharedOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error)
 	// GetExpiringOauthTokens is filtered to auth_mode='shared'. It backs the
 	// shared-only TokenRefreshWorker; per-user tokens refresh lazily/inline
 	// on lookup (GetOauthUserTokenByMode), and folding them into this
@@ -516,10 +521,12 @@ type ConfigStore interface {
 	CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error
 	UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error
 	DeleteOauthToken(ctx context.Context, id string) error
-	// DeleteOauthTokensByConfigAndMode deletes every token row for a given
-	// (oauth_config_id, auth_mode) pair. Used by the shared-OAuth callback
-	// to clear the prior credential before inserting its replacement.
-	DeleteOauthTokensByConfigAndMode(ctx context.Context, oauthConfigID, authMode string, tx ...*gorm.DB) error
+	// DeleteSharedOauthTokensByConfigID deletes every auth_mode='shared' row
+	// for oauthConfigID, not just the one GetSharedOauthTokenByConfigID would
+	// pick. Used to guarantee revocation and shared-flow re-completion can't
+	// leave a duplicate row behind (see GetSharedOauthTokenByConfigID's doc
+	// comment for why more than one can otherwise exist).
+	DeleteSharedOauthTokensByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error
 
 	// Flow-row CRUD (mcp_oauth_flows / TableMCPOauthFlow). Method names keep
 	// their historical "OauthUserSession" naming even though the backing
@@ -581,12 +588,18 @@ type ConfigStore interface {
 	// rows matching the given identity column + MCP client. Used by revoke
 	// across all auth modes so subsequent OAuth init starts from a clean slate.
 	DeleteOauthUserSessionsByModeIdentityAndMCPClient(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error
-	// MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth'
-	// on a single token row. Called by the refresh-failure path when
-	// the upstream credential is permanently rejected: the row stays
-	// (preserves audit + binding for re-auth), but is filtered from
-	// active lookups so the next inference triggers a fresh OAuth
-	// flow that upserts the row back to 'active'.
+	// MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth' on a
+	// single token row, regardless of auth_mode ('shared' included). Called
+	// by the unified refresh function when the upstream credential is
+	// permanently rejected: the row stays (preserves audit + binding for
+	// re-auth), but is filtered from active lookups so the next
+	// inference/access triggers a fresh OAuth flow that upserts (per-identity)
+	// or reauthorizes (shared) the row back to 'active'. Despite the
+	// "UserToken" name (kept for historical continuity with the other
+	// per-user-named methods on this merged table, see GetOauthUserTokenByMode's
+	// comment), this is not scoped away from 'shared' — the tokenID handed in
+	// always comes from an internal lookup already, never an arbitrary
+	// caller-supplied ID.
 	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error
 	// GetOauthUserTokenByID looks up a single per-user token row by primary
 	// key. Returns nil, nil when not found. Unlike GetOauthTokenByID above,
