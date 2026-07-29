@@ -931,13 +931,19 @@ func (m *MCPManager) EnableClient(id string) error {
 
 	if err := m.connectToMCPClient(m.ctx, configCopy); err != nil {
 		// Connection failed — leave the entry as Disconnected so the health monitor can
-		// recover it, but only if the client has not been disabled in the meantime.
+		// recover it, but only if the client has not been disabled in the meantime, and
+		// don't clobber NeedsReauth: connectToMCPClient already classified this failure
+		// as a dead OAuth2 credential (under its own lock, above), and a generic
+		// Disconnected here would silently erase that more specific signal.
 		m.mu.Lock()
 		alreadyDisabled := false
 		if cs, exists := m.clientMap[id]; exists {
-			if cs.State == schemas.MCPConnectionStateDisabled {
+			switch cs.State {
+			case schemas.MCPConnectionStateDisabled:
 				alreadyDisabled = true
-			} else {
+			case schemas.MCPConnectionStateNeedsReauth:
+				// preserve as-is
+			default:
 				cs.State = schemas.MCPConnectionStateDisconnected
 			}
 		}
@@ -1527,6 +1533,23 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 				m.logger.Warn("%s Failed to close external client during cleanup: %v", MCPLogPrefix, closeErr)
 			}
 		}
+
+		// A dead OAuth2 credential (refresh permanently rejected/expired) is not a
+		// transient connectivity problem — the entry above was already reset to
+		// Disconnected at the top of this function, but that's misleading here: no
+		// amount of automatic reconnecting will fix it, only a human reauthorizing
+		// the client will. Flip to NeedsReauth instead so the state itself carries
+		// that signal, mirroring how the success path below sets Connected under
+		// the same lock. Never clobber Disabled — DisableClient is authoritative,
+		// same invariant the health monitor's updateClientState guard preserves.
+		if isOAuth2TokenExpiredErrorText(gateErr.GetErrorString()) {
+			m.mu.Lock()
+			if client, exists := m.clientMap[config.ID]; exists && client.State != schemas.MCPConnectionStateDisabled {
+				client.State = schemas.MCPConnectionStateNeedsReauth
+			}
+			m.mu.Unlock()
+		}
+
 		return fmt.Errorf("failed to connect MCP client %s: %s", config.Name, gateErr.GetErrorString())
 	}
 
@@ -1645,12 +1668,21 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
 		externalClient.OnConnectionLost(func(err error) {
 			m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, config.Name, err)
-			// Update state to disconnected, but never overwrite a disabled state.
-			// DisableClient calls Conn.Close() while holding m.mu; the SSE library
-			// fires OnConnectionLost after the lock is released, by which point
-			// State is already Disabled — do not clobber it.
+			// Update state to disconnected, but never overwrite a disabled or
+			// needs-reauth state. DisableClient calls Conn.Close() while holding
+			// m.mu; the SSE library fires OnConnectionLost after the lock is
+			// released, by which point State is already Disabled — do not clobber
+			// it. Also gate on client.Conn == externalClient: a reconnect can
+			// replace this entry's Conn (and its State, e.g. to NeedsReauth on a
+			// dead OAuth2 credential) before this closed connection's own
+			// OnConnectionLost callback gets a chance to fire, so an identity
+			// check is required — a plain State-value check can't tell a stale
+			// callback from a live one.
 			m.mu.Lock()
-			if client, exists := m.clientMap[config.ID]; exists && client.State != schemas.MCPConnectionStateDisabled {
+			if client, exists := m.clientMap[config.ID]; exists &&
+				client.Conn == externalClient &&
+				client.State != schemas.MCPConnectionStateDisabled &&
+				client.State != schemas.MCPConnectionStateNeedsReauth {
 				client.State = schemas.MCPConnectionStateDisconnected
 			}
 			m.mu.Unlock()
