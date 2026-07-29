@@ -255,3 +255,42 @@ func TestToBifrostCountTokensResponseCachedContent(t *testing.T) {
 		assert.Zero(t, got.InputTokensDetails.AudioTokens)
 	})
 }
+
+// TestToBifrostCountTokensResponseCachedContent locks the cached-token accounting
+// against the real API shape. Verified live: a 7202-token cache plus 9 tokens of
+// contents returns totalTokens 7211 with promptTokensDetails already at 7211 and
+// cacheTokensDetails at 7202 — the cache is a subset of the prompt, not an addition,
+// so its modalities must never be folded into the breakdown a second time.
+func TestToBifrostCountTokensResponseCachedContent(t *testing.T) {
+	t.Run("cached modalities do not inflate the breakdown", func(t *testing.T) {
+		resp := &GeminiCountTokensResponse{
+			TotalTokens:             7211,
+			CachedContentTokenCount: 7202,
+			PromptTokensDetails:     []*ModalityTokenCount{{Modality: ModalityText, TokenCount: 7211}},
+			CacheTokensDetails:      []*ModalityTokenCount{{Modality: ModalityText, TokenCount: 7202}},
+		}
+
+		got := resp.ToBifrostCountTokensResponse("gemini-2.5-flash")
+
+		assert.Equal(t, 7211, got.InputTokens)
+		assert.Equal(t, 7211, got.InputTokensDetails.TextTokens)
+		assert.Equal(t, 7202, got.InputTokensDetails.CachedReadTokens)
+	})
+
+	t.Run("falls back to summing cache details for the cached total", func(t *testing.T) {
+		resp := &GeminiCountTokensResponse{
+			TotalTokens:         100,
+			PromptTokensDetails: []*ModalityTokenCount{{Modality: ModalityText, TokenCount: 100}},
+			CacheTokensDetails: []*ModalityTokenCount{
+				{Modality: ModalityText, TokenCount: 60},
+				{Modality: ModalityAudio, TokenCount: 15},
+			},
+		}
+
+		got := resp.ToBifrostCountTokensResponse("gemini-2.5-flash")
+
+		assert.Equal(t, 75, got.InputTokensDetails.CachedReadTokens)
+		assert.Equal(t, 100, got.InputTokensDetails.TextTokens)
+		assert.Zero(t, got.InputTokensDetails.AudioTokens)
+	})
+}
