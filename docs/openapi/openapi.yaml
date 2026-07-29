@@ -720,28 +720,30 @@ paths:
   /api/pricing/force-sync:
     $ref: './paths/management/config.yaml#/force-sync-pricing'
 
-  # Users
-  /api/users:
+  # Governance - Users (Enterprise)
+  /api/governance/users:
     $ref: './paths/management/users.yaml#/users'
-  /api/users/{id}:
+  /api/governance/users/{user_id}:
     $ref: './paths/management/users.yaml#/users-by-id'
-  /api/users/me/permissions:
+  /api/governance/users/me/permissions:
     $ref: './paths/management/users.yaml#/users-me-permissions'
-  /api/users/{id}/role:
+  /api/governance/users/{user_id}/role:
     $ref: './paths/management/users.yaml#/users-role'
-  /api/users/{id}/teams:
+  /api/governance/users/{user_id}/teams:
     $ref: './paths/management/users.yaml#/users-teams'
-  /api/users/email/{email}/virtual-keys:
+  /api/governance/users/{user_id}/governance:
+    $ref: './paths/management/users.yaml#/users-governance'
+  /api/governance/users/{user_id}/virtual-keys:
+    $ref: './paths/management/governanceextensions.yaml#/user-virtual-keys'
+  /api/governance/users/email/{email}/virtual-keys:
     $ref: './paths/management/users.yaml#/users-email-virtual-keys'
+  /api/governance/users/email/{email}:
+    $ref: './paths/management/users.yaml#/users-by-email'
 
-  # Teams
-  /api/teams:
-    $ref: './paths/management/users.yaml#/teams'
-  /api/teams/{id}:
-    $ref: './paths/management/users.yaml#/teams-by-id'
-  /api/teams/{id}/members:
+  # Governance - Enterprise Team relationships
+  /api/governance/teams/{team_id}/members:
     $ref: './paths/management/users.yaml#/team-members'
-  /api/teams/{id}/members/{userId}:
+  /api/governance/teams/{team_id}/members/{user_id}:
     $ref: './paths/management/users.yaml#/team-member-by-id'
 
   # Session
@@ -831,30 +833,46 @@ paths:
     $ref: './paths/management/governance.yaml#/virtual-keys-quota'
   /api/governance/virtual-keys/{vk_id}:
     $ref: './paths/management/governance.yaml#/virtual-keys-by-id'
+  /api/governance/virtual-keys/{vk_id}/users:
+    $ref: './paths/management/governanceextensions.yaml#/virtual-key-users'
+  /api/governance/virtual-keys/{vk_id}/users/{user_id}:
+    $ref: './paths/management/governanceextensions.yaml#/virtual-key-user'
 
   # Governance - Teams
   /api/governance/teams:
     $ref: './paths/management/governance.yaml#/teams'
   /api/governance/teams/{team_id}:
     $ref: './paths/management/governance.yaml#/teams-by-id'
+  /api/governance/teams/{team_id}/customers:
+    $ref: './paths/management/governanceextensions.yaml#/team-customers'
+  /api/governance/teams/{team_id}/customers/{customer_id}:
+    $ref: './paths/management/governanceextensions.yaml#/team-customer'
 
   # Governance - Customers
   /api/governance/customers:
     $ref: './paths/management/governance.yaml#/customers'
   /api/governance/customers/{customer_id}:
     $ref: './paths/management/governance.yaml#/customers-by-id'
+  /api/governance/customers/{customer_id}/teams:
+    $ref: './paths/management/governanceextensions.yaml#/customer-teams'
+  /api/governance/customers/{customer_id}/business-units:
+    $ref: './paths/management/governanceextensions.yaml#/customer-business-units'
 
   # Governance - Business Units (Enterprise)
   /api/governance/business-units:
     $ref: './paths/management/businessunits.yaml#/business-units'
-  /api/governance/business-units/{id}:
+  /api/governance/business-units/{business_unit_id}:
     $ref: './paths/management/businessunits.yaml#/business-units-by-id'
-  /api/governance/business-units/{id}/teams:
+  /api/governance/business-units/{business_unit_id}/teams:
     $ref: './paths/management/businessunits.yaml#/business-units-teams'
-  /api/governance/business-units/{id}/teams/{team_id}:
+  /api/governance/business-units/{business_unit_id}/teams/{team_id}:
     $ref: './paths/management/businessunits.yaml#/business-units-team-by-id'
-  /api/governance/business-units/{id}/governance:
+  /api/governance/business-units/{business_unit_id}/governance:
     $ref: './paths/management/businessunits.yaml#/business-units-governance'
+  /api/governance/business-units/{business_unit_id}/customers:
+    $ref: './paths/management/governanceextensions.yaml#/business-unit-customers'
+  /api/governance/business-units/{business_unit_id}/customers/{customer_id}:
+    $ref: './paths/management/governanceextensions.yaml#/business-unit-customer'
 
   # Governance - Budgets and Rate Limits
   /api/governance/budgets:
@@ -884,52 +902,54 @@ paths:
   /api/governance/pricing-overrides/{id}:
     $ref: './paths/management/governance.yaml#/pricing-overrides-by-id'
 
-  # RBAC (roles, permissions, resources, operations)
-  /api/roles:
+  # Governance - RBAC (Enterprise)
+  /api/governance/rbac/roles:
     $ref: './paths/management/rbac.yaml#/roles'
-  /api/roles/{id}:
+  /api/governance/rbac/roles/{role_id}:
     $ref: './paths/management/rbac.yaml#/roles-by-id'
-  /api/roles/{id}/permissions:
+  /api/governance/rbac/roles/{role_id}/permissions:
     $ref: './paths/management/rbac.yaml#/roles-permissions'
-  /api/resources:
+  /api/governance/rbac/resources:
     $ref: './paths/management/rbac.yaml#/resources'
-  /api/operations:
+  /api/governance/rbac/operations:
     $ref: './paths/management/rbac.yaml#/operations'
-  /api/permissions:
+  /api/governance/rbac/permissions:
     $ref: './paths/management/rbac.yaml#/permissions'
 
-  # Access Profiles
-  /api/access-profiles:
+  # Governance - Access Profiles (Enterprise)
+  /api/governance/access-profiles:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles'
-  /api/access-profiles/{id}:
+  /api/governance/access-profiles/{profile_id}:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-by-id'
-  /api/access-profiles/{id}/activate:
+  /api/governance/access-profiles/{profile_id}/activate:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-activate'
-  /api/access-profiles/{id}/deactivate:
+  /api/governance/access-profiles/{profile_id}/deactivate:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-deactivate'
-  /api/access-profiles/{id}/clone:
+  /api/governance/access-profiles/{profile_id}/clone:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-clone'
-  /api/access-profiles/{id}/propagate:
+  /api/governance/access-profiles/{profile_id}/propagate:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-propagate'
-  /api/access-profiles/{id}/roles:
+  /api/governance/access-profiles/{profile_id}/roles:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-roles'
-  /api/access-profiles/{id}/roles/{role_id}:
+  /api/governance/access-profiles/{profile_id}/roles/{role_id}:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-role-by-id'
-  /api/access-profiles/{id}/versions:
+  /api/governance/access-profiles/{profile_id}/versions:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-versions'
-  /api/access-profiles/{id}/versions/{version}:
+  /api/governance/access-profiles/{profile_id}/versions/{version}:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-version-by-number'
-  /api/access-profiles/{id}/audit-logs:
+  /api/governance/access-profiles/{profile_id}/audit-logs:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-by-id'
-  /api/access-profiles/audit-logs:
+  /api/governance/access-profiles/audit-logs:
     $ref: './paths/management/accessprofiles.yaml#/access-profiles-audit-logs-all'
-  /api/users/{target_user_id}/access-profiles:
+  /api/governance/users/{user_id}/access-profiles:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profiles'
-  /api/users/{target_user_id}/access-profiles/{profile_id}:
+  /api/governance/users/{user_id}/access-profiles/{profile_id}:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-by-id'
-  /api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys:
+  /api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override:
+    $ref: './paths/management/governanceextensions.yaml#/user-access-profile-budget-override'
+  /api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys'
-  /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
+  /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-key-by-id'
 
   # Audit Logs

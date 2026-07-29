@@ -79,7 +79,7 @@ access-profiles-by-id:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -108,7 +108,7 @@ access-profiles-by-id:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -144,7 +144,7 @@ access-profiles-by-id:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -173,7 +173,7 @@ access-profiles-activate:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -200,7 +200,7 @@ access-profiles-deactivate:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -227,7 +227,7 @@ access-profiles-clone:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -266,7 +266,7 @@ access-profiles-propagate:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -303,7 +303,7 @@ access-profiles-roles:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -337,7 +337,7 @@ access-profiles-role-by-id:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -368,7 +368,7 @@ access-profiles-versions:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -392,7 +392,7 @@ access-profiles-version-by-number:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -423,7 +423,7 @@ access-profiles-audit-logs-by-id:
     tags:
       - Access Profiles
     parameters:
-      - name: id
+      - name: profile_id
         in: path
         required: true
         schema:
@@ -499,7 +499,7 @@ users-access-profiles:
     tags:
       - Access Profiles
     parameters:
-      - name: target_user_id
+      - name: user_id
         in: path
         required: true
         schema:
@@ -524,7 +524,7 @@ users-access-profile-by-id:
     tags:
       - Access Profiles
     parameters:
-      - name: target_user_id
+      - name: user_id
         in: path
         required: true
         schema:
@@ -555,7 +555,7 @@ users-access-profile-virtual-keys:
     tags:
       - Access Profiles
     parameters:
-      - name: target_user_id
+      - name: user_id
         in: path
         required: true
         schema:
@@ -592,7 +592,7 @@ users-access-profile-virtual-key-by-id:
     tags:
       - Access Profiles
     parameters:
-      - name: target_user_id
+      - name: user_id
         in: path
         required: true
         schema:

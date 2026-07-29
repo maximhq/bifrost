@@ -38706,7 +38706,7 @@
         }
       }
     },
-    "/api/users": {
+    "/api/governance/users": {
       "get": {
         "operationId": "listUsers",
         "summary": "List users",
@@ -38716,13 +38716,13 @@
         ],
         "parameters": [
           {
-            "name": "page",
+            "name": "offset",
             "in": "query",
-            "description": "Page number (1-based)",
+            "description": "Zero-based result offset",
             "schema": {
               "type": "integer",
-              "minimum": 1,
-              "default": 1
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -38757,6 +38757,13 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "users",
+                    "count",
+                    "total_count",
+                    "limit",
+                    "offset"
+                  ],
                   "properties": {
                     "users": {
                       "type": "array",
@@ -38874,25 +38881,21 @@
                         }
                       }
                     },
-                    "total": {
+                    "count": {
+                      "type": "integer",
+                      "description": "Number of users in this response"
+                    },
+                    "total_count": {
                       "type": "integer",
                       "description": "Total number of users matching the query"
                     },
-                    "page": {
-                      "type": "integer",
-                      "description": "Current page number"
-                    },
                     "limit": {
                       "type": "integer",
-                      "description": "Number of users per page"
+                      "description": "Requested page size, or the returned collection size when unpaged"
                     },
-                    "total_pages": {
+                    "offset": {
                       "type": "integer",
-                      "description": "Total number of pages"
-                    },
-                    "has_more": {
-                      "type": "boolean",
-                      "description": "Whether more pages are available"
+                      "description": "Zero-based result offset"
                     }
                   }
                 }
@@ -39112,7 +39115,179 @@
         }
       }
     },
-    "/api/users/{id}": {
+    "/api/governance/users/{user_id}": {
+      "get": {
+        "operationId": "getUser",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Get user",
+        "description": "Returns a single Enterprise user.",
+        "tags": [
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "description": "User ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Unique user identifier"
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "User's display name"
+                    },
+                    "email": {
+                      "type": "string",
+                      "format": "email",
+                      "description": "User's email address"
+                    },
+                    "role_id": {
+                      "type": "integer",
+                      "nullable": true,
+                      "description": "ID of the assigned RBAC role"
+                    },
+                    "role": {
+                      "type": "object",
+                      "nullable": true,
+                      "description": "RBAC role details",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "is_system_role": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "teams": {
+                      "type": "array",
+                      "description": "Teams the user belongs to.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Team ID"
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "Team name"
+                          },
+                          "business_unit_id": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Business unit ID associated with this team (if any)"
+                          },
+                          "business_unit_name": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Business unit name associated with this team (if any)"
+                          }
+                        }
+                      }
+                    },
+                    "access_profile": {
+                      "type": "object",
+                      "nullable": true,
+                      "description": "Active or fallback user access profile, if assigned.",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "user_id": {
+                          "type": "string"
+                        },
+                        "parent_profile_id": {
+                          "type": "integer",
+                          "nullable": true
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "is_active": {
+                          "type": "boolean"
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "operationId": "deleteUser",
         "summary": "Delete user",
@@ -39122,7 +39297,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "description": "User ID",
@@ -39180,7 +39355,7 @@
         }
       }
     },
-    "/api/users/me/permissions": {
+    "/api/governance/users/me/permissions": {
       "get": {
         "operationId": "getCurrentUserPermissions",
         "summary": "Get current user permissions",
@@ -39249,7 +39424,7 @@
         }
       }
     },
-    "/api/users/{id}/role": {
+    "/api/governance/users/{user_id}/role": {
       "put": {
         "operationId": "assignUserRole",
         "summary": "Assign role to user",
@@ -39259,7 +39434,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "description": "User ID",
@@ -39336,7 +39511,7 @@
         }
       }
     },
-    "/api/users/{id}/teams": {
+    "/api/governance/users/{user_id}/teams": {
       "get": {
         "operationId": "getUserTeams",
         "summary": "Get user's teams",
@@ -39346,7 +39521,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "description": "User ID",
@@ -39434,7 +39609,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "description": "User ID",
@@ -39514,9 +39689,583 @@
         }
       }
     },
-    "/api/users/email/{email}/virtual-keys": {
+    "/api/governance/users/{user_id}/governance": {
+      "post": {
+        "operationId": "createUserGovernance",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Create user governance",
+        "tags": [
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "User-scoped governance settings. POST creates settings and PUT partially updates them.",
+                "properties": {
+                  "user_id": {
+                    "type": "string",
+                    "description": "Optional body copy of the path user ID. When present, it must match the path."
+                  },
+                  "budget": {
+                    "$ref": "#/components/schemas/CreateBudgetRequest"
+                  },
+                  "budgets": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/CreateBudgetRequest"
+                    }
+                  },
+                  "rate_limit": {
+                    "$ref": "#/components/schemas/CreateRateLimitRequest"
+                  },
+                  "provider_configs": {
+                    "type": "array",
+                    "description": "Optional Enterprise per-provider governance overrides.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Governance created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Unique user identifier"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "User's display name"
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email",
+                          "description": "User's email address"
+                        },
+                        "role_id": {
+                          "type": "integer",
+                          "nullable": true,
+                          "description": "ID of the assigned RBAC role"
+                        },
+                        "role": {
+                          "type": "object",
+                          "nullable": true,
+                          "description": "RBAC role details",
+                          "properties": {
+                            "id": {
+                              "type": "integer"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "is_system_role": {
+                              "type": "boolean"
+                            }
+                          }
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "teams": {
+                          "type": "array",
+                          "description": "Teams the user belongs to.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "description": "Team ID"
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Team name"
+                              },
+                              "business_unit_id": {
+                                "type": "string",
+                                "nullable": true,
+                                "description": "Business unit ID associated with this team (if any)"
+                              },
+                              "business_unit_name": {
+                                "type": "string",
+                                "nullable": true,
+                                "description": "Business unit name associated with this team (if any)"
+                              }
+                            }
+                          }
+                        },
+                        "access_profile": {
+                          "type": "object",
+                          "nullable": true,
+                          "description": "Active or fallback user access profile, if assigned.",
+                          "properties": {
+                            "id": {
+                              "type": "integer"
+                            },
+                            "user_id": {
+                              "type": "string"
+                            },
+                            "parent_profile_id": {
+                              "type": "integer",
+                              "nullable": true
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "is_active": {
+                              "type": "boolean"
+                            },
+                            "expires_at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "nullable": true
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "User governance already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateUserGovernance",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Update user governance",
+        "tags": [
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "User-scoped governance settings. POST creates settings and PUT partially updates them.",
+                "properties": {
+                  "user_id": {
+                    "type": "string",
+                    "description": "Optional body copy of the path user ID. When present, it must match the path."
+                  },
+                  "budget": {
+                    "$ref": "#/components/schemas/CreateBudgetRequest"
+                  },
+                  "budgets": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/CreateBudgetRequest"
+                    }
+                  },
+                  "rate_limit": {
+                    "$ref": "#/components/schemas/CreateRateLimitRequest"
+                  },
+                  "provider_configs": {
+                    "type": "array",
+                    "description": "Optional Enterprise per-provider governance overrides.",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Governance updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Unique user identifier"
+                        },
+                        "name": {
+                          "type": "string",
+                          "description": "User's display name"
+                        },
+                        "email": {
+                          "type": "string",
+                          "format": "email",
+                          "description": "User's email address"
+                        },
+                        "role_id": {
+                          "type": "integer",
+                          "nullable": true,
+                          "description": "ID of the assigned RBAC role"
+                        },
+                        "role": {
+                          "type": "object",
+                          "nullable": true,
+                          "description": "RBAC role details",
+                          "properties": {
+                            "id": {
+                              "type": "integer"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "is_system_role": {
+                              "type": "boolean"
+                            }
+                          }
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "teams": {
+                          "type": "array",
+                          "description": "Teams the user belongs to.",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "description": "Team ID"
+                              },
+                              "name": {
+                                "type": "string",
+                                "description": "Team name"
+                              },
+                              "business_unit_id": {
+                                "type": "string",
+                                "nullable": true,
+                                "description": "Business unit ID associated with this team (if any)"
+                              },
+                              "business_unit_name": {
+                                "type": "string",
+                                "nullable": true,
+                                "description": "Business unit name associated with this team (if any)"
+                              }
+                            }
+                          }
+                        },
+                        "access_profile": {
+                          "type": "object",
+                          "nullable": true,
+                          "description": "Active or fallback user access profile, if assigned.",
+                          "properties": {
+                            "id": {
+                              "type": "integer"
+                            },
+                            "user_id": {
+                              "type": "string"
+                            },
+                            "parent_profile_id": {
+                              "type": "integer",
+                              "nullable": true
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "is_active": {
+                              "type": "boolean"
+                            },
+                            "expires_at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "nullable": true
+                            },
+                            "created_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "updated_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteUserGovernance",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Delete user governance",
+        "tags": [
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Governance deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/users/{user_id}/virtual-keys": {
+      "get": {
+        "operationId": "listUserVirtualKeys",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "List virtual keys available to a user",
+        "tags": [
+          "Users",
+          "Virtual Keys"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User virtual keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "virtual_keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/users/email/{email}/virtual-keys": {
       "get": {
         "operationId": "getUserVirtualKeysByEmail",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
         "summary": "Get user's virtual keys by email",
         "description": "**Enterprise only.**\nReturns all virtual keys associated with a user, looked up by email address. Returns an empty `virtual_keys` array when the user exists but has no virtual keys assigned. Intended for MDM and credential-helper integrations that need to resolve a user's keys without knowing their internal ID.\n",
         "tags": [
@@ -39620,223 +40369,28 @@
         }
       }
     },
-    "/api/teams": {
+    "/api/governance/users/email/{email}": {
       "get": {
-        "operationId": "listTeams",
-        "summary": "List teams",
-        "description": "Returns a paginated list of teams with optional search.",
-        "tags": [
-          "Teams"
-        ],
-        "parameters": [
-          {
-            "name": "page",
-            "in": "query",
-            "description": "Page number (1-based)",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "default": 1
-            }
+        "operationId": "getUserByEmail",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
           },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Number of teams per page (max 100)",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100,
-              "default": 20
-            }
-          },
-          {
-            "name": "search",
-            "in": "query",
-            "description": "Search by team name",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "teams": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string",
-                            "description": "Team ID (derived from name)"
-                          },
-                          "name": {
-                            "type": "string",
-                            "description": "Team name"
-                          },
-                          "member_count": {
-                            "type": "integer",
-                            "description": "Number of members in the team"
-                          },
-                          "virtual_key_count": {
-                            "type": "integer",
-                            "description": "Number of virtual keys assigned to the team"
-                          },
-                          "created_at": {
-                            "type": "string",
-                            "format": "date-time"
-                          },
-                          "updated_at": {
-                            "type": "string",
-                            "format": "date-time"
-                          }
-                        }
-                      }
-                    },
-                    "total": {
-                      "type": "integer"
-                    },
-                    "page": {
-                      "type": "integer"
-                    },
-                    "limit": {
-                      "type": "integer"
-                    },
-                    "total_pages": {
-                      "type": "integer",
-                      "description": "Total number of pages"
-                    },
-                    "has_more": {
-                      "type": "boolean",
-                      "description": "Whether more pages are available"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "createTeam",
-        "summary": "Create team",
-        "description": "Creates a new team. The team ID is derived from the name.",
-        "tags": [
-          "Teams"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "name"
-                ],
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "description": "Team name (must be unique)"
-                  }
-                }
-              }
-            }
-          }
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
         },
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Team created successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "name": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Team with this name already exists",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/teams/{id}": {
-      "get": {
-        "operationId": "getTeam",
-        "summary": "Get team",
-        "description": "Returns details of a specific team including member count.",
+        "summary": "Get user by email",
+        "description": "Returns a single Enterprise user resolved by URL-encoded email address.",
         "tags": [
-          "Teams"
+          "Users"
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "email",
             "in": "path",
             "required": true,
-            "description": "Team ID",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "email"
             }
           }
         ],
@@ -39855,19 +40409,40 @@
                   "properties": {
                     "id": {
                       "type": "string",
-                      "description": "Team ID (derived from name)"
+                      "description": "Unique user identifier"
                     },
                     "name": {
                       "type": "string",
-                      "description": "Team name"
+                      "description": "User's display name"
                     },
-                    "member_count": {
-                      "type": "integer",
-                      "description": "Number of members in the team"
+                    "email": {
+                      "type": "string",
+                      "format": "email",
+                      "description": "User's email address"
                     },
-                    "virtual_key_count": {
+                    "role_id": {
                       "type": "integer",
-                      "description": "Number of virtual keys assigned to the team"
+                      "nullable": true,
+                      "description": "ID of the assigned RBAC role"
+                    },
+                    "role": {
+                      "type": "object",
+                      "nullable": true,
+                      "description": "RBAC role details",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "is_system_role": {
+                          "type": "boolean"
+                        }
+                      }
                     },
                     "created_at": {
                       "type": "string",
@@ -39876,186 +40451,81 @@
                     "updated_at": {
                       "type": "string",
                       "format": "date-time"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Team not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "operationId": "updateTeam",
-        "summary": "Update team",
-        "description": "Updates a team. Note that renaming teams is not allowed.\nAccepts customer_id / customer_ids to attach customers to the team via the team <-> customer many-to-many association, the same association exposed by POST /api/teams/{id}/customers. Attachment is additive and does not detach existing customers.",
-        "tags": [
-          "Teams"
-        ],
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "Team ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "description": "Team name. Renaming is not allowed - sending a value different from the team's current name returns 400."
-                  },
-                  "customer_id": {
-                    "type": "string",
-                    "description": "Customer to attach to this team. Additive: the customer is attached and any customers already attached are left in place. Re-sending an already-attached customer is a no-op. To detach, use DELETE /api/teams/{id}/customers/{customerId}.\nThis is the team <-> customer many-to-many association that drives governance and DAC customer derivation. It is distinct from the customer_id on PUT /api/governance/teams/{team_id}, which sets the team's budget-hierarchy parent and is not modified by this endpoint."
-                  },
-                  "customer_ids": {
-                    "type": "array",
-                    "description": "Customers to attach to this team, same semantics as customer_id. May be combined with customer_id; the two sets are merged.",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Team updated successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
                     },
-                    "name": {
-                      "type": "string"
-                    },
-                    "attached_customer_ids": {
+                    "teams": {
                       "type": "array",
-                      "description": "Customers attached by this request. Omitted when the request carried no customer_id or customer_ids.",
+                      "description": "Teams the user belongs to.",
                       "items": {
-                        "type": "string"
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Team ID"
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "Team name"
+                          },
+                          "business_unit_id": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Business unit ID associated with this team (if any)"
+                          },
+                          "business_unit_name": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Business unit name associated with this team (if any)"
+                          }
+                        }
                       }
                     },
-                    "warning": {
-                      "type": "string",
-                      "description": "Present only when the attachment was persisted but refreshing the cached team scope failed. The association is durable; the derived customer scope may lag until the next reload."
+                    "access_profile": {
+                      "type": "object",
+                      "nullable": true,
+                      "description": "Active or fallback user access profile, if assigned.",
+                      "properties": {
+                        "id": {
+                          "type": "integer"
+                        },
+                        "user_id": {
+                          "type": "string"
+                        },
+                        "parent_profile_id": {
+                          "type": "integer",
+                          "nullable": true
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "is_active": {
+                          "type": "boolean"
+                        },
+                        "expires_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
                     }
                   }
                 }
               }
             }
           },
-          "400": {
-            "description": "Bad request (e.g. renaming not allowed)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "Team or customer not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
+            "description": "Resource not found",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteTeam",
-        "summary": "Delete team",
-        "description": "Permanently removes a team.",
-        "tags": [
-          "Teams"
-        ],
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "Team ID",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "ManagementBearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Team deleted successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Team not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManagementErrorResponse"
                 }
               }
             }
@@ -40073,7 +40543,7 @@
         }
       }
     },
-    "/api/teams/{id}/members": {
+    "/api/governance/teams/{team_id}/members": {
       "get": {
         "operationId": "getTeamMembers",
         "summary": "List team members",
@@ -40083,7 +40553,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "team_id",
             "in": "path",
             "required": true,
             "description": "Team ID",
@@ -40172,7 +40642,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "team_id",
             "in": "path",
             "required": true,
             "description": "Team ID",
@@ -40249,7 +40719,7 @@
         }
       }
     },
-    "/api/teams/{id}/members/{userId}": {
+    "/api/governance/teams/{team_id}/members/{user_id}": {
       "delete": {
         "operationId": "removeTeamMember",
         "summary": "Remove team member",
@@ -40259,7 +40729,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "team_id",
             "in": "path",
             "required": true,
             "description": "Team ID",
@@ -40268,7 +40738,7 @@
             }
           },
           {
-            "name": "userId",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "description": "User ID to remove",
@@ -45038,6 +45508,291 @@
         }
       }
     },
+    "/api/governance/virtual-keys/{vk_id}/users": {
+      "get": {
+        "operationId": "listVirtualKeyUsers",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "List users attached to a virtual key",
+        "tags": [
+          "Virtual Keys",
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attached users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "users",
+                    "count"
+                  ],
+                  "properties": {
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Unique user identifier"
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "User's display name"
+                          },
+                          "email": {
+                            "type": "string",
+                            "format": "email",
+                            "description": "User's email address"
+                          },
+                          "role_id": {
+                            "type": "integer",
+                            "nullable": true,
+                            "description": "ID of the assigned RBAC role"
+                          },
+                          "role": {
+                            "type": "object",
+                            "nullable": true,
+                            "description": "RBAC role details",
+                            "properties": {
+                              "id": {
+                                "type": "integer"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "is_system_role": {
+                                "type": "boolean"
+                              }
+                            }
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "teams": {
+                            "type": "array",
+                            "description": "Teams the user belongs to.",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "description": "Team ID"
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "description": "Team name"
+                                },
+                                "business_unit_id": {
+                                  "type": "string",
+                                  "nullable": true,
+                                  "description": "Business unit ID associated with this team (if any)"
+                                },
+                                "business_unit_name": {
+                                  "type": "string",
+                                  "nullable": true,
+                                  "description": "Business unit name associated with this team (if any)"
+                                }
+                              }
+                            }
+                          },
+                          "access_profile": {
+                            "type": "object",
+                            "nullable": true,
+                            "description": "Active or fallback user access profile, if assigned.",
+                            "properties": {
+                              "id": {
+                                "type": "integer"
+                              },
+                              "user_id": {
+                                "type": "string"
+                              },
+                              "parent_profile_id": {
+                                "type": "integer",
+                                "nullable": true
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "is_active": {
+                                "type": "boolean"
+                              },
+                              "expires_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "nullable": true
+                              },
+                              "created_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "updated_at": {
+                                "type": "string",
+                                "format": "date-time"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "attachVirtualKeyUsers",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Attach users to a virtual key",
+        "tags": [
+          "Virtual Keys",
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "user_ids"
+                ],
+                "properties": {
+                  "user_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "preserve_usage": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Users attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/virtual-keys/{vk_id}/users/{user_id}": {
+      "delete": {
+        "operationId": "detachVirtualKeyUser",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Detach a user from a virtual key",
+        "tags": [
+          "Virtual Keys",
+          "Users"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User detached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/teams": {
       "get": {
         "operationId": "listTeams",
@@ -45353,6 +46108,175 @@
         }
       }
     },
+    "/api/governance/teams/{team_id}/customers": {
+      "get": {
+        "operationId": "listTeamCustomers",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "List customers attached to a team",
+        "tags": [
+          "Teams",
+          "Customers"
+        ],
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attached customers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "customers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "attachTeamCustomer",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Attach a customer to a team",
+        "tags": [
+          "Teams",
+          "Customers"
+        ],
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "customer_id"
+                ],
+                "properties": {
+                  "customer_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customer attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/teams/{team_id}/customers/{customer_id}": {
+      "delete": {
+        "operationId": "detachTeamCustomer",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Detach a customer from a team",
+        "tags": [
+          "Teams",
+          "Customers"
+        ],
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customer detached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/customers": {
       "get": {
         "operationId": "listCustomers",
@@ -45660,9 +46584,133 @@
         }
       }
     },
+    "/api/governance/customers/{customer_id}/teams": {
+      "get": {
+        "operationId": "listCustomerTeams",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "List teams attached to a customer",
+        "tags": [
+          "Customers",
+          "Teams"
+        ],
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attached teams",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "teams": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/customers/{customer_id}/business-units": {
+      "get": {
+        "operationId": "listCustomerBusinessUnits",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "List business units attached to a customer",
+        "tags": [
+          "Customers",
+          "Business Units"
+        ],
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attached business units",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "business_units": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/business-units": {
       "get": {
         "operationId": "listBusinessUnits",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
         "summary": "List business units",
         "description": "Returns a paginated list of business units, each with its team count.",
         "tags": [
@@ -45670,13 +46718,13 @@
         ],
         "parameters": [
           {
-            "name": "page",
+            "name": "offset",
             "in": "query",
-            "description": "Page number (1-based)",
+            "description": "Zero-based result offset",
             "schema": {
               "type": "integer",
-              "minimum": 1,
-              "default": 1
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -45714,9 +46762,10 @@
                   "description": "Paginated list of business units",
                   "required": [
                     "business_units",
-                    "total",
-                    "page",
-                    "limit"
+                    "count",
+                    "total_count",
+                    "limit",
+                    "offset"
                   ],
                   "properties": {
                     "business_units": {
@@ -45734,6 +46783,9 @@
                           "team_count": {
                             "type": "integer"
                           },
+                          "customer_count": {
+                            "type": "integer"
+                          },
                           "created_at": {
                             "type": "string",
                             "format": "date-time"
@@ -45745,13 +46797,16 @@
                         }
                       }
                     },
-                    "total": {
+                    "count": {
                       "type": "integer"
                     },
-                    "page": {
+                    "total_count": {
                       "type": "integer"
                     },
                     "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
                       "type": "integer"
                     }
                   }
@@ -45773,6 +46828,12 @@
       },
       "post": {
         "operationId": "createBusinessUnit",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
         "summary": "Create business unit",
         "description": "Creates a new business unit. Names must be unique.",
         "tags": [
@@ -45855,9 +46916,15 @@
         }
       }
     },
-    "/api/governance/business-units/{id}": {
+    "/api/governance/business-units/{business_unit_id}": {
       "get": {
         "operationId": "getBusinessUnit",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
         "summary": "Get business unit",
         "description": "Returns a specific business unit by ID, including governance and team count.",
         "tags": [
@@ -45865,7 +46932,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "business_unit_id",
             "in": "path",
             "required": true,
             "description": "Business unit ID",
@@ -45938,6 +47005,116 @@
           }
         }
       },
+      "put": {
+        "operationId": "updateBusinessUnit",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Update business unit",
+        "description": "Updates the business unit name.",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "business_unit_id",
+            "in": "path",
+            "required": true,
+            "description": "Business unit ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Create business unit request",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Business unit updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response for business unit create/update operations",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A business unit with this name already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "operationId": "deleteBusinessUnit",
         "summary": "Delete business unit",
@@ -45947,7 +47124,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "business_unit_id",
             "in": "path",
             "required": true,
             "description": "Business unit ID",
@@ -45995,7 +47172,7 @@
         }
       }
     },
-    "/api/governance/business-units/{id}/teams": {
+    "/api/governance/business-units/{business_unit_id}/teams": {
       "get": {
         "operationId": "listBusinessUnitTeams",
         "summary": "List business unit teams",
@@ -46005,7 +47182,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "business_unit_id",
             "in": "path",
             "required": true,
             "description": "Business unit ID",
@@ -46014,13 +47191,13 @@
             }
           },
           {
-            "name": "page",
+            "name": "offset",
             "in": "query",
-            "description": "Page number (1-based)",
+            "description": "Zero-based result offset",
             "schema": {
               "type": "integer",
-              "minimum": 1,
-              "default": 1
+              "minimum": 0,
+              "default": 0
             }
           },
           {
@@ -46058,9 +47235,10 @@
                   "description": "Paginated list of teams assigned to a business unit",
                   "required": [
                     "teams",
-                    "total",
-                    "page",
-                    "limit"
+                    "count",
+                    "total_count",
+                    "limit",
+                    "offset"
                   ],
                   "properties": {
                     "teams": {
@@ -46077,13 +47255,16 @@
                         }
                       }
                     },
-                    "total": {
+                    "count": {
                       "type": "integer"
                     },
-                    "page": {
+                    "total_count": {
                       "type": "integer"
                     },
                     "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
                       "type": "integer"
                     }
                   }
@@ -46122,7 +47303,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "business_unit_id",
             "in": "path",
             "required": true,
             "description": "Business unit ID",
@@ -46209,7 +47390,7 @@
         }
       }
     },
-    "/api/governance/business-units/{id}/teams/{team_id}": {
+    "/api/governance/business-units/{business_unit_id}/teams/{team_id}": {
       "delete": {
         "operationId": "removeTeamFromBusinessUnit",
         "summary": "Remove team from business unit",
@@ -46219,7 +47400,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "business_unit_id",
             "in": "path",
             "required": true,
             "description": "Business unit ID",
@@ -46286,7 +47467,7 @@
         }
       }
     },
-    "/api/governance/business-units/{id}/governance": {
+    "/api/governance/business-units/{business_unit_id}/governance": {
       "post": {
         "operationId": "createBusinessUnitGovernance",
         "summary": "Create business unit governance",
@@ -46296,7 +47477,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "business_unit_id",
             "in": "path",
             "required": true,
             "description": "Business unit ID",
@@ -46466,7 +47647,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "business_unit_id",
             "in": "path",
             "required": true,
             "description": "Business unit ID",
@@ -46607,6 +47788,12 @@
       },
       "delete": {
         "operationId": "deleteBusinessUnitGovernance",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
         "summary": "Delete business unit governance",
         "description": "Removes all budget and rate limit governance from a business unit.",
         "tags": [
@@ -46614,7 +47801,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "business_unit_id",
             "in": "path",
             "required": true,
             "description": "Business unit ID",
@@ -46655,6 +47842,208 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/business-units/{business_unit_id}/customers": {
+      "get": {
+        "operationId": "listBusinessUnitCustomers",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "List customers attached to a business unit",
+        "tags": [
+          "Business Units",
+          "Customers"
+        ],
+        "parameters": [
+          {
+            "name": "business_unit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attached customers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "customers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "total_count": {
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "attachBusinessUnitCustomer",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Attach customers to a business unit",
+        "tags": [
+          "Business Units",
+          "Customers"
+        ],
+        "parameters": [
+          {
+            "name": "business_unit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "customer_id": {
+                    "type": "string"
+                  },
+                  "customer_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customers attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/business-units/{business_unit_id}/customers/{customer_id}": {
+      "delete": {
+        "operationId": "detachBusinessUnitCustomer",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Detach a customer from a business unit",
+        "tags": [
+          "Business Units",
+          "Customers"
+        ],
+        "parameters": [
+          {
+            "name": "business_unit_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Customer detached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
                 }
               }
             }
@@ -47837,7 +49226,7 @@
         }
       }
     },
-    "/api/roles": {
+    "/api/governance/rbac/roles": {
       "get": {
         "operationId": "listRoles",
         "summary": "List roles",
@@ -48042,7 +49431,7 @@
         }
       }
     },
-    "/api/roles/{id}": {
+    "/api/governance/rbac/roles/{role_id}": {
       "get": {
         "operationId": "getRole",
         "summary": "Get role by ID",
@@ -48051,7 +49440,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "role_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -48143,7 +49532,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "role_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -48276,7 +49665,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "role_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -48337,7 +49726,7 @@
         }
       }
     },
-    "/api/roles/{id}/permissions": {
+    "/api/governance/rbac/roles/{role_id}/permissions": {
       "get": {
         "operationId": "getRolePermissions",
         "summary": "List permissions assigned to a role",
@@ -48346,7 +49735,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "role_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -48414,7 +49803,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "role_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -48491,7 +49880,7 @@
         }
       }
     },
-    "/api/resources": {
+    "/api/governance/rbac/resources": {
       "get": {
         "operationId": "listResources",
         "summary": "List RBAC resources",
@@ -48545,7 +49934,7 @@
         }
       }
     },
-    "/api/operations": {
+    "/api/governance/rbac/operations": {
       "get": {
         "operationId": "listOperations",
         "summary": "List RBAC operations",
@@ -48599,7 +49988,7 @@
         }
       }
     },
-    "/api/permissions": {
+    "/api/governance/rbac/permissions": {
       "get": {
         "operationId": "listPermissions",
         "summary": "List all RBAC permissions",
@@ -48656,7 +50045,7 @@
         }
       }
     },
-    "/api/access-profiles": {
+    "/api/governance/access-profiles": {
       "get": {
         "operationId": "listAccessProfiles",
         "summary": "List access profiles",
@@ -49711,7 +51100,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}": {
+    "/api/governance/access-profiles/{profile_id}": {
       "get": {
         "operationId": "getAccessProfile",
         "summary": "Get access profile by ID",
@@ -49721,7 +51110,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -50108,7 +51497,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -50783,7 +52172,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -50831,7 +52220,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/activate": {
+    "/api/governance/access-profiles/{profile_id}/activate": {
       "put": {
         "operationId": "activateAccessProfile",
         "summary": "Activate access profile",
@@ -50841,7 +52230,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -51190,7 +52579,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/deactivate": {
+    "/api/governance/access-profiles/{profile_id}/deactivate": {
       "put": {
         "operationId": "deactivateAccessProfile",
         "summary": "Deactivate access profile",
@@ -51200,7 +52589,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -51549,7 +52938,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/clone": {
+    "/api/governance/access-profiles/{profile_id}/clone": {
       "post": {
         "operationId": "cloneAccessProfile",
         "summary": "Clone an access profile",
@@ -51559,7 +52948,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -51942,7 +53331,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/propagate": {
+    "/api/governance/access-profiles/{profile_id}/propagate": {
       "post": {
         "operationId": "propagateAccessProfile",
         "summary": "Propagate template changes to user copies",
@@ -51952,7 +53341,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52086,7 +53475,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/roles": {
+    "/api/governance/access-profiles/{profile_id}/roles": {
       "post": {
         "operationId": "attachRolesToAccessProfile",
         "summary": "Attach roles to access profile",
@@ -52096,7 +53485,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52183,7 +53572,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/roles/{role_id}": {
+    "/api/governance/access-profiles/{profile_id}/roles/{role_id}": {
       "delete": {
         "operationId": "detachRoleFromAccessProfile",
         "summary": "Detach role from access profile",
@@ -52192,7 +53581,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52245,7 +53634,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/versions": {
+    "/api/governance/access-profiles/{profile_id}/versions": {
       "get": {
         "operationId": "listAccessProfileVersions",
         "summary": "List version snapshots for an access profile",
@@ -52254,7 +53643,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52328,7 +53717,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/versions/{version}": {
+    "/api/governance/access-profiles/{profile_id}/versions/{version}": {
       "get": {
         "operationId": "getAccessProfileVersion",
         "summary": "Get a single version snapshot",
@@ -52337,7 +53726,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52419,7 +53808,7 @@
         }
       }
     },
-    "/api/access-profiles/{id}/audit-logs": {
+    "/api/governance/access-profiles/{profile_id}/audit-logs": {
       "get": {
         "operationId": "listAccessProfileAuditLogsById",
         "summary": "List audit log entries for a single profile",
@@ -52428,7 +53817,7 @@
         ],
         "parameters": [
           {
-            "name": "id",
+            "name": "profile_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52540,7 +53929,7 @@
         }
       }
     },
-    "/api/access-profiles/audit-logs": {
+    "/api/governance/access-profiles/audit-logs": {
       "get": {
         "operationId": "listAccessProfileAuditLogs",
         "summary": "List workspace-wide audit log entries",
@@ -52652,7 +54041,7 @@
         }
       }
     },
-    "/api/users/{target_user_id}/access-profiles": {
+    "/api/governance/users/{user_id}/access-profiles": {
       "get": {
         "operationId": "listUserAccessProfiles",
         "summary": "List access profiles held by a user",
@@ -52661,7 +54050,7 @@
         ],
         "parameters": [
           {
-            "name": "target_user_id",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52742,7 +54131,7 @@
         }
       }
     },
-    "/api/users/{target_user_id}/access-profiles/{profile_id}": {
+    "/api/governance/users/{user_id}/access-profiles/{profile_id}": {
       "delete": {
         "operationId": "detachUserAccessProfile",
         "summary": "Detach a user's access profile",
@@ -52752,7 +54141,7 @@
         ],
         "parameters": [
           {
-            "name": "target_user_id",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52814,7 +54203,134 @@
         }
       }
     },
-    "/api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys": {
+    "/api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override": {
+      "put": {
+        "operationId": "updateUserAccessProfileBudgetOverride",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Update a user's access-profile budget override",
+        "tags": [
+          "Users",
+          "Access Profiles"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteUserAccessProfileBudgetOverride",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n"
+        },
+        "summary": "Delete a user's access-profile budget override",
+        "tags": [
+          "Users",
+          "Access Profiles"
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys": {
       "post": {
         "operationId": "addUserAccessProfileVirtualKey",
         "summary": "Add an extra virtual key under a user's access profile",
@@ -52823,7 +54339,7 @@
         ],
         "parameters": [
           {
-            "name": "target_user_id",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -52906,7 +54422,7 @@
         }
       }
     },
-    "/api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}": {
+    "/api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}": {
       "delete": {
         "operationId": "deleteUserAccessProfileVirtualKey",
         "summary": "Delete a virtual key from a user's access profile",
@@ -52915,7 +54431,7 @@
         ],
         "parameters": [
           {
-            "name": "target_user_id",
+            "name": "user_id",
             "in": "path",
             "required": true,
             "schema": {

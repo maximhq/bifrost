@@ -54,7 +54,7 @@ roles-by-id:
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -82,7 +82,7 @@ roles-by-id:
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -117,7 +117,7 @@ roles-by-id:
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -153,7 +153,7 @@ roles-permissions:
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -181,7 +181,7 @@ roles-permissions:
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         schema:
@@ -275,7 +275,7 @@ users-assign-role:
     tags:
       - RBAC
     parameters:
-      - name: id
+      - name: role_id
         in: path
         required: true
         description: User ID.

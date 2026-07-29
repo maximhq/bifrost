@@ -133,6 +133,24 @@ type GovernanceHandler struct {
 	externalQuotaBudgetResolver ExternalQuotaBudgetResolver
 }
 
+// GovernanceRouteRegistrar registers one replaceable governance route family.
+type GovernanceRouteRegistrar func(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware)
+
+// GovernanceTeamRouteOverrides replaces selected Team handlers and registers edition-specific extensions.
+type GovernanceTeamRouteOverrides struct {
+	List       fasthttp.RequestHandler
+	Get        fasthttp.RequestHandler
+	Create     fasthttp.RequestHandler
+	Update     fasthttp.RequestHandler
+	Delete     fasthttp.RequestHandler
+	Extensions GovernanceRouteRegistrar
+}
+
+// GovernanceRouteOverrides allows downstream editions to own selected governance route families.
+type GovernanceRouteOverrides struct {
+	Teams *GovernanceTeamRouteOverrides
+}
+
 // NewGovernanceHandler creates a new governance handler instance.
 // logManager is optional (may be nil); when supplied it powers the quota
 // endpoint's per-budget actual per-model usage breakdown.
@@ -998,8 +1016,13 @@ type UpdateProviderGovernanceRequest struct {
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 }
 
-// RegisterRoutes registers all governance-related routes for the new hierarchical system
+// RegisterRoutes registers all governance routes with the default OSS family handlers.
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	h.RegisterRoutesWithOverrides(r, GovernanceRouteOverrides{}, middlewares...)
+}
+
+// RegisterRoutesWithOverrides registers governance routes while allowing downstream editions to replace route families.
+func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overrides GovernanceRouteOverrides, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.getComplexityAnalyzerConfig, middlewares...))
 	r.PUT("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.updateComplexityAnalyzerConfig, middlewares...))
 	r.POST("/api/governance/complexity-analyzer-config/reset", lib.ChainMiddlewares(h.resetComplexityAnalyzerConfig, middlewares...))
@@ -1015,12 +1038,9 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.DELETE("/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override", lib.ChainMiddlewares(h.deleteVirtualKeyBudgetOverride, middlewares...))
 	r.DELETE("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.deleteVirtualKey, middlewares...))
 
-	// Team CRUD operations
-	r.GET("/api/governance/teams", lib.ChainMiddlewares(h.getTeams, middlewares...))
-	r.POST("/api/governance/teams", lib.ChainMiddlewares(h.createTeam, middlewares...))
-	r.GET("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.getTeam, middlewares...))
-	r.PUT("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.updateTeam, middlewares...))
-	r.DELETE("/api/governance/teams/{team_id}", lib.ChainMiddlewares(h.deleteTeam, middlewares...))
+	// Team CRUD operations. Enterprise replaces this family with a superset
+	// registrar so the router sees exactly one handler per method/path.
+	h.registerTeamRoutes(r, overrides.Teams, middlewares...)
 
 	// Customer CRUD operations
 	r.GET("/api/governance/customers", lib.ChainMiddlewares(h.getCustomers, middlewares...))
@@ -1061,6 +1081,41 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	// Self-service endpoint — no admin auth, VK in header is the credential.
 	// Registered without admin middlewares; only common middlewares (telemetry) are applied.
 	r.GET("/api/governance/virtual-keys/quota", h.getVirtualKeyQuota)
+}
+
+// registerTeamRoutes registers Team CRUD with optional edition-specific handlers.
+func (h *GovernanceHandler) registerTeamRoutes(r *router.Router, overrides *GovernanceTeamRouteOverrides, middlewares ...schemas.BifrostHTTPMiddleware) {
+	listHandler := h.getTeams
+	getHandler := h.getTeam
+	createHandler := h.createTeam
+	updateHandler := h.updateTeam
+	deleteHandler := h.deleteTeam
+	if overrides != nil {
+		if overrides.List != nil {
+			listHandler = overrides.List
+		}
+		if overrides.Get != nil {
+			getHandler = overrides.Get
+		}
+		if overrides.Create != nil {
+			createHandler = overrides.Create
+		}
+		if overrides.Update != nil {
+			updateHandler = overrides.Update
+		}
+		if overrides.Delete != nil {
+			deleteHandler = overrides.Delete
+		}
+	}
+
+	r.GET("/api/governance/teams", lib.ChainMiddlewares(listHandler, middlewares...))
+	r.POST("/api/governance/teams", lib.ChainMiddlewares(createHandler, middlewares...))
+	r.GET("/api/governance/teams/{team_id}", lib.ChainMiddlewares(getHandler, middlewares...))
+	r.PUT("/api/governance/teams/{team_id}", lib.ChainMiddlewares(updateHandler, middlewares...))
+	r.DELETE("/api/governance/teams/{team_id}", lib.ChainMiddlewares(deleteHandler, middlewares...))
+	if overrides != nil && overrides.Extensions != nil {
+		overrides.Extensions(r, middlewares...)
+	}
 }
 
 func (h *GovernanceHandler) getComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {

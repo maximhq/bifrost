@@ -112,6 +112,7 @@
             "pages": [
               "migration-guides/v2.0.0",
               "migration-guides/v1.5.0",
+              "migration-guides/governance-api-namespace",
               "migration-guides/litellm"
             ]
           },
@@ -687,7 +688,304 @@
             ]
           },
           {
-            "group": "API Reference",
+            "group": "Governance",
+            "icon": "shield-halved",
+            "openapi": "openapi/openapi.json",
+            "pages": [
+              {
+                "group": "Teams",
+                "icon": "users",
+                "pages": [
+                  "GET /api/governance/teams",
+                  "POST /api/governance/teams",
+                  "GET /api/governance/teams/{team_id}",
+                  "PUT /api/governance/teams/{team_id}",
+                  "DELETE /api/governance/teams/{team_id}",
+                  "GET /api/governance/teams/{team_id}/members",
+                  "POST /api/governance/teams/{team_id}/members",
+                  "DELETE /api/governance/teams/{team_id}/members/{user_id}",
+                  "GET /api/governance/users/{user_id}/teams",
+                  "PUT /api/governance/users/{user_id}/teams",
+                  "GET /api/governance/teams/{team_id}/customers",
+                  "POST /api/governance/teams/{team_id}/customers",
+                  "DELETE /api/governance/teams/{team_id}/customers/{customer_id}",
+                  "GET /api/governance/customers/{customer_id}/teams",
+                  "GET /api/governance/business-units/{business_unit_id}/teams",
+                  "POST /api/governance/business-units/{business_unit_id}/teams",
+                  "DELETE /api/governance/business-units/{business_unit_id}/teams/{team_id}"
+                ]
+              },
+              {
+                "group": "Virtual Keys",
+                "icon": "key",
+                "pages": [
+                  "GET /api/governance/virtual-keys",
+                  "POST /api/governance/virtual-keys",
+                  "GET /api/governance/virtual-keys/quota",
+                  "GET /api/governance/virtual-keys/{vk_id}",
+                  "PUT /api/governance/virtual-keys/{vk_id}",
+                  "DELETE /api/governance/virtual-keys/{vk_id}",
+                  "GET /api/governance/virtual-keys/{vk_id}/users",
+                  "POST /api/governance/virtual-keys/{vk_id}/users",
+                  "DELETE /api/governance/virtual-keys/{vk_id}/users/{user_id}",
+                  "GET /api/governance/users/{user_id}/virtual-keys",
+                  "GET /api/governance/users/email/{email}/virtual-keys"
+                ]
+              },
+              {
+                "group": "Customers",
+                "icon": "building",
+                "pages": [
+                  "GET /api/governance/customers",
+                  "POST /api/governance/customers",
+                  "GET /api/governance/customers/{customer_id}",
+                  "PUT /api/governance/customers/{customer_id}",
+                  "DELETE /api/governance/customers/{customer_id}"
+                ]
+              },
+              {
+                "group": "Users",
+                "icon": "user",
+                "pages": [
+                  "GET /api/governance/users",
+                  "POST /api/governance/users",
+                  "GET /api/governance/users/{user_id}",
+                  "DELETE /api/governance/users/{user_id}",
+                  "GET /api/governance/users/email/{email}",
+                  "GET /api/governance/users/me/permissions",
+                  "PUT /api/governance/users/{user_id}/role",
+                  "POST /api/governance/users/{user_id}/governance",
+                  "PUT /api/governance/users/{user_id}/governance",
+                  "DELETE /api/governance/users/{user_id}/governance"
+                ]
+              },
+              {
+                "group": "Business Units",
+                "icon": "sitemap",
+                "pages": [
+                  "GET /api/governance/business-units",
+                  "POST /api/governance/business-units",
+                  "GET /api/governance/business-units/{business_unit_id}",
+                  "PUT /api/governance/business-units/{business_unit_id}",
+                  "DELETE /api/governance/business-units/{business_unit_id}",
+                  "POST /api/governance/business-units/{business_unit_id}/governance",
+                  "PUT /api/governance/business-units/{business_unit_id}/governance",
+                  "DELETE /api/governance/business-units/{business_unit_id}/governance",
+                  "GET /api/governance/business-units/{business_unit_id}/customers",
+                  "POST /api/governance/business-units/{business_unit_id}/customers",
+                  "DELETE /api/governance/business-units/{business_unit_id}/customers/{customer_id}",
+                  "GET /api/governance/customers/{customer_id}/business-units"
+                ]
+              },
+              {
+                "group": "Access Profiles",
+                "icon": "user-shield",
+                "pages": [
+                  "GET /api/governance/access-profiles",
+                  "POST /api/governance/access-profiles",
+                  "GET /api/governance/access-profiles/{profile_id}",
+                  "PUT /api/governance/access-profiles/{profile_id}",
+                  "DELETE /api/governance/access-profiles/{profile_id}",
+                  "PUT /api/governance/access-profiles/{profile_id}/activate",
+                  "PUT /api/governance/access-profiles/{profile_id}/deactivate",
+                  "POST /api/governance/access-profiles/{profile_id}/clone",
+                  "POST /api/governance/access-profiles/{profile_id}/propagate",
+                  "POST /api/governance/access-profiles/{profile_id}/roles",
+                  "DELETE /api/governance/access-profiles/{profile_id}/roles/{role_id}",
+                  "GET /api/governance/access-profiles/{profile_id}/versions",
+                  "GET /api/governance/access-profiles/{profile_id}/versions/{version}",
+                  "GET /api/governance/access-profiles/{profile_id}/audit-logs",
+                  "GET /api/governance/access-profiles/audit-logs",
+                  "GET /api/governance/users/{user_id}/access-profiles",
+                  "DELETE /api/governance/users/{user_id}/access-profiles/{profile_id}",
+                  "PUT /api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
+                  "DELETE /api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
+                  "POST /api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys",
+                  "DELETE /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}"
+                ]
+              },
+              {
+                "group": "RBAC",
+                "icon": "lock",
+                "pages": [
+                  "GET /api/governance/rbac/roles",
+                  "POST /api/governance/rbac/roles",
+                  "GET /api/governance/rbac/roles/{role_id}",
+                  "PUT /api/governance/rbac/roles/{role_id}",
+                  "DELETE /api/governance/rbac/roles/{role_id}",
+                  "GET /api/governance/rbac/roles/{role_id}/permissions",
+                  "PUT /api/governance/rbac/roles/{role_id}/permissions",
+                  "GET /api/governance/rbac/resources",
+                  "GET /api/governance/rbac/operations",
+                  "GET /api/governance/rbac/permissions"
+                ]
+              },
+              {
+                "group": "Budgets & Rate Limits",
+                "icon": "gauge",
+                "pages": [
+                  "GET /api/governance/budgets",
+                  "GET /api/governance/rate-limits"
+                ]
+              },
+              {
+                "group": "Routing Rules",
+                "icon": "route",
+                "pages": [
+                  "GET /api/governance/routing-rules",
+                  "POST /api/governance/routing-rules",
+                  "GET /api/governance/routing-rules/{rule_id}",
+                  "PUT /api/governance/routing-rules/{rule_id}",
+                  "DELETE /api/governance/routing-rules/{rule_id}"
+                ]
+              },
+              {
+                "group": "Model Configs",
+                "icon": "sliders",
+                "pages": [
+                  "GET /api/governance/model-configs",
+                  "POST /api/governance/model-configs",
+                  "GET /api/governance/model-configs/{mc_id}",
+                  "PUT /api/governance/model-configs/{mc_id}",
+                  "DELETE /api/governance/model-configs/{mc_id}"
+                ]
+              },
+              {
+                "group": "Provider Governance",
+                "icon": "server",
+                "pages": [
+                  "GET /api/governance/providers",
+                  "PUT /api/governance/providers/{provider_name}",
+                  "DELETE /api/governance/providers/{provider_name}"
+                ]
+              },
+              {
+                "group": "Pricing Overrides",
+                "icon": "tags",
+                "pages": [
+                  "GET /api/governance/pricing-overrides",
+                  "POST /api/governance/pricing-overrides",
+                  "PUT /api/governance/pricing-overrides/{id}",
+                  "DELETE /api/governance/pricing-overrides/{id}"
+                ]
+              },
+              {
+                "group": "Complexity Analyzer",
+                "icon": "chart-line",
+                "pages": [
+                  "GET /api/governance/complexity-analyzer-config",
+                  "PUT /api/governance/complexity-analyzer-config",
+                  "POST /api/governance/complexity-analyzer-config/reset"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Deprecated",
+            "pages": [
+              {
+                "group": "Virtual Keys",
+                "expanded": false,
+                "pages": [
+                  "GET /api/virtual-keys/{vk_id}/users",
+                  "POST /api/virtual-keys/{vk_id}/users",
+                  "DELETE /api/virtual-keys/{vk_id}/users/{user_id}"
+                ]
+              },
+              {
+                "group": "Teams",
+                "expanded": false,
+                "pages": [
+                  "GET /api/teams/{team_id}/customers",
+                  "POST /api/teams/{team_id}/customers",
+                  "DELETE /api/teams/{team_id}/customers/{customer_id}",
+                  "GET /api/teams/{team_id}/members",
+                  "POST /api/teams/{team_id}/members",
+                  "DELETE /api/teams/{team_id}/members/{user_id}"
+                ]
+              },
+              {
+                "group": "Customers",
+                "expanded": false,
+                "pages": [
+                  "GET /api/customers/{customer_id}/teams"
+                ]
+              },
+              {
+                "group": "RBAC",
+                "expanded": false,
+                "pages": [
+                  "GET /api/roles",
+                  "POST /api/roles",
+                  "GET /api/roles/{role_id}",
+                  "PUT /api/roles/{role_id}",
+                  "DELETE /api/roles/{role_id}",
+                  "GET /api/roles/{role_id}/permissions",
+                  "PUT /api/roles/{role_id}/permissions",
+                  "GET /api/resources",
+                  "GET /api/operations",
+                  "GET /api/permissions"
+                ]
+              },
+              {
+                "group": "Users",
+                "expanded": false,
+                "pages": [
+                  "GET /api/users",
+                  "POST /api/users",
+                  "GET /api/users/{user_id}",
+                  "DELETE /api/users/{user_id}",
+                  "GET /api/users/me/permissions",
+                  "PUT /api/users/{user_id}/role",
+                  "GET /api/users/{user_id}/teams",
+                  "PUT /api/users/{user_id}/teams",
+                  "GET /api/users/email/{email}/virtual-keys",
+                  "GET /api/users/email/{email}",
+                  "GET /api/users/{user_id}/virtual-keys",
+                  "PUT /api/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
+                  "DELETE /api/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override"
+                ]
+              },
+              {
+                "group": "Governance",
+                "expanded": false,
+                "pages": [
+                  "GET /api/teams",
+                  "POST /api/teams",
+                  "GET /api/teams/{team_id}",
+                  "PUT /api/teams/{team_id}",
+                  "DELETE /api/teams/{team_id}"
+                ]
+              },
+              {
+                "group": "Access Profiles",
+                "expanded": false,
+                "pages": [
+                  "GET /api/access-profiles",
+                  "POST /api/access-profiles",
+                  "GET /api/access-profiles/{profile_id}",
+                  "PUT /api/access-profiles/{profile_id}",
+                  "DELETE /api/access-profiles/{profile_id}",
+                  "PUT /api/access-profiles/{profile_id}/activate",
+                  "PUT /api/access-profiles/{profile_id}/deactivate",
+                  "POST /api/access-profiles/{profile_id}/clone",
+                  "POST /api/access-profiles/{profile_id}/propagate",
+                  "POST /api/access-profiles/{profile_id}/roles",
+                  "DELETE /api/access-profiles/{profile_id}/roles/{role_id}",
+                  "GET /api/access-profiles/{profile_id}/versions",
+                  "GET /api/access-profiles/{profile_id}/versions/{version}",
+                  "GET /api/access-profiles/{profile_id}/audit-logs",
+                  "GET /api/access-profiles/audit-logs",
+                  "GET /api/users/{user_id}/access-profiles",
+                  "DELETE /api/users/{user_id}/access-profiles/{profile_id}",
+                  "POST /api/users/{user_id}/access-profiles/{profile_id}/virtual-keys",
+                  "DELETE /api/users/{user_id}/access-profiles/virtual-keys/{vk_id}"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Complete API Reference",
             "openapi": "openapi/openapi.json"
           }
         ]
