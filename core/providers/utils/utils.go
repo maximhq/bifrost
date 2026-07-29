@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/textproto"
@@ -1576,7 +1575,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 		}
 	}
 
-	// Rebuild compact JSON, then indent for consistent formatting
+	// Rebuild compact JSON in the original key order
 	var compact bytes.Buffer
 	compact.WriteByte('{')
 	for i, kv := range pairs {
@@ -1594,12 +1593,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 	}
 	compact.WriteByte('}')
 
-	// Re-indent to match the expected formatting
-	var indented bytes.Buffer
-	if err := json.Indent(&indented, compact.Bytes(), "", "  "); err != nil {
-		return compact.Bytes(), nil
-	}
-	return indented.Bytes(), nil
+	return compact.Bytes(), nil
 }
 
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
@@ -1618,7 +1612,8 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 			return nil, NewBifrostOperationError("request body is not provided", nil)
 		}
 
-		jsonBody, err := MarshalSortedIndent(convertedBody, "", "  ")
+		// Indenting is removed to reduce data on wire
+		jsonBody, err := MarshalSorted(convertedBody)
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 		}
@@ -1837,8 +1832,7 @@ func EnrichError(
 // on responses that are almost certainly valid JSON.
 func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	// Check for empty response
-	trimmed := strings.TrimSpace(string(responseBody))
-	if len(trimmed) == 0 {
+	if len(bytes.TrimSpace(responseBody)) == 0 {
 		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
@@ -3481,18 +3475,9 @@ func HandleMultipleListModelsRequests(
 	return response, nil
 }
 
-// GetRandomString generates a random alphanumeric string of the given length.
+// GetRandomString generates a random hex string of the given length.
 func GetRandomString(length int) string {
-	if length <= 0 {
-		return ""
-	}
-	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
-	letters := []rune("abcdef0123456789")
-	b := make([]rune, length)
-	for i := range b {
-		b[i] = letters[randomSource.Intn(len(letters))]
-	}
-	return string(b)
+	return schemas.GetRandomString(length)
 }
 
 // GetReasoningEffortFromBudgetTokens maps a reasoning token budget to OpenAI reasoning effort.
