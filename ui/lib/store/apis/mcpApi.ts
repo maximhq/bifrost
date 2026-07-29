@@ -14,7 +14,7 @@ import {
 import { baseApi } from "./baseApi";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
-type UpdateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
+type UpdateMCPClientResponse = { status: "success"; message: string };
 
 // Response of POST /mcp/client/{id}/initiate-verification — same flow fields as
 // OAuthFlowResponse but without a required message, plus polling/completion hints.
@@ -159,11 +159,7 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 			async onQueryStarted({ id, data }, { dispatch, getState, queryFulfilled }) {
 				try {
-					const { data: response } = await queryFulfilled;
-					if (response.status === "pending_oauth") {
-						dispatch(mcpApi.util.invalidateTags(["MCPClients"]));
-						return;
-					}
+					await queryFulfilled;
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;

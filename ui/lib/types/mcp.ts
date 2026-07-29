@@ -3,7 +3,14 @@ import { SecretVar } from "./schemas";
 
 export type MCPConnectionType = "http" | "stdio" | "sse";
 
-export type MCPConnectionState = "connected" | "disconnected" | "error" | "pending_tools" | "pending_verification" | "disabled" | "needs_reauth";
+export type MCPConnectionState =
+	| "connected"
+	| "disconnected"
+	| "error"
+	| "pending_tools"
+	| "pending_verification"
+	| "disabled"
+	| "needs_reauth";
 
 export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers";
 
@@ -40,10 +47,15 @@ export interface OAuthConfig {
 	resource?: string; // Optional OAuth resource indicator; omitted when empty
 }
 
-/** OAuth fields allowed on MCP client update (e.g. client_secret-only rotation). */
+/** OAuth fields allowed on MCP client update. Any field left unset keeps its stored value. */
 export interface OAuthConfigUpdate {
 	client_id?: SecretVar;
 	client_secret?: SecretVar;
+	authorize_url?: string;
+	token_url?: string;
+	registration_url?: string;
+	scopes?: string[];
+	resource?: string;
 }
 
 export interface MCPClientConfig {
@@ -58,6 +70,13 @@ export interface MCPClientConfig {
 	oauth_config_id?: string;
 	oauth_client_id?: SecretVar; // Redacted existing client ID (populated on GET for oauth clients)
 	oauth_client_secret?: SecretVar; // Redacted existing client secret (populated on GET for oauth clients)
+	// Remaining oauth_config fields, populated on GET for oauth clients so the
+	// full config can be reviewed and edited, not just the credentials.
+	oauth_authorize_url?: string;
+	oauth_token_url?: string;
+	oauth_registration_url?: string;
+	oauth_scopes?: string[];
+	oauth_resource?: string;
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, SecretVar>;
