@@ -755,10 +755,7 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	g.Go(func() error {
 		dataQuery := s.ScopedDB(gCtx).Model(&Log{})
 		dataQuery = s.applyFilters(dataQuery, filters)
-		dataQuery = dataQuery.Order(orderClause).Select(s.listSelectColumns()).Limit(limit)
-		if pagination.Offset > 0 {
-			dataQuery = dataQuery.Offset(pagination.Offset)
-		}
+		dataQuery = s.paginatedLogListQuery(gCtx, dataQuery, orderClause, limit, pagination.Offset)
 		err := dataQuery.Find(&logs).Error
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
@@ -826,14 +823,13 @@ func (s *RDBLogStore) GetSessionLogs(ctx context.Context, sessionID string, pagi
 	})
 
 	g.Go(func() error {
-		dataQuery := baseQuery.Session(&gorm.Session{}).
-			WithContext(gCtx).
-			Order(orderClause).
-			Select(s.listSelectColumns()).
-			Limit(limit)
-		if pagination.Offset > 0 {
-			dataQuery = dataQuery.Offset(pagination.Offset)
-		}
+		dataQuery := s.paginatedLogListQuery(
+			gCtx,
+			baseQuery.Session(&gorm.Session{}).WithContext(gCtx),
+			orderClause,
+			limit,
+			pagination.Offset,
+		)
 		err := dataQuery.Find(&logs).Error
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
@@ -1020,6 +1016,34 @@ func (s *RDBLogStore) listSelectColumns() string {
 	}
 
 	return baseCols + ", " + inputHistoryExpr + ", " + responsesInputExpr + ", " + outputMessageExpr
+}
+
+// paginatedLogListQuery applies list projection and pagination to a filtered
+// logs query. ClickHouse connections enable final=1 so ReplacingMergeTree
+// updates are immediately visible. Selecting wide payload columns in the same
+// query forces FINAL to materialize those columns for every candidate row
+// before LIMIT can be applied, which can exhaust memory on large tables.
+//
+// For ClickHouse, first select only the page's dedup keys, then fetch the wide
+// list projection for those keys. FINAL still applies to both stages, preserving
+// latest-version semantics while bounding wide-column reads to the requested
+// page. Other dialects keep the direct query shape.
+func (s *RDBLogStore) paginatedLogListQuery(ctx context.Context, filteredQuery *gorm.DB, orderClause string, limit, offset int) *gorm.DB {
+	pageQuery := filteredQuery.Order(orderClause).Limit(limit)
+	if offset > 0 {
+		pageQuery = pageQuery.Offset(offset)
+	}
+	if s.db.Dialector.Name() != "clickhouse" {
+		return pageQuery.Select(s.listSelectColumns())
+	}
+
+	keyQuery := pageQuery.Select("timestamp, id")
+	return s.ScopedDB(ctx).
+		Model(&Log{}).
+		Where("(timestamp, id) IN (?)", keyQuery).
+		Order(orderClause).
+		Limit(limit).
+		Select(s.listSelectColumns())
 }
 
 // GetStats calculates statistics for logs matching the given filters.
