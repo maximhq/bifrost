@@ -167,6 +167,19 @@ type MCPCredentialStore interface {
 	// stale, not necessarily the credential. A no-op returning nil for auth
 	// types with nothing to refresh (none, static headers, per-user headers).
 	ForceRefresh(ctx *BifrostContext, config *MCPClientConfig) error
+
+	// AdminConnectionHeaders resolves the retained admin bootstrap-verification
+	// credential's connection headers, for periodic tool-discovery refresh
+	// (the tool syncer's per-user path — see ClientToolSyncer.performSync)
+	// rather than a real caller's per-call credential (that's ConnectionHeaders'
+	// job, which raises an interactive *MCPAuthRequiredError on a miss since
+	// there's a real caller to redirect). The syncer has no caller to redirect,
+	// so a miss here is just a plain error the syncer logs and retries next
+	// cycle. Meaningful only for per_user_oauth/per_user_headers resolvers,
+	// which keep this credential alive specifically for this purpose. Every
+	// other resolver type errors: there's no separate "admin" credential
+	// distinct from the shared one for those auth types.
+	AdminConnectionHeaders(ctx context.Context, config *MCPClientConfig) (http.Header, error)
 }
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.

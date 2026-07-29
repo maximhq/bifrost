@@ -240,6 +240,10 @@ func (s *authRetryCredStore) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.
 	return s.forceRefreshErr
 }
 
+func (s *authRetryCredStore) AdminConnectionHeaders(_ context.Context, _ *schemas.MCPClientConfig) (http.Header, error) {
+	return http.Header{}, nil
+}
+
 // newAuthRetryClientState builds a minimal MCPClientState + prefixed tool
 // name pair for the tests below. destructive/idempotent (both optional,
 // nil = unset) populate the tool's MCPToolAnnotations so the opt-out gate
