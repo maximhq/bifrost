@@ -1,0 +1,5 @@
+- feat: added export timeouts to bound OTel export duration
+- feat: added Bifrost latency data to connectors
+- chore: refactored overhead duration export for connectors
+- chore: upgraded Go to 1.26.5
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
