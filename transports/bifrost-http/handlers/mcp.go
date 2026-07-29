@@ -142,16 +142,20 @@ type MCPVKConfigResponse struct {
 
 // reauthorizeMCPClient handles POST /api/mcp/client/{id}/reauthorize.
 //
-// Redoes the OAuth consent dance for an already-authorized shared
-// (auth_type='oauth') MCP client, without delete-and-recreate. Serves two
-// cases with one endpoint: a standalone admin-triggered reauth (e.g. the
-// upstream provider revoked the credential) and the follow-up to rotating
-// client_id/client_secret (which cascades every bound token to
-// needs_reauth; this is how an admin actually redoes consent afterward).
-// Always redoes consent against whatever credentials are currently stored
-// on the oauth_configs row, no mode flag, no branching on why the token
-// needs it. per_user_oauth clients are out of scope: their admin flow is a
-// one-time bootstrap-test, not a repeatable reauth surface.
+// Redoes the OAuth consent dance for an already-authorized OAuth-based MCP
+// client, without delete-and-recreate. For shared (auth_type='oauth')
+// clients it serves two cases with one endpoint: a standalone
+// admin-triggered reauth (e.g. the upstream provider revoked the
+// credential) and the follow-up to rotating client_id/client_secret (which
+// cascades every bound token to needs_reauth; this is how an admin actually
+// redoes consent afterward). For per_user_oauth clients it (re)establishes
+// the retained admin credential used for periodic tool-list discovery —
+// available any time, not just repair, so a different admin can take over
+// the credential (e.g. after the original admin's access is revoked) or an
+// admin can rotate it proactively; end-user credentials are untouched
+// either way. Always redoes consent against whatever credentials are
+// currently stored on the oauth_configs row, no mode flag, no branching on
+// why the token needs it.
 func (h *MCPHandler) reauthorizeMCPClient(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
@@ -172,8 +176,8 @@ func (h *MCPHandler) reauthorizeMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
 		return
 	}
-	if clientConfig.AuthType != schemas.MCPAuthTypeOauth {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("reauthorize only applies to shared OAuth clients (auth_type 'oauth'), got %q", clientConfig.AuthType))
+	if clientConfig.AuthType != schemas.MCPAuthTypeOauth && clientConfig.AuthType != schemas.MCPAuthTypePerUserOauth {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("reauthorize only applies to OAuth-based clients (oauth, per_user_oauth), got %q", clientConfig.AuthType))
 		return
 	}
 	if clientConfig.OauthConfigID == nil || *clientConfig.OauthConfigID == "" {
@@ -318,13 +322,16 @@ type VerifyMCPClientHeadersRequest struct {
 // verifyMCPClientHeaders handles
 // POST /api/mcp/client/{id}/verify-headers.
 //
-// Surfaced on per-user-headers MCP clients sitting in pending_verification
-// — i.e. clients whose row was declared in config.json (or otherwise
-// persisted) without DiscoveredTools. The admin enters sample header
-// values in the UI form; this handler runs the same VerifyHeadersConnection
-// the UI Create flow runs (admin sample values → upstream connection →
-// tools/list → discovered tools), persists DiscoveredTools on the row,
-// triggers reconnect, and discards the sample values.
+// Surfaced on per-user-headers MCP clients in two situations: clients
+// sitting in pending_verification (declared in config.json or otherwise
+// persisted without DiscoveredTools) awaiting their one-time bootstrap
+// verification, and already-verified clients whose retained admin
+// discovery credential sits in needs_update and needs repair. Either way
+// the admin enters sample header values in the UI form; this handler runs
+// the same VerifyHeadersConnection the UI Create flow runs (admin sample
+// values → upstream connection → tools/list → discovered tools), retains
+// the values as the admin discovery credential, persists DiscoveredTools
+// on the row, and triggers a runtime refresh.
 //
 // Synchronous: no callback, no popup. On success the client transitions
 // to connected; on failure the row stays in pending_verification and the
@@ -362,16 +369,11 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("verify-headers only applies to auth_type='per_user_headers' clients, got %q", clientConfig.AuthType))
 		return
 	}
-	// Replay guard: once admin verification succeeds DiscoveredTools is set
-	// (non-nil, possibly empty for a server that legitimately exposes zero
-	// tools) and the client is usable. A second hit on this endpoint would
-	// re-run discovery and clobber the existing tool set, which is
-	// surprising and wasteful. Force callers to delete + recreate (or use
-	// the future "edit headers schema" path) to re-verify.
-	if clientConfig.DiscoveredTools != nil {
-		SendError(ctx, fasthttp.StatusConflict, "MCP client has already been verified; delete and recreate to re-verify")
-		return
-	}
+	// No replay guard: mirrors reauthorizeMCPClient's OAuth equivalent
+	// (POST /reauthorize) — always re-runs verification against whatever
+	// sample values are submitted, no branching on whether the admin
+	// credential actually needs repair. The write path below (activation,
+	// persistence, credential upsert) is unconditional on success either way.
 	if len(clientConfig.PerUserHeaderKeys) == 0 {
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no per_user_header_keys declared; cannot verify")
 		return
@@ -390,23 +392,6 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	if verifyErr != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
 		return
-	}
-
-	// Retain the admin's sample header values instead of discarding them
-	// after this one-time verification: persist as an auth_mode='admin'
-	// credential so the periodic tool syncer (ClientToolSyncer.performSync)
-	// can use it for later tool-discovery refresh. Best-effort — a failure
-	// here doesn't fail the request, since verification already succeeded;
-	// it just means the tool list can't be refreshed later.
-	if h.store.MCPHeadersProvider != nil {
-		if err := h.store.MCPHeadersProvider.UpsertCredential(ctx, &schemas.MCPHeadersUserCredential{
-			MCPClientID: clientConfig.ID,
-			AuthMode:    schemas.MCPAuthModeAdmin,
-			Headers:     canonUserHeaders,
-			Status:      schemas.MCPHeadersUserCredentialStatusActive,
-		}); err != nil {
-			logger.Warn(fmt.Sprintf("failed to retain admin header credential for MCP client %s: %v", clientConfig.ID, err))
-		}
 	}
 
 	// Re-load the row before activating and persisting: discovery above
@@ -509,6 +494,28 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted, so runtime and database state have drifted until re-verified. Retry this endpoint to re-run verification and persist: %v", err))
 		return
+	}
+
+	// Retain the admin's sample header values as the auth_mode='admin'
+	// credential so the periodic tool syncer (ClientToolSyncer.performSync)
+	// can use them for later tool-discovery refresh. Deliberately last: on a
+	// repair the upsert flips the credential from needs_update back to
+	// active, which closes the replay guard above, so it must only happen
+	// once activation and persistence have both succeeded; any earlier
+	// failure leaves the credential in needs_update and the retry path open.
+	// Best-effort beyond that: a failed upsert doesn't fail the request,
+	// since the client is verified and serving; it just means the tool list
+	// can't refresh (bootstrap) or the client keeps projecting needs_reauth
+	// until this endpoint is retried (repair).
+	if h.store.MCPHeadersProvider != nil {
+		if err := h.store.MCPHeadersProvider.UpsertCredential(ctx, &schemas.MCPHeadersUserCredential{
+			MCPClientID: clientConfig.ID,
+			AuthMode:    schemas.MCPAuthModeAdmin,
+			Headers:     canonUserHeaders,
+			Status:      schemas.MCPHeadersUserCredentialStatusActive,
+		}); err != nil {
+			logger.Warn(fmt.Sprintf("failed to retain admin header credential for MCP client %s: %v", clientConfig.ID, err))
+		}
 	}
 
 	SendJSON(ctx, map[string]any{
@@ -780,6 +787,33 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 // getMCPClientsPaginated handles the paginated path for GET /api/mcp/clients.
 // states carries the raw connection-state selection (connected/disconnected);
 // it is resolved against the live engine here because state is not a DB column.
+// projectPerUserAdminCredentialState overlays a response-only needs_reauth
+// state onto a per-user client's runtime state when the retained admin
+// credential used for periodic tool-list discovery needs repair. The runtime
+// manager is never touched: per-user clients stay connected (end-user
+// credentials and tool calls keep working); this projection only tells the
+// registry UI that an admin should repair the discovery credential.
+// adminTokenStatus is the admin OAuth token row's status ("" when no row
+// exists), adminCredStatus the admin header credential row's status ("" when
+// no row exists). A missing row leaves the state alone: clients verified
+// before credential retention existed have no admin row and are healthy.
+func projectPerUserAdminCredentialState(authType schemas.MCPAuthType, runtimeState schemas.MCPConnectionState, adminTokenStatus, adminCredStatus string) schemas.MCPConnectionState {
+	if runtimeState != schemas.MCPConnectionStateConnected {
+		return runtimeState
+	}
+	switch authType {
+	case schemas.MCPAuthTypePerUserOauth:
+		if adminTokenStatus == "needs_reauth" {
+			return schemas.MCPConnectionStateNeedsReauth
+		}
+	case schemas.MCPAuthTypePerUserHeaders:
+		if adminCredStatus == "needs_update" {
+			return schemas.MCPConnectionStateNeedsReauth
+		}
+	}
+	return runtimeState
+}
+
 func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params configstore.MCPClientsQueryParams, states []string) {
 	// Get connected clients from Bifrost engine — used both to resolve the
 	// runtime state filter and to merge live state/tools onto each row below.
@@ -877,6 +911,47 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 		}
 	}
 
+	// Batch-fetch the retained admin discovery credentials for this page's
+	// per-user clients so their registry state can carry the needs_reauth
+	// projection (see projectPerUserAdminCredentialState). Best-effort: a
+	// batch-read failure only means the projection is skipped and runtime
+	// states pass through untouched. Debug, not Error, because this runs on
+	// every registry list.
+	adminTokenStatusByOauthConfigID := make(map[string]string)
+	adminCredStatusByClientID := make(map[string]string)
+	if h.store.ConfigStore != nil {
+		perUserOauthConfigIDs := make([]string, 0)
+		perUserHeaderClientIDs := make([]string, 0)
+		for _, c := range dbClients {
+			switch schemas.MCPAuthType(c.AuthType) {
+			case schemas.MCPAuthTypePerUserOauth:
+				if c.OauthConfigID != nil && *c.OauthConfigID != "" {
+					perUserOauthConfigIDs = append(perUserOauthConfigIDs, *c.OauthConfigID)
+				}
+			case schemas.MCPAuthTypePerUserHeaders:
+				perUserHeaderClientIDs = append(perUserHeaderClientIDs, c.ClientID)
+			}
+		}
+		if len(perUserOauthConfigIDs) > 0 {
+			if adminTokens, err := h.store.ConfigStore.GetAdminOauthTokensByConfigIDs(ctx, perUserOauthConfigIDs); err == nil {
+				for configID, token := range adminTokens {
+					adminTokenStatusByOauthConfigID[configID] = token.Status
+				}
+			} else {
+				logger.Debug("failed to batch-get admin oauth tokens for MCP registry state projection: %v", err)
+			}
+		}
+		if len(perUserHeaderClientIDs) > 0 {
+			if adminCreds, err := h.store.ConfigStore.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, perUserHeaderClientIDs); err == nil {
+				for clientID, cred := range adminCreds {
+					adminCredStatusByClientID[clientID] = cred.Status
+				}
+			} else {
+				logger.Debug("failed to batch-get admin header credentials for MCP registry state projection: %v", err)
+			}
+		}
+	}
+
 	// Convert DB rows to MCPClientConfig and merge with engine state
 	clients := make([]MCPClientResponse, 0, len(dbClients))
 	for _, dbClient := range dbClients {
@@ -938,10 +1013,19 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			sort.Slice(sortedTools, func(i, j int) bool {
 				return sortedTools[i].Name < sortedTools[j].Name
 			})
+			adminTokenStatus := ""
+			if dbClient.OauthConfigID != nil {
+				adminTokenStatus = adminTokenStatusByOauthConfigID[*dbClient.OauthConfigID]
+			}
 			clients = append(clients, MCPClientResponse{
-				Config:    redactedConfig,
-				Tools:     sortedTools,
-				State:     connectedClient.State,
+				Config: redactedConfig,
+				Tools:  sortedTools,
+				State: projectPerUserAdminCredentialState(
+					clientConfig.AuthType,
+					connectedClient.State,
+					adminTokenStatus,
+					adminCredStatusByClientID[dbClient.ClientID],
+				),
 				VKConfigs: vkConfigs,
 			})
 		} else {
@@ -2217,6 +2301,134 @@ func (h *MCPHandler) updateMCPClientConnectionWithRetry(ctx context.Context, id 
 	return lastErr
 }
 
+// completePerUserOAuthAdminRepair finishes a per_user_oauth admin repair
+// flow: the admin redid consent via POST /reauthorize because the retained
+// admin tool-discovery credential died, and CompleteOAuthFlow just wrote the
+// fresh token as an auth_mode='shared' row. Verify the fresh credential
+// against the upstream server (which also re-discovers tools), then promote
+// it to the admin row and persist the refreshed tool set. On verification
+// failure the fresh token is revoked and the old admin row and tool set are
+// left untouched, so the repair can simply be retried.
+func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, oauthConfigID, clientID string) {
+	clientConfig, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, clientID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
+		return
+	}
+	if clientConfig == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "MCP client no longer exists")
+		return
+	}
+
+	accessToken, err := h.oauthHandler.GetAccessToken(ctx, oauthConfigID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get admin access token for verification: %v", err))
+		return
+	}
+
+	tools, toolNameMapping, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, clientConfig, accessToken)
+	if err != nil {
+		// The fresh credential is unusable; revoke it so it isn't left
+		// behind as a dangling shared row. The existing admin row and the
+		// current tool set stay untouched, so the repair can be retried.
+		if revokeErr := h.oauthHandler.RevokeToken(ctx, oauthConfigID); revokeErr != nil {
+			logger.Warn(fmt.Sprintf("failed to revoke admin repair token after verification failure for MCP client %s: %v", clientID, revokeErr))
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
+		return
+	}
+
+	// Re-load the row before persisting: verification above holds an
+	// upstream network round-trip, and pushing the pre-verification snapshot
+	// into the full-row write below would silently restore any fields an
+	// admin edited in the meantime.
+	clientConfig, err = h.store.ConfigStore.GetMCPClientConfigByID(ctx, clientID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verification succeeded but reloading the client failed: %v", err))
+		return
+	}
+	if clientConfig == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "Verification succeeded but the MCP client no longer exists")
+		return
+	}
+
+	// Install the verified credential as the admin discovery credential.
+	// Unlike the bootstrap path this is fatal: the whole point of the repair
+	// flow is replacing the dead admin row, and failing silently would leave
+	// the client stuck in the projected needs_reauth state with a dangling
+	// shared row. Tools are deliberately not touched on failure.
+	if promoteErr := h.store.ConfigStore.PromoteSharedOauthTokenToAdmin(ctx, oauthConfigID, clientID); promoteErr != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verification succeeded but installing the repaired admin credential failed: %v", promoteErr))
+		return
+	}
+
+	clientConfig.DiscoveredTools = tools
+	clientConfig.DiscoveredToolNameMapping = toolNameMapping
+
+	// Persist the refreshed tool set via UpdateMCPClientConfig. The store
+	// unconditionally writes every editable column from the given struct, so
+	// the update must carry the full config; clientConfig was re-loaded
+	// above and carries the discovered tools.
+	updateReq := &configstoreTables.TableMCPClient{
+		ClientID:                  clientConfig.ID,
+		Name:                      clientConfig.Name,
+		IsCodeModeClient:          clientConfig.IsCodeModeClient,
+		ConnectionType:            string(clientConfig.ConnectionType),
+		ConnectionString:          clientConfig.ConnectionString,
+		StdioConfig:               clientConfig.StdioConfig,
+		TLSConfig:                 clientConfig.TLSConfig,
+		AuthType:                  string(clientConfig.AuthType),
+		OauthConfigID:             clientConfig.OauthConfigID,
+		ToolsToExecute:            clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:        clientConfig.ToolsToAutoExecute,
+		Headers:                   clientConfig.Headers,
+		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
+		IsPingAvailable:           clientConfig.IsPingAvailable,
+		ToolPricing:               clientConfig.ToolPricing,
+		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
+		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
+		AllowOnAllVirtualKeys:     clientConfig.AllowOnAllVirtualKeys,
+		PerUserHeaderKeys:         clientConfig.PerUserHeaderKeys,
+		DiscoveredTools:           clientConfig.DiscoveredTools,
+		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+		Disabled:                  clientConfig.Disabled,
+	}
+	// Past this point the credential is already promoted, so failures here
+	// are logged as a partial success rather than returned as an error:
+	// PromoteSharedOauthTokenToAdmin already deleted the shared row and
+	// flipped the admin row to 'active', so complete-oauth's replay guard
+	// now finds no shared row and rejects a repeat hit with 409 "already
+	// completed". reauthorizeMCPClient has no such guard and stays usable
+	// after promotion — POST /reauthorize is how an admin retries after a
+	// tool-list persistence failure like this one. Failing the request here
+	// outright would still wedge the client with a stale tool list for no
+	// reason: the credential itself is fine, and the periodic tool syncer
+	// will refresh the list on its next tick regardless.
+	if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, clientConfig.ID, updateReq); err != nil {
+		logger.Error(fmt.Sprintf(
+			"[PARTIAL SUCCESS] Admin discovery credential for MCP client %s was repaired but persisting the refreshed tool list failed: %v",
+			clientConfig.ID, err,
+		))
+	}
+
+	// Refresh the manager's config with the discovered tools, then set them
+	// on the client. Per-user auth clients hold no shared upstream
+	// connection, so there is nothing to reconnect.
+	if err := h.updateMCPClientWithRetry(bifrostCtx, clientConfig.ID, clientConfig); err != nil {
+		logger.Error(fmt.Sprintf(
+			"[PARTIAL SUCCESS] Admin discovery credential for MCP client %s was repaired but refreshing the runtime client failed: %v",
+			clientConfig.ID, err,
+		))
+	}
+	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
+
+	SendJSON(ctx, map[string]any{
+		"status":      "success",
+		"message":     fmt.Sprintf("Admin discovery credential repaired successfully. %d tools discovered.", len(tools)),
+		"tools_count": len(tools),
+	})
+}
+
 // completeMCPClientOAuth handles POST /api/mcp/client/{id}/complete-oauth - Complete MCP client creation after OAuth authorization
 // The {id} parameter is the oauth_config_id returned from the initial addMCPClient call
 func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
@@ -2296,16 +2508,29 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if dbClient.PendingOAuthConfigJSON == nil || *dbClient.PendingOAuthConfigJSON == "" {
-			// Not a bootstrap completion. Two possibilities: a genuine
+			// Not a bootstrap completion. Three possibilities: a genuine
 			// replay (client already active, this exact oauth_config_id's
-			// flow completed long ago, nothing new happened) or a pure
-			// reauth (client already active, a fresh admin flow via
-			// POST /reauthorize just replaced its token). Only auth_type
-			// 'oauth' supports reauth, per_user_oauth's admin flow is a
-			// one-time bootstrap test with no reauth trigger, so any hit
-			// here for that type is always a genuine replay.
+			// flow completed long ago, nothing new happened), a shared
+			// reauth (auth_type 'oauth', a fresh admin flow via
+			// POST /reauthorize just replaced the connection token), or a
+			// per_user_oauth admin repair (same /reauthorize trigger, but
+			// what gets replaced is the retained admin tool-discovery
+			// credential, not any connection).
 			if dbClient.AuthType != string(schemas.MCPAuthTypeOauth) {
-				SendError(ctx, fasthttp.StatusConflict, "OAuth flow has already been completed for this MCP client")
+				// per_user_oauth: a just-completed admin repair flow always
+				// leaves a fresh ACTIVE auth_mode='shared' token behind
+				// (CompleteOAuthFlow's default write); its absence means
+				// nothing new happened and this hit is a genuine replay.
+				sharedToken, tokErr := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, oauthConfigID)
+				if tokErr != nil {
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to look up bootstrap token: %v", tokErr))
+					return
+				}
+				if sharedToken == nil || sharedToken.Status != "active" {
+					SendError(ctx, fasthttp.StatusConflict, "OAuth flow has already been completed for this MCP client")
+					return
+				}
+				h.completePerUserOAuthAdminRepair(ctx, bifrostCtx, oauthConfigID, dbClient.ClientID)
 				return
 			}
 			reauthClientConfig, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, dbClient.ClientID)
@@ -2444,31 +2669,22 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
 
 		// Retain the admin's bootstrap-verification token instead of
-		// discarding it via RevokeToken: re-tag the same row from
-		// auth_mode='shared' (CompleteOAuthFlow's default write for any
+		// discarding it via RevokeToken: promote the row CompleteOAuthFlow
+		// wrote as auth_mode='shared' (its default write for any
 		// admin-flow-mode completion) to 'admin', so the periodic tool
 		// syncer (ClientToolSyncer.performSync) can use it for later
-		// tool-discovery refresh. Deferred until here (after the client's DB
-		// row and runtime registration above have both succeeded) so a
-		// failure in either doesn't leave a retagged admin credential
-		// pointing at a client that was never actually persisted. Best-effort
-		// beyond that point — a failure here doesn't fail the request, since
-		// the client is otherwise fully verified and working; it just means
-		// the tool list can't be refreshed later until the admin
-		// re-bootstraps.
-		if delErr := h.store.ConfigStore.DeleteAdminOauthTokenByMCPClientID(ctx, mcpClientConfig.ID); delErr != nil {
-			logger.Warn(fmt.Sprintf("failed to clear any previous admin bootstrap token before retaining a new one for MCP client %s: %v", mcpClientConfig.ID, delErr))
-		}
-		if sharedToken, tokErr := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, oauthConfigID); tokErr == nil && sharedToken != nil {
-			sharedToken.AuthMode = string(schemas.MCPAuthModeAdmin)
-			sharedToken.MCPClientID = mcpClientConfig.ID
-			if updErr := h.store.ConfigStore.UpdateOauthToken(ctx, sharedToken); updErr != nil {
-				logger.Warn(fmt.Sprintf("failed to retain admin bootstrap token for MCP client %s: %v", mcpClientConfig.ID, updErr))
-			}
-		} else if tokErr != nil {
-			logger.Warn(fmt.Sprintf("failed to load bootstrap token to retain for MCP client %s: %v", mcpClientConfig.ID, tokErr))
-		} else {
-			logger.Warn(fmt.Sprintf("no bootstrap token found to retain for MCP client %s", mcpClientConfig.ID))
+		// tool-discovery refresh. PromoteSharedOauthTokenToAdmin reconciles
+		// a pre-existing admin row for this client atomically, so it can't
+		// collide with idx_mcp_oauth_tokens_admin_mcp. Deferred until here
+		// (after the client's DB row and runtime registration above have
+		// both succeeded) so a failure in either doesn't leave a promoted
+		// admin credential pointing at a client that was never actually
+		// persisted. Best-effort beyond that point — a failure here doesn't
+		// fail the request, since the client is otherwise fully verified and
+		// working; it just means the tool list can't be refreshed later
+		// until the admin repairs the discovery credential.
+		if promoteErr := h.store.ConfigStore.PromoteSharedOauthTokenToAdmin(ctx, oauthConfigID, mcpClientConfig.ID); promoteErr != nil {
+			logger.Warn(fmt.Sprintf("failed to retain admin bootstrap token for MCP client %s: %v", mcpClientConfig.ID, promoteErr))
 		}
 
 		// For clients bootstrapped from config.json, drop the
