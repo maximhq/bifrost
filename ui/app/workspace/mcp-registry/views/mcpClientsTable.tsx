@@ -22,6 +22,7 @@ import {
 	getErrorMessage,
 	useDeleteMCPClientMutation,
 	useInitiateMCPClientVerificationMutation,
+	useReauthorizeMCPClientMutation,
 	useReconnectMCPClientMutation,
 	useUpdateMCPClientMutation,
 	useVerifyMCPClientHeadersMutation,
@@ -29,7 +30,20 @@ import {
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { Box, ChevronLeft, ChevronRight, KeyRound, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
+import {
+	Box,
+	ChevronLeft,
+	ChevronRight,
+	KeyRound,
+	Loader2,
+	MoreHorizontal,
+	PencilIcon,
+	Plus,
+	RefreshCcw,
+	Search,
+	Trash2,
+	X,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
@@ -43,10 +57,12 @@ function MCPClientActionsMenu({
 	hasDeleteAccess,
 	isReconnecting,
 	isAuthorizing,
+	isReauthorizing,
 	isPerUserAuth,
 	onEdit,
 	onReconnect,
 	onAuthorize,
+	onReauthorize,
 	onDelete,
 }: {
 	client: MCPClient;
@@ -54,10 +70,12 @@ function MCPClientActionsMenu({
 	hasDeleteAccess: boolean;
 	isReconnecting: boolean;
 	isAuthorizing: boolean;
+	isReauthorizing: boolean;
 	isPerUserAuth: boolean;
 	onEdit: (client: MCPClient) => void;
 	onReconnect: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
+	onReauthorize: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
@@ -71,8 +89,13 @@ function MCPClientActionsMenu({
 					className="h-8 w-8"
 					aria-label="MCP server actions"
 					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
+					disabled={isReconnecting || isReauthorizing}
 				>
-					{isReconnecting || isAuthorizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+					{isReconnecting || isAuthorizing || isReauthorizing ? (
+						<Loader2 className="h-4 w-4 animate-spin" />
+					) : (
+						<MoreHorizontal className="h-4 w-4" />
+					)}
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent
@@ -117,7 +140,13 @@ function MCPClientActionsMenu({
 				{hasUpdateAccess && (
 					<DropdownMenuItem
 						className="cursor-pointer"
-						disabled={isPerUserAuth || client.config.disabled || isReconnecting || client.state === "pending_verification" || client.state === "needs_reauth"}
+						disabled={
+							isPerUserAuth ||
+							client.config.disabled ||
+							isReconnecting ||
+							client.state === "pending_verification" ||
+							client.state === "needs_reauth"
+						}
 						onSelect={(e) => {
 							e.preventDefault();
 							onReconnect(client);
@@ -128,6 +157,24 @@ function MCPClientActionsMenu({
 						Reconnect
 					</DropdownMenuItem>
 				)}
+				{hasUpdateAccess &&
+					client.state !== "pending_verification" &&
+					client.state !== "disabled" &&
+					client.config.auth_type === "oauth" && (
+						<DropdownMenuItem
+							className="cursor-pointer"
+							disabled={isReauthorizing}
+							data-testid={`mcp-client-reauthorize-${client.config.client_id}-menu-item`}
+							onSelect={(e) => {
+								e.preventDefault();
+								onReauthorize(client);
+								setIsOpen(false);
+							}}
+						>
+							<KeyRound className="h-4 w-4" />
+							Reauthorize
+						</DropdownMenuItem>
+					)}
 				{hasDeleteAccess && (
 					<DropdownMenuItem
 						variant="destructive"
@@ -188,6 +235,7 @@ export default function MCPClientsTable({
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
 	const [authorizingClients, setAuthorizingClients] = useState<string[]>([]);
+	const [reauthorizingClients, setReauthorizingClients] = useState<string[]>([]);
 	const [togglingClientIds, setTogglingClientIds] = useState<Set<string>>(new Set());
 	// Drives the OAuth2Authorizer dialog for a config.json-bootstrapped client
 	// sitting in pending_verification, triggered from the row actions menu.
@@ -202,9 +250,13 @@ export default function MCPClientsTable({
 	// per_user_headers client sitting in pending_verification, triggered from
 	// the row actions menu.
 	const [bootstrapHeadersClient, setBootstrapHeadersClient] = useState<MCPClient | null>(null);
+	// Drives the OAuth2Authorizer dialog for a client redoing consent via
+	// POST /reauthorize, triggered from the row actions menu.
+	const [reauthorizeFlow, setReauthorizeFlow] = useState<{ authorizeUrl: string; oauthConfigId: string; mcpClientId: string } | null>(null);
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
+	const [reauthorizeMCPClient] = useReauthorizeMCPClientMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
 	const [updateMCPClient] = useUpdateMCPClientMutation();
 	const [initiateVerification] = useInitiateMCPClientVerificationMutation();
@@ -277,6 +329,30 @@ export default function MCPClientsTable({
 			toast({ title: "Authorization failed", description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setAuthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
+		}
+	};
+
+	const handleReauthorize = async (client: MCPClient) => {
+		try {
+			setReauthorizingClients((prev) => [...prev, client.config.client_id]);
+			const response = await reauthorizeMCPClient(client.config.client_id).unwrap();
+			if (response.status === "pending_oauth" && response.authorize_url) {
+				setReauthorizeFlow({
+					authorizeUrl: response.authorize_url,
+					oauthConfigId: response.oauth_config_id,
+					mcpClientId: client.config.client_id,
+				});
+			} else {
+				toast({
+					title: "Reauthorization failed",
+					description: "Unexpected response from server. Please try again.",
+					variant: "destructive",
+				});
+			}
+		} catch (error) {
+			toast({ title: "Reauthorization failed", description: getErrorMessage(error), variant: "destructive" });
+		} finally {
+			setReauthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 		}
 	};
 
@@ -707,10 +783,12 @@ export default function MCPClientsTable({
 													hasDeleteAccess={hasDeleteMCPClientAccess}
 													isReconnecting={reconnectingClients.includes(c.config.client_id)}
 													isAuthorizing={authorizingClients.includes(c.config.client_id)}
+													isReauthorizing={reauthorizingClients.includes(c.config.client_id)}
 													isPerUserAuth={isPerUserAuth}
 													onEdit={handleRowClick}
 													onReconnect={(client) => void handleReconnect(client)}
 													onAuthorize={(client) => void handleStartBootstrap(client)}
+													onReauthorize={(client) => void handleReauthorize(client)}
 													onDelete={setClientToDelete}
 												/>
 											</TableCell>
@@ -764,6 +842,32 @@ export default function MCPClientsTable({
 			</div>
 
 			{formOpen && <ClientForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={handleSaved} />}
+			{reauthorizeFlow && (
+				<OAuth2Authorizer
+					open={!!reauthorizeFlow}
+					onClose={() => setReauthorizeFlow(null)}
+					onSuccess={() => {
+						toast({ title: "Success", description: "MCP client re-authorized successfully" });
+						setReauthorizeFlow(null);
+						if (refetch) void refetch();
+					}}
+					onError={(error) => {
+						toast({ title: "Reauthorization failed", description: error, variant: "destructive" });
+					}}
+					onConflict={() => {
+						// 409: the flow's completion raced (popup postMessage vs.
+						// status polling both call complete-oauth) or this was a
+						// double submit. Either way the credential is already live
+						// server-side, so treat it as success rather than an error.
+						toast({ title: "Success", description: "MCP client re-authorized successfully" });
+						setReauthorizeFlow(null);
+						if (refetch) void refetch();
+					}}
+					authorizeUrl={reauthorizeFlow.authorizeUrl}
+					oauthConfigId={reauthorizeFlow.oauthConfigId}
+					mcpClientId={reauthorizeFlow.mcpClientId}
+				/>
+			)}
 		</div>
 	);
 }

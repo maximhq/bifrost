@@ -214,6 +214,15 @@ const (
 	// Used when there's no VK or user; the caller owns the session ID and must
 	// present it on every subsequent request to use the bound OAuth token.
 	MCPAuthModeSession MCPAuthMode = "session"
+	// MCPAuthModeAdmin: no identity dimension, the flow belongs to an MCP
+	// client's shared credential itself, not any caller. Used by
+	// InitiateUserOAuthFlow for redoing consent on an already-authorized
+	// shared client (see the MCP client reauthorize endpoint); the
+	// resulting token is still written with AuthMode "shared" (a
+	// TableMCPOauthToken-column distinction from the flow row's FlowMode
+	// "admin", see TableMCPOauthFlow's FlowMode field comment for why
+	// those two are named differently on purpose).
+	MCPAuthModeAdmin MCPAuthMode = "admin"
 	// MCPAuthModeNone: no identity dimension is present on the request (no
 	// user, no VK, no session header). Lets callers branch on the mode
 	// without mistaking an unauthenticated request for a session-mode caller.
