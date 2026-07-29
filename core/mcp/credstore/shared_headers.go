@@ -35,3 +35,8 @@ func (r *sharedHeadersResolver) ConnectionHeaders(_ *schemas.BifrostContext, con
 }
 
 func (r *sharedHeadersResolver) RequiresPerCallConnection() bool { return false }
+
+// ForceRefresh is a no-op — static admin-configured headers have nothing to refresh.
+func (r *sharedHeadersResolver) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	return nil
+}
