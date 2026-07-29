@@ -818,6 +818,39 @@ ui/app/<route-name>/
 
 ---
 
+### Entity Selectors — never hand-roll an entity picker
+
+Any UI that lets a user pick an existing entity (virtual key, team, customer, user, business unit, …) **must** go through `ui/components/entitySelectors/`. Do not build a new `Select`/`Combobox` + `useState` + debounce + fetch stack for this — that pattern was already duplicated across surfaces and consolidated here.
+
+**Use an existing selector** — import it and pass one of the three modes:
+
+```tsx
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+
+<VirtualKeySelector value={id} onChange={setId} fallbackOption={{ value: row.id, label: row.name }} />   // single
+<VirtualKeySelector multiple value={ids} onChange={setIds} />                                            // multi (chips inside the control)
+<VirtualKeySelector mode="add" onSelect={(o) => appendRow(o)} />                                         // fire-and-forget add
+```
+
+Available today: `virtualKeySelector`, `teamSelector`, `customerSelector` (OSS); `userSelector`, `businessUnitSelector` (enterprise — reached via registry, see below).
+
+**Always pass `fallbackOption` / `fallbackOptions`** when editing an existing row. Selectors fetch nothing until the popover opens, so a preselected id renders as a raw UUID otherwise.
+
+**Adding a selector for a new entity** — write a thin wrapper, never a new picker. Copy `customerSelector.tsx` (the simplest one) and change only what genuinely differs: the list query, the by-id label resolver, and the label/description fields. The wrapper must:
+
+1. Call `useEntitySelectorSearch()` for open/search/debounce state, and pass `skip` to the RTK Query hook — nothing is fetched until the picker opens.
+2. `useMemo` the `options` array. Multi mode feeds it to react-select as `defaultOptions`, which re-syncs on identity change and will loop if the identity churns.
+3. Ship a `LabelResolver` component (`EntityLabelResolverProps`) that fetches one entity by id and calls `onResolved` — this is what keeps selected-but-unfetched ids from rendering as UUIDs.
+4. Type its props as `OwnProps & EntitySelectorModeProps` and extend `EntitySelectorCommonProps`, so all three modes and the shared prop surface come for free.
+5. Default `limit` to `ENTITY_SELECTOR_PAGE_SIZE`; expose a `filters` prop only if the endpoint supports server-side scoping.
+6. Search is **server-side** — never fetch a page and filter it client-side.
+
+Do not edit `entitySelector.tsx` to accommodate one surface. It only carries behaviour identical across every entity; per-entity differences belong in the wrapper, per-surface differences in props (`trigger`, `triggerClassName`, `excludeIds`, `noPortal`, `className`).
+
+**OSS ↔ enterprise placement.** `entitySelector.tsx` and any selector whose API is OSS live in `ui/components/entitySelectors/`. A selector for an enterprise-only API lives in `bifrost-enterprise/enterprise-ui/app/components/entitySelectors/` and OSS must never import it directly — OSS reaches it through a runtime registry (`ui/lib/registries/userPicker.tsx`, `ui/lib/registries/modelLimitScopes.tsx`), with an empty fallback under `ui/app/_fallbacks/enterprise/` so OSS-only builds simply hide the option. Keep single mode prop-compatible with the registry contract (`{ value, onChange, disabled, fallbackOption }`) so the selector can be registered as-is.
+
+---
+
 ### JSX & Rendering
 
 - Avoid deeply nested conditional rendering

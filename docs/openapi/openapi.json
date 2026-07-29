@@ -44572,7 +44572,7 @@
           {
             "name": "from_memory",
             "in": "query",
-            "description": "If true, returns virtual keys from in-memory cache instead of database",
+            "description": "If true, returns virtual keys from in-memory cache instead of database. Filtering, sorting and pagination parameters are not applied in this mode; combining it with user_id is rejected with a 400.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -44616,6 +44616,14 @@
             "name": "team_id",
             "in": "query",
             "description": "Filter virtual keys by team ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Filter virtual keys by assigned user ID (enterprise only; matches no virtual keys on OSS builds). Combined with customer_id/team_id using OR.",
             "schema": {
               "type": "string"
             }
@@ -44677,6 +44685,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListVirtualKeysResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -59555,6 +59573,25 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 100
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "When true, returns every ranked entity with no row cap. Intended for\nexports (CSV / PDF), which must not be truncated.\n",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "security": [
@@ -59914,6 +59951,25 @@
             "description": "Comma-separated list of MCP server labels to filter the MCP section by",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 100
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "When true, returns every ranked entity with no row cap. Intended for\nexports (CSV / PDF), which must not be truncated.\n",
+            "schema": {
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -81961,10 +82017,18 @@
             }
           },
           "virtual_keys": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Virtual keys owned by this customer. Omitted or returned as null by the paginated list endpoint (`GET /api/governance/customers` with `limit`/`offset`/`search`), which reports `virtual_key_count` instead; use the single-customer endpoint to retrieve the keys themselves.\n",
             "items": {
               "$ref": "#/components/schemas/VirtualKey"
             }
+          },
+          "virtual_key_count": {
+            "type": "integer",
+            "description": "Number of virtual keys owned by this customer. Always populated."
           },
           "config_hash": {
             "type": "string"

@@ -186,6 +186,10 @@ interface AsyncMultiSelectProps<T> {
 
 	/** callback function to be called when input value changes */
 	onInputChange?: (inputValue: string, actionMeta: { action: string }) => void;
+	/** called when the menu opens — e.g. to start fetching options lazily */
+	onMenuOpen?: () => void;
+	/** called when the menu closes */
+	onMenuClose?: () => void;
 	onKeyDown?: KeyboardEventHandler;
 
 	/** custom no options message */
@@ -403,9 +407,11 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 				}}
 				onMenuOpen={() => {
 					menuOpenRef.current = true;
+					props.onMenuOpen?.();
 				}}
 				onMenuClose={() => {
 					menuOpenRef.current = false;
+					props.onMenuClose?.();
 				}}
 				menuIsOpen={props.menuIsOpen}
 				noOptionsMessage={

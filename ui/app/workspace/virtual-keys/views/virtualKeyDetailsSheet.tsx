@@ -1,4 +1,5 @@
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
+import { CopyableId } from "@/components/copyableId";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -120,8 +121,11 @@ export default function VirtualKeyDetailSheet({
 					className="flex flex-row items-center justify-between px-0 py-4"
 					headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8"
 				>
-					<div className="flex flex-col items-start">
-						<SheetTitle>{virtualKey.name}</SheetTitle>
+					<div className="flex min-w-0 flex-col items-start">
+						<div className="flex min-w-0 items-center gap-1">
+							<SheetTitle className="truncate">{virtualKey.name}</SheetTitle>
+							<CopyableId id={virtualKey.id} entityLabel="Virtual key" />
+						</div>
 						<SheetDescription>{virtualKey.description || "Virtual key details and usage information"}</SheetDescription>
 					</div>
 					<SheetNavigationButtons
@@ -226,8 +230,7 @@ export default function VirtualKeyDetailSheet({
 													<span className="font-medium">{ProviderLabels[config.provider as ProviderName] || config.provider}</span>
 												</div>
 												<Badge variant="outline" className="font-mono text-xs">
-													Weight:{" "}
-													{config.weight != null ? config.weight : <span className="text-muted-foreground italic">Not Set</span>}
+													Weight: {config.weight != null ? config.weight : <span className="text-muted-foreground italic">Not Set</span>}
 												</Badge>
 											</div>
 

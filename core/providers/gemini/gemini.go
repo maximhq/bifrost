@@ -3899,6 +3899,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		isLargePayload = true
 	}
 
+	if strings.TrimSpace(request.Model) == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
+	}
+
+	// Determine native model name (e.g., parse any provider prefix)
+	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+
 	var (
 		jsonData   []byte
 		bifrostErr *schemas.BifrostError
@@ -3917,24 +3924,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
-
-		// Use sjson to delete fields directly from JSON bytes, preserving key ordering
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "toolConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "generationConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "systemInstruction")
+		jsonData = wrapGeminiCountTokensBody(jsonData, model)
 	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
-
-	if strings.TrimSpace(request.Model) == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
-	}
-
-	// Determine native model name (e.g., parse any provider prefix)
-	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	path := fmt.Sprintf("/models/%s:countTokens", model)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -995,6 +996,113 @@ func TestUpdateRateLimit(t *testing.T) {
 // =============================================================================
 // Virtual Key Tests
 // =============================================================================
+
+// TestGetVirtualKeysPaginated_AssignmentFilters covers how the customer / team /
+// user filters compose. A virtual key is assigned to at most one of the three, so
+// supplying several ORs them rather than narrowing to nothing.
+//
+// UserID is unresolvable in the OSS build — the VK↔user link lives in an
+// enterprise-only table — so it contributes a never-true disjunct here: a
+// user-only filter matches nothing instead of silently returning every key. It
+// deliberately does NOT suppress a customer/team disjunct supplied alongside it;
+// those are still resolvable, and dropping them would diverge from the enterprise
+// store, which returns exactly that union.
+func TestGetVirtualKeysPaginated_AssignmentFilters(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "cust-1", Name: "Customer One"}))
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Team One"}))
+
+	custID, teamID := "cust-1", "team-1"
+	seed := []*tables.TableVirtualKey{
+		{ID: "vk-cust", Name: "Customer Key", Value: *schemas.NewSecretVar("vk-cust-val"), IsActive: schemas.Ptr(true), CustomerID: &custID},
+		{ID: "vk-team", Name: "Team Key", Value: *schemas.NewSecretVar("vk-team-val"), IsActive: schemas.Ptr(true), TeamID: &teamID},
+		{ID: "vk-none", Name: "Unassigned Key", Value: *schemas.NewSecretVar("vk-none-val"), IsActive: schemas.Ptr(true)},
+	}
+	for _, vk := range seed {
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+
+	tests := []struct {
+		name    string
+		params  VirtualKeyQueryParams
+		wantIDs []string
+	}{
+		{
+			name:    "no filters returns every key",
+			params:  VirtualKeyQueryParams{},
+			wantIDs: []string{"vk-cust", "vk-none", "vk-team"},
+		},
+		{
+			name:    "customer only",
+			params:  VirtualKeyQueryParams{CustomerID: "cust-1"},
+			wantIDs: []string{"vk-cust"},
+		},
+		{
+			name:    "team only",
+			params:  VirtualKeyQueryParams{TeamID: "team-1"},
+			wantIDs: []string{"vk-team"},
+		},
+		{
+			name:    "customer or team",
+			params:  VirtualKeyQueryParams{CustomerID: "cust-1", TeamID: "team-1"},
+			wantIDs: []string{"vk-cust", "vk-team"},
+		},
+		{
+			// Fail closed: OSS cannot resolve the assignment, so it matches nothing
+			// rather than falling through to an unfiltered list.
+			name:    "user only matches nothing in OSS",
+			params:  VirtualKeyQueryParams{UserID: "user-1"},
+			wantIDs: nil,
+		},
+		{
+			name:    "user plus customer keeps the resolvable customer disjunct",
+			params:  VirtualKeyQueryParams{UserID: "user-1", CustomerID: "cust-1"},
+			wantIDs: []string{"vk-cust"},
+		},
+		{
+			name:    "user plus team keeps the resolvable team disjunct",
+			params:  VirtualKeyQueryParams{UserID: "user-1", TeamID: "team-1"},
+			wantIDs: []string{"vk-team"},
+		},
+		{
+			name:    "user plus customer and team keeps both resolvable disjuncts",
+			params:  VirtualKeyQueryParams{UserID: "user-1", CustomerID: "cust-1", TeamID: "team-1"},
+			wantIDs: []string{"vk-cust", "vk-team"},
+		},
+		{
+			name:    "user filter never widens a non-matching search",
+			params:  VirtualKeyQueryParams{UserID: "user-1", Search: "Unassigned"},
+			wantIDs: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vks, totalCount, err := store.GetVirtualKeysPaginated(ctx, tt.params)
+			require.NoError(t, err)
+
+			gotIDs := make([]string, 0, len(vks))
+			for _, vk := range vks {
+				gotIDs = append(gotIDs, vk.ID)
+			}
+			sort.Strings(gotIDs)
+			assert.Equal(t, tt.wantIDs, nonEmptyIDs(gotIDs))
+			// The count drives pagination, so it must agree with the page contents.
+			assert.Equal(t, int64(len(tt.wantIDs)), totalCount)
+		})
+	}
+}
+
+// nonEmptyIDs normalizes an empty slice to nil so table cases can express
+// "matches nothing" as a nil wantIDs.
+func nonEmptyIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
 
 func TestCreateVirtualKey(t *testing.T) {
 	store := setupRDBTestStore(t)

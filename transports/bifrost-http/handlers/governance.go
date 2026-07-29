@@ -746,6 +746,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 		}
 	}
 
+
 	// Resulting budget count: the desired set if provided, else the existing set.
 	finalBudgetCount := len(mc.Budgets)
 	if d.budgetsProvided {
@@ -1151,6 +1152,16 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
+		// The in-memory cache holds no VK↔user assignments (GovernanceData.Users carries
+		// only budget/rate-limit ids), so a user_id filter cannot be applied here. Reject
+		// the combination rather than silently dropping the filter: the database path
+		// fails closed on user_id, and returning every cached key instead would be the
+		// exact inverse of that contract. The other filters keep their long-standing
+		// ignored-under-from_memory behaviour.
+		if len(ctx.QueryArgs().Peek("user_id")) > 0 {
+			SendError(ctx, 400, "user_id filter is not supported with from_memory=true; omit from_memory to filter virtual keys by user")
+			return
+		}
 		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
@@ -1189,6 +1200,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
+	userID := string(ctx.QueryArgs().Peek("user_id"))
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
@@ -1196,12 +1208,13 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
 			CustomerID:                         customerID,
 			TeamID:                             teamID,
+			UserID:                             userID,
 			SortBy:                             sortBy,
 			Order:                              order,
 			Export:                             isExport,

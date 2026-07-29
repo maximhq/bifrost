@@ -72,6 +72,24 @@ type SearchFilters struct {
 	CacheHitTypes     []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
 	ContentSearch     string            `json:"content_search,omitempty"`
 	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	// RankingLimit caps the number of rows returned by the ranking queries
+	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
+	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
+	// "return every ranked entity", which is what the dashboard export uses.
+	RankingLimit *int `json:"ranking_limit,omitempty"`
+}
+
+// EffectiveRankingLimit resolves the ranking row cap: the store default when
+// the caller did not specify one, 0 when the caller explicitly asked for an
+// uncapped result.
+func (f SearchFilters) EffectiveRankingLimit(defaultLimit int) int {
+	if f.RankingLimit == nil {
+		return defaultLimit
+	}
+	if *f.RankingLimit <= 0 {
+		return 0
+	}
+	return *f.RankingLimit
 }
 
 // PaginationOptions represents pagination parameters

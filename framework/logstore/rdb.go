@@ -38,13 +38,26 @@ const (
 	defaultMaxQueryLimit = 10000
 	// defaultMaxSearchLimit is the maximum number of rows returned by SearchLogs / SearchMCPToolLogs.
 	defaultMaxSearchLimit = 1000
-	// defaultMaxRankingsLimit caps the number of model+provider groups returned by GetModelRankings.
+	// defaultMaxRankingsLimit caps the number of groups returned by the ranking
+	// queries (model, user, dimension) when the caller does not ask for a
+	// different cap via SearchFilters.RankingLimit.
 	defaultMaxRankingsLimit = 100
 	// defaultFilterDataCutoffDays limits GetDistinct* filter-data queries to recent data.
 	defaultFilterDataCutoffDays = 30
 )
 
 var terminalLogStatuses = []string{"success", "error", "cancelled"}
+
+// applyRankingLimit caps a ranking query at the caller-requested number of rows,
+// falling back to defaultMaxRankingsLimit. The query is left unbounded when the
+// caller explicitly asked for every ranked entity (RankingLimit <= 0), which is
+// what the dashboard export does.
+func applyRankingLimit(q *gorm.DB, filters SearchFilters) *gorm.DB {
+	if limit := filters.EffectiveRankingLimit(defaultMaxRankingsLimit); limit > 0 {
+		return q.Limit(limit)
+	}
+	return q
+}
 
 // nonTerminalLogStatuses are the in-flight statuses structurally absent from
 // mv_logs_hourly (its DDL filters to terminalLogStatuses). Matview-backed
@@ -2169,11 +2182,10 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		TPLatencyMs        float64         `gorm:"column:tp_latency_ms"`
 	}
 
-	if err := currentQuery.
+	if err := applyRankingLimit(currentQuery.
 		Select(currentSelectClause).
 		Group("model, provider").
-		Order("total_requests DESC, model ASC, provider ASC").
-		Limit(defaultMaxRankingsLimit).
+		Order("total_requests DESC, model ASC, provider ASC"), filters).
 		Find(&currentResults).Error; err != nil {
 		return nil, fmt.Errorf("failed to get model rankings: %w", err)
 	}
@@ -2319,11 +2331,10 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
 	}
 
-	if err := currentQuery.
+	if err := applyRankingLimit(currentQuery.
 		Select(selectClause).
 		Group("user_id").
-		Order("total_requests DESC, user_id ASC").
-		Limit(defaultMaxRankingsLimit).
+		Order("total_requests DESC, user_id ASC"), filters).
 		Find(&currentResults).Error; err != nil {
 		return nil, fmt.Errorf("failed to get user rankings: %w", err)
 	}
@@ -2462,15 +2473,14 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 		TotalCost     sql.NullFloat64 `gorm:"column:total_cost"`
 	}
 
-	if err := currentQuery.
+	if err := applyRankingLimit(currentQuery.
 		Select(selectClause).
 		Group(groupExpr).
 		// Tiebreak on the group expression itself, not the `id` alias:
 		// ClickHouse resolves a bare `id` in ORDER BY to the base table's
 		// column (not in GROUP BY -> error 215), while Postgres/SQLite
 		// resolve the alias. The expression works on all three.
-		Order("total_requests DESC, " + groupExpr + " ASC").
-		Limit(defaultMaxRankingsLimit).
+		Order("total_requests DESC, "+groupExpr+" ASC"), filters).
 		Find(&currentResults).Error; err != nil {
 		return nil, fmt.Errorf("failed to get dimension rankings for %s: %w", dimension, err)
 	}
@@ -3613,11 +3623,10 @@ var allowedKeyPairColumns = map[string]struct{}{
 // GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.
 // idCol and nameCol must be valid column names (e.g., "selected_key_id", "selected_key_name").
 //
-// Matview path is DAC-aware: each per-dimension matview carries the
-// visibility columns (user_id, team_id, virtual_key_id), so a
-// QueryScope on ctx applies on the matview directly. Until
-// matViewsReady the raw-table fallback (also ScopedDB-aware) serves
-// requests.
+// Matview path is DAC-aware: each per-dimension matview carries every
+// visibility column a scope can predicate on (see scopeProjection), so a
+// QueryScope on ctx applies on the matview directly. Until matViewsReady
+// the raw-table fallback (also ScopedDB-aware) serves requests.
 func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
 	if s.db.Dialector.Name() == "postgres" && s.matViewsReady.Load() {
 		results, served, err := s.getDistinctKeyPairsFromMatView(ctx, idCol, nameCol, limit, query)

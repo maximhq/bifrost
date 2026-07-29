@@ -706,9 +706,17 @@ Customer:
       items:
         $ref: '#/Team'
     virtual_keys:
-      type: array
+      type: [array, 'null']
+      description: >
+        Virtual keys owned by this customer. Omitted or returned as null by the paginated
+        list endpoint (`GET /api/governance/customers` with `limit`/`offset`/`search`),
+        which reports `virtual_key_count` instead; use the single-customer endpoint to
+        retrieve the keys themselves.
       items:
         $ref: '#/VirtualKey'
+    virtual_key_count:
+      type: integer
+      description: Number of virtual keys owned by this customer. Always populated.
     config_hash:
       type: string
     created_at:

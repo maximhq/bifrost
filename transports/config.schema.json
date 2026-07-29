@@ -1633,6 +1633,12 @@
                         "description": "Command timeout as a Go duration string (default: 10s)",
                         "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
                         "default": "10s"
+                      },
+                      "cache_ttl": {
+                        "type": "string",
+                        "description": "How long a resolved password is reused across new physical connections (Go duration string, default 60s). Without caching the command runs on every new connection. Keep this below the credential's validity window: a rotation shorter than the TTL will fail connections until the cached value expires.",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                        "default": "60s"
                       }
                     },
                     "required": ["command"],
@@ -1662,6 +1668,12 @@
                     "type": "string",
                     "description": "Maximum lifetime for physical database connections as a Go duration string",
                     "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                  },
+                  "conn_max_idle_time": {
+                    "type": "string",
+                    "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                    "default": "5m"
                   }
                 },
                 "required": [
@@ -1831,6 +1843,12 @@
                         "description": "Command timeout as a Go duration string (default: 10s)",
                         "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
                         "default": "10s"
+                      },
+                      "cache_ttl": {
+                        "type": "string",
+                        "description": "How long a resolved password is reused across new physical connections (Go duration string, default 60s). Without caching the command runs on every new connection. Keep this below the credential's validity window: a rotation shorter than the TTL will fail connections until the cached value expires.",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                        "default": "60s"
                       }
                     },
                     "required": ["command"],
@@ -1862,10 +1880,21 @@
                     "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
                     "default": "1m"
                   },
+                  "matview_refresh_timeout": {
+                    "type": "string",
+                    "description": "Maximum time for a single materialized view refresh pass. Go duration string, min 30s, max 30m. Unset derives a budget from matview_refresh_interval (5x the interval, at least 5m). A refresh holds a pooled connection and a session advisory lock across every view, so without a bound one stuck refresh leaves the views permanently stale across all replicas.",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                  },
                   "conn_max_lifetime": {
                     "type": "string",
                     "description": "Maximum lifetime for physical database connections as a Go duration string",
                     "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                  },
+                  "conn_max_idle_time": {
+                    "type": "string",
+                    "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                    "default": "5m"
                   }
                 },
                 "required": [
@@ -3114,6 +3143,13 @@
           "type": "string",
           "description": "Protocol to use for the OTEL collector",
           "enum": ["http", "grpc"]
+        },
+        "export_timeout": {
+          "type": "integer",
+          "description": "Maximum time in seconds for a single trace export. Bounds how long a slow or unreachable collector can hold an export goroutine; gRPC exports have no other timeout.",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60
         },
         "metrics_enabled": {
           "type": "boolean",

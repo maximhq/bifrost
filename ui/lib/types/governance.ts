@@ -47,6 +47,10 @@ export interface Team {
 	rate_limit_id?: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendar_aligned?: boolean;
+	// Number of virtual keys assigned to this team (server-computed via a
+	// correlated subquery; the list endpoints report this instead of embedding
+	// the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	customer?: Customer;
 	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
@@ -58,6 +62,9 @@ export interface Customer {
 	name: string;
 	rate_limit_id?: string;
 	calendar_aligned?: boolean;
+	// Number of virtual keys owned by this customer (server-computed; the list
+	// endpoint reports this instead of embedding the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	teams?: Team[];
 	budgets?: Budget[];
@@ -279,6 +286,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only: filters to virtual keys assigned to this user. */
+	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
 	exclude_assigned_virtual_keys?: boolean;
 	for_user_assignment?: boolean;

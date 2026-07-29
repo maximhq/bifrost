@@ -42864,6 +42864,1420 @@
           ]
         }
       ]
+    },
+    {
+      "name": "34. Gemini/Vertex countTokens full-prompt accounting (PR #5620)",
+      "description": "Regression: CountTokens unconditionally deleted systemInstruction, generationConfig and toolConfig from the\nrequest body for BOTH Gemini and Vertex, so :countTokens reported only the \"contents\" token count. Reported\ncase: a ~7.4k-token system prompt plus a tool declaration counted as 17 tokens on Vertex.\n\nThe two endpoints need opposite request shapes, which is why one strip broke both:\n  - Gemini (generativelanguage): CountTokensRequest accepts only \"contents\" and \"generateContentRequest\".\n    systemInstruction/tools/toolConfig/generationConfig are 400 \"Unknown name\" at the top level and must be\n    wrapped in the envelope. Top-level \"contents\"/\"model\" are then SILENTLY IGNORED, so the body must carry\n    the envelope and nothing beside it. Before the fix, \"tools\" was never stripped, so any tool-bearing\n    countTokens was a hard 400 rather than an undercount.\n  - Vertex (aiplatform): CountTokensRequest takes contents/systemInstruction/tools/generationConfig FLAT and\n    has no envelope. Only toolConfig (plus safetySettings/cachedContent/serviceTier/labels) is rejected.\n\nThe /genai ingress must therefore parse both shapes and emit whichever the resolved provider requires, and\nthe Bifrost-only \"fallbacks\" routing field must be honoured for routing yet stripped before the upstream call.\n\nAssertions are relative, not absolute: token counts drift across model versions, so each provider records a\ncontents-only baseline and every later case asserts the count exceeds it. A dropped field collapses the count\nback to the baseline, which is exactly what these cases catch. 400 is deliberately NOT in the infra guard —\nfor the tools/toolConfig/fallbacks cases a 400 IS the regression signature.",
+      "item": [
+        {
+          "name": "34.1 GenAI Gemini countTokens contents-only baseline (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens contents-only request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('GenAI Gemini countTokens returns a positive totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(total).to.be.above(0);",
+                  "});",
+                  "pm.test('GenAI Gemini countTokens returns promptTokensDetails', function () {",
+                  "  pm.expect(body.promptTokensDetails, 'promptTokensDetails missing: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(body.promptTokensDetails.length).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('genaiCountTokensBaseline', total);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.2 GenAI Gemini countTokens counts a flat systemInstruction (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens accepts a flat systemInstruction', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected systemInstruction').to.not.include('Unknown name \"systemInstruction\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('a flat systemInstruction counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}",
+                  "pm.collectionVariables.set('genaiCountTokensWithSystem', total);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.3 GenAI Gemini countTokens counts flat tools + toolConfig + generationConfig (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens accepts flat tools, toolConfig and generationConfig', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected tools').to.not.include('Unknown name \"tools\"');",
+                  "  pm.expect(pm.response.text(), 'upstream rejected toolConfig').to.not.include('Unknown name \"toolConfig\"');",
+                  "  pm.expect(pm.response.text(), 'upstream rejected generationConfig').to.not.include('Unknown name \"generationConfig\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('flat tools, toolConfig and generationConfig counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\n  \"toolConfig\": {\"functionCallingConfig\":{\"mode\":\"AUTO\"}},\n  \"generationConfig\": {\"temperature\":0.2}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.4 GenAI Gemini countTokens accepts a generateContentRequest envelope (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens accepts a generateContentRequest envelope', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected generateContentRequest').to.not.include('Unknown name \"generateContentRequest\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('a generateContentRequest envelope counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"generateContentRequest\": {\n    \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n    \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n    \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.5 GenAI Gemini countTokens strips the Bifrost fallbacks field (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens accepts a Bifrost fallbacks field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('fallbacks is not forwarded verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected fallbacks').to.not.include('Unknown name \"fallbacks\"');",
+                  "});",
+                  "var total = pm.response.json().totalTokens;",
+                  "var withSystem = Number(pm.collectionVariables.get('genaiCountTokensWithSystem'));",
+                  "// Only compare when 34.2 actually recorded a value (it may have skipped).",
+                  "if (!isNaN(withSystem) && withSystem > 0) {",
+                  "  pm.test('fallbacks is routing-only and does not change the counted prompt', function () {",
+                  "    pm.expect(total, 'fallbacks altered the token count: ' + pm.response.text()).to.eql(withSystem);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n  \"fallbacks\": [\"vertex/gemini-2.5-pro\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.6 Vertex Gemini countTokens contents-only baseline (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini countTokens contents-only request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('Vertex Gemini countTokens returns a positive totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(total).to.be.above(0);",
+                  "});",
+                  "pm.test('Vertex Gemini countTokens returns promptTokensDetails', function () {",
+                  "  pm.expect(body.promptTokensDetails, 'promptTokensDetails missing: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(body.promptTokensDetails.length).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('vertexCountTokensBaseline', total);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "{{vertexModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.7 Vertex Gemini countTokens counts a flat systemInstruction (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini countTokens accepts a flat systemInstruction', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected systemInstruction').to.not.include('Unknown name \"systemInstruction\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('a flat systemInstruction counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "{{vertexModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.8 Vertex Gemini countTokens keeps tools + generationConfig and strips toolConfig (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini countTokens accepts flat tools and generationConfig with toolConfig stripped', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected toolConfig').to.not.include('Unknown name \"toolConfig\"');",
+                  "  pm.expect(pm.response.text(), 'upstream rejected generationConfig').to.not.include('Unknown name \"generationConfig\"');",
+                  "  pm.expect(pm.response.text(), 'upstream rejected tools').to.not.include('Unknown name \"tools\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('flat tools and generationConfig with toolConfig stripped counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\n  \"generationConfig\": {\"temperature\":0.2},\n  \"toolConfig\": {\"functionCallingConfig\":{\"mode\":\"AUTO\"}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "{{vertexModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.9 Vertex Gemini countTokens unwraps a generateContentRequest envelope (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini countTokens accepts a generateContentRequest envelope (Vertex has none, so it must be unwrapped)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected generateContentRequest').to.not.include('Unknown name \"generateContentRequest\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('a generateContentRequest envelope (Vertex has none, so it must be unwrapped) counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"generateContentRequest\": {\n    \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n    \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n    \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "{{vertexModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "35. Gemini/Vertex googleSearch grounding filters + retrievalConfig (/genai)",
+      "description": "Google Search grounding fields on the /genai route that had zero harness coverage: googleSearch.excludeDomains, googleSearch.timeRangeFilter (both camelCase and snake_case), and toolConfig.retrievalConfig.latLng on the request side, plus groundingMetadata fidelity on the response side for both non-streaming and streaming.\n\nThe /genai route is NOT passthrough: the request crosses Gemini JSON -> BifrostResponsesRequest -> Gemini JSON, and the response crosses back the same way. Every one of these fields therefore has two chances to be silently dropped, and a dropped field still returns 200 - the model just quietly runs an unfiltered search. So the assertions are on response content, not status:\n\n- excludeDomains / timeRangeFilter / retrievalConfig.latLng have no distinctive response signature, so they are pinned by the fact that the provider accepts them AND still grounds. A mangled or misnamed field is a 400 INVALID_ARGUMENT from Google; a dropped tool means no groundingMetadata at all.\n- excludeDomains is Vertex-only - the Gemini Developer API does not accept it - so every case carrying it runs on Vertex alone. timeRangeFilter and retrievalConfig.latLng run on both.\n- The latLng cases additionally assert no functionCallingConfig was synthesized: Gemini rejects functionCallingConfig without function declarations, so rebuilding toolConfig for latLng must not pull one in.\n- The snake_case cases pin GoogleSearch.UnmarshalJSON's alias handling: time_range_filter on Gemini, exclude_domains + time_range_filter together on Vertex.\n- The fidelity cases pin what must survive the four conversions: webSearchQueries, a citable uri on every grounding chunk, searchEntryPoint.renderedContent (Google requires rendering Search Suggestions), and groundingSupports[].groundingChunkIndices that stay in-bounds and de-duplicated.\n\nEach case runs on both providers via the provider-prefixed model form (/genai/v1beta/models/gemini/... and /genai/v1beta/models/vertex/...), so PROVIDER=gemini and PROVIDER=vertex both exercise the full set against their own backend.\n\nNot covered here: googleSearch.searchTypes (Grounding with Google Image Search) and the imageSearchQueries / groundingChunks[].image response half. Those need an image model and are deferred - Bifrost currently also drops the generated inlineData part in streaming, because processGeminiPart matches part.ThoughtSignature before part.InlineData and consumes an image part carrying a thought signature as a signature-only reasoning item.\n\nThe chunk-index test checks in-bounds and de-duplicated indices; it cannot by itself catch a regression that keeps only the first index of a multi-source support, since one index is still valid. Folder 32 pins that fan-out on /v1/responses.",
+      "item": [
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch excludeDomains forwarded intact (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"excludeDomains\": [\n          \"wikipedia.org\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex excludeDomains: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex excludeDomains: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - excludeDomains was mangled or the tool was dropped: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex excludeDomains: grounding still returned with the domain filter applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex excludeDomains: no source from the excluded domain', function () {",
+                  "  (gm.groundingChunks || []).forEach(function (c) {",
+                  "    var d = (c.web && c.web.domain) || '';",
+                  "    pm.expect(d.indexOf('wikipedia.org'), 'excluded domain present in groundingChunks: ' + JSON.stringify(c)).to.eql(-1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch timeRangeFilter forwarded intact (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"timeRangeFilter\": {\n          \"startTime\": \"2024-06-01T00:00:00Z\",\n          \"endTime\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini timeRangeFilter: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('gemini timeRangeFilter: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - timeRangeFilter was mangled or the tool was dropped: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini timeRangeFilter: grounding still returned with the time filter applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch timeRangeFilter forwarded intact (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"timeRangeFilter\": {\n          \"startTime\": \"2024-06-01T00:00:00Z\",\n          \"endTime\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex timeRangeFilter: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex timeRangeFilter: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - timeRangeFilter was mangled or the tool was dropped: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex timeRangeFilter: grounding still returned with the time filter applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch excludeDomains + timeRangeFilter combined (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"excludeDomains\": [\n          \"wikipedia.org\"\n        ],\n        \"timeRangeFilter\": {\n          \"startTime\": \"2024-06-01T00:00:00Z\",\n          \"endTime\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex excludeDomains + timeRangeFilter: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex excludeDomains + timeRangeFilter: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - the combined filters were mangled or the tool was dropped: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex excludeDomains + timeRangeFilter: grounding still returned with both filters applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex excludeDomains + timeRangeFilter: no source from the excluded domain', function () {",
+                  "  (gm.groundingChunks || []).forEach(function (c) {",
+                  "    var d = (c.web && c.web.domain) || '';",
+                  "    pm.expect(d.indexOf('wikipedia.org'), 'excluded domain present in groundingChunks: ' + JSON.stringify(c)).to.eql(-1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch + toolConfig.retrievalConfig.latLng localization (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What are the best-known coffee shops in this area? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.7749,\n        \"longitude\": -122.4194\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini latLng: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('gemini latLng: no functionCallingConfig synthesized alongside retrievalConfig', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body.indexOf('FunctionCallingConfig'), 'provider rejected a synthesized functionCallingConfig - latLng must not pull one in without function declarations: ' + body.slice(0, 800)).to.eql(-1);",
+                  "});",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('gemini latLng: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - toolConfig.retrievalConfig.latLng was mangled or dropped the tool: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini latLng: grounding still returned with the location applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch + toolConfig.retrievalConfig.latLng localization (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What are the best-known coffee shops in this area? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.7749,\n        \"longitude\": -122.4194\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex latLng: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('vertex latLng: no functionCallingConfig synthesized alongside retrievalConfig', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body.indexOf('FunctionCallingConfig'), 'provider rejected a synthesized functionCallingConfig - latLng must not pull one in without function declarations: ' + body.slice(0, 800)).to.eql(-1);",
+                  "});",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex latLng: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - toolConfig.retrievalConfig.latLng was mangled or dropped the tool: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex latLng: grounding still returned with the location applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch time_range_filter snake_case alias (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"time_range_filter\": {\n          \"start_time\": \"2024-06-01T00:00:00Z\",\n          \"end_time\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini snake_case filter: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('gemini snake_case filter: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - the snake_case time_range_filter alias was not recognised: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini snake_case filter: grounding still returned with the snake_case filter applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch exclude_domains + time_range_filter snake_case aliases (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"exclude_domains\": [\n          \"wikipedia.org\"\n        ],\n        \"time_range_filter\": {\n          \"start_time\": \"2024-06-01T00:00:00Z\",\n          \"end_time\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex snake_case filters: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex snake_case filters: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - the snake_case filter aliases were not recognised: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex snake_case filters: grounding still returned with the snake_case filters applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex snake_case filters: no source from the excluded domain', function () {",
+                  "  (gm.groundingChunks || []).forEach(function (c) {",
+                  "    var d = (c.web && c.web.domain) || '';",
+                  "    pm.expect(d.indexOf('wikipedia.org'), 'excluded domain present in groundingChunks: ' + JSON.stringify(c)).to.eql(-1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch grounding fidelity: chunk indices + searchEntryPoint (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini grounding fidelity: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('gemini grounding fidelity: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata on the non-streaming genai path: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini grounding fidelity: webSearchQueries survive the round-trip', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini grounding fidelity: groundingChunks carry a citable uri', function () {",
+                  "  var chunks = gm.groundingChunks || [];",
+                  "  pm.expect(chunks.length, 'no groundingChunks: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "  chunks.forEach(function (c) {",
+                  "    var uri = (c.web && c.web.uri) || (c.image && c.image.sourceUri) || '';",
+                  "    pm.expect(uri, 'grounding chunk with no citable uri: ' + JSON.stringify(c)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('gemini grounding fidelity: groundingSupports chunk indices are in-bounds and de-duplicated', function () {",
+                  "  var supports = gm.groundingSupports || [];",
+                  "  var chunkCount = (gm.groundingChunks || []).length;",
+                  "  var totalIndices = 0;",
+                  "  supports.forEach(function (s) {",
+                  "    var idx = s.groundingChunkIndices || [];",
+                  "    totalIndices += idx.length;",
+                  "    var seen = {};",
+                  "    idx.forEach(function (i) {",
+                  "      pm.expect(i, 'groundingChunkIndices entry out of bounds (chunks=' + chunkCount + '): ' + JSON.stringify(s)).to.be.below(chunkCount);",
+                  "      pm.expect(seen[i], 'duplicate chunk index ' + i + ' in one support - annotations were merged twice: ' + JSON.stringify(s)).to.be.undefined;",
+                  "      seen[i] = true;",
+                  "    });",
+                  "  });",
+                  "  if (supports.length) {",
+                  "    pm.expect(totalIndices, 'groundingSupports present but carry no groundingChunkIndices: ' + JSON.stringify(supports).slice(0, 800)).to.be.above(0);",
+                  "  }",
+                  "});",
+                  "pm.test('gemini grounding fidelity: searchEntryPoint.renderedContent present', function () {",
+                  "  pm.expect(((gm.searchEntryPoint || {}).renderedContent) || '', 'searchEntryPoint missing - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch grounding fidelity: chunk indices + searchEntryPoint (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex grounding fidelity: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex grounding fidelity: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata on the non-streaming genai path: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex grounding fidelity: webSearchQueries survive the round-trip', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex grounding fidelity: groundingChunks carry a citable uri', function () {",
+                  "  var chunks = gm.groundingChunks || [];",
+                  "  pm.expect(chunks.length, 'no groundingChunks: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "  chunks.forEach(function (c) {",
+                  "    var uri = (c.web && c.web.uri) || (c.image && c.image.sourceUri) || '';",
+                  "    pm.expect(uri, 'grounding chunk with no citable uri: ' + JSON.stringify(c)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('vertex grounding fidelity: groundingSupports chunk indices are in-bounds and de-duplicated', function () {",
+                  "  var supports = gm.groundingSupports || [];",
+                  "  var chunkCount = (gm.groundingChunks || []).length;",
+                  "  var totalIndices = 0;",
+                  "  supports.forEach(function (s) {",
+                  "    var idx = s.groundingChunkIndices || [];",
+                  "    totalIndices += idx.length;",
+                  "    var seen = {};",
+                  "    idx.forEach(function (i) {",
+                  "      pm.expect(i, 'groundingChunkIndices entry out of bounds (chunks=' + chunkCount + '): ' + JSON.stringify(s)).to.be.below(chunkCount);",
+                  "      pm.expect(seen[i], 'duplicate chunk index ' + i + ' in one support - annotations were merged twice: ' + JSON.stringify(s)).to.be.undefined;",
+                  "      seen[i] = true;",
+                  "    });",
+                  "  });",
+                  "  if (supports.length) {",
+                  "    pm.expect(totalIndices, 'groundingSupports present but carry no groundingChunkIndices: ' + JSON.stringify(supports).slice(0, 800)).to.be.above(0);",
+                  "  }",
+                  "});",
+                  "pm.test('vertex grounding fidelity: searchEntryPoint.renderedContent present', function () {",
+                  "  pm.expect(((gm.searchEntryPoint || {}).renderedContent) || '', 'searchEntryPoint missing - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch grounding survives streaming: chunk indices + searchEntryPoint (/genai SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini grounding stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var sseChunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { sseChunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var gm = null;",
+                  "sseChunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) { if (cand.groundingMetadata) { gm = cand.groundingMetadata; } });",
+                  "});",
+                  "pm.test('gemini grounding stream: SSE chunks parsed', function () {",
+                  "  pm.expect(sseChunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini grounding stream: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata in any SSE chunk - grounding was lost in streaming: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini grounding stream: webSearchQueries survive streaming', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries in the stream: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini grounding stream: groundingSupports chunk indices are in-bounds and de-duplicated', function () {",
+                  "  var supports = gm.groundingSupports || [];",
+                  "  var chunkCount = (gm.groundingChunks || []).length;",
+                  "  var totalIndices = 0;",
+                  "  supports.forEach(function (s) {",
+                  "    var idx = s.groundingChunkIndices || [];",
+                  "    totalIndices += idx.length;",
+                  "    var seen = {};",
+                  "    idx.forEach(function (i) {",
+                  "      pm.expect(i, 'groundingChunkIndices entry out of bounds (chunks=' + chunkCount + '): ' + JSON.stringify(s)).to.be.below(chunkCount);",
+                  "      pm.expect(seen[i], 'duplicate chunk index ' + i + ' in one support - annotations were merged twice: ' + JSON.stringify(s)).to.be.undefined;",
+                  "      seen[i] = true;",
+                  "    });",
+                  "  });",
+                  "  if (supports.length) {",
+                  "    pm.expect(totalIndices, 'groundingSupports present but carry no groundingChunkIndices: ' + JSON.stringify(supports).slice(0, 800)).to.be.above(0);",
+                  "  }",
+                  "});",
+                  "pm.test('gemini grounding stream: searchEntryPoint.renderedContent present', function () {",
+                  "  pm.expect(((gm.searchEntryPoint || {}).renderedContent) || '', 'searchEntryPoint missing - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch grounding survives streaming: chunk indices + searchEntryPoint (/genai SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex grounding stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var sseChunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { sseChunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var gm = null;",
+                  "sseChunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) { if (cand.groundingMetadata) { gm = cand.groundingMetadata; } });",
+                  "});",
+                  "pm.test('vertex grounding stream: SSE chunks parsed', function () {",
+                  "  pm.expect(sseChunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex grounding stream: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata in any SSE chunk - grounding was lost in streaming: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex grounding stream: webSearchQueries survive streaming', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries in the stream: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex grounding stream: groundingSupports chunk indices are in-bounds and de-duplicated', function () {",
+                  "  var supports = gm.groundingSupports || [];",
+                  "  var chunkCount = (gm.groundingChunks || []).length;",
+                  "  var totalIndices = 0;",
+                  "  supports.forEach(function (s) {",
+                  "    var idx = s.groundingChunkIndices || [];",
+                  "    totalIndices += idx.length;",
+                  "    var seen = {};",
+                  "    idx.forEach(function (i) {",
+                  "      pm.expect(i, 'groundingChunkIndices entry out of bounds (chunks=' + chunkCount + '): ' + JSON.stringify(s)).to.be.below(chunkCount);",
+                  "      pm.expect(seen[i], 'duplicate chunk index ' + i + ' in one support - annotations were merged twice: ' + JSON.stringify(s)).to.be.undefined;",
+                  "      seen[i] = true;",
+                  "    });",
+                  "  });",
+                  "  if (supports.length) {",
+                  "    pm.expect(totalIndices, 'groundingSupports present but carry no groundingChunkIndices: ' + JSON.stringify(supports).slice(0, 800)).to.be.above(0);",
+                  "  }",
+                  "});",
+                  "pm.test('vertex grounding stream: searchEntryPoint.renderedContent present', function () {",
+                  "  pm.expect(((gm.searchEntryPoint || {}).renderedContent) || '', 'searchEntryPoint missing - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

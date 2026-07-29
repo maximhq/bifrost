@@ -18,6 +18,11 @@ export interface UserPickerProps {
 	// picker. Callers pass the edited row's own user id when editing an
 	// existing row.
 	fallbackOption?: { value: string; label: string } | null;
+	/** Placeholder for the empty state — e.g. "All Users" when used as a filter. */
+	placeholder?: string;
+	className?: string;
+	/** Extra classes for the combobox trigger, e.g. `h-9` to line up with a search input. */
+	triggerClassName?: string;
 }
 
 let userPicker: ComponentType<UserPickerProps> | undefined;
