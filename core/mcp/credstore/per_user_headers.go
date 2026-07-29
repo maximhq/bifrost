@@ -38,7 +38,7 @@ func (r *perUserHeadersResolver) ConnectionHeaders(ctx *schemas.BifrostContext, 
 	}
 
 	mode := ctx.MCPAuthMode()
-	identity := identityForMCPAuthMode(ctx, mode)
+	identity := ctx.MCPIdentity(mode)
 	if identity == "" {
 		return nil, fmt.Errorf(
 			"per-user headers for %s requires an identity: send a Virtual Key (x-bf-vk), authenticate as a user, or set x-bf-mcp-session-id to any opaque string you'll re-send on subsequent calls",
@@ -68,6 +68,13 @@ func (r *perUserHeadersResolver) ConnectionHeaders(ctx *schemas.BifrostContext, 
 
 func (r *perUserHeadersResolver) RequiresPerCallConnection() bool { return true }
 
+// ForceRefresh is a no-op — user-submitted header credentials have nothing
+// to refresh; a rejected header value requires a fresh submission, not a
+// refresh.
+func (r *perUserHeadersResolver) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	return nil
+}
+
 // buildAuthRequiredError creates a pending mcp_per_user_header_flows row
 // via the provider, then constructs the inline-401 payload pointing at
 // that flow's auth-page URL. Mirrors per_user_oauth.go's call to
@@ -81,7 +88,7 @@ func (r *perUserHeadersResolver) buildAuthRequiredError(ctx *schemas.BifrostCont
 		return fmt.Errorf("per-user headers requires a callback base URL but none is available in context")
 	}
 	mode := ctx.MCPAuthMode()
-	identity := identityForMCPAuthMode(ctx, mode)
+	identity := ctx.MCPIdentity(mode)
 	if identity == "" {
 		// Defensive — the caller already validated identity before invoking
 		// the auth-required path, but keep the guard so a future refactor
