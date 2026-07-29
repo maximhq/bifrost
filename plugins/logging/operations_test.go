@@ -440,6 +440,23 @@ func TestApplyStreamingOutputToEntryPreservesAccumulatorCancelledStatus(t *testi
 	}
 }
 
+func TestApplyStreamingOutputToEntryPreservesServiceTier(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	entry := &logstore.Log{}
+	priority := schemas.BifrostServiceTierPriority
+
+	plugin.applyStreamingOutputToEntry(entry, &streaming.ProcessedStreamResponse{
+		Data: &streaming.AccumulatedData{
+			ServiceTier: &priority,
+			TokenUsage:  &schemas.BifrostLLMUsage{TotalTokens: 1},
+		},
+	}, false, true)
+
+	if entry.ServiceTier == nil || *entry.ServiceTier != string(schemas.BifrostServiceTierPriority) {
+		t.Fatalf("expected priority service tier, got %v", entry.ServiceTier)
+	}
+}
+
 // newTestPricingManager builds a ModelCatalog backed by the committed pricing
 // testdata via an offline file:// URL (no network).
 func newTestPricingManager(t *testing.T) *modelcatalog.ModelCatalog {

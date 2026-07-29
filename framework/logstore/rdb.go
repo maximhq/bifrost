@@ -700,6 +700,88 @@ func (s *RDBLogStore) bulkUpdateCostPostgres(ctx context.Context, updates map[st
 
 // SearchLogs searches for logs in the database without calculating statistics.
 func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
+	return s.searchLogs(ctx, filters, pagination, s.listSelectColumns())
+}
+
+// SearchLogsForBilling searches with the billing projection.
+func (s *RDBLogStore) SearchLogsForBilling(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
+	result, err := s.searchLogs(ctx, filters, pagination, s.billingSelectColumns())
+	if err != nil || result == nil {
+		return result, err
+	}
+	for i := range result.Logs {
+		stripNonBillingPayloadBytes(&result.Logs[i])
+	}
+	return result, nil
+}
+
+// HydrateBillingChunk is a no-op for a pure RDB store: nothing is offloaded, so every
+// pricing input is already in the row. The hybrid store overrides this to fetch.
+func (s *RDBLogStore) HydrateBillingChunk(_ context.Context, _ []*Log) (BillingHydrationResult, error) {
+	return BillingHydrationResult{}, nil
+}
+
+// BulkBackfillBillingPayloads writes recovered token_usage / cache_debug back into their
+// rows so later recomputes need no object fetch.
+//
+// Only ever called with rows whose payload was actually fetched, which in a pure RDB
+// store is never — this exists for the hybrid store layered on top, which delegates here.
+func (s *RDBLogStore) BulkBackfillBillingPayloads(ctx context.Context, updates map[string]BillingPayloadBackfill) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	// ClickHouse has no row UPDATE; mutations are async and expensive, which is why
+	// BulkUpdateCost re-inserts the whole row there instead. Re-inserting just to
+	// populate a cache of something object storage already holds is not worth that
+	// cost, so ClickHouse deployments keep fetching. Skipped rather than errored
+	// because the backfill is an optimisation, not part of the job's output.
+	if s.db.Dialector.Name() == "clickhouse" {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for id, backfill := range updates {
+			// Both written unconditionally, including an empty cache_debug: the gate
+			// infers "already backfilled" from token_usage being present on an
+			// offloaded row, so an empty cache_debug beside it correctly reads as
+			// "the object held none" rather than "not yet recovered".
+			columns := map[string]any{
+				"token_usage": backfill.TokenUsage,
+				"cache_debug": backfill.CacheDebug,
+			}
+			if err := tx.Model(&Log{}).Where("id = ?", id).Updates(columns).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// stripNonBillingPayloadBytes releases bytes that a modality payload carries but
+// pricing never reads.
+//
+// Today that is generated image data. computeImageCost needs the image *count* plus
+// size and quality — extractCostInput passes len(Data) to populateOutputImageCount and
+// never touches the images themselves — while ImageData.B64JSON holds full base64
+// bytes, megabytes per image. A recompute holds a whole batch at once, so keeping them
+// is a straight path to an OOM on an image-generation window.
+//
+// The serialized column is cleared too: it has already been parsed, and the row is
+// never re-deserialized or written back.
+func stripNonBillingPayloadBytes(l *Log) {
+	if l == nil || l.ImageGenerationOutputParsed == nil {
+		return
+	}
+	for i := range l.ImageGenerationOutputParsed.Data {
+		l.ImageGenerationOutputParsed.Data[i].B64JSON = ""
+		l.ImageGenerationOutputParsed.Data[i].URL = ""
+		l.ImageGenerationOutputParsed.Data[i].RevisedPrompt = ""
+	}
+	l.ImageGenerationOutput = ""
+}
+
+func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions, selectColumns string) (*SearchResult, error) {
 	// Build order clause up front (needed by the data goroutine).
 	direction := "DESC"
 	if pagination.Order == "asc" {
@@ -755,7 +837,7 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	g.Go(func() error {
 		dataQuery := s.ScopedDB(gCtx).Model(&Log{})
 		dataQuery = s.applyFilters(dataQuery, filters)
-		dataQuery = dataQuery.Order(orderClause).Select(s.listSelectColumns()).Limit(limit)
+		dataQuery = dataQuery.Order(orderClause).Select(selectColumns).Limit(limit)
 		if pagination.Offset > 0 {
 			dataQuery = dataQuery.Offset(pagination.Offset)
 		}
@@ -971,6 +1053,9 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"metadata", "cache_debug",
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
+		"cached_read_tokens",
+		"has_object", "content_hidden",
+		"service_tier", "speed", "inference_geo",
 		"created_at",
 	}, ", ")
 
@@ -1020,6 +1105,99 @@ func (s *RDBLogStore) listSelectColumns() string {
 	}
 
 	return baseCols + ", " + inputHistoryExpr + ", " + responsesInputExpr + ", " + outputMessageExpr
+}
+
+// billingPayloadColumns are the payload columns cost recomputation reads to recover a
+// billing dimension that BifrostLLMUsage cannot express: audio duration and the
+// audio/text token split, TTS input character counts, output image counts with size
+// and quality, video duration, and OCR pages processed. Without them those request
+// types are priced off aggregate token counts alone, which is wrong for every one.
+//
+// Each is keyed to the object_type values that actually bill on it, so a chat row
+// never drags an unrelated payload into memory — see billingSelectColumns.
+var billingPayloadColumns = map[string][]string{
+	"speech_output":        {"speech", "speech_stream"},
+	"transcription_output": {"transcription", "transcription_stream"},
+	"image_generation_output": {
+		"image_generation", "image_generation_stream",
+		"image_edit", "image_edit_stream",
+		"image_variation",
+	},
+	"video_generation_output": {"video_generation", "video_remix"},
+	"ocr_output":              {"ocr"},
+}
+
+// billingScalarColumns is every non-payload column cost recomputation reads, and
+// nothing else. Traced from calculateCostForLog, pricingScopesForLog,
+// servedTierFromLog, isKnownZeroCostLog, and the recalc job's cursor bookkeeping.
+//
+// Deliberately NOT built on listSelectColumns: that projection serves /api/logs and
+// carries message previews, content summaries, metadata and every denormalized
+// governance name — none of which pricing looks at. A recompute holds a whole batch in
+// memory at once, so every column it does not need is pure ballast.
+var billingScalarColumns = []string{
+	// Identity and the object-storage key.
+	"id", "timestamp", "object_type",
+	// Pricing lookup: provider, the wire/alias/canonical model triplet, and the
+	// server-side fallback model that resolvePricing ranks first.
+	"provider", "model", "alias", "canonical_model_name", "server_side_fallback_model",
+	// Override scopes.
+	"selected_key_id", "virtual_key_id", "user_id",
+	// Usage, and the denormalized fallback used when token_usage was offloaded.
+	"token_usage", "prompt_tokens", "completion_tokens", "total_tokens", "cached_read_tokens",
+	// Semantic-cache billing.
+	"cache_debug",
+	// Whether the payload was offloaded, and whether it can ever be fetched back.
+	"has_object", "content_hidden",
+	// Served tier: scales every token rate.
+	"service_tier", "speed", "inference_geo",
+}
+
+// billingSelectColumns returns the SELECT clause for cost recomputation.
+//
+// The modality payload columns are wrapped in a CASE on object_type so each row pulls
+// only the payload its own request type bills on. This matters most for
+// image_generation_output, which serializes ImageData.B64JSON — full base64 image bytes,
+// megabytes per image. Selecting it unconditionally would pull that for every row in
+// the batch including plain chat rows, and pricing only ever reads len(Data).
+// The same CASE pattern guards output_message in listSelectColumns for realtime turns.
+func (s *RDBLogStore) billingSelectColumns() string {
+	cols := make([]string, 0, len(billingScalarColumns)+len(billingPayloadColumns))
+	cols = append(cols, billingScalarColumns...)
+
+	// Sorted so the generated SQL is stable across calls (map iteration is not).
+	payloadCols := make([]string, 0, len(billingPayloadColumns))
+	for col := range billingPayloadColumns {
+		payloadCols = append(payloadCols, col)
+	}
+	sort.Strings(payloadCols)
+
+	for _, col := range payloadCols {
+		objectTypes := billingPayloadColumns[col]
+		quoted := make([]string, 0, len(objectTypes))
+		for _, t := range objectTypes {
+			quoted = append(quoted, "'"+t+"'")
+		}
+		cols = append(cols, fmt.Sprintf(
+			"CASE WHEN object_type IN (%s) THEN %s ELSE NULL END AS %s",
+			strings.Join(quoted, ", "), col, col,
+		))
+	}
+	return strings.Join(cols, ", ")
+}
+
+// billingPayloadColumnFor returns the payload column an object_type bills on, or ""
+// when the request type prices purely off token counts. Used both to gate the
+// projection and to decide whether a row still needs an object fetch.
+func billingPayloadColumnFor(objectType string) string {
+	for col, objectTypes := range billingPayloadColumns {
+		for _, t := range objectTypes {
+			if t == objectType {
+				return col
+			}
+		}
+	}
+	return ""
 }
 
 // GetStats calculates statistics for logs matching the given filters.
