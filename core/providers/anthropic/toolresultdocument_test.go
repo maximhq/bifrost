@@ -177,3 +177,44 @@ func TestChatDataURLTextDocumentPreservesBase64Source(t *testing.T) {
 		t.Fatalf("expected text/plain media type, got %#v", source.MediaType)
 	}
 }
+
+func TestMixedCaseDataURLTextDocumentPreservesBase64Source(t *testing.T) {
+	dataURL := "DaTa:text/plain;base64,SGVsbG8="
+	chatBlock := ConvertToAnthropicDocumentBlock(schemas.ChatContentBlock{
+		Type: schemas.ChatContentBlockTypeFile,
+		File: &schemas.ChatInputFile{
+			FileData: &dataURL,
+			FileType: schemas.Ptr("text/plain"),
+		},
+	})
+	responsesBlock := ConvertResponsesFileBlockToAnthropic(
+		&schemas.ResponsesInputMessageContentBlockFile{
+			FileData: &dataURL,
+			FileType: schemas.Ptr("text/plain"),
+		},
+		nil,
+		nil,
+		nil,
+	)
+
+	for name, block := range map[string]AnthropicContentBlock{
+		"chat":      chatBlock,
+		"responses": responsesBlock,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if block.Source == nil || block.Source.SourceObj == nil {
+				t.Fatal("expected Anthropic document source")
+			}
+			source := block.Source.SourceObj
+			if source.Type != "base64" {
+				t.Fatalf("expected base64 source, got %q", source.Type)
+			}
+			if source.Data == nil || *source.Data != "SGVsbG8=" {
+				t.Fatalf("expected original base64 payload, got %#v", source.Data)
+			}
+			if source.MediaType == nil || *source.MediaType != "text/plain" {
+				t.Fatalf("expected text/plain media type, got %#v", source.MediaType)
+			}
+		})
+	}
+}

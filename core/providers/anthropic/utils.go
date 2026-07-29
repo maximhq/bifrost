@@ -2429,6 +2429,15 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	return imageBlock
 }
 
+func normalizeAnthropicDocumentDataURL(fileData string) (string, bool) {
+	const dataURLScheme = "data:"
+	if len(fileData) < len(dataURLScheme) ||
+		!strings.EqualFold(fileData[:len(dataURLScheme)], dataURLScheme) {
+		return fileData, false
+	}
+	return dataURLScheme + fileData[len(dataURLScheme):], true
+}
+
 // ConvertToAnthropicDocumentBlock converts a Bifrost file block to Anthropic document format
 func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
 	documentBlock := AnthropicContentBlock{
@@ -2469,10 +2478,11 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 	// Handle file_data (base64 encoded data)
 	if file.FileData != nil && *file.FileData != "" {
 		fileData := *file.FileData
+		normalizedFileData, isDataURL := normalizeAnthropicDocumentDataURL(fileData)
 
 		// A data URL must be decoded as base64 even when its declared media type is
 		// text/plain. Only raw file_data values use Anthropic's text source shape.
-		if !strings.HasPrefix(fileData, "data:") &&
+		if !isDataURL &&
 			file.FileType != nil &&
 			(*file.FileType == "text/plain" || *file.FileType == "txt") {
 			documentBlock.Source.SourceObj.Type = "text"
@@ -2481,8 +2491,8 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 			return documentBlock
 		}
 
-		if strings.HasPrefix(fileData, "data:") {
-			urlTypeInfo := schemas.ExtractURLTypeInfo(fileData)
+		if isDataURL {
+			urlTypeInfo := schemas.ExtractURLTypeInfo(normalizedFileData)
 
 			if urlTypeInfo.DataURLWithoutPrefix != nil {
 				// It's a data URL, extract the base64 content
@@ -2548,10 +2558,11 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	// Handle file_data (base64 encoded data or plain text)
 	if fileBlock.FileData != nil && *fileBlock.FileData != "" {
 		fileData := *fileBlock.FileData
+		normalizedFileData, isDataURL := normalizeAnthropicDocumentDataURL(fileData)
 
 		// A data URL must be decoded as base64 even when its declared media type is
 		// text/plain. Only raw file_data values use Anthropic's text source shape.
-		if !strings.HasPrefix(fileData, "data:") &&
+		if !isDataURL &&
 			fileBlock.FileType != nil &&
 			(*fileBlock.FileType == "text/plain" || *fileBlock.FileType == "txt") {
 			documentBlock.Source.SourceObj.Type = "text"
@@ -2561,8 +2572,8 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 		}
 
 		// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
-		if strings.HasPrefix(fileData, "data:") {
-			urlTypeInfo := schemas.ExtractURLTypeInfo(fileData)
+		if isDataURL {
+			urlTypeInfo := schemas.ExtractURLTypeInfo(normalizedFileData)
 
 			if urlTypeInfo.DataURLWithoutPrefix != nil {
 				// It's a data URL, extract the base64 content
