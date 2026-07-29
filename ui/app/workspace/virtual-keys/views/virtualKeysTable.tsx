@@ -1,4 +1,6 @@
 import { BudgetDisplay } from "@/components/budgetDisplay";
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
+import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -14,7 +16,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ComboboxSelect } from "@/components/ui/combobox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
@@ -32,7 +33,7 @@ import {
 	useLazyGetVirtualKeysQuery,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
-import { Customer, Team, VirtualKey } from "@/lib/types/governance";
+import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -52,10 +53,11 @@ import {
 	MoreHorizontal,
 	Plus,
 	RotateCcw,
+	ScrollText,
 	Search,
 	ShieldCheck,
-	ScrollText,
 	Trash2,
+	X,
 } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
@@ -104,6 +106,35 @@ function downloadCSV(content: string) {
 function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 	const { displayBudgets } = useVirtualKeyUsage(vk);
 	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} />;
+}
+
+// Entity selectors only ever set a value, so a filter built on one needs its own
+// reset back to "all" — this restores the affordance ComboboxSelect gave for free.
+function FilterClearButton({
+	show,
+	label,
+	onClear,
+	"data-testid": dataTestId,
+}: {
+	show: boolean;
+	label: string;
+	onClear: () => void;
+	"data-testid"?: string;
+}) {
+	if (!show) return null;
+	return (
+		<Button
+			type="button"
+			variant="ghost"
+			size="icon"
+			className="h-9 w-7 shrink-0"
+			aria-label={label}
+			onClick={onClear}
+			data-testid={dataTestId}
+		>
+			<X className="h-3.5 w-3.5" />
+		</Button>
+	);
 }
 
 function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
@@ -263,8 +294,6 @@ function VKActionsMenu({
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
 	totalCount: number;
-	teams: Team[];
-	customers: Customer[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
@@ -285,8 +314,6 @@ interface VirtualKeysTableProps {
 export default function VirtualKeysTable({
 	virtualKeys,
 	totalCount,
-	teams,
-	customers,
 	search,
 	debouncedSearch,
 	onSearchChange,
@@ -326,7 +353,9 @@ export default function VirtualKeysTable({
 	// The target may not be on the current page/filter, so fetch it by id as a fallback.
 	const [vkParam, setVkParam] = useQueryState("vk");
 	const needsVkFetch = !!selectedVkId && !selectedVkInList;
-	const { data: fetchedVkData } = useGetVirtualKeyQuery(selectedVkId ?? "", { skip: !needsVkFetch });
+	const { data: fetchedVkData } = useGetVirtualKeyQuery(selectedVkId ?? "", {
+		skip: !needsVkFetch,
+	});
 	const selectedVirtualKey = selectedVkInList ?? (needsVkFetch ? (fetchedVkData?.virtual_key ?? null) : null);
 
 	useEffect(() => {
@@ -596,13 +625,7 @@ export default function VirtualKeysTable({
 		return (
 			<>
 				{showVirtualKeySheet && (
-					<VirtualKeySheet
-						virtualKey={editingVirtualKey}
-						teams={teams}
-						customers={customers}
-						onSave={handleVirtualKeySaved}
-						onCancel={() => setShowVirtualKeySheet(false)}
-					/>
+					<VirtualKeySheet virtualKey={editingVirtualKey} onSave={handleVirtualKeySaved} onCancel={() => setShowVirtualKeySheet(false)} />
 				)}
 				<VirtualKeysEmptyState onAddClick={handleAddVirtualKey} canCreate={hasCreateAccess} />
 			</>
@@ -612,13 +635,7 @@ export default function VirtualKeysTable({
 	return (
 		<>
 			{showVirtualKeySheet && (
-				<VirtualKeySheet
-					virtualKey={editingVirtualKey}
-					teams={teams}
-					customers={customers}
-					onSave={handleVirtualKeySaved}
-					onCancel={() => setShowVirtualKeySheet(false)}
-				/>
+				<VirtualKeySheet virtualKey={editingVirtualKey} onSave={handleVirtualKeySaved} onCancel={() => setShowVirtualKeySheet(false)} />
 			)}
 
 			{!!selectedVkId && selectedVirtualKey && (
@@ -788,23 +805,39 @@ export default function VirtualKeysTable({
 							data-testid="vk-search-input"
 						/>
 					</div>
-					<ComboboxSelect
-						data-testid="vk-customer-filter"
-						options={customers.map((c) => ({ label: c.name, value: c.id }))}
-						value={customerFilter || null}
-						onValueChange={(val) => onCustomerFilterChange(val ?? "")}
-						placeholder="All Customers"
-						className="h-9 w-[180px]"
-					/>
+					{/* Both filters search server-side and resolve their own label for a
+					    value restored from the URL, so the page fetches no entity lists. */}
+					<div className="flex items-center gap-1" data-testid="vk-customer-filter">
+						<CustomerSelector
+							value={customerFilter}
+							onChange={onCustomerFilterChange}
+							placeholder="All Customers"
+							triggerClassName="h-9"
+							className="w-[250px]"
+						/>
+						<FilterClearButton
+							show={!!customerFilter}
+							label="Clear customer filter"
+							onClear={() => onCustomerFilterChange("")}
+							data-testid="vk-customer-filter-clear-btn"
+						/>
+					</div>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<ComboboxSelect
-						data-testid="vk-team-filter"
-						options={teams.map((t) => ({ label: t.name, value: t.id }))}
-						value={teamFilter || null}
-						onValueChange={(val) => onTeamFilterChange(val ?? "")}
-						placeholder="All Teams"
-						className="h-9 w-[180px]"
-					/>
+					<div className="flex items-center gap-1" data-testid="vk-team-filter">
+						<TeamSelector
+							value={teamFilter}
+							onChange={onTeamFilterChange}
+							placeholder="All Teams"
+							triggerClassName="h-9"
+							className="w-[250px]"
+						/>
+						<FilterClearButton
+							show={!!teamFilter}
+							label="Clear team filter"
+							onClear={() => onTeamFilterChange("")}
+							data-testid="vk-team-filter-clear-btn"
+						/>
+					</div>
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">
