@@ -128,6 +128,10 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	pending_tools: "bg-yellow-100 text-yellow-800",
 	pending_verification: "bg-yellow-100 text-yellow-800",
 	disabled: "bg-orange-100 text-orange-800",
+	// Same red as `error`: the client's credential has died and it can't be
+	// used until a human reauthorizes it, mirroring the "destructive" treatment
+	// this status already gets on the MCP sessions table.
+	needs_reauth: "bg-red-100 text-red-800",
 };
 
 // Mapping of what IS supported by each base provider
