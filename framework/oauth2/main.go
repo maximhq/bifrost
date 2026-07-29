@@ -850,7 +850,15 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 	}
 	scopesJSON, _ := json.Marshal(scopes)
 
-	// Create oauth_token record (sanitize tokens to prevent header formatting issues)
+	// Create oauth_token record (sanitize tokens to prevent header formatting
+	// issues). AuthMode is always 'shared' here, even when the flow belongs to
+	// a per_user_oauth client: this callback cannot classify the token (it is
+	// still unverified, and during initial creation the MCP client row does
+	// not exist yet), so 'shared' doubles as a staging label. For shared
+	// clients the row is the production credential and stays as-is; for
+	// per-user clients the complete-oauth step verifies it and then either
+	// promotes it to auth_mode='admin' (PromoteSharedOauthTokenToAdmin) or
+	// revokes it.
 	tokenID := uuid.New().String()
 	var expiresAt *time.Time
 	if tokenResponse.ExpiresIn > 0 {

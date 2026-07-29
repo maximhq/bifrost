@@ -414,6 +414,24 @@ func TestListMCPPerUserHeaderCredentials_NoFilters(t *testing.T) {
 	require.Equal(t, "cred-1", got[0].ID)
 }
 
+// TestListMCPPerUserHeaderCredentials_ExcludesAdminMode pins that the
+// retained admin discovery credential (auth_mode='admin') never leaks into
+// the per-identity sessions list, mirroring ListOauthUserTokens'
+// auth_mode='shared' exclusion on the token table.
+func TestListMCPPerUserHeaderCredentials_ExcludesAdminMode(t *testing.T) {
+	store := setupMCPSessionsTestStore(t)
+	seedMCPSessionsFixture(t, store)
+	require.NoError(t, store.DB().Create(&tables.TableMCPPerUserHeaderCredential{
+		ID: "cred-admin", MCPClientID: "github-prod", AuthMode: "admin",
+		Status: "active", HeadersJSON: "{}",
+	}).Error)
+
+	got, err := store.ListMCPPerUserHeaderCredentials(context.Background(), MCPSessionsFilterParams{})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "cred-1", got[0].ID, "only the per-identity row must be listed; the admin row must be excluded")
+}
+
 func TestListPendingMCPPerUserHeaderFlows_NoFilters(t *testing.T) {
 	store := setupMCPSessionsTestStore(t)
 	seedMCPSessionsFixture(t, store)
