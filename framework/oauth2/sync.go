@@ -97,33 +97,19 @@ func (w *TokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
 	}
 	w.logger.Debug("Found expiring tokens to refresh: %d", len(tokens))
 
-	// Refresh each expiring token
+	// Refresh each expiring token directly by its own ID — RefreshAccessToken
+	// resolves the owning oauth_config internally, and (on permanent
+	// rejection) flips the token's own Status to 'needs_reauth' itself, so
+	// there's nothing left for this loop to do on failure beyond logging.
 	for _, token := range tokens {
-		// Find the oauth_config that references this token
-		oauthConfig, err := w.provider.configStore.GetOauthConfigByTokenID(ctx, token.ID)
-		if err != nil {
-			w.logger.Error("Failed to find oauth config for token: %s, error: %s", token.ID, err.Error())
-			continue
-		}
-
-		if oauthConfig == nil {
-			w.logger.Warn("No oauth config found for token: %s", token.ID)
-			continue
-		}
-
-		// Attempt to refresh the token. Logged at Debug: transient failures
-		// (DNS, timeout, offline) recur on every tick and would spam the
-		// error log, while permanent rejections are already surfaced by the
-		// oauth_config status flipping to "expired" below.
-		if err := w.provider.RefreshAccessToken(ctx, oauthConfig.ID); err != nil {
-			w.logger.Debug("Failed to refresh token: oauth_config_id: %s, error: %s", oauthConfig.ID, err.Error())
-
-			// Only mark as expired for permanent auth rejections (e.g. invalid_grant, 401).
-			// Transient failures (DNS, timeout, offline) are skipped — the worker will
-			// retry on the next tick and the connection heals automatically when online.
-			w.provider.markExpiredIfPermanent(ctx, oauthConfig, err)
+		// Logged at Debug: transient failures (DNS, timeout, offline) recur
+		// on every tick and would spam the error log, while permanent
+		// rejections are already surfaced by the token's Status flipping to
+		// "needs_reauth" inside RefreshAccessToken.
+		if err := w.provider.RefreshAccessToken(ctx, token.ID); err != nil {
+			w.logger.Debug("Failed to refresh token: token_id: %s, mcp_client_id: %s, error: %s", token.ID, token.MCPClientID, err.Error())
 		} else {
-			w.logger.Debug("Successfully refreshed token: %s", oauthConfig.ID)
+			w.logger.Debug("Successfully refreshed token: %s", token.ID)
 		}
 	}
 }
