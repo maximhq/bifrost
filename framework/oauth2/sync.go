@@ -14,10 +14,24 @@ type TokenRefreshWorker struct {
 	provider        *OAuth2Provider
 	refreshInterval time.Duration
 	lookAheadWindow time.Duration // How far ahead to look for expiring tokens
-	stopCh          chan struct{}
-	stopOnce        sync.Once
-	cancel          context.CancelFunc
-	logger          schemas.Logger
+	// AuthModes restricts proactive refresh to tokens whose AuthMode is in
+	// this set. Defaults to {"shared"} — shared-client tokens are the only
+	// ones with no live caller to trigger a lazy/inline refresh, so they're
+	// the only ones that need a background sweep by default. Widening this
+	// (e.g. to include "user"/"vk"/"session") opts specific per-identity
+	// auth modes into the same proactive sweep.
+	//
+	// Set this before calling Start, not after: the background goroutine
+	// reads this field directly on every sweep with no synchronization, so a
+	// mutation concurrent with a running sweep is a data race. Every current
+	// caller already treats this as write-once-before-Start; there is no
+	// supported way to change an already-started worker's scope short of
+	// Stop and constructing a new worker.
+	AuthModes []string
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	cancel    context.CancelFunc
+	logger    schemas.Logger
 }
 
 // NewTokenRefreshWorker creates a new token refresh worker
@@ -31,8 +45,9 @@ func NewTokenRefreshWorker(provider *OAuth2Provider, logger schemas.Logger) *Tok
 	}
 	return &TokenRefreshWorker{
 		provider:        provider,
-		refreshInterval: 5 * time.Minute, // Check every 5 minutes
-		lookAheadWindow: 5 * time.Minute, // Refresh tokens expiring in next 5 minutes
+		refreshInterval: 5 * time.Minute,    // Check every 5 minutes
+		lookAheadWindow: 5 * time.Minute,    // Refresh tokens expiring in next 5 minutes
+		AuthModes:       []string{"shared"}, // Proactive refresh is shared-only by default
 		stopCh:          make(chan struct{}),
 		logger:          logger,
 	}
@@ -85,8 +100,9 @@ func (w *TokenRefreshWorker) run(ctx context.Context) {
 func (w *TokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
 	expiryThreshold := time.Now().Add(w.lookAheadWindow)
 
-	// Get tokens expiring before the threshold
-	tokens, err := w.provider.configStore.GetExpiringOauthTokens(ctx, expiryThreshold)
+	// Get tokens expiring before the threshold, restricted to the configured
+	// auth modes (defaults to shared-only — see AuthModes' doc comment).
+	tokens, err := w.provider.configStore.GetExpiringOauthTokens(ctx, expiryThreshold, w.AuthModes)
 	if err != nil {
 		w.logger.Error("Failed to get expiring tokens: %v", err)
 		return
