@@ -293,21 +293,31 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 		// row so the next call retries refresh.
 		return fmt.Errorf("token refresh failed: %w", err)
 	}
-	// Update token in database (sanitize tokens to prevent header formatting issues)
+	// Persist the refreshed credentials (sanitize tokens to prevent header
+	// formatting issues). Sent as a status-gated write, not a blind full-row
+	// Save keyed on token — this call started before the network round-trip
+	// above and can finish after a concurrent credential rotation
+	// (RotateMCPOAuthConfig) has already flipped this same row to
+	// 'needs_reauth'; a plain Save of the in-memory (pre-rotation) token
+	// would silently overwrite that back to 'active'.
 	now := time.Now()
-	token.ExpiresAt = nil
+	var newExpiresAt *time.Time
 	if newTokenResponse.ExpiresIn > 0 {
 		exp := now.Add(time.Duration(newTokenResponse.ExpiresIn) * time.Second)
-		token.ExpiresAt = bifrost.Ptr(exp)
+		newExpiresAt = bifrost.Ptr(exp)
 	}
-	token.AccessToken = strings.TrimSpace(newTokenResponse.AccessToken)
+	newAccessToken := strings.TrimSpace(newTokenResponse.AccessToken)
+	newRefreshToken := token.RefreshToken
 	if newTokenResponse.RefreshToken != "" {
-		token.RefreshToken = strings.TrimSpace(newTokenResponse.RefreshToken)
+		newRefreshToken = strings.TrimSpace(newTokenResponse.RefreshToken)
 	}
-	token.LastRefreshedAt = bifrost.Ptr(now)
 
-	if err := p.configStore.UpdateOauthToken(ctx, token); err != nil {
+	updated, err := p.configStore.RefreshOauthTokenFieldsIfActive(ctx, token.ID, newAccessToken, newRefreshToken, newExpiresAt, now)
+	if err != nil {
 		return fmt.Errorf("failed to update token: %w", err)
+	}
+	if !updated {
+		return fmt.Errorf("token was reauthorized or rotated during refresh, discarding this refresh: %w", schemas.ErrOAuth2TokenExpired)
 	}
 
 	logger.Debug("OAuth token refreshed successfully: token_id=%s auth_mode=%s", token.ID, token.AuthMode)

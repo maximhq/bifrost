@@ -75,6 +75,11 @@ type MCPManagerInterface interface {
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
 
+	// CloseAndMarkNeedsReauth closes a shared client's live upstream
+	// connection and flips it to needs_reauth, without attempting a new
+	// dial. Used after OAuth credential rotation.
+	CloseAndMarkNeedsReauth(id string) error
+
 	// DisableClient shuts down a client's connection and workers without removing it
 	DisableClient(id string) error
 

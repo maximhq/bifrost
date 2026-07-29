@@ -145,11 +145,13 @@ func (chm *ClientHealthMonitor) performHealthCheck() {
 	chm.manager.mu.RLock()
 	clientState, exists := chm.manager.clientMap[chm.clientID]
 	var isDisabled bool
+	var needsReauth bool
 	var conn *client.Client
 	var clientName string
 	if exists && clientState != nil {
 		conn = clientState.Conn
 		isDisabled = clientState.State == schemas.MCPConnectionStateDisabled
+		needsReauth = clientState.State == schemas.MCPConnectionStateNeedsReauth
 		if clientState.ExecutionConfig != nil {
 			clientName = clientState.ExecutionConfig.Name
 		}
@@ -165,6 +167,20 @@ func (chm *ClientHealthMonitor) performHealthCheck() {
 	// Health monitoring is already stopped for disabled clients. This is just a sanity check.
 	if isDisabled {
 		chm.Stop()
+		return
+	}
+
+	// A NeedsReauth client (e.g. CloseAndMarkNeedsReauth after OAuth
+	// credential rotation) has Conn == nil by design — pinging it would
+	// only observe the failure that's already been diagnosed and recorded
+	// in the state itself. Skip the tick entirely rather than counting it
+	// as a fresh failure and eventually spawning a reconnect attempt: the
+	// credential that connection needed is already known-dead, so
+	// ReconnectClient would just fail immediately, burning its full
+	// backoff-retry budget for nothing. Keep monitoring alive (don't Stop)
+	// so a future tick picks up cleanly once reauthorization moves the
+	// state back to Connected.
+	if needsReauth {
 		return
 	}
 
@@ -230,9 +246,19 @@ func (chm *ClientHealthMonitor) attemptReconnect() {
 	chm.manager.mu.RLock()
 	clientState, exists := chm.manager.clientMap[chm.clientID]
 	isDisabled := exists && clientState != nil && clientState.State == schemas.MCPConnectionStateDisabled
+	needsReauth := exists && clientState != nil && clientState.State == schemas.MCPConnectionStateNeedsReauth
 	chm.manager.mu.RUnlock()
 	if isDisabled {
 		chm.logger.Debug("%s Skipping reconnect for disabled MCP client %s", MCPLogPrefix, chm.clientID)
+		return
+	}
+	// Sanity check mirroring performHealthCheck's guard: this path is only
+	// reached via a caller that already saw a live (non-NeedsReauth) state,
+	// but the state could have moved to NeedsReauth between that read and
+	// here (e.g. a concurrent credential rotation). ReconnectClient would
+	// just fail immediately against the known-dead credential.
+	if needsReauth {
+		chm.logger.Debug("%s Skipping reconnect for needs_reauth MCP client %s", MCPLogPrefix, chm.clientID)
 		return
 	}
 
