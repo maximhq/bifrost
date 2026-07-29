@@ -520,6 +520,16 @@ type ConfigStore interface {
 	GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error)
 	CreateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken, tx ...*gorm.DB) error
 	UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error
+	// RefreshOauthTokenFieldsIfActive persists a successful refresh's new
+	// access_token/refresh_token/expires_at/last_refreshed_at onto the row
+	// with the given id, but ONLY while the row's status is still 'active' —
+	// a targeted column update, not a full-row Save, so it can't clobber a
+	// status a concurrent credential rotation (RotateMCPOAuthConfig) already
+	// flipped to 'needs_reauth' while this refresh's network round-trip was
+	// in flight. Returns updated=false (no error) when the row's status was
+	// no longer 'active' at write time; the caller must treat that as
+	// requiring reauthentication rather than a successful refresh.
+	RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (updated bool, err error)
 	DeleteOauthToken(ctx context.Context, id string) error
 	// DeleteSharedOauthTokensByConfigID deletes every auth_mode='shared' row
 	// for oauthConfigID, not just the one GetSharedOauthTokenByConfigID would
@@ -601,6 +611,22 @@ type ConfigStore interface {
 	// always comes from an internal lookup already, never an arbitrary
 	// caller-supplied ID.
 	MarkOauthUserTokenNeedsReauthByID(ctx context.Context, tokenID string) error
+	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
+	// token row bound to an OAuth config in one bulk UPDATE, with no
+	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret
+	// invalidates every existing holder's cached credential (shared, per-user,
+	// vk, session, admin alike), not just the shared one.
+	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error
+	// RotateMCPOAuthConfig updates every field of an oauth_configs row in
+	// place when ANY of them differs from what's stored (client_id,
+	// client_secret, authorize_url, token_url, registration_url, resource,
+	// scopes), and — only when something actually changed — cascades every
+	// token bound to that config to needs_reauth in the same transaction,
+	// regardless of which auth_mode holds it. Shared by the
+	// update-MCP-client API handler and the config.json sync path so OAuth
+	// config changes behave identically from both entry points. Returns
+	// whether a rotation actually happened.
+	RotateMCPOAuthConfig(ctx context.Context, existingOauthConfig *tables.TableOauthConfig, fields MCPOAuthConfigFields) (bool, error)
 	// GetOauthUserTokenByID looks up a single per-user token row by primary
 	// key. Returns nil, nil when not found. Unlike GetOauthTokenByID above,
 	// this DOES filter to auth_mode IN ('user','vk','session'): the sessions

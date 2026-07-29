@@ -134,6 +134,10 @@ type ServerCallbacks interface {
 	// SetClientTools updates the tool map for an existing client.
 	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 	ReconnectMCPClient(ctx context.Context, id string) error
+	// CloseAndMarkNeedsReauth closes a shared client's live upstream
+	// connection and flips it to needs_reauth, without attempting a new
+	// dial. Used after OAuth credential rotation.
+	CloseAndMarkNeedsReauth(ctx context.Context, id string) error
 	DisableMCPClient(ctx context.Context, id string) error
 	EnableMCPClient(ctx context.Context, id string) error
 }
@@ -320,6 +324,13 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 		logger.Warn("failed to sync MCP servers after removing client: %v", err)
 	}
 	return nil
+}
+
+// CloseAndMarkNeedsReauth closes a shared MCP client's live upstream
+// connection and flips it to needs_reauth, without attempting a new dial.
+// Used after OAuth credential rotation.
+func (s *BifrostHTTPServer) CloseAndMarkNeedsReauth(_ context.Context, id string) error {
+	return s.Client.CloseAndMarkNeedsReauth(id)
 }
 
 // DisableMCPClient shuts down an MCP client's connection and workers without removing it.

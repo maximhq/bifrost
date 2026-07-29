@@ -223,6 +223,57 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 	return clients
 }
 
+// CloseAndMarkNeedsReauth tears down a shared client's live upstream
+// connection and flips it to NeedsReauth, without attempting a new dial.
+// Used after OAuth credential rotation: RotateMCPOAuthConfig has already
+// cascaded every token bound to this client's oauth_config to
+// needs_reauth in the DB, so the in-memory connection is still open on the
+// now-invalidated Authorization header, and calling ReconnectClient instead
+// would just fail immediately (GetAccessToken refuses to hand out a token
+// for a needs_reauth row) while leaving the stale connection in place.
+//
+// Parameters:
+//   - id: ID of the client to close and flip to needs_reauth
+//
+// Returns:
+//   - error: if the client does not exist or has no persistent connection
+func (m *MCPManager) CloseAndMarkNeedsReauth(id string) error {
+	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, true); alreadyInFlight {
+		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
+	}
+	defer m.reconnectingClients.Delete(id)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	clientState, ok := m.clientMap[id]
+	if !ok {
+		return fmt.Errorf("client %s not found", id)
+	}
+	if clientState.ExecutionConfig != nil && m.credStore.RequiresPerCallConnection(clientState.ExecutionConfig) {
+		return fmt.Errorf("per-user auth clients do not maintain a shared upstream connection (each user manages their own auth): %w", schemas.ErrMCPReconnectNotApplicable)
+	}
+	if clientState.State == schemas.MCPConnectionStateDisabled {
+		// DisableClient is authoritative; a rotation racing a disable must
+		// not resurrect the client into needs_reauth.
+		return nil
+	}
+
+	if clientState.CancelFunc != nil {
+		clientState.CancelFunc()
+		clientState.CancelFunc = nil
+	}
+	if clientState.Conn != nil {
+		if err := clientState.Conn.Close(); err != nil {
+			m.logger.Error("%s Failed to close connection for MCP client '%s': %v", MCPLogPrefix, clientState.ExecutionConfig.Name, err)
+		}
+		clientState.Conn = nil
+	}
+	clientState.State = schemas.MCPConnectionStateNeedsReauth
+	m.logger.Debug("%s MCP client '%s' closed and marked needs_reauth after credential rotation", MCPLogPrefix, clientState.ExecutionConfig.Name)
+	return nil
+}
+
 // ReconnectClient attempts to reconnect an MCP client if it is disconnected.
 // It validates that the client exists and then establishes a new connection using
 // the client's existing configuration. Retry logic is handled internally by
