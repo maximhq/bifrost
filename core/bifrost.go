@@ -4204,6 +4204,22 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	return bifrost.MCPManager.ReconnectClient(id)
 }
 
+// CloseAndMarkNeedsReauth closes a shared MCP client's live upstream
+// connection and flips it to needs_reauth, without attempting a new dial.
+// Used after OAuth credential rotation.
+//
+// Parameters:
+//   - id: ID of the client to close and flip to needs_reauth
+//
+// Returns:
+//   - error: if the client does not exist or has no persistent connection
+func (bifrost *Bifrost) CloseAndMarkNeedsReauth(id string) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	return bifrost.MCPManager.CloseAndMarkNeedsReauth(id)
+}
+
 // DisableMCPClient shuts down an MCP client's connection, health monitor, and tool
 // syncer without removing it. The client entry is kept in a "disabled" state so it
 // can be re-enabled via EnableMCPClient.

@@ -88,6 +88,25 @@ func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.Tabl
 	return nil
 }
 
+// RefreshOauthTokenFieldsIfActive is the test-double equivalent of the real
+// store's status-gated refresh write (see its doc comment on the interface):
+// applies the new credential fields only while the row is still 'active'.
+func (s *testConfigStore) RefreshOauthTokenFieldsIfActive(_ context.Context, id string, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.oauthTokens[id]
+	if !ok || token.Status != "active" {
+		return false, nil
+	}
+	updated := *token
+	updated.AccessToken = accessToken
+	updated.RefreshToken = refreshToken
+	updated.ExpiresAt = expiresAt
+	updated.LastRefreshedAt = &lastRefreshedAt
+	s.oauthTokens[id] = &updated
+	return true, nil
+}
+
 // MarkOauthUserTokenNeedsReauthByID flips a token's status to 'needs_reauth',
 // the test-double equivalent of the real store's method of the same name —
 // which, despite the historical "UserToken" naming, is not scoped away from
@@ -100,6 +119,19 @@ func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, t
 		return nil
 	}
 	token.Status = "needs_reauth"
+	return nil
+}
+
+// MarkTokensNeedsReauthByConfigID is the test-double equivalent of the real
+// store's bulk, auth_mode-agnostic cascade used by OAuth credential rotation.
+func (s *testConfigStore) MarkTokensNeedsReauthByConfigID(_ context.Context, oauthConfigID string, _ ...*gorm.DB) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, token := range s.oauthTokens {
+		if token.OauthConfigID == oauthConfigID {
+			token.Status = "needs_reauth"
+		}
+	}
 	return nil
 }
 
@@ -582,6 +614,52 @@ func TestTokenRefreshWorker_SuccessfulRefresh_UpdatesToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "active", token.Status)
 	assert.Equal(t, "new-access-token", token.AccessToken)
+}
+
+func TestTokenRefreshWorker_ConcurrentReauth_DoesNotOverwriteStaleRefresh(t *testing.T) {
+	// If the token flips to needs_reauth (e.g. a user-initiated reauth, or a
+	// credential-rotation cascade) while a refresh request is already in
+	// flight, the in-flight refresh's stale success response must not
+	// resurrect the old credentials as "active" — this exercises the
+	// store's RefreshOauthTokenFieldsIfActive status gate under an actual race,
+	// not just the update path in isolation.
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-unblock
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "stale-refreshed-access-token",
+			"refresh_token": "stale-refreshed-refresh-token",
+			"token_type":    "bearer",
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+
+	worker := newTestWorker(store)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		worker.refreshExpiredTokens(context.Background())
+	}()
+
+	<-started
+	require.NoError(t, store.MarkOauthUserTokenNeedsReauthByID(context.Background(), tokenID))
+	close(unblock)
+	wg.Wait()
+
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "needs_reauth", token.Status, "status flip during an in-flight refresh must not be overwritten by the stale response")
+	assert.Equal(t, "old-access-token", token.AccessToken, "stale refresh response must not overwrite credentials once needs_reauth has been set")
+	assert.Equal(t, "refresh-token", token.RefreshToken)
 }
 
 func TestTokenRefreshWorker_ConnectionRefused_DoesNotMarkNeedsReauth(t *testing.T) {
