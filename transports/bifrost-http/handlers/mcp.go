@@ -392,6 +392,23 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Retain the admin's sample header values instead of discarding them
+	// after this one-time verification: persist as an auth_mode='admin'
+	// credential so the periodic tool syncer (ClientToolSyncer.performSync)
+	// can use it for later tool-discovery refresh. Best-effort — a failure
+	// here doesn't fail the request, since verification already succeeded;
+	// it just means the tool list can't be refreshed later.
+	if h.store.MCPHeadersProvider != nil {
+		if err := h.store.MCPHeadersProvider.UpsertCredential(ctx, &schemas.MCPHeadersUserCredential{
+			MCPClientID: clientConfig.ID,
+			AuthMode:    schemas.MCPAuthModeAdmin,
+			Headers:     canonUserHeaders,
+			Status:      schemas.MCPHeadersUserCredentialStatusActive,
+		}); err != nil {
+			logger.Warn(fmt.Sprintf("failed to retain admin header credential for MCP client %s: %v", clientConfig.ID, err))
+		}
+	}
+
 	// Re-load the row before activating and persisting: discovery above
 	// holds an upstream network round-trip, and pushing the pre-discovery
 	// snapshot into the runtime refresh and the full-row write below would
@@ -2337,13 +2354,19 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get admin access token for verification: %v", err))
 			return
 		}
-		// Always clean up admin's temp token and pending config, even on failure
-		defer h.oauthHandler.RevokeToken(ctx, oauthConfigID)
+		// Always clean up admin's pending config, even on failure
 		defer h.oauthHandler.RemovePendingMCPClient(oauthConfigID)
 
 		// Verify connection and discover tools using admin's temp token
 		tools, toolNameMapping, err := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, mcpClientConfig, accessToken)
 		if err != nil {
+			// Nothing worth retaining on a failed verification: revoke the
+			// admin's temp token immediately so it isn't left behind (it
+			// used to get this for free from an unconditional defer, before
+			// retention on success made cleanup conditional).
+			if revokeErr := h.oauthHandler.RevokeToken(ctx, oauthConfigID); revokeErr != nil {
+				logger.Warn(fmt.Sprintf("failed to revoke admin bootstrap token after verification failure for MCP client %s: %v", mcpClientConfig.ID, revokeErr))
+			}
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth configuration test failed: %v", err))
 			return
 		}
@@ -2419,6 +2442,34 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 
 		// Set discovered tools on the client
 		h.mcpManager.SetClientTools(mcpClientConfig.ID, tools, toolNameMapping)
+
+		// Retain the admin's bootstrap-verification token instead of
+		// discarding it via RevokeToken: re-tag the same row from
+		// auth_mode='shared' (CompleteOAuthFlow's default write for any
+		// admin-flow-mode completion) to 'admin', so the periodic tool
+		// syncer (ClientToolSyncer.performSync) can use it for later
+		// tool-discovery refresh. Deferred until here (after the client's DB
+		// row and runtime registration above have both succeeded) so a
+		// failure in either doesn't leave a retagged admin credential
+		// pointing at a client that was never actually persisted. Best-effort
+		// beyond that point — a failure here doesn't fail the request, since
+		// the client is otherwise fully verified and working; it just means
+		// the tool list can't be refreshed later until the admin
+		// re-bootstraps.
+		if delErr := h.store.ConfigStore.DeleteAdminOauthTokenByMCPClientID(ctx, mcpClientConfig.ID); delErr != nil {
+			logger.Warn(fmt.Sprintf("failed to clear any previous admin bootstrap token before retaining a new one for MCP client %s: %v", mcpClientConfig.ID, delErr))
+		}
+		if sharedToken, tokErr := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, oauthConfigID); tokErr == nil && sharedToken != nil {
+			sharedToken.AuthMode = string(schemas.MCPAuthModeAdmin)
+			sharedToken.MCPClientID = mcpClientConfig.ID
+			if updErr := h.store.ConfigStore.UpdateOauthToken(ctx, sharedToken); updErr != nil {
+				logger.Warn(fmt.Sprintf("failed to retain admin bootstrap token for MCP client %s: %v", mcpClientConfig.ID, updErr))
+			}
+		} else if tokErr != nil {
+			logger.Warn(fmt.Sprintf("failed to load bootstrap token to retain for MCP client %s: %v", mcpClientConfig.ID, tokErr))
+		} else {
+			logger.Warn(fmt.Sprintf("no bootstrap token found to retain for MCP client %s", mcpClientConfig.ID))
+		}
 
 		// For clients bootstrapped from config.json, drop the
 		// pending_oauth_config_json stash now that verification succeeded.

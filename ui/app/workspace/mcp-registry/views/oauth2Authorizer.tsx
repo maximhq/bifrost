@@ -317,7 +317,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	};
 
 	const subtitles: Record<Status, string> = {
-		confirm: "Run a one-time OAuth test before enabling this server.",
+		confirm: "Sign in to verify the OAuth setup and discover available tools.",
 		polling: "Complete sign-in in the popup window to continue.",
 		blocked: "Allow popups for this site, then try again.",
 		success: "OAuth authorization completed successfully.",
@@ -363,7 +363,8 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 									We'll open <strong>{authorizationHost}</strong> to verify the OAuth setup and discover available tools.
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
-									This login is for setup only. Each user authenticates individually when they connect.
+									Bifrost keeps this sign-in on file to periodically refresh the available tool list. Each user still
+									authenticates individually when they use this server; this credential is never used for their requests.
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
