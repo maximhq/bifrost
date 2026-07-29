@@ -95,7 +95,7 @@ func seedExpiringTokenFixtures(t *testing.T, s *RDBConfigStore) (mkToken func(id
 
 func expiringTokenIDs(t *testing.T, s *RDBConfigStore) map[string]bool {
 	t.Helper()
-	got, err := s.GetExpiringOauthTokens(context.Background(), time.Now().Add(time.Minute))
+	got, err := s.GetExpiringOauthTokens(context.Background(), time.Now().Add(time.Minute), []string{"shared"})
 	require.NoError(t, err)
 	ids := make(map[string]bool, len(got))
 	for _, tk := range got {
@@ -124,6 +124,49 @@ func TestGetExpiringOauthTokens_ExcludesNonActiveTokens(t *testing.T) {
 	ids := expiringTokenIDs(t, s)
 	assert.True(t, ids["tok-live"], "active token with an enabled client should be refreshed")
 	assert.False(t, ids["tok-needs-reauth"], "token already marked needs_reauth must be excluded")
+}
+
+// TestGetExpiringOauthTokens_FiltersByAuthMode verifies the caller-supplied
+// authModes slice, not a hardcoded "shared" clause, decides which token
+// holder types come back. With authModes=["shared"] (TokenRefreshWorker's
+// default), a same-config, same-expiry "user"-mode row must not be picked up
+// — the coverage the old hardcoded `auth_mode = 'shared'` filter gave for
+// free, now expressed as an explicit parameter instead.
+func TestGetExpiringOauthTokens_FiltersByAuthMode(t *testing.T) {
+	s := setupRDBTestStore(t)
+	mkToken, mkConfig, mkClient := seedExpiringTokenFixtures(t, s)
+	past := time.Now().Add(-time.Hour)
+
+	mkConfig("cfg-mixed")
+	mkToken("tok-shared", "cfg-mixed", "active")
+	mkClient("client-mixed", "cfg-mixed", false)
+	require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+		ID: "tok-user", AuthMode: "user", OauthConfigID: "cfg-mixed", Status: "active",
+		AccessToken: "at-tok-user", TokenType: "Bearer",
+		ExpiresAt: &past, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error)
+
+	shared, err := s.GetExpiringOauthTokens(context.Background(), time.Now().Add(time.Minute), []string{"shared"})
+	require.NoError(t, err)
+	sharedIDs := make(map[string]bool, len(shared))
+	for _, tk := range shared {
+		sharedIDs[tk.ID] = true
+	}
+	assert.True(t, sharedIDs["tok-shared"], "shared token must be returned when authModes=[shared]")
+	assert.False(t, sharedIDs["tok-user"], "user-mode token must be excluded when authModes=[shared]")
+
+	both, err := s.GetExpiringOauthTokens(context.Background(), time.Now().Add(time.Minute), []string{"shared", "user"})
+	require.NoError(t, err)
+	bothIDs := make(map[string]bool, len(both))
+	for _, tk := range both {
+		bothIDs[tk.ID] = true
+	}
+	assert.True(t, bothIDs["tok-shared"], "shared token must be returned when authModes=[shared,user]")
+	assert.True(t, bothIDs["tok-user"], "user-mode token must be returned when authModes=[shared,user]")
+
+	empty, err := s.GetExpiringOauthTokens(context.Background(), time.Now().Add(time.Minute), nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty, "an empty authModes must match nothing rather than falling back to all modes")
 }
 
 // TestGetExpiringOauthTokens_RequiresEnabledClient verifies the refresh worker
