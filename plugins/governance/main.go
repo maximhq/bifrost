@@ -90,6 +90,12 @@ type GovernancePlugin struct {
 	disableAutoToolInject *bool
 
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
+
+	// embeddingRequestExecutor is wired by the HTTP server after the bifrost
+	// client exists (post-Init) via SetEmbeddingRequestExecutor; nil until
+	// then and during teardown. Atomic because classification reads it on the
+	// request hot path while plugin reloads may re-wire it.
+	embeddingRequestExecutor atomic.Pointer[EmbeddingRequestExecutor]
 }
 
 // Init initializes and returns a governance plugin instance.
