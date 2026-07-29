@@ -78,3 +78,15 @@ func TestMigrationAddProviderRequestIDConfigColumn(t *testing.T) {
 	require.NoError(t, db.Table("migrations").Where("id = ?", "add_provider_request_id_config_column").Count(&count).Error)
 	require.Equal(t, int64(1), count)
 }
+
+func TestProviderRequestIDConfigMigrationIsRegistered(t *testing.T) {
+	for _, step := range configstoreMigrationSteps {
+		for _, id := range step.IDs {
+			if id == "add_provider_request_id_config_column" {
+				require.NotNil(t, step.run)
+				return
+			}
+		}
+	}
+	t.Fatal("add_provider_request_id_config_column is not registered in configstoreMigrationSteps")
+}

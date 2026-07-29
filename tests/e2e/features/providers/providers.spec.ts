@@ -11,8 +11,8 @@ const createdProviders: string[] = [];
 async function installProviderRequestIDRoutes(
   page: import("@playwright/test").Page,
 ) {
-  const providers: Record<string, Record<string, unknown>> = {
-    openai: {
+  const providerResponseFixtures = [
+    {
       name: "openai",
       provider_status: "success",
       network_config: {},
@@ -21,7 +21,20 @@ async function installProviderRequestIDRoutes(
       send_back_raw_response: false,
       store_raw_request_response: false,
     },
-    "custom-cohere": {
+    {
+      name: "openai-enabled",
+      provider_status: "success",
+      network_config: {},
+      concurrency_and_buffer_size: { concurrency: 1, buffer_size: 1 },
+      send_back_raw_request: false,
+      send_back_raw_response: false,
+      store_raw_request_response: false,
+      provider_request_id: {
+        enabled: true,
+        header_name: "x-request-id",
+      },
+    },
+    {
       name: "custom-cohere",
       provider_status: "success",
       network_config: {},
@@ -34,7 +47,10 @@ async function installProviderRequestIDRoutes(
         is_key_less: true,
       },
     },
-  };
+  ];
+  const providerState = new Map(
+    providerResponseFixtures.map((provider) => [provider.name, provider]),
+  );
 
   await page.route("**/api/config**", async (route) => {
     await route.fulfill({
@@ -54,8 +70,8 @@ async function installProviderRequestIDRoutes(
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          providers: Object.values(providers),
-          total: Object.keys(providers).length,
+          providers: providerResponseFixtures,
+          total: providerResponseFixtures.length,
         }),
       });
       return;
@@ -66,7 +82,7 @@ async function installProviderRequestIDRoutes(
     );
     if (providerMatch) {
       const providerName = decodeURIComponent(providerMatch[1]);
-      const provider = providers[providerName];
+      const provider = providerState.get(providerName);
       if (providerMatch[2] === "keys") {
         await route.fulfill({
           status: 200,
@@ -76,14 +92,15 @@ async function installProviderRequestIDRoutes(
         return;
       }
       if (provider && route.request().method() === "PUT") {
-        providers[providerName] = {
+        const updatedProvider = {
           ...provider,
           ...(route.request().postDataJSON() as object),
         };
+        providerState.set(providerName, updatedProvider);
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify(providers[providerName]),
+          body: JSON.stringify(updatedProvider),
         });
         return;
       }
@@ -1030,6 +1047,33 @@ test.describe("Debugging Tab", () => {
       providersPage.page.getByText("Response header is required"),
     ).toBeVisible();
     await expect(providersPage.getConfigSaveBtn("debugging")).toBeDisabled();
+  });
+
+  test("should update an already-enabled provider request ID capture header", async ({
+    providersPage,
+  }) => {
+    await providersPage.selectProvider("openai-enabled");
+    await providersPage.selectConfigTab("debugging");
+
+    const enabledSwitch = providersPage.page.getByTestId(
+      "provider-debugging-provider-request-id-enabled",
+    );
+    await expect(enabledSwitch).toHaveAttribute("data-state", "checked");
+
+    const headerInput = providersPage.page.getByTestId(
+      "provider-debugging-provider-request-id-header",
+    );
+    await expect(headerInput).toHaveValue("x-request-id");
+    await headerInput.fill("X-Existing-Provider-Request-ID");
+    await expect(providersPage.getConfigSaveBtn("debugging")).toBeEnabled();
+    await providersPage.saveDebuggingConfig();
+
+    await providersPage.page.keyboard.press("Escape");
+    await expect(
+      providersPage.page.locator('[role="dialog"]'),
+    ).not.toBeVisible();
+    await providersPage.selectConfigTab("debugging");
+    await expect(headerInput).toHaveValue("x-existing-provider-request-id");
   });
 
   test("should validate, save, and reload provider request ID capture", async ({

@@ -275,6 +275,10 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 										<Input
 											{...field}
 											value={field.value ?? ""}
+											onChange={(event) => {
+												field.onChange(event);
+												form.trigger("provider_request_id");
+											}}
 											placeholder="x-request-id"
 											disabled={!hasUpdateProviderAccess}
 											data-testid="provider-debugging-provider-request-id-header"

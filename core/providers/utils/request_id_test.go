@@ -20,7 +20,8 @@ func TestExtractProviderRequestID(t *testing.T) {
 		{name: "case insensitive", headers: map[string]string{"X-Request-ID": " req-123 "}, header: "x-request-id", want: "req-123"},
 		{name: "configured case insensitive", headers: map[string]string{"x-request-id": "req-123"}, header: "X-REQUEST-ID", want: "req-123"},
 		{name: "empty", headers: map[string]string{"x-request-id": "  "}, header: "x-request-id"},
-		{name: "too long", headers: map[string]string{"x-request-id": strings.Repeat("x", 513)}, header: "x-request-id"},
+		{name: "max length", headers: map[string]string{"x-request-id": strings.Repeat("x", schemas.MaxProviderRequestIDLength)}, header: "x-request-id", want: strings.Repeat("x", schemas.MaxProviderRequestIDLength)},
+		{name: "too long", headers: map[string]string{"x-request-id": strings.Repeat("x", schemas.MaxProviderRequestIDLength+1)}, header: "x-request-id"},
 		{name: "combined value", headers: map[string]string{"x-request-id": "req-1, req-2"}, header: "x-request-id", want: "req-1, req-2"},
 	}
 	for _, tt := range tests {

@@ -457,6 +457,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
+	{IDs: []string{"add_provider_request_id_config_column"}, run: migrationAddProviderRequestIDConfigColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
