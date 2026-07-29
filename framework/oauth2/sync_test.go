@@ -48,17 +48,6 @@ func (s *testConfigStore) GetOauthConfigByID(_ context.Context, id string) (*tab
 	return bifrost.Ptr(*cfg), nil
 }
 
-func (s *testConfigStore) GetOauthConfigByTokenID(_ context.Context, tokenID string) (*tables.TableOauthConfig, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, cfg := range s.oauthConfigs {
-		if cfg.TokenID != nil && *cfg.TokenID == tokenID {
-			return bifrost.Ptr(*cfg), nil
-		}
-	}
-	return nil, nil
-}
-
 func (s *testConfigStore) UpdateOauthConfig(_ context.Context, cfg *tables.TableOauthConfig, _ ...*gorm.DB) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,10 +65,40 @@ func (s *testConfigStore) GetOauthTokenByID(_ context.Context, id string) (*tabl
 	return bifrost.Ptr(*token), nil
 }
 
+// GetSharedOauthTokenByConfigID resolves the shared-mode token row for a
+// config — the test-double equivalent of the real store's
+// (oauth_config_id, auth_mode='shared') lookup, the replacement for the
+// retired TableOauthConfig.TokenID FK shortcut.
+func (s *testConfigStore) GetSharedOauthTokenByConfigID(_ context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, token := range s.oauthTokens {
+		if token.OauthConfigID == oauthConfigID && token.AuthMode == "shared" {
+			return bifrost.Ptr(*token), nil
+		}
+	}
+	return nil, nil
+}
+
 func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.TableMCPOauthToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.oauthTokens[token.ID] = bifrost.Ptr(*token)
+	return nil
+}
+
+// MarkOauthUserTokenNeedsReauthByID flips a token's status to 'needs_reauth',
+// the test-double equivalent of the real store's method of the same name —
+// which, despite the historical "UserToken" naming, is not scoped away from
+// auth_mode='shared' (see its doc comment on the real ConfigStore interface).
+func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, tokenID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := s.oauthTokens[tokenID]
+	if token == nil {
+		return nil
+	}
+	token.Status = "needs_reauth"
 	return nil
 }
 
@@ -104,20 +123,12 @@ func (s *testConfigStore) GetExpiringOauthTokens(_ context.Context, before time.
 	return expiring, nil
 }
 
-// seedFixtures inserts an authorized oauth_config + token pair into the store.
-// The token expires 1 minute from now so GetExpiringOauthTokens will find it.
-func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthConfigID string) {
+// seedFixtures inserts an authorized oauth_config + shared-mode token pair
+// into the store, linked via the token's OauthConfigID (the replacement for
+// the retired TableOauthConfig.TokenID FK shortcut). The token expires 1
+// minute from now so GetExpiringOauthTokens will find it.
+func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthConfigID, tokenID string) {
 	t.Helper()
-
-	tokenID := "test-token-id"
-	store.oauthTokens[tokenID] = &tables.TableMCPOauthToken{
-		ID:           tokenID,
-		AccessToken:  "old-access-token",
-		RefreshToken: "refresh-token",
-		TokenType:    "bearer",
-		ExpiresAt:    new(time.Now().Add(1 * time.Minute)),
-		Scopes:       "[]",
-	}
 
 	oauthConfigID = "test-oauth-config-id"
 	store.oauthConfigs[oauthConfigID] = &tables.TableOauthConfig{
@@ -127,10 +138,22 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 		RedirectURI: "http://localhost/callback",
 		Scopes:      `["read"]`,
 		Status:      "authorized",
-		TokenID:     new(tokenID),
 	}
 
-	return oauthConfigID
+	tokenID = "test-token-id"
+	store.oauthTokens[tokenID] = &tables.TableMCPOauthToken{
+		ID:            tokenID,
+		AuthMode:      "shared",
+		OauthConfigID: oauthConfigID,
+		Status:        "active",
+		AccessToken:   "old-access-token",
+		RefreshToken:  "refresh-token",
+		TokenType:     "bearer",
+		ExpiresAt:     new(time.Now().Add(1 * time.Minute)),
+		Scopes:        "[]",
+	}
+
+	return oauthConfigID, tokenID
 }
 
 func newTestWorker(store *testConfigStore) *TokenRefreshWorker {
@@ -138,6 +161,71 @@ func newTestWorker(store *testConfigStore) *TokenRefreshWorker {
 	provider := NewOAuth2Provider(store, noopLogger)
 	provider.retryBaseDelay = 1 * time.Millisecond // speed up retry backoff in tests
 	return NewTokenRefreshWorker(provider, noopLogger)
+}
+
+func newTestProvider(store *testConfigStore) *OAuth2Provider {
+	noopLogger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	provider := NewOAuth2Provider(store, noopLogger)
+	provider.retryBaseDelay = 1 * time.Millisecond
+	return provider
+}
+
+// TestRefreshAccessToken_CallerCancellationDoesNotAbortOtherWaiters exercises
+// the race RefreshAccessToken's DoChan (rather than Do) shape exists to
+// close: a caller's own context cancellation must only stop that caller from
+// waiting, never abort the shared refresh work other concurrent callers for
+// the same token are depending on.
+func TestRefreshAccessToken_CallerCancellationDoesNotAbortOtherWaiters(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	var startedOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedOnce.Do(func() { close(started) })
+		<-unblock
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "new-access-token",
+			"refresh_token": "new-refresh-token",
+			"token_type":    "bearer",
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+	provider := newTestProvider(store)
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var leaderErr error
+	go func() {
+		defer wg.Done()
+		leaderErr = provider.RefreshAccessToken(leaderCtx, tokenID)
+	}()
+
+	<-started
+	// The leader disconnects before the upstream call finishes. Its own
+	// RefreshAccessToken call returns immediately on this (it only selects
+	// on its own ctx vs the shared result), without waiting for or
+	// affecting the shared work still blocked in the handler below.
+	cancelLeader()
+	wg.Wait()
+
+	// Only now let the shared refresh's upstream call actually complete.
+	close(unblock)
+
+	// A second caller for the same token, with its own live context, must
+	// get the refresh's real result — not the leader's cancellation.
+	followerErr := provider.RefreshAccessToken(context.Background(), tokenID)
+
+	assert.ErrorIs(t, leaderErr, context.Canceled, "the leader itself should observe its own cancellation")
+	assert.NoError(t, followerErr, "a follower with its own live context must not inherit the leader's cancellation")
+
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-access-token", token.AccessToken, "the shared refresh must have completed and persisted, unaffected by the leader's cancellation")
 }
 
 func TestTestConfigStore_GetExpiringOauthTokens(t *testing.T) {
@@ -341,29 +429,29 @@ func TestExchangeRefreshToken_OmitsEmptyResource(t *testing.T) {
 	assert.False(t, exists)
 }
 
-func TestTokenRefreshWorker_TransientError_DoesNotMarkExpired(t *testing.T) {
+func TestTokenRefreshWorker_TransientError_DoesNotMarkNeedsReauth(t *testing.T) {
 	// A 503 response from the token server is a transient failure.
-	// The oauth_config must stay "authorized" so the connection can
-	// heal automatically when the server recovers.
+	// The token must stay "active" so the connection can heal
+	// automatically when the server recovers.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
 
 	store := newTestConfigStore()
-	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
 	worker := newTestWorker(store)
 	worker.refreshExpiredTokens(context.Background())
 
-	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
-	assert.Equal(t, "authorized", cfg.Status, "transient server error must not mark config as expired")
+	assert.Equal(t, "active", token.Status, "transient server error must not mark token needs_reauth")
 }
 
-func TestTokenRefreshWorker_PermanentError_MarksExpired(t *testing.T) {
+func TestTokenRefreshWorker_PermanentError_MarksNeedsReauth(t *testing.T) {
 	// A 401 invalid_grant response is a permanent rejection from the auth server.
-	// The oauth_config must be marked "expired" to prompt the user to re-authorize.
+	// The token must be marked "needs_reauth" to prompt the user to re-authorize.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -375,19 +463,19 @@ func TestTokenRefreshWorker_PermanentError_MarksExpired(t *testing.T) {
 	defer server.Close()
 
 	store := newTestConfigStore()
-	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
 	worker := newTestWorker(store)
 	worker.refreshExpiredTokens(context.Background())
 
-	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
-	assert.Equal(t, "expired", cfg.Status, "permanent auth rejection must mark config as expired")
+	assert.Equal(t, "needs_reauth", token.Status, "permanent auth rejection must mark token needs_reauth")
 }
 
 func TestTokenRefreshWorker_SuccessfulRefresh_UpdatesToken(t *testing.T) {
 	// A successful refresh must update the stored access token and
-	// leave the oauth_config status as "authorized".
+	// leave the token status as "active".
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -400,42 +488,39 @@ func TestTokenRefreshWorker_SuccessfulRefresh_UpdatesToken(t *testing.T) {
 	defer server.Close()
 
 	store := newTestConfigStore()
-	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
 	worker := newTestWorker(store)
 	worker.refreshExpiredTokens(context.Background())
 
-	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
-	assert.Equal(t, "authorized", cfg.Status)
-
-	token, err := store.GetOauthTokenByID(context.Background(), *cfg.TokenID)
-	require.NoError(t, err)
+	assert.Equal(t, "active", token.Status)
 	assert.Equal(t, "new-access-token", token.AccessToken)
 }
 
-func TestTokenRefreshWorker_ConnectionRefused_DoesNotMarkExpired(t *testing.T) {
+func TestTokenRefreshWorker_ConnectionRefused_DoesNotMarkNeedsReauth(t *testing.T) {
 	// This is the exact failure mode that triggered this fix: the machine goes
 	// offline, DNS fails, and the token endpoint is unreachable. The transport
-	// error (client.Do fails) must not mark the config expired.
+	// error (client.Do fails) must not mark the token needs_reauth.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	tokenURL := server.URL + "/token"
 	server.Close() // close immediately so all connection attempts are refused
 
 	store := newTestConfigStore()
-	oauthConfigID := seedFixtures(t, store, tokenURL)
+	_, tokenID := seedFixtures(t, store, tokenURL)
 
 	worker := newTestWorker(store)
 	worker.refreshExpiredTokens(context.Background())
 
-	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
-	assert.Equal(t, "authorized", cfg.Status, "connection refused must not mark config as expired")
+	assert.Equal(t, "active", token.Status, "connection refused must not mark token needs_reauth")
 }
 
-func TestTokenRefreshWorker_400InvalidGrant_MarksExpired(t *testing.T) {
+func TestTokenRefreshWorker_400InvalidGrant_MarksNeedsReauth(t *testing.T) {
 	// 400 invalid_grant is the canonical RFC 6749 signal that a refresh token
-	// has been revoked. Must mark the config expired.
+	// has been revoked. Must mark the token needs_reauth.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -447,19 +532,19 @@ func TestTokenRefreshWorker_400InvalidGrant_MarksExpired(t *testing.T) {
 	defer server.Close()
 
 	store := newTestConfigStore()
-	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
 	worker := newTestWorker(store)
 	worker.refreshExpiredTokens(context.Background())
 
-	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
-	assert.Equal(t, "expired", cfg.Status, "400 invalid_grant must mark config as expired")
+	assert.Equal(t, "needs_reauth", token.Status, "400 invalid_grant must mark token needs_reauth")
 }
 
-func TestTokenRefreshWorker_429RateLimit_DoesNotMarkExpired(t *testing.T) {
+func TestTokenRefreshWorker_429RateLimit_DoesNotMarkNeedsReauth(t *testing.T) {
 	// 429 Too Many Requests is a transient rate limit — not a permanent auth
-	// rejection. Must not mark the config expired.
+	// rejection. Must not mark the token needs_reauth.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "1")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -467,17 +552,17 @@ func TestTokenRefreshWorker_429RateLimit_DoesNotMarkExpired(t *testing.T) {
 	defer server.Close()
 
 	store := newTestConfigStore()
-	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
 	worker := newTestWorker(store)
 	worker.refreshExpiredTokens(context.Background())
 
-	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
-	assert.Equal(t, "authorized", cfg.Status, "429 rate limit must not mark config as expired")
+	assert.Equal(t, "active", token.Status, "429 rate limit must not mark token needs_reauth")
 }
 
-func TestTokenRefreshWorker_400InvalidRequest_DoesNotMarkExpired(t *testing.T) {
+func TestTokenRefreshWorker_400InvalidRequest_DoesNotMarkNeedsReauth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -489,17 +574,17 @@ func TestTokenRefreshWorker_400InvalidRequest_DoesNotMarkExpired(t *testing.T) {
 	defer server.Close()
 
 	store := newTestConfigStore()
-	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
 	worker := newTestWorker(store)
 	worker.refreshExpiredTokens(context.Background())
 
-	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
-	assert.Equal(t, "authorized", cfg.Status, "400 invalid_request must not mark config as expired")
+	assert.Equal(t, "active", token.Status, "400 invalid_request must not mark token needs_reauth")
 }
 
-func TestTokenRefreshWorker_400UnauthorizedClient_MarksExpired(t *testing.T) {
+func TestTokenRefreshWorker_400UnauthorizedClient_MarksNeedsReauth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -511,12 +596,12 @@ func TestTokenRefreshWorker_400UnauthorizedClient_MarksExpired(t *testing.T) {
 	defer server.Close()
 
 	store := newTestConfigStore()
-	oauthConfigID := seedFixtures(t, store, server.URL+"/token")
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
 	worker := newTestWorker(store)
 	worker.refreshExpiredTokens(context.Background())
 
-	cfg, err := store.GetOauthConfigByID(context.Background(), oauthConfigID)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
-	assert.Equal(t, "expired", cfg.Status, "400 unauthorized_client must mark config as expired")
+	assert.Equal(t, "needs_reauth", token.Status, "400 unauthorized_client must mark token needs_reauth")
 }

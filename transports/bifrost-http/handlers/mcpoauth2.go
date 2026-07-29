@@ -197,12 +197,12 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 		"created_at": oauthConfig.CreatedAt,
 	}
 
-	if oauthConfig.Status == "authorized" && oauthConfig.TokenID != nil {
-		response["token_id"] = *oauthConfig.TokenID
-
-		// Get token metadata
-		token, err := h.store.ConfigStore.GetOauthTokenByID(ctx, *oauthConfig.TokenID)
+	if oauthConfig.Status == "authorized" {
+		// Resolve the shared token row via (oauth_config_id, auth_mode='shared')
+		// — the replacement for the retired TableOauthConfig.TokenID FK shortcut.
+		token, err := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, configID)
 		if err == nil && token != nil {
+			response["token_id"] = token.ID
 			if token.ExpiresAt != nil {
 				response["token_expires_at"] = token.ExpiresAt
 			}
