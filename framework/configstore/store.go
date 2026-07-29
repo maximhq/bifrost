@@ -21,6 +21,7 @@ type VirtualKeyQueryParams struct {
 	Search                             string
 	CustomerID                         string
 	TeamID                             string
+	UserID                             string // Enterprise-only: filters to VKs assigned to this user; matches nothing in OSS
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
 	Export                             bool   // When true, skip default pagination limits (caller controls limit)

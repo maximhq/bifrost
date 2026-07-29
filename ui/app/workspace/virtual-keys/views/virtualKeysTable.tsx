@@ -25,6 +25,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
+import { getUserPicker } from "@/lib/registries/userPicker";
 import {
 	getErrorMessage,
 	useBulkRotateVirtualKeysMutation,
@@ -66,6 +67,10 @@ import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
+
+// Registers the enterprise user picker as a side effect; a no-op in OSS builds,
+// where the user filter stays hidden because no picker is registered.
+import "@enterprise/lib/registrations/userPicker";
 
 const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration;
 
@@ -301,6 +306,8 @@ interface VirtualKeysTableProps {
 	onCustomerFilterChange: (value: string) => void;
 	teamFilter: string;
 	onTeamFilterChange: (value: string) => void;
+	userFilter: string;
+	onUserFilterChange: (value: string) => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -321,6 +328,8 @@ export default function VirtualKeysTable({
 	onCustomerFilterChange,
 	teamFilter,
 	onTeamFilterChange,
+	userFilter,
+	onUserFilterChange,
 	offset,
 	limit,
 	onOffsetChange,
@@ -502,6 +511,7 @@ export default function VirtualKeysTable({
 					search: debouncedSearch || undefined,
 					customer_id: customerFilter || undefined,
 					team_id: teamFilter || undefined,
+					user_id: userFilter || undefined,
 					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 					order: (order as "asc" | "desc") || undefined,
 				}).then((result) => {
@@ -525,6 +535,7 @@ export default function VirtualKeysTable({
 					search: debouncedSearch || undefined,
 					customer_id: customerFilter || undefined,
 					team_id: teamFilter || undefined,
+					user_id: userFilter || undefined,
 					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 					order: (order as "asc" | "desc") || undefined,
 				}).then((result) => {
@@ -556,7 +567,11 @@ export default function VirtualKeysTable({
 
 	const { copy: copyToClipboard } = useCopyToClipboard();
 
-	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter;
+	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter || userFilter;
+
+	// Registered by the downstream build at module load; undefined in builds
+	// without a user directory, which hides the user filter entirely.
+	const UserPicker = getUserPicker();
 
 	const toggleSort = (column: string) => {
 		if (sortBy === column) {
@@ -590,6 +605,7 @@ export default function VirtualKeysTable({
 				search: debouncedSearch || undefined,
 				customer_id: customerFilter || undefined,
 				team_id: teamFilter || undefined,
+				user_id: userFilter || undefined,
 				sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 				order: (order as "asc" | "desc") || undefined,
 				export: true,
@@ -708,7 +724,12 @@ export default function VirtualKeysTable({
 						{hasActiveFilters && (
 							<p className="text-muted-foreground text-xs">
 								Filters applied:{" "}
-								{[debouncedSearch && `search "${debouncedSearch}"`, customerFilter && "customer filter", teamFilter && "team filter"]
+								{[
+									debouncedSearch && `search "${debouncedSearch}"`,
+									customerFilter && "customer filter",
+									teamFilter && "team filter",
+									userFilter && "user filter",
+								]
 									.filter(Boolean)
 									.join(", ")}
 							</p>
@@ -838,6 +859,26 @@ export default function VirtualKeysTable({
 							data-testid="vk-team-filter-clear-btn"
 						/>
 					</div>
+					{UserPicker && (customerFilter || teamFilter) && userFilter && (
+						<span className="text-muted-foreground text-xs font-medium">or</span>
+					)}
+					{UserPicker && (
+						<div className="flex items-center gap-1" data-testid="vk-user-filter">
+							<UserPicker
+								value={userFilter}
+								onChange={onUserFilterChange}
+								placeholder="All Users"
+								triggerClassName="h-9"
+								className="w-[250px]"
+							/>
+							<FilterClearButton
+								show={!!userFilter}
+								label="Clear user filter"
+								onClear={() => onUserFilterChange("")}
+								data-testid="vk-user-filter-clear-btn"
+							/>
+						</div>
+					)}
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">

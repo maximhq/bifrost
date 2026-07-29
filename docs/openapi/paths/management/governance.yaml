@@ -10,7 +10,10 @@ virtual-keys:
     parameters:
       - name: from_memory
         in: query
-        description: If true, returns virtual keys from in-memory cache instead of database
+        description: >-
+          If true, returns virtual keys from in-memory cache instead of database.
+          Filtering, sorting and pagination parameters are not applied in this mode;
+          combining it with user_id is rejected with a 400.
         schema:
           type: boolean
           default: false
@@ -39,6 +42,13 @@ virtual-keys:
       - name: team_id
         in: query
         description: Filter virtual keys by team ID
+        schema:
+          type: string
+      - name: user_id
+        in: query
+        description: >-
+          Filter virtual keys by assigned user ID (enterprise only; matches no
+          virtual keys on OSS builds). Combined with customer_id/team_id using OR.
         schema:
           type: string
       - name: sort_by
@@ -74,6 +84,8 @@ virtual-keys:
           application/json:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ListVirtualKeysResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
