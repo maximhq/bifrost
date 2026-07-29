@@ -158,6 +158,15 @@ type MCPCredentialStore interface {
 	// shared persistent one). True for per-user auth types; false for
 	// shared (none, headers, oauth-server-level).
 	RequiresPerCallConnection(config *MCPClientConfig) bool
+
+	// ForceRefresh unconditionally refreshes the credential backing config,
+	// bypassing whatever lazy expiry gate ConnectionHeaders' normal
+	// resolution path applies. Called when a live upstream tool call was
+	// rejected despite Bifrost's own bookkeeping saying the credential was
+	// still good — the premise being that the local bookkeeping is what's
+	// stale, not necessarily the credential. A no-op returning nil for auth
+	// types with nothing to refresh (none, static headers, per-user headers).
+	ForceRefresh(ctx *BifrostContext, config *MCPClientConfig) error
 }
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
