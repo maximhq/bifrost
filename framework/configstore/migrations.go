@@ -461,6 +461,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"merge_oauth_token_tables"}, run: migrationMergeOauthTokenTables},
 	{IDs: []string{"create_mcp_oauth_flows_table"}, run: migrationCreateMCPOauthFlowsTable},
 	{IDs: []string{"drop_oauth_config_pkce_columns"}, run: migrationDropOauthConfigPKCEColumns},
+	{IDs: []string{"drop_oauth_config_token_id_column"}, run: migrationDropOauthConfigTokenIDColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11233,7 +11234,23 @@ func migrationMergeOauthTokenTables(ctx context.Context, db *gorm.DB, logger sch
 			// rather than being excluded — see the MCPClientID field comment
 			// on TableMCPOauthToken.
 			if mg.HasTable(&tables.TableOauthToken{}) {
-				if err := tx.Exec(`
+				// oauth_configs.token_id (the legacy FK shortcut this
+				// derivation reads) is itself dropped by a later migration in
+				// this chain (migrationDropOauthConfigTokenIDColumn). A fresh
+				// install's earlier CreateTable(&tables.TableOauthConfig{})
+				// call already builds the table from today's TokenID-free Go
+				// struct, so the column never exists at all on such an
+				// install — same guard shape (HasColumn before referencing a
+				// since-retired column in raw SQL) as
+				// migrationWidenEncryptedVarcharColumns uses for
+				// code_verifier elsewhere in this file, for the identical
+				// reason. When the column is absent there is nothing to
+				// derive mcp_client_id/oauth_config_id from; both fall back
+				// to '', the same tolerated-empty shape the COALESCE below
+				// already produces for a row whose oauth_config was deleted
+				// or never linked (see the MCPClientID field comment on
+				// TableMCPOauthToken).
+				backfillSQL := `
 					INSERT INTO mcp_oauth_tokens (
 						id, auth_mode, mcp_client_id, oauth_config_id, session_id,
 						virtual_key_id, user_id, status, access_token, refresh_token,
@@ -11267,7 +11284,38 @@ func migrationMergeOauthTokenTables(ctx context.Context, db *gorm.DB, logger sch
 						oauth_tokens.updated_at
 					FROM oauth_tokens
 					WHERE NOT EXISTS (SELECT 1 FROM mcp_oauth_tokens WHERE mcp_oauth_tokens.id = oauth_tokens.id)
-				`).Error; err != nil {
+				`
+				if !mg.HasColumn(&tables.TableOauthConfig{}, "token_id") {
+					backfillSQL = `
+						INSERT INTO mcp_oauth_tokens (
+							id, auth_mode, mcp_client_id, oauth_config_id, session_id,
+							virtual_key_id, user_id, status, access_token, refresh_token,
+							token_type, expires_at, scopes, last_refreshed_at,
+							encryption_status, created_at, updated_at
+						)
+						SELECT
+							oauth_tokens.id,
+							'shared',
+							'',
+							'',
+							'',
+							NULL,
+							NULL,
+							'active',
+							oauth_tokens.access_token,
+							oauth_tokens.refresh_token,
+							oauth_tokens.token_type,
+							oauth_tokens.expires_at,
+							oauth_tokens.scopes,
+							oauth_tokens.last_refreshed_at,
+							oauth_tokens.encryption_status,
+							oauth_tokens.created_at,
+							oauth_tokens.updated_at
+						FROM oauth_tokens
+						WHERE NOT EXISTS (SELECT 1 FROM mcp_oauth_tokens WHERE mcp_oauth_tokens.id = oauth_tokens.id)
+					`
+				}
+				if err := tx.Exec(backfillSQL).Error; err != nil {
 					return fmt.Errorf("backfill mcp_oauth_tokens from oauth_tokens: %w", err)
 				}
 			}
@@ -11569,6 +11617,69 @@ func migrationDropOauthConfigPKCEColumns(ctx context.Context, db *gorm.DB, logge
 	}
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop_oauth_config_pkce_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropOauthConfigTokenIDColumn drops the token_id column from
+// oauth_configs. TokenID was an FK shortcut onto the single shared-mode
+// token row, populated once by CompleteOAuthFlow and read by every
+// shared-token lookup thereafter. Once every read site resolves the token
+// row via (oauth_config_id, auth_mode='shared') on mcp_oauth_tokens instead
+// (see the application-code change that shipped alongside this migration),
+// nothing populates or reads token_id any longer. Unlike the PKCE columns
+// dropped by the preceding migration, token_id was never NOT NULL at the DB
+// level, so there's no constraint to relax first — dropping it outright is
+// safe the moment the write side stops.
+func migrationDropOauthConfigTokenIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "drop_oauth_config_token_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db.WithContext(ctx), migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if !mg.HasTable(&tables.TableOauthConfig{}) {
+				return nil
+			}
+
+			return dropColumnIfExists(tx, logger, &tables.TableOauthConfig{}, "token_id")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Forward-only: token_id was a pure FK shortcut with no data
+			// meaning of its own once the token row is reachable via
+			// (oauth_config_id, auth_mode) on mcp_oauth_tokens — re-adding an
+			// empty column would not restore anything a rollback needs.
+			return nil
+		},
+	}})
+	// SQLite workaround — same reasoning as migrationDropOauthConfigPKCEColumns:
+	// GORM's SQLite DropColumn rebuilds oauth_configs via DROP+RENAME, which fails
+	// when config_mcp_clients.oauth_config_id holds an FK into it and foreign_keys is
+	// ON. PRAGMA foreign_keys cannot change inside a transaction, so disable it on a
+	// pinned single connection before the migrator opens its transaction, then restore it.
+	if db.Dialector.Name() == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return fmt.Errorf("failed to get underlying sql.DB: %w", err)
+		}
+		prevMaxOpenConns := sqlDB.Stats().MaxOpenConnections
+		sqlDB.SetMaxOpenConns(1)
+		defer sqlDB.SetMaxOpenConns(prevMaxOpenConns)
+
+		if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+			return fmt.Errorf("failed to disable SQLite foreign keys: %w", err)
+		}
+		defer func() {
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				log.Fatalf("[Migration] FATAL: failed to re-enable SQLite foreign keys: %v", err)
+			}
+		}()
+	}
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop_oauth_config_token_id_column migration: %s", err.Error())
 	}
 	return nil
 }

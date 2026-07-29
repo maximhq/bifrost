@@ -20,10 +20,6 @@ func (f *fakeOAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID s
 	return "", errors.New("not implemented")
 }
 
-func (f *fakeOAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID string) error {
-	return errors.New("not implemented")
-}
-
 func (f *fakeOAuth2Provider) ValidateToken(ctx context.Context, oauthConfigID string) (bool, error) {
 	return false, errors.New("not implemented")
 }
@@ -44,7 +40,7 @@ func (f *fakeOAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state st
 	return "", errors.New("not implemented")
 }
 
-func (f *fakeOAuth2Provider) RefreshUserAccessToken(ctx context.Context, tokenID string) error {
+func (f *fakeOAuth2Provider) RefreshAccessToken(ctx context.Context, tokenID string) error {
 	return errors.New("not implemented")
 }
 
