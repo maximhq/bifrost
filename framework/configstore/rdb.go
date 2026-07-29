@@ -6562,8 +6562,12 @@ func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error 
 	return nil
 }
 
-// GetExpiringOauthTokens retrieves tokens that are expiring before the given time
-func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableMCPOauthToken, error) {
+// GetExpiringOauthTokens retrieves tokens that are expiring before the given
+// time, restricted to the given AuthModes.
+func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error) {
+	if len(authModes) == 0 {
+		return nil, nil
+	}
 	var tokens []*tables.TableMCPOauthToken
 	// Only select tokens whose own status is 'active' — a token already
 	// flagged 'needs_reauth' (a prior refresh attempt was permanently
@@ -6579,11 +6583,10 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 	// client is re-enabled or attached later, GetAccessToken refreshes inline
 	// on first use.
 	result := s.DB().WithContext(ctx).
-		// mcp_oauth_tokens now also holds per-user rows; this worker is
-		// shared-only, so per-user proactive refresh doesn't start happening
-		// as a side effect of the table merge (that's a deliberate later
-		// change, not this one).
-		Where("auth_mode = ?", "shared").
+		// mcp_oauth_tokens holds both shared and per-user rows; callers
+		// decide which holder types get proactive background refresh via
+		// authModes (TokenRefreshWorker.AuthModes, shared-only by default).
+		Where("auth_mode IN ?", authModes).
 		Where("status = ?", "active").
 		Where("expires_at IS NOT NULL AND expires_at < ?", before).
 		Where("EXISTS (?)",
