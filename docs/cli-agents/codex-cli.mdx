@@ -112,7 +112,9 @@ To make non-OpenAI models show up in `/models` and carry correct metadata, creat
 
 ### 1. Create a model catalog file
 
-Create `~/.codex/bifrost_catalog.json` with one entry per model you want listed. At minimum, set the `slug` (the `provider/model` string you pass to Codex), a `display_name`, and the `context_window`:
+You don't need to create a model entry from scratch. First choose a complete, compatible entry from `~/.codex/models_cache.json`, then copy it into `~/.codex/bifrost_catalog.json` while overriding only `slug`, `display_name`, and `context_window`.
+
+The following example shows the complete entry shape. The two `<COPY-...>` values represent long, version-specific strings; copy their full values from the same source entry without modifying them.
 
 ```json
 {
@@ -120,23 +122,72 @@ Create `~/.codex/bifrost_catalog.json` with one entry per model you want listed.
     {
       "slug": "bedrock/anthropic.claude-haiku-4-5",
       "display_name": "Claude Haiku 4.5 (Bifrost)",
-      "description": "Served via Bifrost gateway",
-      "context_window": 200000,
-      "max_context_window": 200000,
+      "description": "Small, fast, and cost-efficient model for simpler coding tasks.",
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
-        { "effort": "low", "description": "Fast responses with lighter reasoning" },
-        { "effort": "medium", "description": "Balances speed and reasoning depth" },
-        { "effort": "high", "description": "Greater reasoning depth for complex problems" }
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "effort": "high",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extra high reasoning depth for complex problems"
+        }
       ],
-      "visibility": "list"
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 23,
+      "additional_speed_tiers": [],
+      "service_tiers": [],
+      "availability_nux": null,
+      "upgrade": null,
+      "base_instructions": "<COPY-FULL-BASE-INSTRUCTIONS-FROM-SOURCE-ENTRY>",
+      "model_messages": {
+        "instructions_template": "<COPY-FULL-INSTRUCTIONS-TEMPLATE-FROM-SOURCE-ENTRY>",
+        "instructions_variables": {},
+        "approvals": null,
+        "auto_review": null,
+        "permissions": null
+      },
+      "include_skills_usage_instructions": true,
+      "default_reasoning_summary": "none",
+      "support_verbosity": true,
+      "default_verbosity": "medium",
+      "apply_patch_tool_type": "freeform",
+      "web_search_tool_type": "text_and_image",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "supports_parallel_tool_calls": true,
+      "supports_image_detail_original": true,
+      "context_window": 200000,
+      "max_context_window": 272000,
+      "comp_hash": "2911",
+      "effective_context_window_percent": 95,
+      "experimental_supported_tools": [],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "supports_search_tool": true,
+      "use_responses_lite": false
     }
   ]
 }
 ```
 
 <Note>
-The catalog JSON schema is internal to Codex and its full entry shape (35+ fields) can change between Codex versions. The most reliable way to build valid entries is to copy an existing entry from `~/.codex/models_cache.json` (Codex's own cached catalog) and override `slug`, `display_name`, and `context_window`. Drop reasoning levels that the target model doesn't support — non-OpenAI models generally accept only `low`/`medium`/`high`.
+The catalog JSON schema is internal to Codex and can change between versions. Select a source entry whose API behavior and capabilities are closest to the target model. Preserve every other field from that entry, including compatibility, response parsing, priority, visibility, truncation, reasoning, and tooling metadata. Do not trim the copied object into a minimal entry or remove fields that appear optional.
 </Note>
 
 ### 2. Reference it from config.toml

@@ -184,6 +184,7 @@ Pass custom headers required by Bifrost plugins (like governance, telemetry, etc
 ```python
 import anthropic
 
+# Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
     api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
@@ -205,6 +206,7 @@ response = client.messages.create(
 ```javascript
 import Anthropic from "@anthropic-ai/sdk";
 
+// Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
   apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.

@@ -270,7 +270,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="<YOUR-GEMINI-VIRTUAL-KEY>",  # Replace with your Gemini API key.
+    api_key="<YOUR-GEMINI-API-KEY>",  # Replace with your Gemini API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "gemini"}
