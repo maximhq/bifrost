@@ -193,17 +193,31 @@ func seedSyntheticMCPClients(t *testing.T, db *gorm.DB, count int) {
 }
 
 // bulkInsertOauthTokens seeds count rows into oauth_tokens (the pre-merge
-// shared-credential table), each linked to its own oauth_configs row (via
-// the legacy TokenID shortcut) and config_mcp_clients row (via
-// oauth_config_id) — the exact join path migrationMergeOauthTokenTables
-// walks to derive mcp_oauth_tokens.oauth_config_id/mcp_client_id for shared
-// tokens. Without these linked rows every seeded token would only exercise
-// that join's COALESCE(...,'') miss branch, never a real hit. Batched
-// multi-row INSERTs wrapped in a single transaction — not one .Create() call
-// per row — so seeding time stays a small fraction of the migration time
-// being measured.
+// shared-credential table), each linked to its own oauth_configs row and
+// config_mcp_clients row (via oauth_config_id) — the exact join path
+// migrationMergeOauthTokenTables walks to derive
+// mcp_oauth_tokens.oauth_config_id/mcp_client_id for shared tokens. Without
+// these linked rows every seeded token would only exercise that join's
+// COALESCE(...,'') miss branch, never a real hit.
+//
+// The join reads oauth_configs.token_id — a column TableOauthConfig no
+// longer maps a Go field to (see its doc comment: the FK shortcut is
+// retired) and, per migrationMergeOauthTokenTables's own comment, doesn't
+// even exist on a fresh install, since runPreMergeMigrationChain's
+// CreateTable(&tables.TableOauthConfig{}) call builds the table from
+// today's TokenID-free struct. This test simulates the other real
+// deployment shape the migration's HasColumn guard exists for — an
+// existing installation that predates the column's retirement — by adding
+// the column back with a raw ALTER TABLE before seeding it, rather than
+// leaving the join's hit branch permanently untestable.
+//
+// Batched multi-row INSERTs wrapped in a single transaction — not one
+// .Create() call per row — so seeding time stays a small fraction of the
+// migration time being measured.
 func bulkInsertOauthTokens(t *testing.T, db *gorm.DB, count int) {
 	t.Helper()
+	require.NoError(t, db.Exec(`ALTER TABLE oauth_configs ADD COLUMN token_id VARCHAR(255)`).Error,
+		"simulate a pre-retirement install so the shared-token join has a token_id column to hit")
 	now := time.Now()
 	expiresAt := now.Add(24 * time.Hour)
 	tokenBatch := make([]tables.TableOauthToken, 0, perfSeedInsertBatchSize)
@@ -248,7 +262,6 @@ func bulkInsertOauthTokens(t *testing.T, db *gorm.DB, count int) {
 			})
 			configBatch = append(configBatch, tables.TableOauthConfig{
 				ID:          configID,
-				TokenID:     &tokenID,
 				RedirectURI: "https://perf.example.com/callback",
 				Status:      "authorized",
 				CreatedAt:   now,
@@ -271,6 +284,13 @@ func bulkInsertOauthTokens(t *testing.T, db *gorm.DB, count int) {
 		}
 		return flush(tx)
 	}))
+
+	// Backfill the legacy oauth_configs.token_id column (see the doc comment
+	// above): a plain string match on the deterministic ID pattern this
+	// function uses, so it can run as one statement instead of per-row.
+	require.NoError(t, db.Exec(
+		`UPDATE oauth_configs SET token_id = REPLACE(id, 'perf-shared-cfg-', 'perf-shared-tok-') WHERE id LIKE 'perf-shared-cfg-%'`,
+	).Error)
 }
 
 // bulkInsertOauthUserTokens seeds count rows into oauth_user_tokens (the
