@@ -6500,25 +6500,6 @@ func (s *RDBConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, 
 	return nil
 }
 
-// DeleteAdminOauthTokenByMCPClientID deletes the retained admin-mode token
-// row for mcpClientID, if one exists. idx_mcp_oauth_tokens_admin_mcp allows
-// at most one auth_mode='admin' row per mcp_client_id, so this must run
-// before retagging a fresh bootstrap-verification row to 'admin' for a
-// client that already has one from an earlier bootstrap — otherwise the
-// retag's write collides with that existing row instead of replacing it.
-func (s *RDBConfigStore) DeleteAdminOauthTokenByMCPClientID(ctx context.Context, mcpClientID string) error {
-	if mcpClientID == "" {
-		return nil
-	}
-	result := s.DB().WithContext(ctx).
-		Where("mcp_client_id = ? AND auth_mode = ?", mcpClientID, "admin").
-		Delete(&tables.TableMCPOauthToken{})
-	if result.Error != nil {
-		return fmt.Errorf("failed to delete admin oauth token by mcp client id: %w", result.Error)
-	}
-	return nil
-}
-
 // GetAdminOauthTokenByConfigID resolves the single retained admin-mode token
 // row for a config — the bootstrap-verification credential kept alive for a
 // per_user_oauth client's periodic tool-discovery refresh (see
@@ -6538,6 +6519,128 @@ func (s *RDBConfigStore) GetAdminOauthTokenByConfigID(ctx context.Context, oauth
 		return nil, fmt.Errorf("failed to get admin oauth token by config id: %w", result.Error)
 	}
 	return &token, nil
+}
+
+// GetAdminOauthTokensByConfigIDs is GetAdminOauthTokenByConfigID's batch
+// counterpart, styled after GetOauthConfigsByIDs: one query resolving the
+// retained admin-mode token row for each of the given oauth_config_ids,
+// keyed by OauthConfigID. Not filtered by status: callers inspect
+// token.Status themselves (the registry list projects 'needs_reauth' rows
+// into a response-only state). Configs with no admin row are simply absent
+// from the map. Empty input returns an empty map without querying.
+func (s *RDBConfigStore) GetAdminOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
+	if len(oauthConfigIDs) == 0 {
+		return map[string]*tables.TableMCPOauthToken{}, nil
+	}
+	var tokens []tables.TableMCPOauthToken
+	if err := s.DB().WithContext(ctx).
+		Where("oauth_config_id IN ? AND auth_mode = ?", oauthConfigIDs, "admin").
+		Find(&tokens).Error; err != nil {
+		return nil, fmt.Errorf("failed to batch-get admin oauth tokens: %w", err)
+	}
+	result := make(map[string]*tables.TableMCPOauthToken, len(tokens))
+	for i := range tokens {
+		result[tokens[i].OauthConfigID] = &tokens[i]
+	}
+	return result, nil
+}
+
+// PromoteSharedOauthTokenToAdmin transactionally installs the shared-mode
+// bootstrap token for oauthConfigID as the retained admin-mode discovery
+// credential of mcpClientID. Two shapes, both leaving exactly one admin row
+// and zero shared rows for the config:
+//   - an admin row already exists (a repair flow replacing a dead
+//     credential): the fresh shared row's credential fields are copied onto
+//     the existing admin row (preserving its ID and CreatedAt, since the row
+//     represents the binding) and the shared row is deleted;
+//   - no admin row exists (first-time bootstrap): the shared row itself is
+//     retagged to auth_mode='admin' with MCPClientID set.
+//
+// Errors if the shared row is missing or not status='active', since the caller
+// must have just completed a successful admin flow, which always leaves an
+// active shared row behind (CompleteOAuthFlow's default write). On a per-user
+// client that 'shared' row is only ever this transient staging state, never a
+// production credential; this promotion (or a revoke on verification failure)
+// is what resolves it, so outside that window per-user clients hold no
+// shared rows.
+func (s *RDBConfigStore) PromoteSharedOauthTokenToAdmin(ctx context.Context, oauthConfigID, mcpClientID string) error {
+	if oauthConfigID == "" || mcpClientID == "" {
+		return fmt.Errorf("promote shared oauth token to admin: oauthConfigID and mcpClientID are required")
+	}
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var shared tables.TableMCPOauthToken
+		// Same active-first, most-recently-updated ordering as
+		// GetSharedOauthTokenByConfigID: nothing guarantees at most one
+		// auth_mode='shared' row per oauth_config_id, and a bare First()
+		// without ORDER BY can select a stale row, fail the active-status
+		// check below, and reject a repair whose fresh token is actually
+		// present.
+		if err := dbForUpdate(tx).
+			Where("oauth_config_id = ? AND auth_mode = ?", oauthConfigID, "shared").
+			Order("CASE WHEN status = 'active' THEN 0 ELSE 1 END, updated_at DESC, id DESC").
+			First(&shared).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("no shared oauth token found for config %s to promote", oauthConfigID)
+			}
+			return fmt.Errorf("failed to load shared oauth token for config %s: %w", oauthConfigID, err)
+		}
+		if shared.Status != "active" {
+			return fmt.Errorf("shared oauth token for config %s has status %q, expected 'active'", oauthConfigID, shared.Status)
+		}
+
+		var admin tables.TableMCPOauthToken
+		adminErr := dbForUpdate(tx).
+			Where("oauth_config_id = ? AND auth_mode = ?", oauthConfigID, "admin").
+			First(&admin).Error
+		now := time.Now()
+		if adminErr == nil {
+			// Replace the existing admin row's credential in place, keeping
+			// its identity (ID + CreatedAt: the row represents the binding,
+			// not the individual credential), then drop the now-redundant
+			// shared row.
+			admin.MCPClientID = mcpClientID
+			admin.AccessToken = shared.AccessToken
+			admin.RefreshToken = shared.RefreshToken
+			admin.TokenType = shared.TokenType
+			admin.ExpiresAt = shared.ExpiresAt
+			admin.Scopes = shared.Scopes
+			admin.EncryptionStatus = shared.EncryptionStatus
+			admin.Status = "active"
+			admin.LastRefreshedAt = &now
+			if err := tx.Save(&admin).Error; err != nil {
+				return fmt.Errorf("failed to update admin oauth token for config %s: %w", oauthConfigID, err)
+			}
+			// Delete every remaining shared row for this config, not just
+			// the one selected above: any other shared row left behind
+			// (e.g. by a stale/orphaned row predating this promotion) would
+			// let GetSharedOauthTokenByConfigID keep returning a shared
+			// row, making completeMCPClientOAuth's replay guard read this
+			// as a new repair flow instead of a completed one.
+			if err := tx.Where("oauth_config_id = ? AND auth_mode = ?", oauthConfigID, "shared").
+				Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
+				return fmt.Errorf("failed to delete promoted shared oauth token for config %s: %w", oauthConfigID, err)
+			}
+			return nil
+		}
+		if !errors.Is(adminErr, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to load admin oauth token for config %s: %w", oauthConfigID, adminErr)
+		}
+
+		// First-time promotion: retag the shared row itself.
+		shared.AuthMode = "admin"
+		shared.MCPClientID = mcpClientID
+		if err := tx.Save(&shared).Error; err != nil {
+			return fmt.Errorf("failed to retag shared oauth token to admin for config %s: %w", oauthConfigID, err)
+		}
+		// Same reasoning as the replace-admin-row branch above: clear any
+		// other leftover shared row for this config so the replay guard
+		// sees the promotion as complete.
+		if err := tx.Where("oauth_config_id = ? AND auth_mode = ?", oauthConfigID, "shared").
+			Delete(&tables.TableMCPOauthToken{}).Error; err != nil {
+			return fmt.Errorf("failed to delete leftover shared oauth tokens for config %s: %w", oauthConfigID, err)
+		}
+		return nil
+	})
 }
 
 // CreateOauthConfig creates a new OAuth config
@@ -7427,6 +7530,31 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, 
 	return &cred, nil
 }
 
+// GetAdminMCPPerUserHeaderCredentialsByClientIDs is the batch counterpart of
+// GetMCPPerUserHeaderCredentialByMode's admin branch, styled after
+// GetOauthConfigsByIDs: one query resolving the retained admin-mode header
+// credential for each of the given MCP client IDs, keyed by MCPClientID.
+// Not filtered by status: callers inspect cred.Status themselves (the
+// registry list projects 'needs_update' rows into a response-only state).
+// Clients with no admin row are simply absent from the map. Empty input
+// returns an empty map without querying.
+func (s *RDBConfigStore) GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx context.Context, mcpClientIDs []string) (map[string]*tables.TableMCPPerUserHeaderCredential, error) {
+	if len(mcpClientIDs) == 0 {
+		return map[string]*tables.TableMCPPerUserHeaderCredential{}, nil
+	}
+	var creds []tables.TableMCPPerUserHeaderCredential
+	if err := s.DB().WithContext(ctx).
+		Where("mcp_client_id IN ? AND auth_mode = ?", mcpClientIDs, "admin").
+		Find(&creds).Error; err != nil {
+		return nil, fmt.Errorf("failed to batch-get admin mcp per-user header credentials: %w", err)
+	}
+	result := make(map[string]*tables.TableMCPPerUserHeaderCredential, len(creds))
+	for i := range creds {
+		result[creds[i].MCPClientID] = &creds[i]
+	}
+	return result, nil
+}
+
 // UpsertMCPPerUserHeaderCredential atomically inserts or updates a credential
 // row keyed by (auth_mode, identity, mcp_client_id) — or, for auth_mode='admin',
 // by mcp_client_id alone, since the retained bootstrap-verification credential
@@ -7495,7 +7623,11 @@ func (s *RDBConfigStore) DeleteMCPPerUserHeaderCredential(ctx context.Context, i
 // lookups apply their own status='active' filter and don't go through
 // this method.
 func (s *RDBConfigStore) ListMCPPerUserHeaderCredentials(ctx context.Context, params MCPSessionsFilterParams) ([]tables.TableMCPPerUserHeaderCredential, error) {
-	query := s.ScopedDB(ctx).Model(&tables.TableMCPPerUserHeaderCredential{})
+	// Always excludes auth_mode='admin' so the retained admin discovery
+	// credential never leaks into the per-identity sessions UI, mirroring
+	// ListOauthUserTokens' auth_mode scoping.
+	query := s.ScopedDB(ctx).Model(&tables.TableMCPPerUserHeaderCredential{}).
+		Where("mcp_per_user_header_credentials.auth_mode IN ?", perUserOauthAuthModes)
 	query = applyMCPSessionFilters(query, params, mcpSessionFilterTable{
 		table:          "mcp_per_user_header_credentials",
 		authModeColumn: "auth_mode",
