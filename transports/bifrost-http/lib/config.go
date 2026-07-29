@@ -1811,7 +1811,7 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 // oauth_configs row backing an already-authorized client (nil when the client
 // is unauthorized or the row is unavailable); it is only read, and only to
 // detect oauth_config drift.
-func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig, authorizedOauth *configstoreTables.TableOauthConfig) []string {
+func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) []string {
 	if fileClient == nil || existing == nil {
 		return nil
 	}
@@ -1845,9 +1845,12 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig, 
 	}
 	fileClient.StdioConfig = existing.StdioConfig
 
-	if mcpOauthBlockChanged(fileClient.PendingOAuthConfig, existing.PendingOAuthConfig, authorizedOauth) {
-		changed = append(changed, "oauth_config")
-	}
+	// oauth_config drift is not pinned here: it is fully handled by
+	// rotateMCPOauthConfigFromFile at the call sites below, which applies any
+	// declared change (client_id/client_secret/authorize_url/token_url/
+	// registration_url/resource/scopes) and cascades needs_reauth. Only the
+	// pre-authorization pending stash is preserved here — once authorized,
+	// PendingOAuthConfig is cleared and this is a no-op.
 	fileClient.PendingOAuthConfig = existing.PendingOAuthConfig
 
 	// Not immutable, but a per_user_headers client must keep a non-empty key
@@ -1866,60 +1869,105 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig, 
 	return changed
 }
 
-// mcpOauthBlockChanged reports whether the file's inline oauth_config block
-// drifts from the OAuth configuration the client actually runs on. Only
-// fields the file explicitly sets are compared: absent fields are filled in
-// by discovery / dynamic client registration at authorization time, so a
-// stored value with no file counterpart is not drift. The reference is the
-// stored pending stash while verification is pending, and the authorized
-// oauth_configs row afterwards; with neither available there is nothing to
-// compare against.
-func mcpOauthBlockChanged(fileBlock, storedStash *schemas.OAuth2Config, authorizedOauth *configstoreTables.TableOauthConfig) bool {
-	if fileBlock == nil {
+// rotateMCPOauthConfigFromFile applies any oauth_config drift declared in
+// the file to the authorized oauth_configs row backing clientName, mirroring
+// the update-MCP-client API's rotation via the same
+// store.RotateMCPOAuthConfig: every field the file explicitly sets
+// (client_id/client_secret/authorize_url/token_url/registration_url/
+// resource/scopes) is resolved against what's stored, and if anything
+// differs the row is updated in place and every token bound to it — shared,
+// per-user, vk, session, admin alike — is cascaded to needs_reauth. Only
+// fields the file explicitly sets participate: an absent field means "not
+// declared" (e.g. filled in by discovery/dynamic registration at
+// authorization time), not a request to clear it.
+//
+// No-op when authorizedOauth is nil — verification is still pending (no
+// authorized row to rotate yet) or the client isn't OAuth-based; the pending
+// stash case is handled separately by pinMCPClientImmutableFields preserving
+// the stored PendingOAuthConfig.
+//
+// Returns incomplete=true when a declared client_id/client_secret secret
+// reference failed to resolve, or when the stored row's scopes column isn't
+// valid JSON, so a field was skipped rather than applied. Callers must not
+// advance ConfigHash to this boot's file hash in that case:
+// doing so would checkpoint a partially-applied rotation as fully synced,
+// and the next boot's identical file content would hash-match and skip
+// reconciliation entirely — even after the underlying secret becomes
+// resolvable — until the file itself changes again.
+func rotateMCPOauthConfigFromFile(ctx context.Context, store configstore.ConfigStore, clientName string, fileBlock *schemas.OAuth2Config, authorizedOauth *configstoreTables.TableOauthConfig) (incomplete bool) {
+	if store == nil || fileBlock == nil || authorizedOauth == nil {
 		return false
 	}
-	var refClientID, refClientSecret, refAuthorizeURL, refTokenURL string
-	var refScopes []string
-	switch {
-	case storedStash != nil:
-		refClientID = storedStash.ClientID
-		refClientSecret = storedStash.ClientSecret
-		refAuthorizeURL = storedStash.AuthorizeURL
-		refTokenURL = storedStash.TokenURL
-		refScopes = storedStash.Scopes
-	case authorizedOauth != nil:
-		refClientID = authorizedOauth.GetResolvedClientID()
-		refClientSecret = authorizedOauth.GetResolvedClientSecret()
-		refAuthorizeURL = authorizedOauth.AuthorizeURL
-		refTokenURL = authorizedOauth.TokenURL
-		if authorizedOauth.Scopes != "" {
-			_ = json.Unmarshal([]byte(authorizedOauth.Scopes), &refScopes)
-		}
-	default:
-		return false
+	fields := configstore.MCPOAuthConfigFields{
+		ClientID:     authorizedOauth.ClientID,
+		ClientSecret: authorizedOauth.ClientSecret,
+		AuthorizeURL: authorizedOauth.AuthorizeURL,
+		TokenURL:     authorizedOauth.TokenURL,
+		Resource:     authorizedOauth.Resource,
 	}
-	if fileBlock.ClientID != "" && fileBlock.ClientID != refClientID {
-		return true
+	if authorizedOauth.RegistrationURL != nil {
+		fields.RegistrationURL = *authorizedOauth.RegistrationURL
 	}
-	if fileBlock.ClientSecret != "" && fileBlock.ClientSecret != refClientSecret {
-		return true
-	}
-	if fileBlock.AuthorizeURL != "" && fileBlock.AuthorizeURL != refAuthorizeURL {
-		return true
-	}
-	if fileBlock.TokenURL != "" && fileBlock.TokenURL != refTokenURL {
-		return true
-	}
-	if len(fileBlock.Scopes) > 0 {
-		fileScopes := slices.Clone(fileBlock.Scopes)
-		storedScopes := slices.Clone(refScopes)
-		slices.Sort(fileScopes)
-		slices.Sort(storedScopes)
-		if !slices.Equal(fileScopes, storedScopes) {
+	if authorizedOauth.Scopes != "" {
+		if err := json.Unmarshal([]byte(authorizedOauth.Scopes), &fields.Scopes); err != nil {
+			// A decode failure would otherwise silently collapse fields.Scopes
+			// to nil — indistinguishable from "the file declared nothing about
+			// scopes" — and a file that never mentions scopes would then look
+			// like drift against the (unreadable) stored value, rotating and
+			// cascading needs_reauth for a field it never touched. Skip this
+			// rotation attempt instead so a later boot retries once the stored
+			// row is repaired.
+			logger.Warn("stored oauth scopes for MCP client %q are not valid JSON; skipping OAuth rotation: %v", clientName, err)
 			return true
 		}
 	}
-	return false
+	// NewSecretVar resolves env./vault. references immediately and sets Val
+	// to "" when the reference doesn't resolve (e.g. the env var isn't set
+	// on this boot). Guard against persisting that empty value: it would
+	// silently blank a real stored credential and RotateMCPOAuthConfig would
+	// see it as drift, cascading every bound token to needs_reauth over a
+	// transient env var absence. Skip the field (keep the stored value) and
+	// warn instead.
+	if fileBlock.ClientID != "" {
+		if declared := schemas.NewSecretVar(fileBlock.ClientID); declared.GetValue() != "" {
+			fields.ClientID = declared
+		} else {
+			logger.Warn("oauth client_id declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
+			incomplete = true
+		}
+	}
+	if fileBlock.ClientSecret != "" {
+		if declared := schemas.NewSecretVar(fileBlock.ClientSecret); declared.GetValue() != "" {
+			fields.ClientSecret = declared
+		} else {
+			logger.Warn("oauth client_secret declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
+			incomplete = true
+		}
+	}
+	if fileBlock.AuthorizeURL != "" {
+		fields.AuthorizeURL = fileBlock.AuthorizeURL
+	}
+	if fileBlock.TokenURL != "" {
+		fields.TokenURL = fileBlock.TokenURL
+	}
+	if fileBlock.RegistrationURL != nil && *fileBlock.RegistrationURL != "" {
+		fields.RegistrationURL = *fileBlock.RegistrationURL
+	}
+	if fileBlock.Resource != "" {
+		fields.Resource = fileBlock.Resource
+	}
+	if fileBlock.Scopes != nil {
+		fields.Scopes = fileBlock.Scopes
+	}
+	rotated, err := store.RotateMCPOAuthConfig(ctx, authorizedOauth, fields)
+	if err != nil {
+		logger.Warn("failed to rotate OAuth config for MCP client %q from config file: %v", clientName, err)
+		return true
+	}
+	if rotated {
+		logger.Warn("rotated OAuth config for MCP client %q from config file; existing sessions must re-authenticate", clientName)
+	}
+	return incomplete
 }
 
 // authorizedOauthRowForComparison loads the oauth_configs row backing an
@@ -2020,16 +2068,25 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 				if existingClientConfig.ConfigHash != fileHash {
 					logger.Debug("config hash mismatch for MCP client %q, syncing from config file", newClientConfig.Name)
 					newClientConfig.ID = existingClientConfig.ID
-					newClientConfig.ConfigHash = fileHash
 					// Pin immutable fields to their stored values and carry
 					// server-side verification state (authorized OAuth link,
 					// discovered tools) the file cannot express, so a config
 					// edit does not reset a verified client.
 					authorizedOauth := authorizedOauthRowForComparison(ctx, config.ConfigStore, newClientConfig, existingClientConfig)
-					warnIgnoredImmutableMCPFields(existingClientConfig.Name, pinMCPClientImmutableFields(newClientConfig, existingClientConfig, authorizedOauth))
+					incompleteRotation := rotateMCPOauthConfigFromFile(ctx, config.ConfigStore, existingClientConfig.Name, newClientConfig.PendingOAuthConfig, authorizedOauth)
+					warnIgnoredImmutableMCPFields(existingClientConfig.Name, pinMCPClientImmutableFields(newClientConfig, existingClientConfig))
 					applyMCPClientPinnedStateToRow(&fileClientRow, newClientConfig)
 					fileClientRow.ClientID = existingClientConfig.ID
-					fileClientRow.ConfigHash = fileHash
+					if incompleteRotation {
+						// Keep the prior stored hash so this file version is
+						// not checkpointed as fully synced — see
+						// rotateMCPOauthConfigFromFile's doc comment.
+						newClientConfig.ConfigHash = existingClientConfig.ConfigHash
+						fileClientRow.ConfigHash = existingClientConfig.ConfigHash
+					} else {
+						newClientConfig.ConfigHash = fileHash
+						fileClientRow.ConfigHash = fileHash
+					}
 					clientConfigsToUpdate = append(clientConfigsToUpdate, fileClientRow)
 					mcpConfig.ClientConfigs[i] = newClientConfig
 				} else {
@@ -2233,12 +2290,18 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 			// overwrite does not reset a verified client. The advisory log
 			// is gated on the stored hash so it fires once per file edit,
 			// not on every boot.
-			var authorizedOauth *configstoreTables.TableOauthConfig
 			fileEdited := existing.ConfigHash != fileHash
 			if fileEdited {
-				authorizedOauth = authorizedOauthRowForComparison(ctx, config.ConfigStore, fileClient, existing)
+				authorizedOauth := authorizedOauthRowForComparison(ctx, config.ConfigStore, fileClient, existing)
+				if rotateMCPOauthConfigFromFile(ctx, config.ConfigStore, existing.Name, fileClient.PendingOAuthConfig, authorizedOauth) {
+					// Keep the prior stored hash so this file version is not
+					// checkpointed as fully synced — see
+					// rotateMCPOauthConfigFromFile's doc comment.
+					fileClient.ConfigHash = existing.ConfigHash
+					fileRow.ConfigHash = existing.ConfigHash
+				}
 			}
-			changedImmutable := pinMCPClientImmutableFields(fileClient, existing, authorizedOauth)
+			changedImmutable := pinMCPClientImmutableFields(fileClient, existing)
 			if fileEdited {
 				warnIgnoredImmutableMCPFields(existing.Name, changedImmutable)
 			}
