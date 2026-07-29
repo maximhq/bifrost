@@ -790,6 +790,40 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 	return tools, toolNameMapping, nil
 }
 
+// performAdminToolDiscovery resolves the retained admin bootstrap credential
+// for a per_user_oauth/per_user_headers client (via credStore.AdminConnectionHeaders)
+// and runs a one-shot ephemeral connect-discover-close cycle, reusing the
+// exact same verification functions the one-time bootstrap flow itself uses
+// (VerifyPerUserOAuthConnection / VerifyHeadersConnection) — this is the
+// periodic tool-syncer's per-user counterpart to reusing a live Conn for
+// shared clients (see ClientToolSyncer.performSync).
+func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *schemas.MCPClientConfig) (map[string]schemas.ChatTool, map[string]string, error) {
+	if config.AuthType != schemas.MCPAuthTypePerUserOauth && config.AuthType != schemas.MCPAuthTypePerUserHeaders {
+		return nil, nil, fmt.Errorf("admin tool discovery not supported for auth_type %q", config.AuthType)
+	}
+
+	headers, err := m.credStore.AdminConnectionHeaders(ctx, config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to resolve admin credential: %w", err)
+	}
+	switch config.AuthType {
+	case schemas.MCPAuthTypePerUserOauth:
+		accessToken := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
+		if accessToken == "" {
+			return nil, nil, fmt.Errorf("admin credential resolved no access token")
+		}
+		return m.VerifyPerUserOAuthConnection(ctx, config, accessToken)
+	case schemas.MCPAuthTypePerUserHeaders:
+		userHeaders := make(map[string]string, len(headers))
+		for k := range headers {
+			userHeaders[k] = headers.Get(k)
+		}
+		return m.VerifyHeadersConnection(ctx, config, userHeaders)
+	default:
+		return nil, nil, fmt.Errorf("admin tool discovery not supported for auth_type %q", config.AuthType)
+	}
+}
+
 // SetClientTools updates the tool map and name mapping for an existing client.
 // This is used to populate tools discovered during per-user OAuth verification,
 // where tool discovery happens separately from client creation.

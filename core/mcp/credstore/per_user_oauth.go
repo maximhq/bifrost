@@ -1,6 +1,7 @@
 package credstore
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -104,4 +105,22 @@ func (r *perUserOAuthResolver) ForceRefresh(ctx *schemas.BifrostContext, config 
 		return fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
 	}
 	return r.provider.ForceRefreshAccessToken(ctx, config)
+}
+
+// AdminConnectionHeaders resolves the retained admin bootstrap token (see
+// GetAdminAccessToken's doc comment) for periodic tool-discovery refresh.
+func (r *perUserOAuthResolver) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+	if r.provider == nil {
+		return nil, fmt.Errorf("per-user OAuth requires an OAuth2Provider but none is configured")
+	}
+	if config.OauthConfigID == nil || *config.OauthConfigID == "" {
+		return nil, fmt.Errorf("per-user OAuth client %q has no linked oauth config", config.Name)
+	}
+	accessToken, err := r.provider.GetAdminAccessToken(ctx, *config.OauthConfigID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get admin access token for MCP server %s: %w", config.Name, err)
+	}
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+accessToken)
+	return headers, nil
 }
