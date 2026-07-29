@@ -60,6 +60,10 @@ func (expiredOAuthCredStore) RequiresPerCallConnection(_ *schemas.MCPClientConfi
 	return false
 }
 
+func (expiredOAuthCredStore) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	return fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
+}
+
 // newSharedOAuthClientConfig builds a minimal shared-OAuth (auth_type=oauth,
 // persistent-connection) MCP client config for the connectToMCPClient tests
 // below. ConnectionType is HTTP so the failure happens at the
@@ -121,6 +125,10 @@ func (genericFailureCredStore) RequestHeaders(_ *schemas.BifrostContext, _ *sche
 
 func (genericFailureCredStore) RequiresPerCallConnection(_ *schemas.MCPClientConfig) bool {
 	return false
+}
+
+func (genericFailureCredStore) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	return nil
 }
 
 func TestConnectToMCPClient_GenericFailure_StaysDisconnected(t *testing.T) {

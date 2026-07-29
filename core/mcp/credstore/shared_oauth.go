@@ -32,3 +32,14 @@ func (r *sharedOAuthResolver) ConnectionHeaders(ctx *schemas.BifrostContext, con
 }
 
 func (r *sharedOAuthResolver) RequiresPerCallConnection() bool { return false }
+
+// ForceRefresh unconditionally refreshes the shared token, bypassing
+// GetAccessToken's ExpiresAt gate. Resolution (the OauthConfigID lookup, the
+// provider-availability check) now happens entirely inside the provider —
+// see schemas.OAuth2Provider.ForceRefreshAccessToken.
+func (r *sharedOAuthResolver) ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error {
+	if r.provider == nil {
+		return schemas.ErrOAuth2ProviderNotAvailable
+	}
+	return r.provider.ForceRefreshAccessToken(ctx, config)
+}

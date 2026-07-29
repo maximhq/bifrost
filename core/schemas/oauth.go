@@ -46,6 +46,27 @@ type OAuth2Provider interface {
 	// MCP OAuth credential; GetAccessToken and GetUserAccessTokenByMode both
 	// funnel their lazy pre-flight refresh through this.
 	RefreshAccessToken(ctx context.Context, tokenID string) error
+
+	// ForceRefreshAccessToken unconditionally refreshes the MCP OAuth
+	// credential backing config, bypassing whichever lazy ExpiresAt gate
+	// GetAccessToken / GetUserAccessTokenByMode would otherwise apply. Used
+	// when a live upstream call was rejected despite Bifrost's own expiry
+	// bookkeeping still considering the credential valid: the local
+	// bookkeeping is what's stale here, not necessarily the token, so the
+	// gate that would normally skip a refresh has to be skipped too.
+	//
+	// Branches internally on config.AuthType:
+	//   - MCPAuthTypeOauth resolves the shared token linked to
+	//     config.OauthConfigID, the same lookup GetAccessToken performs.
+	//   - MCPAuthTypePerUserOauth derives (mode, identity) from ctx via
+	//     ctx.MCPAuthMode() / ctx.MCPIdentity(mode) and resolves the
+	//     per-identity token, the same lookup GetUserAccessTokenByMode
+	//     performs.
+	//
+	// Either branch ends by calling RefreshAccessToken once the underlying
+	// token row is resolved — the one refresh path for every kind of MCP
+	// OAuth credential.
+	ForceRefreshAccessToken(ctx *BifrostContext, config *MCPClientConfig) error
 }
 
 // OauthConfig represents OAuth client configuration

@@ -258,6 +258,41 @@ func isOAuth2TokenExpiredErrorText(errStr string) bool {
 	return strings.Contains(errStr, schemas.ErrOAuth2TokenExpired.Error())
 }
 
+// isAuthFailureErrorText reports whether a raw upstream tool-call error looks
+// like an auth rejection (401/403/unauthorized/forbidden). mcp-go flattens
+// HTTP status codes into a plain error string by the time a CallTool error
+// reaches toolmanager.go — no typed status field survives — so, like
+// isTransientError above, substring matching on the same class of text is
+// the only option.
+//
+// This is deliberately a separate function from both of the above, not a
+// reuse of either:
+//
+//   - isTransientError matches this exact substring class too, but as a
+//     PERMANENT signal (don't retry) for its connection-establishment
+//     callers — the opposite polarity needed here, where the same text is
+//     the POSITIVE trigger for a forced-refresh-and-retry. A tool call that
+//     reaches this point already has a live, previously-healthy connection
+//     (AcquireClientConn already succeeded once), so a 401/403 here means
+//     the upstream server is actively rejecting a credential Bifrost's own
+//     bookkeeping still considers valid — worth reacting to, not giving up
+//     on.
+//   - isOAuth2TokenExpiredErrorText matches Bifrost's OWN internal sentinel
+//     text (schemas.ErrOAuth2TokenExpired), surfaced only after Bifrost's
+//     own refresh logic already ran and classified a credential as
+//     permanently dead. A raw CallTool error never goes through that
+//     classification at all — it's the upstream server's rejection text
+//     verbatim, not Bifrost's.
+func isAuthFailureErrorText(errStr string) bool {
+	lower := strings.ToLower(errStr)
+	for _, needle := range []string{"401", "403", "unauthorized", "forbidden"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // ExecuteWithRetry executes a function with exponential backoff retry logic.
 // Only retries on transient errors; permanent errors (auth, config) fail immediately.
 // It returns the error from the last attempt if all retries fail.
