@@ -602,6 +602,16 @@ const (
 	MCPConnectionStatePendingTools        MCPConnectionState = "pending_tools"        // Connected but tools not yet populated
 	MCPConnectionStatePendingVerification MCPConnectionState = "pending_verification" // Declared (typically via config.json) but the one-time auth/test flow has not been completed by an admin yet
 	MCPConnectionStateDisabled            MCPConnectionState = "disabled"             // Client is intentionally disabled by the user
+	// MCPConnectionStateNeedsReauth means this client was previously authorized and
+	// connected at least once, but its credential can no longer be used — the upstream
+	// OAuth token died (refresh token rejected/expired with no way to silently recover,
+	// see ErrOAuth2TokenExpired) and a human has to reauthorize it. This is distinct from
+	// MCPConnectionStatePendingVerification, which means the one-time initial setup was
+	// never completed in the first place; NeedsReauth means setup succeeded once and the
+	// credential died later. Only reachable by shared-connection auth types (a persistent
+	// upstream connection to reconnect); per-user auth types resolve credentials per-call
+	// and never hold a connection this state describes.
+	MCPConnectionStateNeedsReauth MCPConnectionState = "needs_reauth"
 )
 
 // MCPClientState represents a connected MCP client with its configuration and tools.
