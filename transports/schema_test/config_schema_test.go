@@ -440,6 +440,86 @@ func TestSchemaComplexityAnalyzerKeywordCompatibility(t *testing.T) {
 	}
 }
 
+func TestSchemaComplexitySemanticConfig(t *testing.T) {
+	compiled := compileSchema(t)
+	prefix := `{"governance":{"complexity_analyzer_config":{"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4},"keywords":{"simple_keywords":["hello"],"medium_keywords":["api"],"complex_keywords":["tradeoffs"]}`
+	suffix := `}}}`
+
+	tests := []struct {
+		name      string
+		semantic  string
+		wantError bool
+	}{
+		{
+			name:     "no semantic block",
+			semantic: ``,
+		},
+		{
+			name:     "minimal semantic block",
+			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536}`,
+		},
+		{
+			name:     "full semantic block",
+			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"timeout":"100ms","fallback":"lexical","count_toward_budgets":true,"vector_store":"embedded"}`,
+		},
+		{
+			name:     "timeout as milliseconds number",
+			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"timeout":250}`,
+		},
+		{
+			name:      "missing embedding_model",
+			semantic:  `,"semantic":{"provider":"openai","dimension":1536}`,
+			wantError: true,
+		},
+		{
+			name:      "dimension below minimum",
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1}`,
+			wantError: true,
+		},
+		{
+			name:     "custom provider name",
+			semantic: `,"semantic":{"provider":"my-custom-provider","embedding_model":"text-embedding-3-small","dimension":1536}`,
+		},
+		{
+			name:      "empty provider",
+			semantic:  `,"semantic":{"provider":"","embedding_model":"text-embedding-3-small","dimension":1536}`,
+			wantError: true,
+		},
+		{
+			name:      "unknown fallback value",
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"fallback":"llm"}`,
+			wantError: true,
+		},
+		{
+			name:      "unknown vector_store value",
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"vector_store":"pgvector"}`,
+			wantError: true,
+		},
+		{
+			name:      "unknown semantic field",
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"threshold":0.8}`,
+			wantError: true,
+		},
+		{
+			name:      "exemplars block no longer accepted",
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"exemplars":{"simple_exemplars":["hi"]}}`,
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, prefix+tt.semantic+suffix)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaSCIMConfigValidation(t *testing.T) {
 	compiled := compileSchema(t)
 

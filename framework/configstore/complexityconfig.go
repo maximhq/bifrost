@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // ComplexityTierBoundaries defines score thresholds for complexity tier classification.
@@ -29,7 +32,9 @@ func (b *ComplexityTierBoundaries) Validate() error {
 	return nil
 }
 
-// ComplexityEditableKeywordConfig contains the user-editable keyword lists.
+// ComplexityEditableKeywordConfig contains the user-editable per-tier lists.
+// The same lists feed both classifiers: the lexical matcher treats entries as
+// keywords, the semantic classifier embeds them as exemplars.
 type ComplexityEditableKeywordConfig struct {
 	SimpleKeywords  []string `json:"simple_keywords"`
 	MediumKeywords  []string `json:"medium_keywords"`
@@ -102,6 +107,166 @@ func hasAnyComplexityField(fields map[string]json.RawMessage, names ...string) b
 	return false
 }
 
+// Fallback behaviors when semantic classification is unavailable (executor not
+// wired, warmup incomplete) or exceeds its timeout.
+const (
+	ComplexitySemanticFallbackLexical = "lexical"
+	ComplexitySemanticFallbackNone    = "none"
+)
+
+// Vector store selection modes for exemplar embeddings. "embedded" (the
+// default) uses the built-in chromem store; "auto" opts into the configured
+// external store when present, falling back to embedded otherwise;
+// "external" makes a missing external store a startup error.
+const (
+	ComplexitySemanticVectorStoreAuto     = "auto"
+	ComplexitySemanticVectorStoreEmbedded = "embedded"
+	ComplexitySemanticVectorStoreExternal = "external"
+)
+
+// DefaultComplexitySemanticTimeout bounds per-request embedding generation.
+const DefaultComplexitySemanticTimeout = 100 * time.Millisecond
+
+// ComplexitySemanticConfig configures the embedding-based complexity
+// classifier. A non-nil value enables semantic classification. The classifier
+// embeds the analyzer's shared per-tier keyword lists as its exemplars; there
+// is no separate exemplar storage.
+type ComplexitySemanticConfig struct {
+	Provider           schemas.ModelProvider `json:"provider"`
+	EmbeddingModel     string                `json:"embedding_model"`
+	Dimension          int                   `json:"dimension"`
+	Timeout            time.Duration         `json:"timeout,omitempty"`
+	Fallback           string                `json:"fallback,omitempty"`
+	CountTowardBudgets bool                  `json:"count_toward_budgets,omitempty"`
+	VectorStore        string                `json:"vector_store,omitempty"`
+}
+
+// UnmarshalJSON accepts Timeout as a duration string ("100ms") or a JSON number
+// (milliseconds). It rejects unknown fields so unshipped semantic-only settings
+// cannot be silently accepted through config.json or the management API.
+func (c *ComplexitySemanticConfig) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	allowed := map[string]struct{}{
+		"provider":              {},
+		"embedding_model":       {},
+		"timeout":               {},
+		"min_similarity":        {},
+		"message_history_count": {},
+		"count_toward_budgets":  {},
+		"vector_store":          {},
+	}
+	for field := range fields {
+		if _, ok := allowed[field]; !ok {
+			return fmt.Errorf("unknown semantic complexity field %q", field)
+		}
+	}
+
+	// alias suppresses ComplexitySemanticConfig's UnmarshalJSON to avoid
+	// infinite recursion. The outer Timeout (json.RawMessage) shadows
+	// alias.Timeout because the json package picks the shallower field.
+	type alias ComplexitySemanticConfig
+	aux := &struct {
+		Timeout json.RawMessage `json:"timeout,omitempty"`
+		*alias
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if len(aux.Timeout) == 0 || string(aux.Timeout) == "null" {
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(aux.Timeout, &s); err == nil {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("failed to parse semantic timeout duration string %q: %w", s, err)
+		}
+		c.Timeout = d
+	} else {
+		var ms float64
+		if err := json.Unmarshal(aux.Timeout, &ms); err != nil {
+			return fmt.Errorf("unsupported semantic timeout value: %s", string(aux.Timeout))
+		}
+		c.Timeout = time.Duration(ms * float64(time.Millisecond))
+	}
+	if c.Timeout < 0 {
+		return fmt.Errorf("semantic timeout must be non-negative, got %v", c.Timeout)
+	}
+	return nil
+}
+
+// MarshalJSON writes Timeout as a duration string so persisted configs decode
+// back to the same value (the default int encoding is nanoseconds, which the
+// millisecond-number decode path would misread).
+func (c ComplexitySemanticConfig) MarshalJSON() ([]byte, error) {
+	type alias ComplexitySemanticConfig
+	var timeout string
+	if c.Timeout != 0 {
+		timeout = c.Timeout.String()
+	}
+	return json.Marshal(struct {
+		Timeout string `json:"timeout,omitempty"`
+		alias
+	}{
+		Timeout: timeout,
+		alias:   alias(c),
+	})
+}
+
+// normalized returns a canonical deep copy with defaults applied.
+func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
+	if c == nil {
+		return nil
+	}
+	out := &ComplexitySemanticConfig{
+		Provider:           schemas.ModelProvider(strings.ToLower(strings.TrimSpace(string(c.Provider)))),
+		EmbeddingModel:     strings.TrimSpace(c.EmbeddingModel),
+		Dimension:          c.Dimension,
+		Timeout:            c.Timeout,
+		Fallback:           strings.ToLower(strings.TrimSpace(c.Fallback)),
+		CountTowardBudgets: c.CountTowardBudgets,
+		VectorStore:        strings.ToLower(strings.TrimSpace(c.VectorStore)),
+	}
+	if out.Timeout == 0 {
+		out.Timeout = DefaultComplexitySemanticTimeout
+	}
+	if out.Fallback == "" {
+		out.Fallback = ComplexitySemanticFallbackLexical
+	}
+	if out.VectorStore == "" {
+		out.VectorStore = ComplexitySemanticVectorStoreEmbedded
+	}
+	return out
+}
+
+// Validate checks a normalized semantic config.
+func (c *ComplexitySemanticConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if strings.TrimSpace(string(c.Provider)) == "" {
+		return fmt.Errorf("semantic config requires a provider")
+	}
+	if strings.TrimSpace(c.EmbeddingModel) == "" {
+		return fmt.Errorf("semantic config requires an embedding_model")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("semantic timeout must be positive, got %v", c.Timeout)
+	}
+	switch c.VectorStore {
+	case ComplexitySemanticVectorStoreAuto, ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreExternal:
+	default:
+		return fmt.Errorf("semantic vector_store must be %q, %q, or %q, got %q",
+			ComplexitySemanticVectorStoreAuto, ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreExternal, c.VectorStore)
+	}
+	return nil
+}
+
 // ComplexityAnalyzerConfigHashes tracks the config.json hash for each editable
 // analyzer section. It is persisted with the config row, but not exposed through
 // API responses or config.json.
@@ -110,6 +275,10 @@ type ComplexityAnalyzerConfigHashes struct {
 	SimpleKeywords  string `json:"simple_keywords,omitempty"`
 	MediumKeywords  string `json:"medium_keywords,omitempty"`
 	ComplexKeywords string `json:"complex_keywords,omitempty"`
+	// SemanticSettings covers the semantic block (provider, model, timeout,
+	// budgets flag, vector store). The semantic classifier's
+	// exemplars are the shared keyword lists, tracked by the sections above.
+	SemanticSettings string `json:"semantic_settings,omitempty"`
 }
 
 type legacyComplexityAnalyzerConfigHashes struct {
@@ -162,31 +331,33 @@ func (h *ComplexityAnalyzerConfigHashes) UnmarshalJSON(data []byte) error {
 
 // Empty reports whether no file-backed section hashes are present.
 func (h ComplexityAnalyzerConfigHashes) Empty() bool {
-	return h.TierBoundaries == "" &&
-		h.SimpleKeywords == "" &&
-		h.MediumKeywords == "" &&
-		h.ComplexKeywords == ""
+	return h == ComplexityAnalyzerConfigHashes{}
 }
 
 // Equal reports whether all section hashes match.
 func (h ComplexityAnalyzerConfigHashes) Equal(other ComplexityAnalyzerConfigHashes) bool {
-	return h.TierBoundaries == other.TierBoundaries &&
-		h.SimpleKeywords == other.SimpleKeywords &&
-		h.MediumKeywords == other.MediumKeywords &&
-		h.ComplexKeywords == other.ComplexKeywords
+	return h == other
 }
 
 // ComplexityAnalyzerConfig is the persisted runtime configuration for the complexity analyzer.
 type ComplexityAnalyzerConfig struct {
 	TierBoundaries ComplexityTierBoundaries        `json:"tier_boundaries"`
 	Keywords       ComplexityEditableKeywordConfig `json:"keywords"`
+	Semantic       *ComplexitySemanticConfig       `json:"semantic,omitempty"`
 	ConfigHashes   ComplexityAnalyzerConfigHashes  `json:"-"`
+	// EmbeddingFingerprint records the (model, dimension, keyword lists) the
+	// stored exemplar embeddings were computed from. Warmup compares it against
+	// the current config to decide whether to re-embed. Persisted with the
+	// config row, not exposed through API responses or config.json.
+	EmbeddingFingerprint string `json:"-"`
 }
 
 type complexityAnalyzerConfigRecord struct {
-	TierBoundaries ComplexityTierBoundaries        `json:"tier_boundaries"`
-	Keywords       ComplexityEditableKeywordConfig `json:"keywords"`
-	ConfigHashes   ComplexityAnalyzerConfigHashes  `json:"_config_hashes,omitempty"`
+	TierBoundaries       ComplexityTierBoundaries        `json:"tier_boundaries"`
+	Keywords             ComplexityEditableKeywordConfig `json:"keywords"`
+	Semantic             *ComplexitySemanticConfig       `json:"semantic,omitempty"`
+	ConfigHashes         ComplexityAnalyzerConfigHashes  `json:"_config_hashes,omitempty"`
+	EmbeddingFingerprint string                          `json:"_embedding_fingerprint,omitempty"`
 }
 
 // Validate checks that the config is internally consistent.
@@ -211,6 +382,9 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("keyword lists must be non-empty: %s", strings.Join(missing, ", "))
 	}
+	if err := c.Semantic.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -226,7 +400,9 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 			MediumKeywords:  normalizeComplexityKeywordList(c.Keywords.MediumKeywords),
 			ComplexKeywords: normalizeComplexityKeywordList(c.Keywords.ComplexKeywords),
 		},
-		ConfigHashes: c.ConfigHashes,
+		Semantic:             c.Semantic.normalized(),
+		ConfigHashes:         c.ConfigHashes,
+		EmbeddingFingerprint: c.EmbeddingFingerprint,
 	}
 }
 
@@ -263,12 +439,23 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 			MediumKeywords:  mergeComplexityKeywordLists(normalizedBase.Keywords.MediumKeywords, normalizedFile.Keywords.MediumKeywords),
 			ComplexKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords),
 		},
-		ConfigHashes: normalizedFile.ConfigHashes,
+		Semantic:             mergeComplexitySemanticConfig(normalizedBase.Semantic, normalizedFile.Semantic),
+		ConfigHashes:         normalizedFile.ConfigHashes,
+		EmbeddingFingerprint: normalizedBase.EmbeddingFingerprint,
 	}
 	if err := merged.Validate(); err != nil {
 		return nil, err
 	}
 	return &merged, nil
+}
+
+// mergeComplexitySemanticConfig overlays the file semantic settings. A nil
+// file section keeps the base untouched.
+func mergeComplexitySemanticConfig(base, file *ComplexitySemanticConfig) *ComplexitySemanticConfig {
+	if file == nil {
+		return base.normalized()
+	}
+	return file.normalized()
 }
 
 // MergeComplexityAnalyzerConfigByHashes overlays only file-backed sections whose
@@ -307,6 +494,15 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 		merged.Keywords.ComplexKeywords = mergeComplexityKeywordLists(merged.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords)
 		merged.ConfigHashes.ComplexKeywords = normalizedFile.ConfigHashes.ComplexKeywords
 	}
+	// A config.json without a semantic section leaves DB semantic state (and its
+	// section hash) untouched: the section is optional, so absence means "no
+	// opinion", not removal.
+	if normalizedFile.Semantic != nil {
+		if merged.Semantic == nil || merged.ConfigHashes.SemanticSettings != normalizedFile.ConfigHashes.SemanticSettings {
+			merged.Semantic = normalizedFile.Semantic.normalized()
+			merged.ConfigHashes.SemanticSettings = normalizedFile.ConfigHashes.SemanticSettings
+		}
+	}
 	if err := merged.Validate(); err != nil {
 		return nil, err
 	}
@@ -325,9 +521,11 @@ func DecodeComplexityAnalyzerConfig(data []byte) (*ComplexityAnalyzerConfig, err
 	}
 
 	cfg := ComplexityAnalyzerConfig{
-		TierBoundaries: record.TierBoundaries,
-		Keywords:       record.Keywords,
-		ConfigHashes:   record.ConfigHashes,
+		TierBoundaries:       record.TierBoundaries,
+		Keywords:             record.Keywords,
+		Semantic:             record.Semantic,
+		ConfigHashes:         record.ConfigHashes,
+		EmbeddingFingerprint: record.EmbeddingFingerprint,
 	}
 	normalized := cfg.Normalized()
 	if err := normalized.Validate(); err != nil {
@@ -338,9 +536,11 @@ func DecodeComplexityAnalyzerConfig(data []byte) (*ComplexityAnalyzerConfig, err
 
 func encodeComplexityAnalyzerConfig(config ComplexityAnalyzerConfig) ([]byte, error) {
 	record := complexityAnalyzerConfigRecord{
-		TierBoundaries: config.TierBoundaries,
-		Keywords:       config.Keywords,
-		ConfigHashes:   config.ConfigHashes,
+		TierBoundaries:       config.TierBoundaries,
+		Keywords:             config.Keywords,
+		Semantic:             config.Semantic,
+		ConfigHashes:         config.ConfigHashes,
+		EmbeddingFingerprint: config.EmbeddingFingerprint,
 	}
 	data, err := json.Marshal(record)
 	if err != nil {

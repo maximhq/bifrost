@@ -1273,12 +1273,22 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash complex keywords: %w", err)
 	}
 
-	return ComplexityAnalyzerConfigHashes{
+	hashes := ComplexityAnalyzerConfigHashes{
 		TierBoundaries:  tierHash,
 		SimpleKeywords:  simpleHash,
 		MediumKeywords:  mediumHash,
 		ComplexKeywords: complexHash,
-	}, nil
+	}
+
+	if normalized.Semantic != nil {
+		settingsHash, err := hashComplexityValue(normalized.Semantic)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash semantic settings: %w", err)
+		}
+		hashes.SemanticSettings = settingsHash
+	}
+
+	return hashes, nil
 }
 
 // GenerateLegacyComplexityMediumKeywordsHash returns the Medium section hash
