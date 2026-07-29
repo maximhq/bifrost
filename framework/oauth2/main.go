@@ -315,6 +315,57 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 	return nil
 }
 
+// ForceRefreshAccessToken resolves the MCP OAuth token row backing config —
+// the shared token linked to config.OauthConfigID for MCPAuthTypeOauth (same
+// lookup GetAccessToken performs), or the caller's per-identity token for
+// MCPAuthTypePerUserOauth (same lookup GetUserAccessTokenByMode performs,
+// with (mode, identity) derived from ctx) — and refreshes it unconditionally
+// via RefreshAccessToken, regardless of whether the token's own ExpiresAt
+// says it's still good. RefreshAccessToken itself never consults ExpiresAt —
+// only its callers (GetAccessToken, GetUserAccessTokenByMode) gate on it
+// before deciding to call it — so resolving the right token row and going
+// straight to RefreshAccessToken is the entire "force" behavior.
+func (p *OAuth2Provider) ForceRefreshAccessToken(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error {
+	switch config.AuthType {
+	case schemas.MCPAuthTypeOauth:
+		if config.OauthConfigID == nil || *config.OauthConfigID == "" {
+			return schemas.ErrOAuth2ConfigNotFound
+		}
+		token, err := p.configStore.GetSharedOauthTokenByConfigID(ctx, *config.OauthConfigID)
+		if err != nil {
+			return fmt.Errorf("failed to load oauth token: %w", err)
+		}
+		if token == nil {
+			return fmt.Errorf("no token linked to oauth config")
+		}
+		// GetSharedOauthTokenByConfigID is not filtered by status (its doc
+		// comment makes status-checking the caller's responsibility) — mirror
+		// GetAccessToken's own check here so a token already marked
+		// needs_reauth short-circuits locally instead of attempting a live
+		// refresh call that's doomed to fail.
+		if token.Status != "active" {
+			return fmt.Errorf("oauth token is not active, status: %s: %w", token.Status, schemas.ErrOAuth2TokenExpired)
+		}
+		return p.RefreshAccessToken(ctx, token.ID)
+	case schemas.MCPAuthTypePerUserOauth:
+		mode := ctx.MCPAuthMode()
+		identity := ctx.MCPIdentity(mode)
+		if identity == "" {
+			return fmt.Errorf("per-user OAuth for %s requires an identity to force-refresh its token", config.Name)
+		}
+		token, err := p.configStore.GetOauthUserTokenByMode(ctx, mode, identity, config.ID)
+		if err != nil {
+			return fmt.Errorf("failed to load per-user oauth token (mode=%s): %w", mode, err)
+		}
+		if token == nil {
+			return schemas.ErrOAuth2TokenNotFound
+		}
+		return p.RefreshAccessToken(ctx, token.ID)
+	default:
+		return fmt.Errorf("force-refresh is not supported for MCP auth type %q", config.AuthType)
+	}
+}
+
 // ValidateToken checks if the token is still valid
 func (p *OAuth2Provider) ValidateToken(ctx context.Context, oauthConfigID string) (bool, error) {
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
