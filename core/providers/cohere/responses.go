@@ -471,7 +471,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				role := schemas.ResponsesInputMessageRoleAssistant
 
 				// Generate stable ID for reasoning item
-				itemID := "rs_" + providerUtils.GetRandomString(50)
+				itemID := "rs_" + schemas.GetRandomString(50)
 				state.ItemIDs[outputIndex] = itemID
 
 				item := &schemas.ResponsesMessage{

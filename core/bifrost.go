@@ -4601,7 +4601,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 		pq := pqValue.(*ProviderQueue)
 		return pq, nil
 	}
-	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
+	bifrost.logger.Debug("Creating new request queue for provider %s at runtime", providerKey)
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config for provider %s: %v", providerKey, err)
@@ -5156,7 +5156,7 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 		return false
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
+	bifrost.logger.Debug("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message)
 	return true
 }
 
@@ -5210,17 +5210,17 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		return nil, err
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
+	bifrost.logger.Debug("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks))
 
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
-			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
+			bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message)
 		} else {
-			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %v", provider, model, primaryErr))
+			bifrost.logger.Debug("primary provider %s with model %s returned error: %v", provider, model, primaryErr)
 		}
 		if len(fallbacks) > 0 {
-			bifrost.logger.Debug(fmt.Sprintf("check if we should try %d fallbacks", len(fallbacks)))
+			bifrost.logger.Debug("check if we should try %d fallbacks", len(fallbacks))
 		}
 	}
 
@@ -5244,7 +5244,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
-		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
+		bifrost.logger.Debug("trying fallback provider %s with model %s", fallback.Provider, fallback.Model)
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Trying fallback %d/%d: %s/%s (previous attempt failed: %s)", i+1, len(fallbacks), fallback.Provider, fallback.Model, routingErrorSummary(lastErr)))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
@@ -5260,7 +5260,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
-			bifrost.logger.Debug(fmt.Sprintf("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model))
+			bifrost.logger.Debug("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Fallback %s/%s skipped: missing provider config", fallback.Provider, fallback.Model))
 			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
 			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
@@ -5275,7 +5275,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		result.SetFallbackRoutingInfo(provider, model)
 		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
-			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			bifrost.logger.Debug("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			return result, nil
@@ -5343,17 +5343,17 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		return nil, err
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
+	bifrost.logger.Debug("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks))
 
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
-			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
+			bifrost.logger.Debug("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message)
 		} else {
-			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %v", provider, model, primaryErr))
+			bifrost.logger.Debug("primary provider %s with model %s returned error: %v", provider, model, primaryErr)
 		}
 		if len(fallbacks) > 0 {
-			bifrost.logger.Debug(fmt.Sprintf("check if we should try %d fallbacks", len(fallbacks)))
+			bifrost.logger.Debug("check if we should try %d fallbacks", len(fallbacks))
 		}
 	}
 
@@ -5419,7 +5419,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 				}
 				ctx.SetRoutingInfoSnapshot(ri)
 			}
-			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			bifrost.logger.Debug("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			return result, nil
@@ -7630,7 +7630,7 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-hook for plugin %s", pluginName)
 		// Start span for this plugin's PreLLMHook
-		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).prehook, schemas.SpanKindPlugin)
 		// Update pluginCtx with span context for nested operations
 		if spanCtx != nil {
 			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
@@ -7683,7 +7683,7 @@ func (p *PluginPipeline) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sc
 	for _, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-request hook for plugin %s", pluginName)
-		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.prerequesthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).prerequesthook, schemas.SpanKindPlugin)
 		if spanCtx != nil {
 			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
 				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
@@ -7769,7 +7769,7 @@ func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *sche
 			}
 		} else {
 			// For non-streaming: create span per plugin (existing behavior)
-			spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+			spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).posthook, schemas.SpanKindPlugin)
 			// Update pluginCtx with span context for nested operations
 			if spanCtx != nil {
 				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
@@ -7827,7 +7827,7 @@ func (p *PluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schema
 		pluginName := plugin.GetName()
 		p.logger.Debug("running MCP pre-hook for plugin %s", pluginName)
 		// Start span for this plugin's PreMCPHook
-		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.mcp_prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).mcpPrehook, schemas.SpanKindPlugin)
 		// Update pluginCtx with span context for nested operations
 		if spanCtx != nil {
 			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
@@ -7883,7 +7883,7 @@ func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *s
 		pluginName := plugin.GetName()
 		p.logger.Debug("running MCP post-hook for plugin %s", pluginName)
 		// Create span per plugin
-		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.mcp_posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).mcpPosthook, schemas.SpanKindPlugin)
 		// Update pluginCtx with span context for nested operations
 		if spanCtx != nil {
 			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
@@ -7937,7 +7937,7 @@ func (p *PluginPipeline) RunMCPPreConnectionHooks(ctx *schemas.BifrostContext, r
 	for i, plugin := range p.mcpPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running MCP connect pre-hook for plugin %s", pluginName)
-		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.mcp_connect_prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).mcpConnectPrehook, schemas.SpanKindPlugin)
 		if spanCtx != nil {
 			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
 				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
@@ -8000,7 +8000,7 @@ func (p *PluginPipeline) RunMCPPostConnectionHooks(ctx *schemas.BifrostContext, 
 		plugin := p.mcpPlugins[i]
 		pluginName := plugin.GetName()
 		p.logger.Debug("running MCP connect post-hook for plugin %s", pluginName)
-		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.mcp_connect_posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		spanCtx, handle := p.tracer.StartSpan(ctx, pluginSpanNamesFor(pluginName).mcpConnectPosthook, schemas.SpanKindPlugin)
 		if spanCtx != nil {
 			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
 				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
@@ -8182,7 +8182,7 @@ func (p *PluginPipeline) FinalizeStreamingPostHookSpans(ctx context.Context) {
 	// Start spans in execution order (nested: each is a child of the previous)
 	for _, entry := range snapshot {
 		// Create span as child of the previous span (nested hierarchy)
-		newCtx, handle := tracer.StartSpan(currentCtx, fmt.Sprintf("plugin.%s.posthook", sanitizeSpanName(entry.pluginName)), schemas.SpanKindPlugin)
+		newCtx, handle := tracer.StartSpan(currentCtx, pluginSpanNamesFor(entry.pluginName).posthook, schemas.SpanKindPlugin)
 		if handle == nil {
 			continue
 		}

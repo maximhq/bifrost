@@ -3,14 +3,13 @@ package schemas
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Ptr creates a pointer to any value.
@@ -19,16 +18,19 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
-// GetRandomString generates a random alphanumeric string of the given length.
+// letters is the hex alphabet GetRandomString draws from.
+const letters = "abcdef0123456789"
+
+// GetRandomString generates a random hex string of the given length.
+// Uses rand/v2 (seedless, per-thread): the old per-call time-seeded source cost
+// ~7µs per call and could mint identical strings for same-tick calls.
 func GetRandomString(length int) string {
 	if length <= 0 {
 		return ""
 	}
-	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
-	letters := []rune("abcdef0123456789")
-	b := make([]rune, length)
+	b := make([]byte, length)
 	for i := range b {
-		b[i] = letters[randomSource.Intn(len(letters))]
+		b[i] = letters[rand.IntN(len(letters))]
 	}
 	return string(b)
 }
