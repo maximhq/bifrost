@@ -183,6 +183,42 @@ func TestUpdateClientState_PreservesNeedsReauth(t *testing.T) {
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, stateAfterSuccessTick, "a successful health-check tick must not clobber NeedsReauth back to Connected")
 }
 
+// TestPerformHealthCheck_SkipsNeedsReauthClients covers the health monitor's
+// entry-point guard, one level up from TestUpdateClientState_PreservesNeedsReauth:
+// a NeedsReauth client (e.g. CloseAndMarkNeedsReauth after OAuth credential
+// rotation) has Conn == nil by design. Without a skip, performHealthCheck
+// would treat that nil Conn as a fresh failure, increment the counter, and
+// eventually spawn attemptReconnect — which dials with the already-known-dead
+// credential for nothing. The tick must be a complete no-op: no failure
+// counted, no reconnect scheduled, state untouched.
+func TestPerformHealthCheck_SkipsNeedsReauthClients(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	config := newSharedOAuthClientConfig("client-needs-reauth-healthcheck")
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateNeedsReauth,
+		Conn:            nil,
+	}
+	m.mu.Unlock()
+
+	chm := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, true, nil)
+	chm.performHealthCheck()
+
+	assert.Equal(t, 0, chm.getConsecutiveFailures(), "a NeedsReauth tick must not count as a failure")
+	chm.mu.Lock()
+	reconnecting := chm.isReconnecting
+	chm.mu.Unlock()
+	assert.False(t, reconnecting, "a NeedsReauth tick must not spawn a reconnect attempt")
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID].State
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state)
+}
+
 // TestUpdateClientState_StillPreservesDisabled is a regression guard for the
 // pre-existing Disabled-preservation behavior updateClientState had before
 // this change — the new NeedsReauth branch must be additive, not a

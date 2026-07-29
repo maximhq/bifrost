@@ -1180,6 +1180,20 @@ export const mcpClientUpdateSchema = z.object({
 		.object({
 			client_id: secretVarSchema.optional(),
 			client_secret: secretVarSchema.optional(),
+			authorize_url: z
+				.string()
+				.optional()
+				.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Authorize URL must start with http:// or https://" }),
+			token_url: z
+				.string()
+				.optional()
+				.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Token URL must start with http:// or https://" }),
+			registration_url: z
+				.string()
+				.optional()
+				.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Registration URL must start with http:// or https://" }),
+			scopes: z.array(z.string()).optional(),
+			resource: z.string().optional(),
 		})
 		.optional(),
 	tls_config: z
