@@ -10,6 +10,13 @@ type OAuth2Provider interface {
 	// GetAccessToken retrieves the access token for a given oauth_config_id (server-level OAuth)
 	GetAccessToken(ctx context.Context, oauthConfigID string) (string, error)
 
+	// GetAdminAccessToken is GetAccessToken's admin-mode counterpart:
+	// resolves the retained bootstrap-verification credential for a
+	// per_user_oauth client's periodic tool-discovery refresh (see
+	// ClientToolSyncer.performSync's per-user branch), rather than the
+	// shared-mode production credential.
+	GetAdminAccessToken(ctx context.Context, oauthConfigID string) (string, error)
+
 	// ValidateToken checks if the token is still valid
 	ValidateToken(ctx context.Context, oauthConfigID string) (bool, error)
 

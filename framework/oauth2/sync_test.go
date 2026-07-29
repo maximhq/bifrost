@@ -83,6 +83,20 @@ func (s *testConfigStore) GetSharedOauthTokenByConfigID(_ context.Context, oauth
 	return nil, nil
 }
 
+// GetAdminOauthTokenByConfigID is GetSharedOauthTokenByConfigID's admin-mode
+// counterpart — the test-double equivalent of the real store's
+// (oauth_config_id, auth_mode='admin') lookup, used by GetAdminAccessToken.
+func (s *testConfigStore) GetAdminOauthTokenByConfigID(_ context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, token := range s.oauthTokens {
+		if token.OauthConfigID == oauthConfigID && token.AuthMode == "admin" {
+			return bifrost.Ptr(*token), nil
+		}
+	}
+	return nil, nil
+}
+
 func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.TableMCPOauthToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -436,7 +450,7 @@ func TestTokenRefreshWorker_DefaultAuthModes_ExcludesUserModeTokens(t *testing.T
 	}
 
 	worker := newTestWorker(store)
-	assert.Equal(t, []string{"shared"}, worker.AuthModes, "constructor must default AuthModes to shared-only")
+	assert.Equal(t, []string{"shared", "admin"}, worker.AuthModes, "constructor must default AuthModes to shared + admin")
 	worker.refreshExpiredTokens(context.Background())
 
 	sharedToken, err := store.GetOauthTokenByID(context.Background(), sharedTokenID)

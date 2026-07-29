@@ -507,7 +507,7 @@ export default function MCPClientSheet({
 								<SheetDescription>
 									{mcpClient.state === "pending_verification"
 										? mcpClient.config.auth_type === "per_user_oauth"
-											? "This client was declared in config.json. A one-time admin test login is needed to verify the OAuth setup and discover tools — each user will authenticate individually afterward."
+											? "This client was declared in config.json. An admin sign-in is needed to verify the OAuth setup and discover tools; Bifrost keeps it on file to refresh the tool list periodically. Each user will still authenticate individually when they use this server."
 											: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
 										: mcpClient.state === "needs_reauth"
 											? "This connection's credentials need to be re-authorized. Click Reauthorize to redo the OAuth consent flow."

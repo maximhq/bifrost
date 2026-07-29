@@ -153,6 +153,14 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 		return "", fmt.Errorf("no token linked to oauth config")
 	}
 
+	return p.resolveAccessToken(ctx, token)
+}
+
+// resolveAccessToken takes an already-loaded MCP OAuth token row, refreshes
+// it if needed, and returns a usable access token. Factored out of
+// GetAccessToken so GetAdminAccessToken (same status/refresh/expiry/sanitize
+// logic, just resolving the row via a different lookup) doesn't duplicate it.
+func (p *OAuth2Provider) resolveAccessToken(ctx context.Context, token *tables.TableMCPOauthToken) (string, error) {
 	// The token's own Status ('active' | 'orphaned' | 'needs_reauth') is the
 	// sole source of truth for whether this credential is usable.
 	// oauthConfig.Status only tracks the one-time bootstrap lifecycle
@@ -169,6 +177,7 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 			return "", fmt.Errorf("token expired and refresh failed: %w", err)
 		}
 		// Reload token after refresh
+		var err error
 		token, err = p.configStore.GetOauthTokenByID(ctx, token.ID)
 		if err != nil || token == nil {
 			return "", fmt.Errorf("failed to reload token after refresh: %w", err)
@@ -184,6 +193,21 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 		return "", fmt.Errorf("access token is empty after sanitization")
 	}
 	return accessToken, nil
+}
+
+// GetAdminAccessToken is GetAccessToken's admin-mode counterpart: resolves
+// the retained bootstrap-verification credential for a per_user_oauth
+// client's periodic tool-discovery refresh (ClientToolSyncer.performSync),
+// rather than the shared-mode production credential.
+func (p *OAuth2Provider) GetAdminAccessToken(ctx context.Context, oauthConfigID string) (string, error) {
+	token, err := p.configStore.GetAdminOauthTokenByConfigID(ctx, oauthConfigID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load admin oauth token: %w", err)
+	}
+	if token == nil {
+		return "", fmt.Errorf("no admin token linked to oauth config")
+	}
+	return p.resolveAccessToken(ctx, token)
 }
 
 // RefreshAccessToken refreshes any MCP OAuth token row — the single shared
