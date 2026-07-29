@@ -1988,34 +1988,56 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					// Check for tool use start event
 					if streamEvent.Start != nil && streamEvent.Start.ToolUse != nil {
 						if streamEvent.Start.ToolUse.Name == structuredOutputToolName {
-							// This is the structured output tool - start accumulating, don't forward
+							// This is the structured output tool - open the tracked
+							// synthetic text item instead of forwarding the tool call,
+							// so the terminal events and the completed snapshot carry it
+							contentBlockIndex := 0
+							if streamEvent.ContentBlockIndex != nil {
+								contentBlockIndex = *streamEvent.ContentBlockIndex
+							}
 							isAccumulatingStructuredOutput = true
 							streamState.UsedStructuredOutputTool = true
+							for _, response := range streamState.beginStructuredOutputTextItem(contentBlockIndex, chunkIndex) {
+								response.ExtraFields = schemas.BifrostResponseExtraFields{
+									ChunkIndex: chunkIndex,
+									Latency:    time.Since(lastChunkTime).Milliseconds(),
+								}
+								chunkIndex++
+								lastChunkTime = time.Now()
+
+								if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+									response.ExtraFields.RawResponse = string(message.Payload)
+								}
+
+								providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+							}
 							continue
 						}
 					}
 
 					// Check for tool use delta event
 					if streamEvent.Delta != nil && streamEvent.Delta.ToolUse != nil && isAccumulatingStructuredOutput {
-						// Convert tool use delta to text delta
-						content := streamEvent.Delta.ToolUse.Input
-						response := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: chunkIndex,
-							Delta:          &content,
-							ExtraFields: schemas.BifrostResponseExtraFields{
+						// Convert the tool use delta to a text delta on the tracked
+						// synthetic text item, buffered so the done events and the
+						// completed snapshot carry the assembled structured output
+						contentBlockIndex := 0
+						if streamEvent.ContentBlockIndex != nil {
+							contentBlockIndex = *streamEvent.ContentBlockIndex
+						}
+						for _, response := range streamState.appendStructuredOutputText(streamEvent.Delta.ToolUse.Input, contentBlockIndex, chunkIndex) {
+							response.ExtraFields = schemas.BifrostResponseExtraFields{
 								ChunkIndex: chunkIndex,
 								Latency:    time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
+							}
+							chunkIndex++
+							lastChunkTime = time.Now()
 
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
-						}
+							if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+								response.ExtraFields.RawResponse = string(message.Payload)
+							}
 
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+							providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+						}
 						continue
 					}
 
