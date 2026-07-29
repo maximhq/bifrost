@@ -7,6 +7,7 @@
 package credstore
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -23,6 +24,10 @@ type resolver interface {
 	// ForceRefresh unconditionally refreshes the credential backing config.
 	// See schemas.MCPCredentialStore.ForceRefresh for the full contract.
 	ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error
+	// AdminConnectionHeaders resolves the retained admin bootstrap-verification
+	// credential's connection headers. See schemas.MCPCredentialStore.AdminConnectionHeaders
+	// for the full contract.
+	AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error)
 }
 
 // CredStore routes credential resolution by MCPAuthType. Implements
@@ -93,6 +98,15 @@ func (s *CredStore) ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MC
 		return err
 	}
 	return r.ForceRefresh(ctx, config)
+}
+
+// AdminConnectionHeaders implements schemas.MCPCredentialStore.
+func (s *CredStore) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+	r, err := s.resolverFor(config)
+	if err != nil {
+		return nil, err
+	}
+	return r.AdminConnectionHeaders(ctx, config)
 }
 
 // resolverFor returns the resolver matching config.AuthType, or an error if

@@ -116,7 +116,7 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 				<DialogHeader>
 					<DialogTitle>{status === "confirm" ? "Test Header Configuration" : "Header Authorization"}</DialogTitle>
 					<DialogDescription>
-						{status === "confirm" && "A one-time test is needed to verify your header setup."}
+						{status === "confirm" && "Verify your header setup to discover available tools."}
 						{status === "input" && "Enter sample values to verify the connection."}
 						{status === "testing" && "Verifying connection..."}
 						{status === "success" && "Verification successful!"}
@@ -132,8 +132,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 									To set up this MCP server, we need to verify that your header configuration is correct and discover the available tools.
 								</p>
 								<p>
-									You will be asked to provide sample values for the required headers. This is a <strong>one-time test</strong> to confirm
-									the setup works. Your sample values will <strong>not</strong> be stored or used for any other purpose.
+									You will be asked to provide sample values for the required headers. Bifrost keeps these values on file
+									to periodically refresh the available tool list; they are never used for real end-user requests.
 								</p>
 								<p>Once verified, each user will submit their own header values when they use this MCP server.</p>
 							</div>
@@ -151,7 +151,8 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 					{status === "input" && (
 						<>
 							<p className="text-muted-foreground text-sm">
-								These values are used only for this verification. They are <strong>not</strong> persisted.
+								These values verify the connection now and are kept on file so Bifrost can periodically refresh the
+								available tool list. Each user still submits their own values when they use this server.
 							</p>
 							<HeadersForm
 								requiredKeys={perUserHeaderKeys}
