@@ -2694,6 +2694,39 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		if err := Unmarshal(data, &funcTool); err != nil {
 			return err
 		}
+		// Chat Completions format nests the definition under "function":
+		//   {"type":"function","function":{"name":...,"parameters":...}}
+		// Clients like Cursor send this shape to Responses endpoints; without
+		// lifting the nested fields the tool parses with a nil name and
+		// providers that require one (e.g. Bedrock) reject the request.
+		// Top-level (Responses format) fields win when both are present.
+		if _, hasWrapper := raw["function"]; hasWrapper {
+			var wrapper struct {
+				Function *struct {
+					Name        *string                 `json:"name"`
+					Description *string                 `json:"description"`
+					Parameters  *ToolFunctionParameters `json:"parameters"`
+					Strict      *bool                   `json:"strict"`
+				} `json:"function"`
+			}
+			if err := Unmarshal(data, &wrapper); err != nil {
+				return fmt.Errorf("invalid 'function' object in ResponsesTool: %w", err)
+			}
+			if wrapper.Function != nil {
+				if t.Name == nil {
+					t.Name = wrapper.Function.Name
+				}
+				if t.Description == nil {
+					t.Description = wrapper.Function.Description
+				}
+				if funcTool.Parameters == nil {
+					funcTool.Parameters = wrapper.Function.Parameters
+				}
+				if funcTool.Strict == nil {
+					funcTool.Strict = wrapper.Function.Strict
+				}
+			}
+		}
 		t.ResponsesToolFunction = &funcTool
 
 	case ResponsesToolTypeFileSearch:
