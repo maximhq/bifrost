@@ -874,6 +874,10 @@ export const otelConfigSchema = z
 		// TLS configuration
 		tls_ca_cert: z.string().optional(),
 		insecure: z.boolean().default(true),
+		// Bounds a single trace export. gRPC exports have no other timeout, so an
+		// endpoint that accepts the connection but never replies would otherwise block
+		// an export goroutine indefinitely.
+		export_timeout: z.number().int().min(1).max(60).default(5),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
 		metrics_endpoint: secretVarSchema.optional(),
