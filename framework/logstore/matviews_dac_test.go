@@ -11,11 +11,13 @@ import (
 
 // TestFilterMatViews_AllCarryVisibilityColumns asserts the widening
 // from Fix 4 — every per-dimension matview projects user_id, team_id,
-// and virtual_key_id (or has them as part of its dimension columns).
-// Without these columns the DAC scope WHERE applied via ScopedDB
-// would error at the SQL layer with "no such column".
+// virtual_key_id, customer_id and business_unit_id (or has them as part
+// of its dimension columns). Without these columns the DAC scope WHERE
+// applied via ScopedDB would error at the SQL layer with "no such
+// column"; customer_id / business_unit_id specifically are the ones a
+// team-data principal's scope ORs in.
 func TestFilterMatViews_AllCarryVisibilityColumns(t *testing.T) {
-	required := []string{"user_id", "team_id", "virtual_key_id"}
+	required := []string{"user_id", "team_id", "virtual_key_id", "customer_id", "business_unit_id"}
 	for _, v := range filterMatViews {
 		cols := filterMatViewRequiredColumns(v)
 		colSet := make(map[string]struct{}, len(cols))
@@ -32,17 +34,17 @@ func TestFilterMatViews_AllCarryVisibilityColumns(t *testing.T) {
 }
 
 // TestFilterMatViews_UniqueIdxIncludesVisibilityColumns asserts the
-// widened unique index covers (user_id, team_id, virtual_key_id) so
-// the new row shape can be uniquely keyed for REFRESH ... CONCURRENTLY.
+// widened unique index covers every visibility column so the row shape
+// stays uniquely keyed for REFRESH ... CONCURRENTLY. The view is a
+// DISTINCT over (dimension + visibility columns); leaving one out of
+// the index would let two rows differing only in that column collide.
 func TestFilterMatViews_UniqueIdxIncludesVisibilityColumns(t *testing.T) {
 	for _, v := range filterMatViews {
 		idx := strings.ToLower(v.uniqueIdx)
-		assert.Contains(t, idx, "user_id",
-			"matview %s unique index must include user_id", v.name)
-		assert.Contains(t, idx, "team_id",
-			"matview %s unique index must include team_id", v.name)
-		assert.Contains(t, idx, "virtual_key_id",
-			"matview %s unique index must include virtual_key_id", v.name)
+		for _, col := range scopeRequiredColumns {
+			assert.Containsf(t, idx, col,
+				"matview %s unique index must include %s", v.name, col)
+		}
 	}
 }
 
@@ -60,7 +62,7 @@ func TestFilterMatViewScopeIdx_IsConcurrentAndIdempotent(t *testing.T) {
 		assert.Contains(t, ddl, filterMatViewScopeIdxName(v),
 			"scope index DDL must reference the canonical index name")
 		assert.Contains(t, ddl, scopeIdxColumns,
-			"scope index must lead with (user_id, team_id, virtual_key_id)")
+			"scope index must lead with the visibility columns (%s)", scopeIdxColumns)
 	}
 }
 

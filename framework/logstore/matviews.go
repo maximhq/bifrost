@@ -181,16 +181,16 @@ type filterMatViewDef struct {
 // histogram readers use — so a team / business unit that only ever appears in
 // the JSON array still surfaces in the filter dropdown. The fanned-out
 // dim_id/dim_name become the dropdown id/name; the visibility columns
-// (user_id, team_id, virtual_key_id) come from the original log row (exposed via
-// l.* by the fan-out subquery) so DAC scope still applies. idCol is the scalar
-// id column ("team_id" / "business_unit_id").
+// (scopeProjection) come from the original log row (exposed via l.* by the
+// fan-out subquery) so DAC scope still applies — including the scalar
+// customer_id / business_unit_id, which stay the row's own owner columns and
+// are independent of the fanned-out dim_id. idCol is the scalar id column
+// ("team_id" / "business_unit_id").
 func multiValueFilterMatViewBody(idCol string) string {
 	from, _ := teamOrBUFanoutFrom(idCol)
 	return fmt.Sprintf(
-		"SELECT DISTINCT dim_id AS id, dim_name AS name, "+
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, "+
-			"COALESCE(virtual_key_id, '') AS virtual_key_id "+
-			"FROM %s WHERE timestamp >= NOW() - INTERVAL '%s' AND dim_id != '' AND dim_name != ''",
+		"SELECT DISTINCT dim_id AS id, dim_name AS name, "+scopeProjection+
+			" FROM %s WHERE timestamp >= NOW() - INTERVAL '%s' AND dim_id != '' AND dim_name != ''",
 		from, filterDataMatViewWindow,
 	)
 }
@@ -202,20 +202,31 @@ func multiValueFilterMatViewBody(idCol string) string {
 // the unique index from rejecting NULLs on REFRESH CONCURRENTLY).
 const scopeProjection = "COALESCE(user_id, '') AS user_id, " +
 	"COALESCE(team_id, '') AS team_id, " +
-	"COALESCE(virtual_key_id, '') AS virtual_key_id"
+	"COALESCE(virtual_key_id, '') AS virtual_key_id, " +
+	"COALESCE(customer_id, '') AS customer_id, " +
+	"COALESCE(business_unit_id, '') AS business_unit_id"
 
 // scopeIdxColumns is the unique-index suffix that pairs with scopeProjection.
-const scopeIdxColumns = "user_id, team_id, virtual_key_id"
+const scopeIdxColumns = "user_id, team_id, virtual_key_id, customer_id, business_unit_id"
 
 // scopeRequiredColumns lists the resolved column aliases produced by
 // scopeProjection. Appended to each matview's requiredColumns so
 // repairMatViewShapes can verify them against pg_attribute.
-var scopeRequiredColumns = []string{"user_id", "team_id", "virtual_key_id"}
+//
+// customer_id / business_unit_id are part of the set because a team-data
+// DAC principal widens visibility by those org dimensions: the scope
+// predicate ORs them in alongside user_id / team_id / virtual_key_id, and
+// a matview missing the columns would fail the query outright rather than
+// filter it. Adding them here also drives the rebuild — repairMatViewShapes
+// sees the old three-column views as drifted and drops them on boot, so no
+// separate migration is needed.
+var scopeRequiredColumns = []string{"user_id", "team_id", "virtual_key_id", "customer_id", "business_unit_id"}
 
 // filterMatViews enumerates every per-dimension materialized view used to
 // populate filter dropdowns on the logs page. Each view carries the
 // dropdown's dimension columns plus the visibility columns
-// (user_id, team_id, virtual_key_id) so DAC scope applies in-matview.
+// (user_id, team_id, virtual_key_id, customer_id, business_unit_id) so
+// every DAC scope predicate applies in-matview.
 // Order matters only for deterministic startup logs.
 var filterMatViews = []filterMatViewDef{
 	{
@@ -257,9 +268,7 @@ var filterMatViews = []filterMatViewDef{
 		name: "mv_filter_virtual_keys",
 		// virtual_key_id is exposed as "id" for the dropdown and also as the
 		// scope column so DAC predicates use a stable name across matviews.
-		selectExpr: "virtual_key_id AS id, virtual_key_name AS name, " +
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, " +
-			"COALESCE(virtual_key_id, '') AS virtual_key_id",
+		selectExpr:      "virtual_key_id AS id, virtual_key_name AS name, " + scopeProjection,
 		whereExpr:       "virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != ''",
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
@@ -404,7 +413,8 @@ var matviewUniqueIndexes = func() []matviewIndexDef {
 
 // matviewScopeIndexes enumerates the secondary BTREE indexes that make
 // DAC-scoped reads on the per-dimension filter matviews cheap. The
-// composite (user_id, team_id, virtual_key_id) is a covering index for
+// composite (user_id, team_id, virtual_key_id, customer_id,
+// business_unit_id) is a covering index for
 // the only column subset every filter-dropdown query selects, so
 // Postgres can serve scoped DISTINCT queries via an index-only scan
 // even when only the trailing columns are in the predicate. Filter
