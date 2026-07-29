@@ -188,6 +188,103 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
+func bedrockDocumentFormat(fileType string) (format string, isText bool) {
+	normalized := strings.ToLower(strings.TrimSpace(fileType))
+	if mediaType, _, err := mime.ParseMediaType(normalized); err == nil {
+		normalized = mediaType
+	}
+
+	switch {
+	case normalized == "text/markdown" || normalized == "md":
+		return "md", true
+	case normalized == "text/html" || normalized == "html":
+		return "html", true
+	case normalized == "text/csv" || normalized == "csv":
+		return "csv", true
+	case strings.HasPrefix(normalized, "text/") || normalized == "txt":
+		return "txt", true
+	case normalized == "application/msword" || normalized == "doc":
+		return "doc", false
+	case strings.Contains(normalized, "wordprocessingml") || normalized == "docx":
+		return "docx", false
+	case normalized == "application/vnd.ms-excel" || normalized == "xls":
+		return "xls", false
+	case strings.Contains(normalized, "spreadsheetml") || normalized == "xlsx":
+		return "xlsx", false
+	case strings.Contains(normalized, "pdf") || normalized == "pdf":
+		return "pdf", false
+	default:
+		return "pdf", false
+	}
+}
+
+// materializeBedrockDocument converts the canonical Bifrost file representation
+// into the inline document shape required by Bedrock Converse. Remote documents
+// use the shared bounded, SSRF-safe fetcher; inline data URLs are reduced to their
+// base64 payload before emission.
+func materializeBedrockDocument(
+	ctx context.Context,
+	fileData *string,
+	fileURL *string,
+	filename *string,
+	fileType *string,
+) (*BedrockDocumentSource, error) {
+	document := &BedrockDocumentSource{
+		Name:   "document",
+		Format: "pdf",
+		Source: &BedrockDocumentSourceData{},
+	}
+	if filename != nil {
+		document.Name = normalizeBedrockFilename(*filename)
+	}
+
+	isText := false
+	if fileType != nil {
+		document.Format, isText = bedrockDocumentFormat(*fileType)
+	}
+
+	if fileURL != nil && *fileURL != "" {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		fetchedMediaType, fetchedBase64, err := providerUtils.FetchAndEncodeURL(ctx, *fileURL)
+		if err != nil {
+			return nil, err
+		}
+		if fetchedMediaType != "" {
+			document.Format, _ = bedrockDocumentFormat(fetchedMediaType)
+		}
+		document.Source.Bytes = &fetchedBase64
+		return document, nil
+	}
+
+	if fileData == nil {
+		return nil, nil
+	}
+
+	data := *fileData
+	if strings.HasPrefix(data, "data:") {
+		urlInfo := schemas.ExtractURLTypeInfo(data)
+		if urlInfo.DataURLWithoutPrefix == nil {
+			return nil, fmt.Errorf("invalid document data URL")
+		}
+		if urlInfo.MediaType != nil && *urlInfo.MediaType != "" {
+			document.Format, _ = bedrockDocumentFormat(*urlInfo.MediaType)
+		}
+		document.Source.Bytes = urlInfo.DataURLWithoutPrefix
+		return document, nil
+	}
+
+	if isText {
+		document.Source.Text = &data
+		encoded := base64.StdEncoding.EncodeToString([]byte(data))
+		document.Source.Bytes = &encoded
+	} else {
+		document.Source.Bytes = &data
+	}
+	return document, nil
+}
+
 // bedrockAliasToolName returns a Bedrock-safe tool name and records a reverse mapping.
 func bedrockAliasToolName(ctx context.Context, name string) string {
 	if len(name) <= 64 && !bedrockUnsafeToolNameCharRegex.MatchString(name) {
@@ -1177,124 +1274,20 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			return nil, fmt.Errorf("file block missing file field")
 		}
 
-		documentSource := &BedrockDocumentSource{
-			Name:   "document",
-			Format: "pdf",
-			Source: &BedrockDocumentSourceData{},
+		document, err := materializeBedrockDocument(
+			ctx,
+			block.File.FileData,
+			block.File.FileURL,
+			block.File.Filename,
+			block.File.FileType,
+		)
+		if err != nil {
+			return nil, err
 		}
-
-		// Set filename (normalized for Bedrock)
-		if block.File.Filename != nil {
-			documentSource.Name = normalizeBedrockFilename(*block.File.Filename)
+		if document == nil {
+			return nil, nil
 		}
-
-		// Convert MIME type to Bedrock format
-		isText := false
-		if block.File.FileType != nil {
-			fileType := *block.File.FileType
-			switch {
-			case fileType == "text/plain" || fileType == "txt":
-				documentSource.Format = "txt"
-				isText = true
-			case fileType == "text/markdown" || fileType == "md":
-				documentSource.Format = "md"
-				isText = true
-			case fileType == "text/html" || fileType == "html":
-				documentSource.Format = "html"
-				isText = true
-			case fileType == "text/csv" || fileType == "csv":
-				documentSource.Format = "csv"
-				isText = true
-			case fileType == "application/msword" || fileType == "doc":
-				documentSource.Format = "doc"
-			case strings.Contains(fileType, "wordprocessingml") || fileType == "docx":
-				documentSource.Format = "docx"
-			case fileType == "application/vnd.ms-excel" || fileType == "xls":
-				documentSource.Format = "xls"
-			case strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx":
-				documentSource.Format = "xlsx"
-			case strings.Contains(fileType, "pdf") || fileType == "pdf":
-				documentSource.Format = "pdf"
-			}
-		}
-
-		// URL-sourced document: fetch and inline the bytes (Bedrock Converse only
-		// accepts inline source bytes, not remote URLs).
-		if block.File.FileURL != nil && *block.File.FileURL != "" {
-			fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *block.File.FileURL)
-			if fetchErr != nil {
-				return nil, fetchErr
-			}
-			// Refine format from response Content-Type when present (more reliable
-			// than file extension or upstream-declared media type). Normalize to
-			// strip parameters (e.g. "; charset=utf-8") and lowercase the base type.
-			if mt, _, err := mime.ParseMediaType(fetchedMediaType); err == nil {
-				fetchedMediaType = mt
-			}
-			switch fetchedMediaType {
-			case "application/pdf":
-				documentSource.Format = "pdf"
-			case "text/plain":
-				documentSource.Format = "txt"
-				isText = true
-			case "text/markdown":
-				documentSource.Format = "md"
-				isText = true
-			case "text/html":
-				documentSource.Format = "html"
-				isText = true
-			case "text/csv":
-				documentSource.Format = "csv"
-				isText = true
-			case "application/msword":
-				documentSource.Format = "doc"
-			case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-				documentSource.Format = "docx"
-			case "application/vnd.ms-excel":
-				documentSource.Format = "xls"
-			case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-				documentSource.Format = "xlsx"
-			}
-			documentSource.Source.Bytes = &fetchedB64
-			return []BedrockContentBlock{
-				{
-					Document: documentSource,
-				},
-			}, nil
-		}
-
-		// Handle file data - strip data URL prefix if present
-		if block.File.FileData != nil {
-			fileData := *block.File.FileData
-
-			// Check if it's a data URL and extract raw base64
-			if strings.HasPrefix(fileData, "data:") {
-				urlInfo := schemas.ExtractURLTypeInfo(fileData)
-				if urlInfo.DataURLWithoutPrefix != nil {
-					documentSource.Source.Bytes = urlInfo.DataURLWithoutPrefix
-					return []BedrockContentBlock{
-						{
-							Document: documentSource,
-						},
-					}, nil
-				}
-			}
-
-			// Set text or bytes based on file type
-			if isText {
-				documentSource.Source.Text = &fileData // Plain text
-				encoded := base64.StdEncoding.EncodeToString([]byte(fileData))
-				documentSource.Source.Bytes = &encoded // Also sets Bytes
-			} else {
-				documentSource.Source.Bytes = &fileData
-			}
-		}
-
-		return []BedrockContentBlock{
-			{
-				Document: documentSource,
-			},
-		}, nil
+		return []BedrockContentBlock{{Document: document}}, nil
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
 		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")

@@ -5291,30 +5291,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 					if block.Content.ContentStr != nil {
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr = block.Content.ContentStr
 					} else if block.Content.ContentBlocks != nil {
-						var toolMsgContentBlocks []schemas.ResponsesMessageContentBlock
-						for _, contentBlock := range block.Content.ContentBlocks {
-							switch contentBlock.Type {
-							case AnthropicContentBlockTypeText:
-								if contentBlock.Text != nil {
-									var blockType schemas.ResponsesMessageContentBlockType
-									if isOutputMessage {
-										blockType = schemas.ResponsesOutputMessageContentTypeText
-									} else {
-										blockType = schemas.ResponsesInputMessageContentBlockTypeText
-									}
-									toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-										Type:         blockType,
-										Text:         contentBlock.Text,
-										CacheControl: contentBlock.CacheControl,
-									})
-								}
-							case AnthropicContentBlockTypeImage:
-								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
-									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesImageBlock())
-								}
-							}
-						}
-						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
+						bifrostMsg.Output.ResponsesFunctionToolCallOutputBlocks = convertAnthropicToolResultContentBlocks(block.Content.ContentBlocks, isOutputMessage)
 					}
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
@@ -5727,30 +5704,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 					if block.Content.ContentStr != nil {
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr = block.Content.ContentStr
 					} else if block.Content.ContentBlocks != nil {
-						var toolMsgContentBlocks []schemas.ResponsesMessageContentBlock
-						for _, contentBlock := range block.Content.ContentBlocks {
-							switch contentBlock.Type {
-							case AnthropicContentBlockTypeText:
-								if contentBlock.Text != nil {
-									var blockType schemas.ResponsesMessageContentBlockType
-									if isOutputMessage {
-										blockType = schemas.ResponsesOutputMessageContentTypeText
-									} else {
-										blockType = schemas.ResponsesInputMessageContentBlockTypeText
-									}
-									toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-										Type:         blockType,
-										Text:         contentBlock.Text,
-										CacheControl: contentBlock.CacheControl,
-									})
-								}
-							case AnthropicContentBlockTypeImage:
-								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
-									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesImageBlock())
-								}
-							}
-						}
-						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
+						bifrostMsg.Output.ResponsesFunctionToolCallOutputBlocks = convertAnthropicToolResultContentBlocks(block.Content.ContentBlocks, isOutputMessage)
 					}
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
@@ -7998,6 +7952,7 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 			if src.MediaType != nil {
 				mediaType = *src.MediaType
 			}
+			resultBlock.FileType = &mediaType
 			dataURL := *src.Data
 			if !strings.HasPrefix(dataURL, "data:") {
 				dataURL = "data:" + mediaType + ";base64," + *src.Data
@@ -8018,6 +7973,40 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 	}
 
 	return resultBlock
+}
+
+// convertAnthropicToolResultContentBlocks maps the content types Anthropic permits
+// inside tool_result blocks to their canonical Bifrost Responses representations.
+// Both grouped and non-grouped request conversion use this boundary so nested
+// content support cannot drift between routing modes.
+func convertAnthropicToolResultContentBlocks(contentBlocks []AnthropicContentBlock, isOutputMessage bool) []schemas.ResponsesMessageContentBlock {
+	var toolMessageContentBlocks []schemas.ResponsesMessageContentBlock
+	for _, contentBlock := range contentBlocks {
+		switch contentBlock.Type {
+		case AnthropicContentBlockTypeText:
+			if contentBlock.Text == nil {
+				continue
+			}
+			blockType := schemas.ResponsesInputMessageContentBlockTypeText
+			if isOutputMessage {
+				blockType = schemas.ResponsesOutputMessageContentTypeText
+			}
+			toolMessageContentBlocks = append(toolMessageContentBlocks, schemas.ResponsesMessageContentBlock{
+				Type:         blockType,
+				Text:         contentBlock.Text,
+				CacheControl: contentBlock.CacheControl,
+			})
+		case AnthropicContentBlockTypeImage:
+			if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
+				toolMessageContentBlocks = append(toolMessageContentBlocks, contentBlock.toBifrostResponsesImageBlock())
+			}
+		case AnthropicContentBlockTypeDocument:
+			if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
+				toolMessageContentBlocks = append(toolMessageContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
+			}
+		}
+	}
+	return toolMessageContentBlocks
 }
 
 // Helper functions for MCP tool/server conversion

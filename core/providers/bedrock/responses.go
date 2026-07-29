@@ -3,7 +3,6 @@ package bedrock
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -3452,6 +3451,16 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 								} else {
 									resultContent = append(resultContent, BedrockContentBlock{Image: imageSource})
 								}
+							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeFile &&
+								block.ResponsesInputMessageContentBlockFile != nil {
+								file := block.ResponsesInputMessageContentBlockFile
+								document, err := materializeBedrockDocument(ctx, file.FileData, file.FileURL, file.Filename, file.FileType)
+								if err != nil {
+									return nil, nil, fmt.Errorf("bedrock: converting tool result document: %w", err)
+								}
+								if document != nil {
+									resultContent = append(resultContent, BedrockContentBlock{Document: document})
+								}
 							}
 						}
 					}
@@ -4627,76 +4636,12 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				continue
 			case schemas.ResponsesInputMessageContentBlockTypeFile:
 				if block.ResponsesInputMessageContentBlockFile != nil {
-					doc := &BedrockDocumentSource{
-						Name:   "document", // Default
-						Format: "pdf",      // Default
-						Source: &BedrockDocumentSourceData{},
+					file := block.ResponsesInputMessageContentBlockFile
+					document, err := materializeBedrockDocument(ctx, file.FileData, file.FileURL, file.Filename, file.FileType)
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert document in responses content block: %w", err)
 					}
-
-					// Set filename (normalized for Bedrock)
-					if block.ResponsesInputMessageContentBlockFile.Filename != nil {
-						doc.Name = normalizeBedrockFilename(*block.ResponsesInputMessageContentBlockFile.Filename)
-					}
-
-					// Determine format: text or PDF based on FileType
-					isTextFile := false
-					if block.ResponsesInputMessageContentBlockFile.FileType != nil {
-						fileType := *block.ResponsesInputMessageContentBlockFile.FileType
-						// Check if it's a text type
-						if fileType == "text/markdown" || fileType == "md" {
-							doc.Format = "md"
-							isTextFile = true
-						} else if fileType == "text/html" || fileType == "html" {
-							doc.Format = "html"
-							isTextFile = true
-						} else if fileType == "text/csv" || fileType == "csv" {
-							doc.Format = "csv"
-							isTextFile = true
-						} else if strings.HasPrefix(fileType, "text/") || fileType == "txt" {
-							doc.Format = "txt"
-							isTextFile = true
-						} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
-							doc.Format = "pdf"
-						} else if strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx" {
-							doc.Format = "xlsx"
-						} else if fileType == "application/vnd.ms-excel" || fileType == "xls" {
-							doc.Format = "xls"
-						} else if strings.Contains(fileType, "wordprocessingml") || fileType == "docx" {
-							doc.Format = "docx"
-						} else if fileType == "application/msword" || fileType == "doc" {
-							doc.Format = "doc"
-						}
-					}
-
-					// Handle file data
-					if block.ResponsesInputMessageContentBlockFile.FileData != nil {
-						fileData := *block.ResponsesInputMessageContentBlockFile.FileData
-
-						// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
-						if strings.HasPrefix(fileData, "data:") {
-							urlInfo := schemas.ExtractURLTypeInfo(fileData)
-							if urlInfo.DataURLWithoutPrefix != nil {
-								// PDF or other binary - keep as base64
-								doc.Source.Bytes = urlInfo.DataURLWithoutPrefix
-								bedrockBlock.Document = doc
-								break
-							}
-						}
-
-						// Not a data URL - use as-is
-						if isTextFile {
-							// bytes is necessary for bedrock
-							// base64 string of the text
-							doc.Source.Text = &fileData
-							encoded := base64.StdEncoding.EncodeToString([]byte(fileData))
-							doc.Source.Bytes = &encoded
-						} else {
-							doc.Source.Bytes = &fileData
-						}
-
-						bedrockBlock.Document = doc
-
-					}
+					bedrockBlock.Document = document
 				}
 			default:
 				// Don't add anything for unknown types
