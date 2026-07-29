@@ -633,14 +633,21 @@ const (
 	MCPConnectionStatePendingVerification MCPConnectionState = "pending_verification" // Declared (typically via config.json) but the one-time auth/test flow has not been completed by an admin yet
 	MCPConnectionStateDisabled            MCPConnectionState = "disabled"             // Client is intentionally disabled by the user
 	// MCPConnectionStateNeedsReauth means this client was previously authorized and
-	// connected at least once, but its credential can no longer be used — the upstream
-	// OAuth token died (refresh token rejected/expired with no way to silently recover,
-	// see ErrOAuth2TokenExpired) and a human has to reauthorize it. This is distinct from
+	// connected at least once, but a credential an admin is responsible for can no
+	// longer be used and needs a human to repair it. This is distinct from
 	// MCPConnectionStatePendingVerification, which means the one-time initial setup was
 	// never completed in the first place; NeedsReauth means setup succeeded once and the
-	// credential died later. Only reachable by shared-connection auth types (a persistent
-	// upstream connection to reconnect); per-user auth types resolve credentials per-call
-	// and never hold a connection this state describes.
+	// credential died later. What "the credential" is depends on the auth type:
+	//   - Shared-connection auth types: the connection credential itself died; the
+	//     upstream OAuth token was rejected/expired with no way to silently recover
+	//     (see ErrOAuth2TokenExpired) and the connection cannot be re-established
+	//     until an admin reauthorizes. The runtime manager holds this state.
+	//   - Per-user auth types: a response-only projection computed when listing the
+	//     registry, never stored in the runtime manager (whose state stays
+	//     connected). It means the retained admin credential used for periodic
+	//     tool-list discovery needs repair; end-user credentials and tool calls
+	//     keep working, only the tool list stops refreshing until an admin repairs
+	//     the discovery credential.
 	MCPConnectionStateNeedsReauth MCPConnectionState = "needs_reauth"
 )
 
