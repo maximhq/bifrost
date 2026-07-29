@@ -2416,6 +2416,16 @@ type GeminiFileDeleteRequest struct {
 	FileID string `json:"file_id"`
 }
 
+// GeminiCountTokensRequest represents the request body for Google Gemini's count tokens API.
+// Two shapes reach this endpoint: the generateContentRequest envelope the Gemini API requires,
+// and the flat generateContent body Vertex accepts. The embedded request parses the flat shape,
+// so every field it already understands — systemInstruction, tools, fallbacks — survives ingress
+// without this type having to re-declare them and drift as fields are added.
+type GeminiCountTokensRequest struct {
+	GeminiGenerationRequest
+	GenerateContentRequest *GeminiGenerationRequest `json:"generateContentRequest,omitempty"`
+}
+
 // GeminiCountTokensResponse represents the response from Google Gemini's count tokens API.
 type GeminiCountTokensResponse struct {
 	// Response from models.countTokens

@@ -124,6 +124,12 @@ func SetJSONField(data []byte, path string, value interface{}) ([]byte, error) {
 	return sjson.SetBytes(data, path, value)
 }
 
+// SetRawJSONField sets a field in JSON bytes to an already-encoded JSON document,
+// inserting it verbatim instead of re-marshaling it.
+func SetRawJSONField(data []byte, path string, value []byte) ([]byte, error) {
+	return sjson.SetRawBytes(data, path, value)
+}
+
 // DeleteJSONField deletes a field from JSON bytes without disturbing other fields' ordering.
 // Uses in-place byte manipulation for minimal allocations and preserves nested structure.
 func DeleteJSONField(data []byte, path string) ([]byte, error) {
