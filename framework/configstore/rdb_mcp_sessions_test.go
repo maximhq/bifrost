@@ -237,6 +237,32 @@ func TestListPendingOauthUserSessions_FlowModeFilter(t *testing.T) {
 	require.Empty(t, got, "fixture's only session is user-mode; vk filter should match none")
 }
 
+func TestGetOauthUserSessionByID_ExcludesAdminMode(t *testing.T) {
+	store := setupMCPSessionsTestStore(t)
+	seedMCPSessionsFixture(t, store)
+
+	// The fixture's own user-mode flow is still reachable by ID.
+	got, err := store.GetOauthUserSessionByID(context.Background(), "sess-pending")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "sess-pending", got.ID)
+
+	// An admin-mode flow (the shared client's or a bootstrap-test's one-time
+	// setup flow) must never be reachable through this per-user-facing
+	// lookup, even by exact ID — this is the same auth_mode discipline
+	// GetOauthUserTokenByID already applies on the token side.
+	adminFlow := &tables.TableMCPOauthFlow{
+		ID: "sess-admin", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		FlowMode: "admin", Status: "pending",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	require.NoError(t, store.DB().WithContext(context.Background()).Create(adminFlow).Error)
+
+	got, err = store.GetOauthUserSessionByID(context.Background(), "sess-admin")
+	require.NoError(t, err)
+	require.Nil(t, got, "admin-mode flow must not be returned by a per-user-facing ID lookup")
+}
+
 func TestListMCPPerUserHeaderCredentials_NoFilters(t *testing.T) {
 	store := setupMCPSessionsTestStore(t)
 	seedMCPSessionsFixture(t, store)
