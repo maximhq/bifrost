@@ -458,7 +458,9 @@ export default function MCPClientSheet({
 										? mcpClient.config.auth_type === "per_user_oauth"
 											? "This client was declared in config.json. A one-time admin test login is needed to verify the OAuth setup and discover tools — each user will authenticate individually afterward."
 											: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
-										: "MCP server configuration and available tools"}
+										: mcpClient.state === "needs_reauth"
+											? "This connection's credentials have expired and need to be re-authorized. Re-authorization from the dashboard isn't available yet: recreating this client is the current workaround."
+											: "MCP server configuration and available tools"}
 								</SheetDescription>
 							</div>
 							<SheetNavigationButtons
