@@ -89,12 +89,17 @@ func (p *Provider) mcpTempTokenAuthEnabled(ctx context.Context) bool {
 
 // GetCredentialByMode looks up the active credential row for the given
 // identity dimension. Returns ErrHeadersCredentialNotFound when the row is
-// absent so callers can switch on the sentinel.
+// absent so callers can switch on the sentinel. mode can also be
+// MCPAuthModeAdmin: the retained bootstrap credential has no per-caller
+// identity, so identity is allowed empty in that case alone.
 func (p *Provider) GetCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*schemas.MCPHeadersUserCredential, error) {
 	if p.configStore == nil {
 		return nil, schemas.ErrHeadersCredentialProviderNotAvailable
 	}
-	if strings.TrimSpace(identity) == "" || strings.TrimSpace(mcpClientID) == "" {
+	if strings.TrimSpace(mcpClientID) == "" {
+		return nil, schemas.ErrHeadersCredentialNotFound
+	}
+	if mode != schemas.MCPAuthModeAdmin && strings.TrimSpace(identity) == "" {
 		return nil, schemas.ErrHeadersCredentialNotFound
 	}
 	row, err := p.configStore.GetMCPPerUserHeaderCredentialByMode(ctx, mode, identity, mcpClientID)

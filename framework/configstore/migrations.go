@@ -462,6 +462,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"create_mcp_oauth_flows_table"}, run: migrationCreateMCPOauthFlowsTable},
 	{IDs: []string{"drop_oauth_config_pkce_columns"}, run: migrationDropOauthConfigPKCEColumns},
 	{IDs: []string{"drop_oauth_config_token_id_column"}, run: migrationDropOauthConfigTokenIDColumn},
+	{IDs: []string{"add_mcp_admin_auth_mode_indexes"}, run: migrationAddMCPAdminAuthModeIndexes},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11682,4 +11683,55 @@ func migrationDropOauthConfigTokenIDColumn(ctx context.Context, db *gorm.DB, log
 		return fmt.Errorf("error running drop_oauth_config_token_id_column migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddMCPAdminAuthModeIndexes adds partial unique indexes for
+// auth_mode='admin' rows on mcp_oauth_tokens and mcp_per_user_header_credentials,
+// mirroring each table's existing partial unique indexes for its other
+// auth_mode values (see idx_mcp_oauth_tokens_shared_mcp and the
+// idx_mcp_per_user_header_credentials_{user,vk,session}_mcp trio). An
+// 'admin'-mode row is the retained bootstrap-verification credential for a
+// per_user_oauth/per_user_headers MCP client — exactly one per mcp_client_id,
+// used only for periodic tool-discovery refresh, never real end-user calls.
+func migrationAddMCPAdminAuthModeIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_admin_auth_mode_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableMCPOauthToken{}) {
+				if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_admin_mcp
+					ON mcp_oauth_tokens (mcp_client_id)
+					WHERE auth_mode = 'admin' AND mcp_client_id IS NOT NULL AND mcp_client_id != ''`).Error; err != nil {
+					return fmt.Errorf("create admin partial unique index on mcp_oauth_tokens: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableMCPPerUserHeaderCredential{}) {
+				if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_per_user_header_credentials_admin_mcp
+					ON mcp_per_user_header_credentials (mcp_client_id)
+					WHERE auth_mode = 'admin' AND mcp_client_id IS NOT NULL AND mcp_client_id != ''`).Error; err != nil {
+					return fmt.Errorf("create admin partial unique index on mcp_per_user_header_credentials: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableMCPOauthToken{}) {
+				if err := tx.Exec(`DROP INDEX IF EXISTS idx_mcp_oauth_tokens_admin_mcp`).Error; err != nil {
+					return fmt.Errorf("drop admin partial unique index on mcp_oauth_tokens: %w", err)
+				}
+			}
+			if mg.HasTable(&tables.TableMCPPerUserHeaderCredential{}) {
+				if err := tx.Exec(`DROP INDEX IF EXISTS idx_mcp_per_user_header_credentials_admin_mcp`).Error; err != nil {
+					return fmt.Errorf("drop admin partial unique index on mcp_per_user_header_credentials: %w", err)
+				}
+			}
+			return nil
+		},
+	})
 }

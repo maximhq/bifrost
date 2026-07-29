@@ -115,22 +115,33 @@ func (cts *ClientToolSyncer) performSync() {
 		return
 	}
 
-	if clientState.Conn == nil {
-		cts.manager.mu.RUnlock()
-		cts.logger.Debug("%s Skipping tool sync for %s: client not connected", MCPLogPrefix, cts.clientID)
-		return
-	}
-
-	// Get the connection reference while holding the lock
 	conn := clientState.Conn
-	clientName := clientState.ExecutionConfig.Name
+	config := clientState.ExecutionConfig
+	clientName := config.Name
 	cts.manager.mu.RUnlock()
 
 	// Perform tool sync with timeout (outside of lock)
 	ctx, cancel := context.WithTimeout(context.Background(), cts.timeout)
 	defer cancel()
 
-	newTools, newMapping, err := cts.manager.runListToolsWithHooks(ctx, conn, clientName)
+	var newTools map[string]schemas.ChatTool
+	var newMapping map[string]string
+	var err error
+
+	switch {
+	case conn != nil:
+		// Shared-connection path (unchanged): reuse the live conn.
+		newTools, newMapping, err = cts.manager.runListToolsWithHooks(ctx, conn, clientName)
+	case config.AuthType == schemas.MCPAuthTypePerUserOauth || config.AuthType == schemas.MCPAuthTypePerUserHeaders:
+		// Per-user auth types never hold a persistent conn (RequiresPerCallConnection
+		// is true for both). Resolve the retained admin bootstrap credential and
+		// run a one-shot ephemeral connect-discover-close cycle instead.
+		newTools, newMapping, err = cts.manager.performAdminToolDiscovery(ctx, config)
+	default:
+		cts.logger.Debug("%s Skipping tool sync for %s: client not connected", MCPLogPrefix, cts.clientID)
+		return
+	}
+
 	if err != nil {
 		// On failure, keep existing tools intact
 		cts.logger.Warn("%s Tool sync failed for %s, keeping existing tools: %v", MCPLogPrefix, cts.clientID, err)

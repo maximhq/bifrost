@@ -1464,6 +1464,10 @@ func (m *MockConfigStore) GetSharedOauthTokenByConfigID(ctx context.Context, oau
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetAdminOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
@@ -1485,6 +1489,10 @@ func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error
 }
 
 func (m *MockConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteAdminOauthTokenByMCPClientID(ctx context.Context, mcpClientID string) error {
 	return nil
 }
 
