@@ -48,6 +48,10 @@ type TierBoundaries = configstore.ComplexityTierBoundaries
 // EditableKeywordConfig is the user-facing subset of analyzer keyword lists.
 type EditableKeywordConfig = configstore.ComplexityEditableKeywordConfig
 
+// SemanticConfig is the embedding-based classifier configuration. Its
+// exemplars are the shared per-tier keyword lists in EditableKeywordConfig.
+type SemanticConfig = configstore.ComplexitySemanticConfig
+
 // AnalyzerConfig is the runtime configuration for the complexity analyzer.
 type AnalyzerConfig = configstore.ComplexityAnalyzerConfig
 

@@ -5778,29 +5778,45 @@ func (s *RDBConfigStore) UpdateComplexityAnalyzerConfig(ctx context.Context, con
 		return err
 	}
 
-	txDB := s.DB()
 	if len(tx) > 0 && tx[0] != nil {
-		txDB = tx[0]
+		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, tx[0])
 	}
+	// Standalone calls own the transaction so the carry-over read below and the save
+	// that follows it cannot interleave with a concurrent update.
+	return s.DB().WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
+		return s.updateComplexityAnalyzerConfigWithTx(ctx, &normalized, txDB)
+	})
+}
 
-	if normalized.ConfigHashes.Empty() {
-		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, txDB)
+// updateComplexityAnalyzerConfigWithTx carries over ConfigHashes and EmbeddingFingerprint
+// from the stored config when the incoming one omits them, then persists the result. The
+// existing row is read FOR UPDATE (a plain read on SQLite, whose writer serialization
+// already prevents the interleave) so a concurrent updater cannot save a stale copy of
+// either field between this read and the save. txDB must be a transaction.
+func (s *RDBConfigStore) updateComplexityAnalyzerConfigWithTx(ctx context.Context, normalized *ComplexityAnalyzerConfig, txDB *gorm.DB) error {
+	if normalized.ConfigHashes.Empty() || normalized.EmbeddingFingerprint == "" {
+		existing, err := s.getComplexityAnalyzerConfigWithDB(ctx, dbForUpdate(txDB))
 		if err != nil {
 			return err
 		}
 		if existing != nil {
-			normalized.ConfigHashes = existing.ConfigHashes
+			if normalized.ConfigHashes.Empty() {
+				normalized.ConfigHashes = existing.ConfigHashes
+			}
+			if normalized.EmbeddingFingerprint == "" {
+				normalized.EmbeddingFingerprint = existing.EmbeddingFingerprint
+			}
 		}
 	}
 
-	raw, err := encodeComplexityAnalyzerConfig(normalized)
+	raw, err := encodeComplexityAnalyzerConfig(*normalized)
 	if err != nil {
 		return err
 	}
 	return s.UpdateConfig(ctx, &tables.TableGovernanceConfig{
 		Key:   tables.ConfigComplexityAnalyzerConfigKey,
 		Value: string(raw),
-	}, tx...)
+	}, txDB)
 }
 
 // GetAuthConfig retrieves the auth configuration from the database.
