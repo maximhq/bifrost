@@ -41,6 +41,13 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		logger.Error("configstore: failed to open migration connection pool: %v", err)
 		return nil, err
 	}
+	// Pin the throwaway pool small: migrations are serial DDL, and an untuned pool
+	// inherits database/sql's unlimited MaxOpenConns.
+	if err := postgresconn.ApplyMigrationPoolTuning(mDb); err != nil {
+		logger.Error("configstore: failed to tune migration connection pool: %v", err)
+		postgresconn.Close(mDb, logger)
+		return nil, err
+	}
 	logger.Info("configstore: migration pool opened; running schema migrations (may block on a cross-node advisory lock if another pod is migrating)")
 	if err := triggerMigrations(ctx, mDb, logger); err != nil {
 		logger.Error("configstore: schema migrations failed: %v", err)
@@ -57,7 +64,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		logger.Error("configstore: failed to open runtime connection pool: %v", err)
 		return nil, err
 	}
-	if err := postgresconn.ApplyPoolTuning(db, config); err != nil {
+	if err := postgresconn.ApplyPoolTuning(db, config, logger); err != nil {
 		logger.Error("configstore: failed to apply connection pool tuning: %v", err)
 		postgresconn.Close(db, logger)
 		return nil, err
@@ -79,6 +86,11 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 			return err
 		}
 		defer postgresconn.Close(tempDB, logger)
+		// fn is supplied by downstream consumers, so bound the pool rather than
+		// leaving it on database/sql's unlimited default.
+		if err := postgresconn.ApplyMigrationPoolTuning(tempDB); err != nil {
+			return err
+		}
 		return fn(ctx, tempDB)
 	}
 
@@ -91,7 +103,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		if err != nil {
 			return fmt.Errorf("failed to open fresh runtime pool: %w", err)
 		}
-		if err := postgresconn.ApplyPoolTuning(newDB, config); err != nil {
+		if err := postgresconn.ApplyPoolTuning(newDB, config, logger); err != nil {
 			postgresconn.Close(newDB, logger)
 			return fmt.Errorf("failed to tune fresh runtime pool: %w", err)
 		}

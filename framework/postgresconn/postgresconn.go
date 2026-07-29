@@ -8,12 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/maximhq/bifrost/core/schemas"
+	"golang.org/x/sync/singleflight"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -21,11 +23,79 @@ import (
 
 const defaultPasswordCommandTimeout = 10 * time.Second
 
+// defaultPasswordCommandCacheTTL is how long a resolved password is reused before
+// the command is run again. Without caching the command runs on every new physical
+// connection, which for the common case (fetching a short-lived IAM token) is a
+// subprocess fork per connection.
+//
+// Deliberately conservative: pgx's OptionBeforeConnect gets no signal about whether
+// the password was actually accepted, so the TTL is the only invalidation mechanism.
+const defaultPasswordCommandCacheTTL = 60 * time.Second
+
 // PasswordCommandConfig describes a command that prints a Postgres password to stdout.
 type PasswordCommandConfig struct {
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
 	Timeout string   `json:"timeout,omitempty"`
+	// CacheTTL is how long a successfully resolved password is reused across new
+	// physical connections (Go duration string, default 60s). Set it below the
+	// credential's validity window; a rotation shorter than the TTL will fail
+	// connections until the cached value expires.
+	CacheTTL string `json:"cache_ttl,omitempty"`
+}
+
+// passwordCache memoizes a resolved password for the configured TTL and collapses
+// concurrent resolutions onto a single command execution. Pool churn otherwise
+// produces one fork per connection, all racing to fetch the same token.
+type passwordCache struct {
+	group singleflight.Group
+
+	mu        sync.RWMutex
+	value     string
+	expiresAt time.Time
+}
+
+// get returns a cached password when still fresh, otherwise resolves one. Failures
+// are never cached, so a transient error does not persist for the whole TTL.
+func (c *passwordCache) get(ctx context.Context, config *PasswordCommandConfig) (string, error) {
+	ttl, err := parsePasswordCommandCacheTTL(config)
+	if err != nil {
+		return "", err
+	}
+
+	c.mu.RLock()
+	value, expiresAt := c.value, c.expiresAt
+	c.mu.RUnlock()
+	if value != "" && time.Now().Before(expiresAt) {
+		return value, nil
+	}
+
+	// singleflight keys on a constant: one cache instance serves one config.
+	resolved, err, _ := c.group.Do("password", func() (any, error) {
+		// Re-check under the flight: a concurrent caller may have just refreshed.
+		c.mu.RLock()
+		value, expiresAt := c.value, c.expiresAt
+		c.mu.RUnlock()
+		if value != "" && time.Now().Before(expiresAt) {
+			return value, nil
+		}
+		// Detached from ctx on purpose: singleflight hands this single execution's
+		// error to every waiter, so one canceled dial would fail unrelated password
+		// resolutions. RunPasswordCommand applies its own timeout, so this stays bounded.
+		password, err := RunPasswordCommand(context.WithoutCancel(ctx), config)
+		if err != nil {
+			return "", err
+		}
+		c.mu.Lock()
+		c.value = password
+		c.expiresAt = time.Now().Add(ttl)
+		c.mu.Unlock()
+		return password, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return resolved.(string), nil
 }
 
 // Config is the shared Postgres connection configuration used by framework stores.
@@ -40,6 +110,11 @@ type Config struct {
 	MaxIdleConns    int                    `json:"max_idle_conns"`
 	MaxOpenConns    int                    `json:"max_open_conns"`
 	ConnMaxLifetime string                 `json:"conn_max_lifetime,omitempty"`
+	// ConnMaxIdleTime bounds how long an idle physical connection is kept before
+	// being closed. Without it, the idle cap is the only thing controlling pool
+	// size, so every burst above MaxIdleConns closes connections on return and
+	// reopens them on the next query — each reopen forks a Postgres backend.
+	ConnMaxIdleTime string `json:"conn_max_idle_time,omitempty"`
 }
 
 // Validate checks required Postgres connection fields.
@@ -65,6 +140,9 @@ func Validate(config *Config, requireStaticPassword bool) error {
 	if _, err := parseConnMaxLifetime(config); err != nil {
 		return err
 	}
+	if _, err := parseConnMaxIdleTime(config); err != nil {
+		return err
+	}
 	if config.PasswordCommand != nil {
 		if err := validatePasswordCommand(config.PasswordCommand); err != nil {
 			return err
@@ -73,6 +151,9 @@ func Validate(config *Config, requireStaticPassword bool) error {
 			return fmt.Errorf("postgres password and password_command are mutually exclusive")
 		}
 		if _, err := parsePasswordCommandTimeout(config.PasswordCommand); err != nil {
+			return err
+		}
+		if _, err := parsePasswordCommandCacheTTL(config.PasswordCommand); err != nil {
 			return err
 		}
 		return nil
@@ -109,8 +190,11 @@ func Open(dsn string, config *Config, logger gormlogger.Interface) (*gorm.DB, er
 	if err != nil {
 		return nil, err
 	}
+	// One cache per pool. BeforeConnect runs for every new physical connection, so
+	// without this a bursty workload forks the password command once per connection.
+	cache := &passwordCache{}
 	sqlDB := stdlib.OpenDB(*pgxConfig, stdlib.OptionBeforeConnect(func(ctx context.Context, connConfig *pgx.ConnConfig) error {
-		password, err := RunPasswordCommand(ctx, config.PasswordCommand)
+		password, err := cache.get(ctx, config.PasswordCommand)
 		if err != nil {
 			return err
 		}
@@ -132,29 +216,79 @@ func openGormFromSQLDB(sqlDB *sql.DB, logger gormlogger.Interface) (*gorm.DB, er
 	return db, nil
 }
 
-// ApplyPoolTuning applies MaxIdleConns, MaxOpenConns, and ConnMaxLifetime.
-func ApplyPoolTuning(db *gorm.DB, config *Config) error {
+const (
+	// defaultMaxIdleConns / defaultMaxOpenConns are the pool sizes used when the
+	// config leaves them at zero.
+	defaultMaxIdleConns = 5
+	defaultMaxOpenConns = 50
+
+	// defaultConnMaxIdleTime reaps genuinely idle connections without making the
+	// idle cap the only pool-size control. Paired with MaxIdleConns, this is what
+	// keeps a bursty workload from churning physical connections.
+	defaultConnMaxIdleTime = 5 * time.Minute
+
+	// Migration pools run strictly serial DDL, so they need almost nothing. Left
+	// untuned they inherit database/sql's defaults, where MaxOpenConns is unlimited.
+	migrationMaxOpenConns = 2
+	migrationMaxIdleConns = 1
+)
+
+// ApplyPoolTuning applies MaxIdleConns, MaxOpenConns, ConnMaxLifetime, and
+// ConnMaxIdleTime. When a logger is supplied the effective pool shape is logged
+// once, so operators can size against the server's max_connections without
+// reading source — note that logstore and configstore open separate pools, so a
+// pod's ceiling is the sum across them.
+func ApplyPoolTuning(db *gorm.DB, config *Config, logger ...schemas.Logger) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return err
 	}
 	maxIdleConns := config.MaxIdleConns
 	if maxIdleConns == 0 {
-		maxIdleConns = 5
+		maxIdleConns = defaultMaxIdleConns
 	}
 	sqlDB.SetMaxIdleConns(maxIdleConns)
 	maxOpenConns := config.MaxOpenConns
 	if maxOpenConns == 0 {
-		maxOpenConns = 50
+		maxOpenConns = defaultMaxOpenConns
 	}
 	sqlDB.SetMaxOpenConns(maxOpenConns)
-	if config.ConnMaxLifetime != "" {
-		lifetime, err := parseConnMaxLifetime(config)
-		if err != nil {
-			return err
-		}
+
+	lifetime, err := parseConnMaxLifetime(config)
+	if err != nil {
+		return err
+	}
+	if lifetime > 0 {
 		sqlDB.SetConnMaxLifetime(lifetime)
 	}
+
+	idleTime, err := parseConnMaxIdleTime(config)
+	if err != nil {
+		return err
+	}
+	sqlDB.SetConnMaxIdleTime(idleTime)
+
+	if len(logger) > 0 && logger[0] != nil {
+		lifetimeDesc := "unlimited"
+		if lifetime > 0 {
+			lifetimeDesc = lifetime.String()
+		}
+		logger[0].Info("postgres pool tuned: max_open_conns=%d max_idle_conns=%d conn_max_idle_time=%s conn_max_lifetime=%s (this is one pool; logstore and configstore each open their own)",
+			maxOpenConns, maxIdleConns, idleTime, lifetimeDesc)
+	}
+	return nil
+}
+
+// ApplyMigrationPoolTuning pins a throwaway migration pool to a minimal size.
+// Migration pools are opened, used for serial DDL, and closed; without this they
+// inherit database/sql's defaults, where MaxOpenConns is unlimited.
+func ApplyMigrationPoolTuning(db *gorm.DB) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	sqlDB.SetMaxOpenConns(migrationMaxOpenConns)
+	sqlDB.SetMaxIdleConns(migrationMaxIdleConns)
 	return nil
 }
 
@@ -284,6 +418,37 @@ func parseConnMaxLifetime(config *Config) (time.Duration, error) {
 		return 0, fmt.Errorf("postgres conn_max_lifetime must be positive")
 	}
 	return lifetime, nil
+}
+
+// parsePasswordCommandCacheTTL parses the optional password cache TTL.
+func parsePasswordCommandCacheTTL(config *PasswordCommandConfig) (time.Duration, error) {
+	if config == nil || config.CacheTTL == "" {
+		return defaultPasswordCommandCacheTTL, nil
+	}
+	ttl, err := time.ParseDuration(config.CacheTTL)
+	if err != nil {
+		return 0, fmt.Errorf("invalid postgres password_command.cache_ttl %q: %w", config.CacheTTL, err)
+	}
+	if ttl <= 0 {
+		return 0, fmt.Errorf("postgres password_command.cache_ttl must be positive")
+	}
+	return ttl, nil
+}
+
+// parseConnMaxIdleTime parses the optional idle-connection timeout, falling back
+// to defaultConnMaxIdleTime when unset.
+func parseConnMaxIdleTime(config *Config) (time.Duration, error) {
+	if config == nil || config.ConnMaxIdleTime == "" {
+		return defaultConnMaxIdleTime, nil
+	}
+	idleTime, err := time.ParseDuration(config.ConnMaxIdleTime)
+	if err != nil {
+		return 0, fmt.Errorf("invalid postgres conn_max_idle_time %q: %w", config.ConnMaxIdleTime, err)
+	}
+	if idleTime <= 0 {
+		return 0, fmt.Errorf("postgres conn_max_idle_time must be positive")
+	}
+	return idleTime, nil
 }
 
 // parsePasswordCommandTimeout parses the optional password command timeout.
