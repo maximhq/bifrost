@@ -203,6 +203,64 @@ func TestGetExpiringOauthTokens_RequiresEnabledClient(t *testing.T) {
 	assert.False(t, ids["tok-orphan"], "token with no owning config must be excluded")
 }
 
+// TestCreateOauthToken_AdminMode_UpsertsByMCPClientIDNotDuplicate guards the
+// gap CodeRabbit flagged in CreateOauthToken's upsert-lookup switch: an
+// admin-mode token (no UserID/VirtualKeyID/SessionID, bound only by
+// MCPClientID — see InitiateUserOAuthFlow's MCPAuthModeAdmin case) matched no
+// case and fell through to the default "not found" branch, so every call
+// always inserted a fresh row instead of reusing the existing binding's row.
+// RetainExchangeAdminCredential calls CreateOauthToken with exactly this
+// shape on every token_exchange admin-credential repair, and its own doc
+// comment promises "a repair replaces the existing row's credential" — this
+// pins that an admin-mode call is a true upsert, not an unconditional insert.
+func TestCreateOauthToken_AdminMode_UpsertsByMCPClientIDNotDuplicate(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableMCPOauthToken{}))
+	ctx := context.Background()
+
+	first := &tables.TableMCPOauthToken{
+		ID:          "tok-admin-1",
+		AuthMode:    "admin",
+		MCPClientID: "client-1",
+		AccessToken: "first-access-token",
+		TokenType:   "Bearer",
+		Status:      "active",
+	}
+	require.NoError(t, s.CreateOauthToken(ctx, first))
+
+	// A second call for the same (auth_mode='admin', mcp_client_id) binding —
+	// a repair, per RetainExchangeAdminCredential's own doc comment — must
+	// update the existing row, not insert a second one.
+	second := &tables.TableMCPOauthToken{
+		ID:          "tok-admin-2",
+		AuthMode:    "admin",
+		MCPClientID: "client-1",
+		AccessToken: "second-access-token",
+		TokenType:   "Bearer",
+		Status:      "active",
+	}
+	require.NoError(t, s.CreateOauthToken(ctx, second))
+
+	var rows []tables.TableMCPOauthToken
+	require.NoError(t, s.DB().Where("auth_mode = ? AND mcp_client_id = ?", "admin", "client-1").Find(&rows).Error)
+	require.Len(t, rows, 1, "must reuse the existing row for this binding, not insert a duplicate")
+	assert.Equal(t, "second-access-token", rows[0].AccessToken, "the repair's new credential must win")
+
+	// A different mcp_client_id is a different binding — it must get its own row.
+	other := &tables.TableMCPOauthToken{
+		ID:          "tok-admin-3",
+		AuthMode:    "admin",
+		MCPClientID: "client-2",
+		AccessToken: "other-client-access-token",
+		TokenType:   "Bearer",
+		Status:      "active",
+	}
+	require.NoError(t, s.CreateOauthToken(ctx, other))
+	var allAdminRows []tables.TableMCPOauthToken
+	require.NoError(t, s.DB().Where("auth_mode = ?", "admin").Find(&allAdminRows).Error)
+	assert.Len(t, allAdminRows, 2, "a different mcp_client_id must not reuse another client's admin row")
+}
+
 func TestGetOAuth2SigningKey_AutoGeneratesAndIsStable(t *testing.T) {
 	s := setupOAuth2TestStore(t)
 	ctx := context.Background()

@@ -263,6 +263,148 @@ func TestGetOauthUserSessionByID_ExcludesAdminMode(t *testing.T) {
 	require.Nil(t, got, "admin-mode flow must not be returned by a per-user-facing ID lookup")
 }
 
+// TestGetOauthUserSessionByModeIdentityAndMCPClient_AdminMode covers the
+// admin branch added alongside MCPAuthModeAdmin: unlike the per-identity
+// modes, an admin-mode flow has no identity column at all, so the lookup is
+// scoped by (flow_mode='admin', mcp_client_id) alone. It also pins that the
+// pre-existing per-identity modes (user/vk/session) keep their original
+// behavior — still rejecting an empty identity, still resolving their own
+// rows by identity.
+func TestGetOauthUserSessionByModeIdentityAndMCPClient_AdminMode(t *testing.T) {
+	store := setupMCPSessionsTestStore(t)
+	ctx := context.Background()
+
+	client1 := &tables.TableMCPClient{ClientID: "mcp-1", Name: "MCP One", ConnectionType: "stdio"}
+	client2 := &tables.TableMCPClient{ClientID: "mcp-2", Name: "MCP Two", ConnectionType: "stdio"}
+	client3 := &tables.TableMCPClient{ClientID: "mcp-3", Name: "MCP Three", ConnectionType: "stdio"}
+	require.NoError(t, store.DB().WithContext(ctx).Create(client1).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Create(client2).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Create(client3).Error)
+
+	uid := "user-1"
+	vkID := "vk-1"
+	adminFlow1 := &tables.TableMCPOauthFlow{
+		ID: "flow-admin-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+		FlowMode: "admin", Status: "pending", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	adminFlow2 := &tables.TableMCPOauthFlow{
+		ID: "flow-admin-2", MCPClientID: "mcp-2", OauthConfigID: "cfg-1",
+		FlowMode: "admin", Status: "pending", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	userFlow := &tables.TableMCPOauthFlow{
+		ID: "flow-user-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+		FlowMode: "user", Status: "pending", UserID: &uid, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	vkFlow := &tables.TableMCPOauthFlow{
+		ID: "flow-vk-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+		FlowMode: "vk", Status: "pending", VirtualKeyID: &vkID, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	sessionFlow := &tables.TableMCPOauthFlow{
+		ID: "flow-session-1", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+		FlowMode: "session", Status: "pending", SessionID: "sess-tok-1", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	require.NoError(t, store.DB().WithContext(ctx).Create(adminFlow1).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Create(adminFlow2).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Create(userFlow).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Create(vkFlow).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Create(sessionFlow).Error)
+
+	// Admin mode is found with an empty identity — admin rows have none.
+	got, err := store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeAdmin, "", "mcp-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "flow-admin-1", got.ID)
+
+	// A different mcp_client_id's admin row is a distinct binding — resolves
+	// to its own row, not mcp-1's.
+	got, err = store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeAdmin, "", "mcp-2")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "flow-admin-2", got.ID)
+
+	// A client with no admin row of its own must not fall through to another
+	// client's admin row.
+	got, err = store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeAdmin, "", "mcp-3")
+	require.NoError(t, err)
+	require.Nil(t, got)
+
+	// Per-identity modes still require a non-empty identity (unaffected by
+	// the admin branch's identity-optional carve-out).
+	got, err = store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeUser, "", "mcp-1")
+	require.NoError(t, err)
+	require.Nil(t, got, "user mode must still require non-empty identity")
+
+	got, err = store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeVK, "", "mcp-1")
+	require.NoError(t, err)
+	require.Nil(t, got, "vk mode must still require non-empty identity")
+
+	got, err = store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeSession, "", "mcp-1")
+	require.NoError(t, err)
+	require.Nil(t, got, "session mode must still require non-empty identity")
+
+	// Per-identity modes still resolve their own rows correctly by identity.
+	got, err = store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeUser, uid, "mcp-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "flow-user-1", got.ID)
+
+	got, err = store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeVK, vkID, "mcp-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "flow-vk-1", got.ID)
+
+	got, err = store.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeSession, "sess-tok-1", "mcp-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "flow-session-1", got.ID)
+}
+
+// TestGetOauthFlowByID covers GetOauthUserSessionByID's admin-mode
+// counterpart, pinning the security boundary it exists for: a
+// caller-supplied ID must only ever resolve a flow_mode='admin' row through
+// this method, never a per-identity row, even when the ID is an exact match.
+func TestGetOauthFlowByID(t *testing.T) {
+	store := setupMCPSessionsTestStore(t)
+	seedMCPSessionsFixture(t, store)
+	ctx := context.Background()
+
+	adminFlow := &tables.TableMCPOauthFlow{
+		ID: "flow-admin-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		FlowMode: "admin", Status: "pending", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	vkID := "vk-alpha"
+	vkFlow := &tables.TableMCPOauthFlow{
+		ID: "flow-vk-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		FlowMode: "vk", Status: "pending", VirtualKeyID: &vkID, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	sessionFlow := &tables.TableMCPOauthFlow{
+		ID: "flow-session-x", MCPClientID: "github-prod", OauthConfigID: "cfg-1",
+		FlowMode: "session", Status: "pending", SessionID: "sess-tok-x", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	require.NoError(t, store.DB().WithContext(ctx).Create(adminFlow).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Create(vkFlow).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Create(sessionFlow).Error)
+
+	// Finds a flow_mode='admin' row by ID.
+	got, err := store.GetOauthFlowByID(ctx, "flow-admin-x")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "flow-admin-x", got.ID)
+
+	// Returns nil for flow_mode='user'/'vk'/'session' rows even with the
+	// correct ID — the security boundary this whole method exists for.
+	for _, id := range []string{"sess-pending" /* user-mode, from the shared fixture */, "flow-vk-x", "flow-session-x"} {
+		got, err := store.GetOauthFlowByID(ctx, id)
+		require.NoError(t, err)
+		require.Nil(t, got, "non-admin flow %q must not be returned by the admin-only ID lookup", id)
+	}
+
+	// Nonexistent ID.
+	got, err = store.GetOauthFlowByID(ctx, "does-not-exist")
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
 func TestListMCPPerUserHeaderCredentials_NoFilters(t *testing.T) {
 	store := setupMCPSessionsTestStore(t)
 	seedMCPSessionsFixture(t, store)
