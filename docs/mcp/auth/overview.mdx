@@ -50,6 +50,8 @@ Per-user auth applies to the **HTTP** and **SSE** connection types. STDIO connec
 
 Per-user auth requires every request to carry an identity. See [Identity modes](#identity-modes) below.
 
+Connection-state semantics (`connected`, `disconnected`, `error`, `needs_reauth`, etc., shown on the MCP client list) describe a persistent upstream connection, so they only apply to server-level clients. Per-user clients are stateless by design: each tool call resolves and uses the caller's credential on its own, with nothing held open between calls, so the dashboard links a per-user client to its [MCP Sessions](../sessions) rows instead of showing a connection state for it.
+
 ---
 
 ## Pick your auth type
