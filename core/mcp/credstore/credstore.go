@@ -20,6 +20,9 @@ import (
 type resolver interface {
 	ConnectionHeaders(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) (http.Header, error)
 	RequiresPerCallConnection() bool
+	// ForceRefresh unconditionally refreshes the credential backing config.
+	// See schemas.MCPCredentialStore.ForceRefresh for the full contract.
+	ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error
 }
 
 // CredStore routes credential resolution by MCPAuthType. Implements
@@ -81,6 +84,15 @@ func (s *CredStore) RequiresPerCallConnection(config *schemas.MCPClientConfig) b
 		return false
 	}
 	return r.RequiresPerCallConnection()
+}
+
+// ForceRefresh implements schemas.MCPCredentialStore.
+func (s *CredStore) ForceRefresh(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) error {
+	r, err := s.resolverFor(config)
+	if err != nil {
+		return err
+	}
+	return r.ForceRefresh(ctx, config)
 }
 
 // resolverFor returns the resolver matching config.AuthType, or an error if

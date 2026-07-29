@@ -48,6 +48,7 @@ func (m *mockToolClientManager) ReleasePluginPipeline(pipeline PluginPipeline) {
 func (m *mockToolClientManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), error) {
 	return nil, func() {}, nil
 }
+func (m *mockToolClientManager) ReconnectClient(id string) error { return nil }
 func (m *mockToolClientManager) RunWithPluginPipeline(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
 	resp, err := op(req)
 	if err != nil {
