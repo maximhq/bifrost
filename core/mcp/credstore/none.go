@@ -1,6 +1,8 @@
 package credstore
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -21,4 +23,10 @@ func (r *noneResolver) RequiresPerCallConnection() bool { return false }
 // ForceRefresh is a no-op — there is no credential to refresh.
 func (r *noneResolver) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
 	return nil
+}
+
+// AdminConnectionHeaders is not supported for this auth type — there is no
+// separate "admin" credential distinct from the one used for real calls.
+func (r *noneResolver) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
+	return nil, fmt.Errorf("admin connection headers not supported for auth_type %q", "none")
 }

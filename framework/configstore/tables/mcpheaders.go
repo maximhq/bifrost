@@ -71,7 +71,7 @@ type TableMCPPerUserHeaderCredential struct {
 	VirtualKeyID     *string   `gorm:"type:varchar(255);index" json:"virtual_key_id"`            // VK identity (vk-mode rows)
 	UserID           *string   `gorm:"type:varchar(255);index" json:"user_id"`                   // User identity (user-mode rows)
 	MCPClientID      string    `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`    // Which MCP server
-	AuthMode         string    `gorm:"type:varchar(20);not null" json:"auth_mode"`               // 'user' | 'vk' | 'session' — which identity column keys this row
+	AuthMode         string    `gorm:"type:varchar(20);not null" json:"auth_mode"`               // 'user' | 'vk' | 'session' | 'admin' — which identity column keys this row; 'admin' has none, keyed by mcp_client_id alone
 	Status           string    `gorm:"type:varchar(20);not null;default:'active'" json:"status"` // 'active' | 'orphaned' | 'needs_update'
 	HeadersJSON      string    `gorm:"type:text;not null" json:"-"`                              // Encrypted JSON map[string]string of user-supplied header values
 	EncryptionStatus string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`

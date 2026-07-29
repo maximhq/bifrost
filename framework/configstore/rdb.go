@@ -6500,6 +6500,46 @@ func (s *RDBConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, 
 	return nil
 }
 
+// DeleteAdminOauthTokenByMCPClientID deletes the retained admin-mode token
+// row for mcpClientID, if one exists. idx_mcp_oauth_tokens_admin_mcp allows
+// at most one auth_mode='admin' row per mcp_client_id, so this must run
+// before retagging a fresh bootstrap-verification row to 'admin' for a
+// client that already has one from an earlier bootstrap — otherwise the
+// retag's write collides with that existing row instead of replacing it.
+func (s *RDBConfigStore) DeleteAdminOauthTokenByMCPClientID(ctx context.Context, mcpClientID string) error {
+	if mcpClientID == "" {
+		return nil
+	}
+	result := s.DB().WithContext(ctx).
+		Where("mcp_client_id = ? AND auth_mode = ?", mcpClientID, "admin").
+		Delete(&tables.TableMCPOauthToken{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete admin oauth token by mcp client id: %w", result.Error)
+	}
+	return nil
+}
+
+// GetAdminOauthTokenByConfigID resolves the single retained admin-mode token
+// row for a config — the bootstrap-verification credential kept alive for a
+// per_user_oauth client's periodic tool-discovery refresh (see
+// GetSharedOauthTokenByConfigID's doc comment for the parallel shared-mode
+// case; this mirrors it exactly, just auth_mode='admin' instead of 'shared').
+// Returns (nil, nil) when no admin token exists for this config.
+func (s *RDBConfigStore) GetAdminOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error) {
+	if oauthConfigID == "" {
+		return nil, nil
+	}
+	var token tables.TableMCPOauthToken
+	result := s.DB().WithContext(ctx).Where("oauth_config_id = ? AND auth_mode = ?", oauthConfigID, "admin").First(&token)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get admin oauth token by config id: %w", result.Error)
+	}
+	return &token, nil
+}
+
 // CreateOauthConfig creates a new OAuth config
 func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
 	result := s.DB().WithContext(ctx).Create(config)
@@ -6548,6 +6588,11 @@ func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.Tab
 			Where("auth_mode = ? AND mcp_client_id = ?", "shared", token.MCPClientID).
 			First(&existing).Error
 	case token.AuthMode == "admin" && token.MCPClientID != "":
+		// Mirrors the shared-mode branch above: exactly one admin-mode
+		// row per mcp_client_id (idx_mcp_oauth_tokens_admin_mcp), so a
+		// second admin verification for the same client must reuse this
+		// row rather than falling through to Create and violating that
+		// unique index.
 		lookupErr = dbForUpdate(txDB).
 			Where("auth_mode = ? AND mcp_client_id = ?", "admin", token.MCPClientID).
 			First(&existing).Error
@@ -6694,7 +6739,7 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 	result := s.DB().WithContext(ctx).
 		// mcp_oauth_tokens holds both shared and per-user rows; callers
 		// decide which holder types get proactive background refresh via
-		// authModes (TokenRefreshWorker.AuthModes, shared-only by default).
+		// authModes (TokenRefreshWorker.AuthModes, shared + admin by default).
 		Where("auth_mode IN ?", authModes).
 		Where("status = ?", "active").
 		Where("expires_at IS NOT NULL AND expires_at < ?", before).
@@ -7324,9 +7369,14 @@ func (s *RDBConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olde
 // resolution nor the flow-detail prefill UX should surface them. Mirrors
 // GetOauthUserTokenByMode (which is stricter — OAuth has no needs_update
 // equivalent because tokens are opaque and resubmission is the full IdP
-// dance).
+// dance). mode can also be MCPAuthModeAdmin: the retained bootstrap
+// credential has no per-caller identity, so that case is scoped by
+// mcp_client_id + auth_mode='admin' alone.
 func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error) {
-	if identity == "" || mcpClientID == "" {
+	if mcpClientID == "" {
+		return nil, nil
+	}
+	if mode != schemas.MCPAuthModeAdmin && identity == "" {
 		return nil, nil
 	}
 	var cred tables.TableMCPPerUserHeaderCredential
@@ -7344,6 +7394,10 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Context
 	case schemas.MCPAuthModeSession:
 		result = s.DB().WithContext(ctx).
 			Where("auth_mode = ? AND session_id = ? AND mcp_client_id = ? AND status IN ?", string(schemas.MCPAuthModeSession), identity, mcpClientID, statuses).
+			First(&cred)
+	case schemas.MCPAuthModeAdmin:
+		result = s.DB().WithContext(ctx).
+			Where("auth_mode = ? AND mcp_client_id = ? AND status IN ?", "admin", mcpClientID, statuses).
 			First(&cred)
 	default:
 		return nil, fmt.Errorf("unknown auth mode: %s", mode)
@@ -7374,14 +7428,20 @@ func (s *RDBConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, 
 }
 
 // UpsertMCPPerUserHeaderCredential atomically inserts or updates a credential
-// row keyed by (auth_mode, identity, mcp_client_id). Mirrors CreateOauthToken's
-// per-identity upsert branches — the row represents the (identity, mcp_client)
-// binding, so a re-submit preserves CreatedAt.
+// row keyed by (auth_mode, identity, mcp_client_id) — or, for auth_mode='admin',
+// by mcp_client_id alone, since the retained bootstrap-verification credential
+// has no per-caller identity. Mirrors CreateOauthToken's per-identity upsert
+// branches — the row represents the (identity, mcp_client) binding, so a
+// re-submit preserves CreatedAt.
 func (s *RDBConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing tables.TableMCPPerUserHeaderCredential
 		var lookupErr error
 		switch {
+		case cred.AuthMode == string(schemas.MCPAuthModeAdmin) && cred.MCPClientID != "":
+			lookupErr = dbForUpdate(tx).
+				Where("auth_mode = ? AND mcp_client_id = ?", "admin", cred.MCPClientID).
+				First(&existing).Error
 		case cred.UserID != nil && *cred.UserID != "":
 			lookupErr = dbForUpdate(tx).
 				Where("auth_mode = ? AND user_id = ? AND mcp_client_id = ?", string(schemas.MCPAuthModeUser), *cred.UserID, cred.MCPClientID).
