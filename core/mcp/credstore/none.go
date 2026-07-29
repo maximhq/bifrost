@@ -17,3 +17,8 @@ func (r *noneResolver) ConnectionHeaders(_ *schemas.BifrostContext, _ *schemas.M
 }
 
 func (r *noneResolver) RequiresPerCallConnection() bool { return false }
+
+// ForceRefresh is a no-op — there is no credential to refresh.
+func (r *noneResolver) ForceRefresh(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
+	return nil
+}
