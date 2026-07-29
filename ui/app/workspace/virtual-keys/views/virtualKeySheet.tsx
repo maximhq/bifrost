@@ -41,20 +41,14 @@ import {
 	useGetAllKeysQuery,
 	useGetMCPClientsQuery,
 	useGetProvidersQuery,
+	useGetTeamQuery,
 	useRotateVirtualKeyMutation,
 	useRemoveVirtualKeyBudgetOverrideMutation,
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
-import {
-	BudgetOverrideRequest,
-	CreateVirtualKeyRequest,
-	Customer,
-	Team,
-	UpdateVirtualKeyRequest,
-	VirtualKey,
-} from "@/lib/types/governance";
+import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride, parseResetPeriod } from "@/lib/utils/governance";
 import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -69,8 +63,6 @@ import { z } from "zod";
 
 interface VirtualKeySheetProps {
 	virtualKey?: VirtualKey | null;
-	teams: Team[];
-	customers: Customer[];
 	// When set, the new VK is created under this team. The entity assignment is pre-set
 	// and cannot be changed (but all other fields remain editable).
 	defaultTeamId?: string;
@@ -241,7 +233,7 @@ function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
 	);
 }
 
-export default function VirtualKeySheet({ virtualKey, teams, customers, defaultTeamId, onSave, onCancel }: VirtualKeySheetProps) {
+export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onCancel }: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
@@ -257,8 +249,13 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	// Team attachment: when creating from a team context (defaultTeamId provided), the entity
 	// assignment is pre-set and locked. When editing an existing VK the assignment can be changed.
 	const attachedTeamId = isEditing ? virtualKey?.team_id || "" : defaultTeamId || "";
-	const attachedTeam = attachedTeamId ? teams.find((t) => t.id === attachedTeamId) : undefined;
 	const isTeamLocked = !isEditing && !!defaultTeamId;
+	// Only the locked banner needs this name, and only when creating under a team,
+	// so resolve that one team by id rather than holding the whole list.
+	const { data: attachedTeamData } = useGetTeamQuery(attachedTeamId, {
+		skip: !isTeamLocked || !attachedTeamId,
+	});
+	const attachedTeam = attachedTeamData?.team;
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -279,9 +276,15 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const mcpClientsData = mcpClientsResponse?.clients || [];
 	const isLoading = isCreating || isUpdating || isRotating;
 	const persistedOverrideBudgets = [
-		...(virtualKey?.budgets ?? []).map((budget) => ({ budget, label: "Virtual key" })),
+		...(virtualKey?.budgets ?? []).map((budget) => ({
+			budget,
+			label: "Virtual key",
+		})),
 		...(virtualKey?.provider_configs ?? []).flatMap((config) =>
-			(config.budgets ?? []).map((budget) => ({ budget, label: ProviderLabels[config.provider as ProviderName] ?? config.provider })),
+			(config.budgets ?? []).map((budget) => ({
+				budget,
+				label: ProviderLabels[config.provider as ProviderName] ?? config.provider,
+			})),
 		),
 	];
 	const saveBudgetOverride = async (budgetId: string, data: BudgetOverrideRequest) => {
@@ -1119,10 +1122,16 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 																blacklisted_models: next.blacklistedModels,
 																weight: next.weight ?? undefined,
 																key_ids: next.keyIds,
-																budgets: next.budgets.map((l) => ({ id: l.id, max_limit: l.max_limit, reset_duration: l.reset_duration })),
+																budgets: next.budgets.map((l) => ({
+																	id: l.id,
+																	max_limit: l.max_limit,
+																	reset_duration: l.reset_duration,
+																})),
 																rate_limit: next.rateLimit ?? undefined,
 															};
-															form.setValue("providerConfigs", updated, { shouldDirty: true });
+															form.setValue("providerConfigs", updated, {
+																shouldDirty: true,
+															});
 														}}
 													/>
 												);
@@ -1535,156 +1544,147 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										</AlertDialogFooter>
 									</AlertDialogContent>
 								</AlertDialog>
-								{(teams?.length > 0 || customers?.length > 0) && (
-									<>
-										<DottedSeparator className="my-6" />
+								<DottedSeparator className="my-6" />
 
-										{/* Entity Assignment */}
-										<div className="space-y-4">
-											<Label className="text-sm font-medium">Entity Assignment</Label>
+								{/* Entity Assignment */}
+								<div className="space-y-4">
+									<Label className="text-sm font-medium">Entity Assignment</Label>
 
-											<div className="grid grid-cols-1 items-center gap-2 md:grid-cols-2">
-												<FormField
-													control={form.control}
-													name="entityType"
-													render={({ field }) => (
-														<FormItem>
-															<FormLabel className="font-normal">Assignment Type</FormLabel>
-															<ComboboxSelect
-																options={[
-																	{ value: "none", label: "No Assignment" },
-																	...(teams?.length > 0
-																		? [
-																				{
-																					value: "team",
-																					label: "Assign to Team",
-																				},
-																			]
-																		: []),
-																	...(customers?.length > 0
-																		? [
-																				{
-																					value: "customer",
-																					label: "Assign to Customer",
-																				},
-																			]
-																		: []),
-																]}
-																value={field.value}
-																onValueChange={async (value) => {
-																	const val = value ?? "none";
-																	field.onChange(val);
-																	if (val === "team" && teams?.length > 0) {
-																		form.setValue("teamId", teams[0].id, {
-																			shouldDirty: true,
-																			shouldValidate: true,
-																		});
-																		form.setValue("customerId", "", {
-																			shouldDirty: true,
-																			shouldValidate: true,
-																		});
-																		await form.trigger(["teamId", "customerId", "entityType"]);
-																	} else if (val === "customer" && customers?.length > 0) {
-																		form.setValue("customerId", customers[0].id, {
-																			shouldDirty: true,
-																			shouldValidate: true,
-																		});
-																		form.setValue("teamId", "", {
-																			shouldDirty: true,
-																			shouldValidate: true,
-																		});
-																		await form.trigger(["teamId", "customerId", "entityType"]);
-																	} else {
-																		form.setValue("teamId", "", {
-																			shouldDirty: true,
-																			shouldValidate: true,
-																		});
-																		form.setValue("customerId", "", {
-																			shouldDirty: true,
-																			shouldValidate: true,
-																		});
-																		await form.trigger(["teamId", "customerId", "entityType"]);
-																	}
-																}}
-																disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
-																disableSearch
-																hideClear
-																className="h-9"
-															/>
-															{isEditing && assignedUsers.length > 0 ? (
-																<p className="text-muted-foreground text-xs">
-																	This key is assigned to a user. Detach the user first to change the assignment type.
-																</p>
-															) : (
-																<FormMessage />
-															)}
-														</FormItem>
+									<div className="grid grid-cols-1 items-center gap-2 md:grid-cols-2">
+										<FormField
+											control={form.control}
+											name="entityType"
+											render={({ field }) => (
+												<FormItem>
+													<FormLabel className="font-normal">Assignment Type</FormLabel>
+													<ComboboxSelect
+														options={[
+															{ value: "none", label: "No Assignment" },
+															{ value: "team", label: "Assign to Team" },
+															{
+																value: "customer",
+																label: "Assign to Customer",
+															},
+														]}
+														value={field.value}
+														onValueChange={async (value) => {
+															const val = value ?? "none";
+															field.onChange(val);
+															// Switching type clears both ids and lets the user pick;
+															// there is no entity list loaded to default from.
+															if (val === "team") {
+																form.setValue("teamId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																form.setValue("customerId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																await form.trigger(["teamId", "customerId", "entityType"]);
+															} else if (val === "customer") {
+																form.setValue("customerId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																form.setValue("teamId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																await form.trigger(["teamId", "customerId", "entityType"]);
+															} else {
+																form.setValue("teamId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																form.setValue("customerId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																await form.trigger(["teamId", "customerId", "entityType"]);
+															}
+														}}
+														disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
+														disableSearch
+														hideClear
+														className="h-9"
+													/>
+													{isEditing && assignedUsers.length > 0 ? (
+														<p className="text-muted-foreground text-xs">
+															This key is assigned to a user. Detach the user first to change the assignment type.
+														</p>
+													) : (
+														<FormMessage />
 													)}
-												/>
-												{form.watch("entityType") === "team" && teams?.length > 0 && (
-													<FormField
-														control={form.control}
-														name="teamId"
-														render={({ field }) => (
-															<FormItem>
-																<FormLabel className="font-normal">Select Team</FormLabel>
-																<TeamSelector
-																	value={field.value || ""}
-																	onChange={(newVal) => {
-																		if (isEditing && virtualKey?.team_id && newVal && newVal !== virtualKey.team_id) {
-																			setPendingTeamId(newVal);
-																			setShowReassignTeamWarning(true);
-																		} else {
-																			field.onChange(newVal);
+												</FormItem>
+											)}
+										/>
+										{form.watch("entityType") === "team" && (
+											<FormField
+												control={form.control}
+												name="teamId"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel className="font-normal">Select Team</FormLabel>
+														<TeamSelector
+															value={field.value || ""}
+															onChange={(newVal) => {
+																if (isEditing && virtualKey?.team_id && newVal && newVal !== virtualKey.team_id) {
+																	setPendingTeamId(newVal);
+																	setShowReassignTeamWarning(true);
+																} else {
+																	field.onChange(newVal);
+																}
+															}}
+															// The already-assigned team may fall outside the
+															// selector's first page, so seed its label from the
+															// team embedded on the virtual key itself.
+															fallbackOption={
+																field.value
+																	? {
+																			value: field.value,
+																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
 																		}
-																	}}
-																	// The already-assigned team may fall outside the
-																	// selector's first page, so seed its label from the
-																	// list the page already fetched.
-																	fallbackOption={
-																		field.value
-																			? { value: field.value, label: teams.find((t) => t.id === field.value)?.name ?? field.value }
-																			: null
-																	}
-																	disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
-																	triggerClassName="h-9"
-																/>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
+																	: null
+															}
+															disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
+															triggerClassName="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
 												)}
+											/>
+										)}
 
-												{form.watch("entityType") === "customer" && customers?.length > 0 && (
-													<FormField
-														control={form.control}
-														name="customerId"
-														render={({ field }) => (
-															<FormItem>
-																<FormLabel className="font-normal">Select Customer</FormLabel>
-																<CustomerSelector
-																	value={field.value || ""}
-																	onChange={(val) => field.onChange(val)}
-																	fallbackOption={
-																		field.value
-																			? {
-																					value: field.value,
-																					label: customers.find((c) => c.id === field.value)?.name ?? field.value,
-																				}
-																			: null
-																	}
-																	disabled={isEditing && assignedUsers.length > 0}
-																	triggerClassName="h-9"
-																/>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
+										{form.watch("entityType") === "customer" && (
+											<FormField
+												control={form.control}
+												name="customerId"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel className="font-normal">Select Customer</FormLabel>
+														<CustomerSelector
+															value={field.value || ""}
+															onChange={(val) => field.onChange(val)}
+															fallbackOption={
+																field.value
+																	? {
+																			value: field.value,
+																			label:
+																				field.value === virtualKey?.customer_id ? (virtualKey?.customer?.name ?? field.value) : field.value,
+																		}
+																	: null
+															}
+															disabled={isEditing && assignedUsers.length > 0}
+															triggerClassName="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
 												)}
-											</div>
-										</div>
-									</>
-								)}
+											/>
+										)}
+									</div>
+								</div>
 							</fieldset>
 						</div>
 						<AlertDialog open={showRotateWarning} onOpenChange={setShowRotateWarning}>
