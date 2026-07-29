@@ -1434,7 +1434,7 @@ func (m *MockConfigStore) GetSharedOauthTokenByConfigID(ctx context.Context, oau
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableMCPOauthToken, error) {
+func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
