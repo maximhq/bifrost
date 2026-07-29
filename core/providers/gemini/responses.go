@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,21 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 			params.ToolChoice = convertGeminiToolConfigToToolChoice(request.ToolConfig)
 		}
 		params.IncludeServerSideToolInvocations = request.ToolConfig.IncludeServerSideToolInvocations
+
+		// Search localization rides on the web_search tool, the only tool it applies to.
+		if retrieval := request.ToolConfig.RetrievalConfig; retrieval != nil && retrieval.LatLng != nil {
+			for i := range params.Tools {
+				webSearch := params.Tools[i].ResponsesToolWebSearch
+				if params.Tools[i].Type != schemas.ResponsesToolTypeWebSearch || webSearch == nil {
+					continue
+				}
+				if webSearch.UserLocation == nil {
+					webSearch.UserLocation = &schemas.ResponsesToolWebSearchUserLocation{}
+				}
+				webSearch.UserLocation.Latitude = retrieval.LatLng.Latitude
+				webSearch.UserLocation.Longitude = retrieval.LatLng.Longitude
+			}
+		}
 	}
 
 	if request.SafetySettings != nil {
@@ -130,6 +146,27 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 				if hasFunctionDeclarations {
 					geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
 				}
+			}
+
+			// Rebuild search localization from the web_search tool that carried it.
+			for _, tool := range bifrostReq.Params.Tools {
+				webSearch := tool.ResponsesToolWebSearch
+				if tool.Type != schemas.ResponsesToolTypeWebSearch || webSearch == nil || webSearch.UserLocation == nil {
+					continue
+				}
+				if webSearch.UserLocation.Latitude == nil && webSearch.UserLocation.Longitude == nil {
+					continue
+				}
+				if geminiReq.ToolConfig == nil {
+					geminiReq.ToolConfig = &ToolConfig{}
+				}
+				geminiReq.ToolConfig.RetrievalConfig = &RetrievalConfig{
+					LatLng: &LatLng{
+						Latitude:  webSearch.UserLocation.Latitude,
+						Longitude: webSearch.UserLocation.Longitude,
+					},
+				}
+				break
 			}
 		}
 
@@ -2327,6 +2364,13 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 	return block
 }
 
+// OpenAI's search_content_types values, which carry Gemini's googleSearch.searchTypes.
+// Gemini's webSearch returns text results, so it maps to "text".
+const (
+	geminiSearchContentTypeText  = "text"
+	geminiSearchContentTypeImage = "image"
+)
+
 func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 	var responsesTools []schemas.ResponsesTool
 
@@ -2348,6 +2392,16 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 					}
 				}
 				responsesTool.ResponsesToolWebSearch.Filters = filters
+			}
+			if searchTypes := tool.GoogleSearch.SearchTypes; searchTypes != nil {
+				var contentTypes []string
+				if searchTypes.WebSearch != nil {
+					contentTypes = append(contentTypes, geminiSearchContentTypeText)
+				}
+				if searchTypes.ImageSearch != nil {
+					contentTypes = append(contentTypes, geminiSearchContentTypeImage)
+				}
+				responsesTool.ResponsesToolWebSearch.SearchContentTypes = contentTypes
 			}
 			responsesTools = append(responsesTools, responsesTool)
 		} else if len(tool.FunctionDeclarations) > 0 {
@@ -2428,6 +2482,39 @@ func textBlockOf(messages []schemas.ResponsesMessage, idx int) *schemas.Response
 		}
 	}
 	return nil
+}
+
+// groundingChunkSource converts a grounding chunk to a neutral search source. Image chunks
+// attribute to the containing page, as Google's display terms require, and carry the asset
+// URL alongside. Reports false for chunk types that expose no citable URL.
+func groundingChunkSource(chunk *GroundingChunk) (schemas.ResponsesWebSearchToolCallActionSearchSource, bool) {
+	if chunk == nil {
+		return schemas.ResponsesWebSearchToolCallActionSearchSource{}, false
+	}
+	source := schemas.ResponsesWebSearchToolCallActionSearchSource{Type: "url"}
+
+	switch {
+	case chunk.Web != nil && chunk.Web.URI != "":
+		source.URL = chunk.Web.URI
+		if chunk.Web.Title != "" {
+			source.Title = schemas.Ptr(chunk.Web.Title)
+		}
+	case chunk.Image != nil && chunk.Image.SourceURI != "":
+		source.URL = chunk.Image.SourceURI
+		if chunk.Image.Title != "" {
+			source.Title = schemas.Ptr(chunk.Image.Title)
+		}
+		if chunk.Image.ImageURI != "" {
+			source.ImageURL = schemas.Ptr(chunk.Image.ImageURI)
+		}
+		if chunk.Image.Domain != "" {
+			source.Domain = schemas.Ptr(chunk.Image.Domain)
+		}
+	default:
+		return source, false
+	}
+
+	return source, true
 }
 
 // Helper functions for Responses conversion
@@ -2700,15 +2787,14 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			if len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
 				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
 			}
+			if len(candidate.GroundingMetadata.ImageSearchQueries) > 0 {
+				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.ImageQueries = candidate.GroundingMetadata.ImageSearchQueries
+			}
 
 			sources := []schemas.ResponsesWebSearchToolCallActionSearchSource{}
-			for _, source := range candidate.GroundingMetadata.GroundingChunks {
-				if source.Web != nil {
-					sources = append(sources, schemas.ResponsesWebSearchToolCallActionSearchSource{
-						Type:  "url",
-						Title: schemas.Ptr(source.Web.Title),
-						URL:   source.Web.URI,
-					})
+			for _, chunk := range candidate.GroundingMetadata.GroundingChunks {
+				if source, ok := groundingChunkSource(chunk); ok {
+					sources = append(sources, source)
 				}
 			}
 
@@ -2730,8 +2816,8 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 						if chunkIdx < 0 || int(chunkIdx) >= len(candidate.GroundingMetadata.GroundingChunks) {
 							continue
 						}
-						chunk := candidate.GroundingMetadata.GroundingChunks[chunkIdx]
-						if chunk.Web == nil || chunk.Web.URI == "" {
+						source, ok := groundingChunkSource(candidate.GroundingMetadata.GroundingChunks[chunkIdx])
+						if !ok {
 							continue
 						}
 						annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
@@ -2739,11 +2825,9 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 							Text:       schemas.Ptr(support.Segment.Text),
 							StartIndex: schemas.Ptr(int(support.Segment.StartIndex)),
 							EndIndex:   schemas.Ptr(int(support.Segment.EndIndex)),
-							URL:        schemas.Ptr(chunk.Web.URI),
+							URL:        schemas.Ptr(source.URL),
 						}
-						if chunk.Web.Title != "" {
-							annotation.Title = schemas.Ptr(chunk.Web.Title)
-						}
+						annotation.Title = source.Title
 						annotations = append(annotations, annotation)
 					}
 				}
@@ -3057,6 +3141,20 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 				}
 				if len(tool.ResponsesToolWebSearch.Filters.BlockedDomains) > 0 {
 					googleSearch.ExcludeDomains = tool.ResponsesToolWebSearch.Filters.BlockedDomains
+				}
+			}
+			if tool.ResponsesToolWebSearch != nil && len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+				searchTypes := &SearchTypes{}
+				for _, contentType := range tool.ResponsesToolWebSearch.SearchContentTypes {
+					switch contentType {
+					case geminiSearchContentTypeText:
+						searchTypes.WebSearch = &WebSearch{}
+					case geminiSearchContentTypeImage:
+						searchTypes.ImageSearch = &ImageSearch{}
+					}
+				}
+				if searchTypes.WebSearch != nil || searchTypes.ImageSearch != nil {
+					googleSearch.SearchTypes = searchTypes
 				}
 			}
 		}
@@ -3670,6 +3768,9 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 	} else if action.Query != nil {
 		groundingMetadata.WebSearchQueries = []string{*action.Query}
 	}
+	if len(action.ImageQueries) > 0 {
+		groundingMetadata.ImageSearchQueries = action.ImageQueries
+	}
 
 	// Extract grounding chunks from sources
 	var groundingChunks []*GroundingChunk
@@ -3685,11 +3786,22 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 			title = *source.Title
 		}
 
-		chunk := &GroundingChunk{
-			Web: &GroundingChunkWeb{
+		// An asset URL marks the source as an image-search hit; URL stays the containing page.
+		chunk := &GroundingChunk{}
+		if source.ImageURL != nil && *source.ImageURL != "" {
+			chunk.Image = &GroundingChunkImage{
+				SourceURI: source.URL,
+				ImageURI:  *source.ImageURL,
+				Title:     title,
+			}
+			if source.Domain != nil {
+				chunk.Image.Domain = *source.Domain
+			}
+		} else {
+			chunk.Web = &GroundingChunkWeb{
 				URI:   source.URL,
 				Title: title,
-			},
+			}
 		}
 		groundingChunks = append(groundingChunks, chunk)
 		urlToIndexMap[source.URL] = int32(len(groundingChunks) - 1)
@@ -3699,41 +3811,56 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 		groundingMetadata.GroundingChunks = groundingChunks
 	}
 
-	// Convert annotations to grounding supports
+	// Convert annotations to grounding supports. Annotations carry one entry per
+	// (support, chunk) pair, so regroup by segment to restore multi-source supports.
 	var groundingSupports []*GroundingSupport
+	supportBySegment := make(map[string]*GroundingSupport)
 	for _, annotation := range annotations {
 		if annotation.Type != "url_citation" {
 			continue
 		}
 
-		support := &GroundingSupport{
-			Segment: &Segment{},
-		}
+		segment := &Segment{}
 
 		// Set segment text
 		if annotation.Text != nil {
-			support.Segment.Text = *annotation.Text
+			segment.Text = *annotation.Text
 		}
 
 		// Set segment indices
 		if annotation.StartIndex != nil {
-			support.Segment.StartIndex = int32(*annotation.StartIndex)
+			segment.StartIndex = int32(*annotation.StartIndex)
 		}
 		if annotation.EndIndex != nil {
-			support.Segment.EndIndex = int32(*annotation.EndIndex)
+			segment.EndIndex = int32(*annotation.EndIndex)
 		}
 
 		// Map annotation URL to chunk indices
+		var chunkIndices []int32
 		if annotation.URL != nil {
 			if chunkIdx, exists := urlToIndexMap[*annotation.URL]; exists {
-				support.GroundingChunkIndices = []int32{chunkIdx}
+				chunkIndices = []int32{chunkIdx}
 			}
 		}
 
 		// Only add support if we have valid segment or chunk indices
-		if support.Segment.Text != "" || len(support.GroundingChunkIndices) > 0 {
-			groundingSupports = append(groundingSupports, support)
+		if segment.Text == "" && len(chunkIndices) == 0 {
+			continue
 		}
+
+		key := fmt.Sprintf("%d|%d|%s", segment.StartIndex, segment.EndIndex, segment.Text)
+		if support, exists := supportBySegment[key]; exists {
+			for _, chunkIdx := range chunkIndices {
+				if !slices.Contains(support.GroundingChunkIndices, chunkIdx) {
+					support.GroundingChunkIndices = append(support.GroundingChunkIndices, chunkIdx)
+				}
+			}
+			continue
+		}
+
+		support := &GroundingSupport{Segment: segment, GroundingChunkIndices: chunkIndices}
+		supportBySegment[key] = support
+		groundingSupports = append(groundingSupports, support)
 	}
 
 	if len(groundingSupports) > 0 {
@@ -3741,7 +3868,8 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 	}
 
 	// Return nil if no meaningful data was extracted
-	if len(groundingMetadata.WebSearchQueries) == 0 && len(groundingMetadata.GroundingChunks) == 0 {
+	if len(groundingMetadata.WebSearchQueries) == 0 && len(groundingMetadata.ImageSearchQueries) == 0 &&
+		len(groundingMetadata.GroundingChunks) == 0 {
 		return nil
 	}
 
@@ -3756,7 +3884,7 @@ func emitWebSearchFromGroundingMetadata(
 ) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
-	if metadata == nil || len(metadata.WebSearchQueries) == 0 {
+	if metadata == nil || (len(metadata.WebSearchQueries) == 0 && len(metadata.ImageSearchQueries) == 0) {
 		return responses
 	}
 
@@ -3766,8 +3894,9 @@ func emitWebSearchFromGroundingMetadata(
 
 	// Build web search action
 	action := &schemas.ResponsesWebSearchToolCallAction{
-		Type:    "search",
-		Queries: metadata.WebSearchQueries,
+		Type:         "search",
+		Queries:      metadata.WebSearchQueries,
+		ImageQueries: metadata.ImageSearchQueries,
 	}
 	if len(metadata.WebSearchQueries) > 0 {
 		action.Query = &metadata.WebSearchQueries[0]
@@ -3776,16 +3905,7 @@ func emitWebSearchFromGroundingMetadata(
 	// Convert groundingChunks to sources
 	var sources []schemas.ResponsesWebSearchToolCallActionSearchSource
 	for _, chunk := range metadata.GroundingChunks {
-		if chunk.Web != nil && chunk.Web.URI != "" {
-			source := schemas.ResponsesWebSearchToolCallActionSearchSource{
-				Type: "url",
-				URL:  chunk.Web.URI,
-			}
-			if chunk.Web.Title != "" {
-				source.Title = &chunk.Web.Title
-			} else {
-				source.Title = &chunk.Web.URI // Fallback to URI
-			}
+		if source, ok := groundingChunkSource(chunk); ok {
 			sources = append(sources, source)
 		}
 	}
@@ -3937,23 +4057,21 @@ func emitAnnotationsFromGroundingSupports(
 			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
 				continue
 			}
-			chunk := metadata.GroundingChunks[chunkIdx]
-			if chunk.Web == nil || chunk.Web.URI == "" {
+			source, ok := groundingChunkSource(metadata.GroundingChunks[chunkIdx])
+			if !ok {
 				continue
 			}
 
 			annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
 				Type: "url_citation",
-				URL:  &chunk.Web.URI,
+				URL:  &source.URL,
 			}
 			if support.Segment.Text != "" {
 				annotation.Text = &support.Segment.Text
 			}
 			annotation.StartIndex = schemas.Ptr(int(support.Segment.StartIndex))
 			annotation.EndIndex = schemas.Ptr(int(support.Segment.EndIndex))
-			if chunk.Web.Title != "" {
-				annotation.Title = &chunk.Web.Title
-			}
+			annotation.Title = source.Title
 
 			// Emit annotation.added event
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
