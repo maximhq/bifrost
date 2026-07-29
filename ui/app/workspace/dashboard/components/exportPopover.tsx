@@ -92,7 +92,7 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
 				<DropdownMenuSub>
-					<DropdownMenuSubTrigger data-testid="export-csv-item">
+					<DropdownMenuSubTrigger data-testid="export-csv-item" className="flex gap-2">
 						<FileSpreadsheet className="h-4 w-4" />
 						CSV
 					</DropdownMenuSubTrigger>
@@ -108,7 +108,7 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 					</DropdownMenuPortal>
 				</DropdownMenuSub>
 				<DropdownMenuSub>
-					<DropdownMenuSubTrigger data-testid="export-pdf-item">
+					<DropdownMenuSubTrigger data-testid="export-pdf-item" className="flex gap-2">
 						<FileText className="h-4 w-4" />
 						PDF
 					</DropdownMenuSubTrigger>

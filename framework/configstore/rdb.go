@@ -3272,14 +3272,26 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 	// on what the caller is allowed to see.
 	baseQuery := s.ScopedDB(ctx).Model(&tables.TableVirtualKey{})
 
-	// Virtual keys are either customer-scoped or team-scoped, never both.
-	// When both filters are provided, use OR to match keys belonging to either.
-	if params.CustomerID != "" && params.TeamID != "" {
-		baseQuery = baseQuery.Where("(customer_id = ? OR team_id = ?)", params.CustomerID, params.TeamID)
-	} else if params.CustomerID != "" {
-		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
-	} else if params.TeamID != "" {
-		baseQuery = baseQuery.Where("team_id = ?", params.TeamID)
+	// A virtual key is assigned to at most one of customer / team / user, so
+	// combining assignment filters ORs them rather than narrowing to nothing.
+	// UserID has no meaning in the OSS build (the VK↔user link lives in an
+	// enterprise table), so it fails closed instead of silently widening the
+	// result set; the enterprise store overrides this method to honour it.
+	var assignmentClauses []string
+	var assignmentArgs []interface{}
+	if params.CustomerID != "" {
+		assignmentClauses = append(assignmentClauses, "customer_id = ?")
+		assignmentArgs = append(assignmentArgs, params.CustomerID)
+	}
+	if params.TeamID != "" {
+		assignmentClauses = append(assignmentClauses, "team_id = ?")
+		assignmentArgs = append(assignmentArgs, params.TeamID)
+	}
+	if params.UserID != "" {
+		assignmentClauses = append(assignmentClauses, "1 = 0")
+	}
+	if len(assignmentClauses) > 0 {
+		baseQuery = baseQuery.Where("("+strings.Join(assignmentClauses, " OR ")+")", assignmentArgs...)
 	}
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"

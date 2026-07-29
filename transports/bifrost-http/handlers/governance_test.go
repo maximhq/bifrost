@@ -2409,6 +2409,73 @@ func TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit(t *testing.T) {
 	}
 }
 
+// TestGetVirtualKeys_FromMemoryRejectsUserFilter locks in the fail-closed contract
+// for the user filter. The in-memory GovernanceData carries no VK↔user assignments,
+// so the filter cannot be applied there; silently ignoring it would return every
+// cached key — the inverse of the DB path, which matches nothing it cannot resolve.
+func TestGetVirtualKeys_FromMemoryRejectsUserFilter(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/virtual-keys?from_memory=true&user_id=user-1")
+
+	h.getVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 400 {
+		t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	// Rejected before any data is read, so no key ever leaves the handler.
+	if manager.getGovernanceDataCalls != 0 {
+		t.Fatalf("expected GetGovernanceData not to be called, got %d", manager.getGovernanceDataCalls)
+	}
+	if store.getVirtualKeysCalls != 0 || store.getVirtualKeysPaginatedCalls != 0 {
+		t.Fatalf("rejected request hit the config store: %d/%d", store.getVirtualKeysCalls, store.getVirtualKeysPaginatedCalls)
+	}
+}
+
+// TestGetVirtualKeys_FromMemoryIgnoresOtherFilters pins the long-standing behaviour
+// the user_id rejection deliberately does not extend to: customer_id/team_id are
+// still silently ignored under from_memory, so existing consumers are unaffected.
+func TestGetVirtualKeys_FromMemoryIgnoresOtherFilters(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/virtual-keys?from_memory=true&customer_id=cust-1&team_id=team-1")
+
+	h.getVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if manager.getGovernanceDataCalls != 1 {
+		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
+	}
+}
+
 // Ensure mockLogger satisfies schemas.Logger (already defined in middlewares_test.go
 // but we reference it here — same package, so no redeclaration needed).
 var _ schemas.Logger = (*mockLogger)(nil)

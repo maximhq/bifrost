@@ -2,9 +2,10 @@
 // (routing rules, model limits, pricing overrides).
 //
 // Lives in OSS because the governance teams endpoint (/governance/teams) is
-// OSS. Note this is a different entity from the enterprise user-groups team
-// list (/teams), which carries membership and business-unit fields and is
-// only used by the admin surfaces under Users & Groups.
+// OSS. It reads the same teams table as the enterprise /teams list — the ids
+// are interchangeable — so this is also what the Users & Groups filters pick
+// with; /teams only differs in returning membership and business-unit fields
+// that a picker has no use for.
 //
 // Single mode is prop-compatible with the model limit scope picker contract
 // ({ value, onChange, disabled, fallbackOption }).
