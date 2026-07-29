@@ -47,6 +47,10 @@ export interface Team {
 	rate_limit_id?: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendar_aligned?: boolean;
+	// Number of virtual keys assigned to this team (server-computed via a
+	// correlated subquery; the list endpoints report this instead of embedding
+	// the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	customer?: Customer;
 	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
