@@ -37,6 +37,8 @@ import (
 	"container/list"
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -396,4 +398,57 @@ func (c *Cache[V]) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.order.Len()
+}
+
+// EncodeKey builds a collision-free composite cache key from parts, for
+// callers whose key is a tuple of caller-controlled strings (e.g.
+// (auth mode, identity, mcp client ID) — identity is frequently a
+// caller-asserted string with no charset restriction). A naive
+// separator-joined key lets one part's content forge a boundary — e.g.
+// join("\x00", "a\x00b", "c") and join("\x00", "a", "b\x00c") would build
+// the identical string, aliasing two distinct tuples onto one cache entry
+// and skewing any eviction predicate that parses the key back apart.
+// Length-prefixing each part makes that forgery impossible regardless of
+// what bytes a part contains. Pair with DecodeKey to parse it back.
+func EncodeKey(parts ...string) string {
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(strconv.Itoa(len(p)))
+		b.WriteByte(':')
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
+// DecodeKey is EncodeKey's inverse: it parses exactly n length-prefixed
+// parts out of key, in the order EncodeKey wrote them. ok is false for a
+// key that isn't in the length-prefixed form EncodeKey builds for n parts
+// (impossible for keys a well-behaved caller produces with EncodeKey).
+func DecodeKey(key string, n int) (parts []string, ok bool) {
+	if n < 0 {
+		return nil, false
+	}
+	rest := key
+	parts = make([]string, 0, n)
+	for range n {
+		i := strings.IndexByte(rest, ':')
+		if i < 0 {
+			return nil, false
+		}
+		lengthText := rest[:i]
+		length, err := strconv.Atoi(lengthText)
+		if err != nil || length < 0 || strconv.Itoa(length) != lengthText {
+			return nil, false
+		}
+		rest = rest[i+1:]
+		if length > len(rest) {
+			return nil, false
+		}
+		parts = append(parts, rest[:length])
+		rest = rest[length:]
+	}
+	if rest != "" {
+		return nil, false
+	}
+	return parts, true
 }
