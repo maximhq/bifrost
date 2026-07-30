@@ -1205,6 +1205,18 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// tool_execution_timeout: 0 (unset) means "use global from
+	// tool_manager_config", matching TableMCPClient's own column semantics —
+	// req.ToolExecutionTimeout is a plain int (embedded from TableMCPClient),
+	// not a pointer, so 0 can't be distinguished from "not sent"; same
+	// convention tool_sync_interval already uses on this create path.
+	// Computed once here and reused across every creation branch below.
+	if req.ToolExecutionTimeout < 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "tool_execution_timeout must not be negative")
+		return
+	}
+	resolvedToolExecutionTimeout := time.Duration(req.ToolExecutionTimeout) * time.Second
+
 	// Handle per-user headers: admin declares the required key names (schema)
 	// AND supplies a sample set of values inline so the server can verify
 	// upstream + discover tools in a single round-trip. Mirrors the per-user
@@ -1269,6 +1281,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsCodeModeClient:      req.IsCodeModeClient,
 			IsPingAvailable:       &isPingAvailable,
 			ToolSyncInterval:      toolSyncInterval,
+			ToolExecutionTimeout:  resolvedToolExecutionTimeout,
 			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
@@ -1371,6 +1384,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsCodeModeClient:      req.IsCodeModeClient,
 			IsPingAvailable:       &isPingAvailable,
 			ToolSyncInterval:      toolSyncInterval,
+			ToolExecutionTimeout:  resolvedToolExecutionTimeout,
 			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
@@ -1464,6 +1478,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			IsCodeModeClient:      req.IsCodeModeClient,
 			IsPingAvailable:       req.IsPingAvailable,
 			ToolSyncInterval:      toolSyncInterval,
+			ToolExecutionTimeout:  resolvedToolExecutionTimeout,
 			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:      req.ConnectionString,
 			StdioConfig:           req.StdioConfig,
@@ -1538,6 +1553,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		OauthConfigID:         req.OauthConfigID,
 		IsPingAvailable:       req.IsPingAvailable,
 		ToolSyncInterval:      toolSyncInterval,
+		ToolExecutionTimeout:  resolvedToolExecutionTimeout,
 		ToolPricing:           req.ToolPricing,
 		AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
 	}
