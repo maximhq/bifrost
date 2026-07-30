@@ -17,8 +17,19 @@ import (
 )
 
 const (
-	grantTypeTokenExchange      = "urn:ietf:params:oauth:grant-type:token-exchange"
-	grantTypeJWTBearer          = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+	grantTypeJWTBearer     = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+	// subjectTokenTypeAccessToken is the RFC 8693 subject_token_type declared
+	// for delegated exchanges. The raw bearer stamped as the caller's
+	// identity token (BifrostContextKeyMCPInboundBearer) must be a genuine
+	// OAuth access token, not an ID token: identity-provider token-exchange
+	// endpoints reject an ID token both as a type mismatch when declared
+	// access_token (observed as Okta's "'subject_token' is invalid") and
+	// outright when declared id_token (Okta's "'subject_token_type' is
+	// invalid or not supported" — id_token isn't a supported
+	// subject_token_type at all). Whatever stamps this context key is
+	// responsible for ensuring it is a genuine access token, not merely an
+	// identity-bearing JWT.
 	subjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
 
 	// exchangeExpirySafetyMargin is subtracted from an exchanged token's
