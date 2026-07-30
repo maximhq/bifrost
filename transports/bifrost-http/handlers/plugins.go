@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -430,7 +431,8 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	// neither, and nulling `path` turns a custom plugin into a built-in lookup that
 	// then fails with "unknown built-in plugin" while the old instance keeps running.
 	// Presence is detected on the raw body because absent and explicit null both
-	// decode to a nil pointer.
+	// decode to a nil pointer. An explicit null is treated as "not provided" as well;
+	// an empty string is the documented way to detach a path.
 	var rawFields map[string]json.RawMessage
 	if err := json.Unmarshal(ctx.PostBody(), &rawFields); err != nil {
 		logger.Error("failed to unmarshal update plugin request fields: %v", err)
@@ -438,13 +440,13 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if existingPlugin != nil {
-		if _, sent := rawFields["path"]; !sent {
+		if !fieldProvided(rawFields, "path") {
 			request.Path = existingPlugin.Path
 		}
-		if _, sent := rawFields["placement"]; !sent {
+		if !fieldProvided(rawFields, "placement") {
 			request.Placement = existingPlugin.Placement
 		}
-		if _, sent := rawFields["order"]; !sent {
+		if !fieldProvided(rawFields, "order") {
 			request.Order = existingPlugin.Order
 		}
 	}
@@ -582,6 +584,17 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin deleted successfully",
 	})
+}
+
+// fieldProvided reports whether a request body carried a usable value for a key.
+// A key that is absent, or present as JSON null, counts as not provided, so the
+// caller keeps whatever is already stored rather than writing a nil over it.
+func fieldProvided(rawFields map[string]json.RawMessage, key string) bool {
+	raw, ok := rawFields[key]
+	if !ok {
+		return false
+	}
+	return !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // restoreRedactedFromExisting walks the incoming config map and, for any field whose

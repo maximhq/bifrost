@@ -473,3 +473,44 @@ func TestUpdatePlugin_ClearsPathWhenExplicitlyEmpty(t *testing.T) {
 		t.Errorf("path = %q, want nil after an explicit empty path", *store.capturedPath)
 	}
 }
+
+// TestUpdatePlugin_PreservesPathWhenNull verifies that an explicit JSON null for `path`
+// is treated the same as omitting it. Null would otherwise persist a nil path and send
+// a custom plugin back down the built-in branch, which is the same failure as omitting
+// the field. An empty string remains the way to detach a path.
+func TestUpdatePlugin_PreservesPathWhenNull(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	storedPath := "/app/plugins/custom.so"
+	store := &capturePluginsStore{
+		existingPlugin: &configstoreTables.TablePlugin{
+			Name:     "custom-probe",
+			Enabled:  true,
+			Config:   map[string]any{},
+			Path:     &storedPath,
+			IsCustom: true,
+		},
+	}
+
+	h := &PluginsHandler{
+		pluginsLoader: noopPluginsLoader{},
+		configStore:   store,
+	}
+
+	ctx := buildUpdateRequestFor(t, "custom-probe", map[string]any{
+		"enabled": true,
+		"path":    nil,
+		"config":  map[string]any{},
+	})
+	h.updatePlugin(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if store.capturedPath == nil {
+		t.Fatal("path was cleared by an explicit null; null must behave like an omitted field")
+	}
+	if *store.capturedPath != storedPath {
+		t.Errorf("path = %q, want %q", *store.capturedPath, storedPath)
+	}
+}
