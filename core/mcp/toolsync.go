@@ -116,6 +116,11 @@ func (cts *ClientToolSyncer) performSync() {
 	}
 
 	conn := clientState.Conn
+	// Record the connection generation alongside the conn snapshot: if a
+	// reconnect swaps in a fresh connection while this sync is in flight, the
+	// write-back below must not clobber the fresh tool set with results from
+	// the replaced connection.
+	connGeneration := clientState.ConnGeneration
 	config := clientState.ExecutionConfig
 	clientName := config.Name
 	cts.manager.mu.RUnlock()
@@ -155,6 +160,14 @@ func (cts *ClientToolSyncer) performSync() {
 	clientState, exists = cts.manager.clientMap[cts.clientID]
 	if !exists {
 		cts.manager.mu.Unlock()
+		return
+	}
+
+	// The connection this sync ran against has been replaced mid-flight;
+	// drop the stale results and let the next tick sync the new connection.
+	if clientState.ConnGeneration != connGeneration {
+		cts.manager.mu.Unlock()
+		cts.logger.Debug("%s Skipping tool sync write-back for %s: connection was replaced during sync", MCPLogPrefix, cts.clientID)
 		return
 	}
 
