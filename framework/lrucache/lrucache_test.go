@@ -590,3 +590,54 @@ func TestNew_PanicsOnNonPositiveCapacity(t *testing.T) {
 	assert.Panics(t, func() { New[string](0) })
 	assert.Panics(t, func() { New[string](-1) })
 }
+
+func TestEncodeDecodeKey_RoundTrip(t *testing.T) {
+	parts := []string{"user", "alice", "client-1"}
+	key := EncodeKey(parts...)
+	got, ok := DecodeKey(key, len(parts))
+	require.True(t, ok)
+	assert.Equal(t, parts, got)
+}
+
+// TestEncodeDecodeKey_NoCollisionOnEmbeddedDelimiter pins the reason this
+// codec exists over a plain separator join: a value that happens to
+// contain the separator (or, here, digits and a colon shaped like a length
+// prefix) must not let one tuple's key collide with a different tuple's.
+func TestEncodeDecodeKey_NoCollisionOnEmbeddedDelimiter(t *testing.T) {
+	keyA := EncodeKey("user", "a\x00b", "c")
+	keyB := EncodeKey("user", "a", "b\x00c")
+	assert.NotEqual(t, keyA, keyB, "distinct tuples must not alias to the same key")
+
+	gotA, ok := DecodeKey(keyA, 3)
+	require.True(t, ok)
+	assert.Equal(t, []string{"user", "a\x00b", "c"}, gotA)
+
+	gotB, ok := DecodeKey(keyB, 3)
+	require.True(t, ok)
+	assert.Equal(t, []string{"user", "a", "b\x00c"}, gotB)
+}
+
+func TestDecodeKey_RejectsMalformedInput(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		n    int
+	}{
+		{"empty string", "", 3},
+		{"no colon", "abc", 1},
+		{"non-numeric length", "x:abc", 1},
+		{"negative length", "-1:a", 1},
+		{"length exceeds remaining bytes", "10:ab", 1},
+		{"trailing garbage after all parts", "1:a1:btrailing", 2},
+		{"too few parts", "4:user", 2},
+		{"negative part count", "1:a", -1},
+		{"non-canonical length prefix with leading plus", "+1:a", 1},
+		{"non-canonical length prefix with leading zero", "01:a", 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := DecodeKey(tc.key, tc.n)
+			assert.False(t, ok)
+		})
+	}
+}
