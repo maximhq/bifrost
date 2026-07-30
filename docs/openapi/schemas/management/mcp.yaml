@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -10,6 +10,55 @@ MCPAuthType:
     - oauth: OAuth 2.0 authentication (server-level, admin authenticates once)
     - per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)
     - per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)
+    - token_exchange: Delegated token exchange (each caller's own identity-provider token is
+      exchanged for a short-lived token scoped to this server on every call; nothing is
+      stored per caller). Requires an enabled identity-provider integration (enterprise).
+
+MCPTokenExchangeConfig:
+  type: object
+  required: [audience, client_id]
+  properties:
+    audience:
+      type: string
+      minLength: 1
+      description: Resource identifier this server is scoped to at the identity provider (e.g. "api://jira-mcp")
+    client_id:
+      type: string
+      minLength: 1
+      description: |
+        The identity-provider application authorized to perform exchanges for
+        this audience — a dedicated registration carrying the token-exchange
+        (or on-behalf-of) grant, not the SSO login application. Supports
+        env.VAR_NAME and vault.path references. Redacted in API responses.
+    client_secret:
+      type: string
+      description: |
+        Secret for the exchange application; omit for public clients. Supports
+        env.VAR_NAME and vault.path references. Redacted in API responses.
+    scopes:
+      type: array
+      items:
+        type: string
+      description: |
+        Optional scopes to request on the exchanged token. Include
+        "offline_access" (where the identity provider supports it) so the
+        retained admin discovery credential gets a refresh token and stays
+        self-renewing.
+    authorization_server_url:
+      type: string
+      description: |
+        Overrides the Authorization Server the exchange request is sent to.
+        Only needed when the audience is registered on a different
+        Authorization Server than the one used for SSO login (e.g. Okta's
+        per-resource Custom Authorization Servers). Leave unset to use the
+        deployment's SSO login issuer, which is correct for providers with a
+        single tenant-wide token endpoint (Entra, Auth0).
+  description: |
+    Delegated token-exchange scoping and credentials for auth_type
+    "token_exchange". The exchange endpoint and grant shape come from the
+    deployment's identity-provider integration; this block only says which
+    resource the exchanged token must be scoped to and which application
+    performs the exchange.
 
 MCPConnectionType:
   type: string
@@ -39,8 +88,10 @@ MCPConnectionState:
       response-only projection meaning the retained admin discovery credential
       needs repair; end-user credentials and tool calls keep working, only
       periodic tool-list refresh pauses. Repair via reauthorize
-      (per_user_oauth) or verify-headers with fresh sample values
-      (per_user_headers).
+      (per_user_oauth), verify-headers with fresh sample values
+      (per_user_headers), or verify-exchange (token_exchange, which
+      re-exchanges the signed-in admin's own identity token — no sample
+      values to supply).
     - disabled: Client has been intentionally disabled; no connection or workers are active
 
 MCPStdioConfig:
@@ -103,6 +154,29 @@ MCPClientCreateRequestBase:
           When `auth_type` is `per_user_headers`, `per_user_header_keys` must
           declare at least one header name — the submission flow has nothing
           to ask the end-user for otherwise.
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: token_exchange
+      then:
+        required: [token_exchange]
+        description: |
+          When `auth_type` is `token_exchange`, `token_exchange` must declare
+          at least `audience` and `client_id` — there is nothing to scope the
+          exchange to, or exchange with, otherwise.
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            not:
+              const: token_exchange
+      then:
+        not:
+          required: [token_exchange]
+        description: |
+          A `token_exchange` block only applies to auth_type "token_exchange";
+          reject it for every other auth_type instead of silently ignoring it.
   properties:
     client_id:
       type: string
@@ -219,6 +293,13 @@ MCPClientCreateRequestBase:
         end-user must supply the first time they hit this MCP server. Values are
         submitted per user via the inline-401 flow — never persisted on the MCP
         client config.
+    token_exchange:
+      $ref: '#/MCPTokenExchangeConfig'
+      description: |
+        Required when creating a client with auth_type "token_exchange".
+        Verification runs automatically as the signed-in admin (see
+        POST /api/mcp/client/{id}/verify-exchange) — there is no sample-token
+        field on this request.
     user_headers:
       type: object
       additionalProperties:
@@ -391,6 +472,14 @@ MCPClientUpdateRequest:
         their next tool call to satisfy the new schema. The retained admin
         discovery credential is flipped the same way; repair it by calling
         POST /api/mcp/client/{id}/verify-headers with fresh sample values.
+    token_exchange:
+      $ref: '#/MCPTokenExchangeConfig'
+      description: |
+        For `token_exchange` clients only. Omitted preserves the stored
+        configuration. A redacted `client_id` / `client_secret` round-tripped
+        from a prior GET is resolved back to the stored value rather than
+        overwriting it; any other change re-scopes future exchanges and
+        invalidates cached exchanged tokens for this client.
     disabled:
       type: boolean
       default: false
@@ -535,6 +624,11 @@ MCPClientConfig:
         For `per_user_headers` clients only. The list of header names each end-user
         must supply via the inline-401 flow. Header values themselves are stored
         per-user in a separate table (surfaced on `/api/mcp/sessions`).
+    token_exchange:
+      $ref: '#/MCPTokenExchangeConfig'
+      description: |
+        For `token_exchange` clients only. `client_id` and `client_secret` are
+        redacted in this response.
     disabled:
       type: boolean
       default: false
