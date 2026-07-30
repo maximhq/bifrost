@@ -947,7 +947,9 @@ func (m *ToolsManager) recoverSharedConnection(
 	// ExecutionConfig.ID doesn't match the client this recovery is actually
 	// for, or if the tool it was reconnected for is no longer on it —
 	// letting the original auth failure surface is strictly safer than
-	// guessing.
+	// guessing. GetClientByName returns a snapshot copy of the client state,
+	// so it must be re-resolved after the reconnect to pick up the fresh
+	// connection.
 	state := m.clientManager.GetClientByName(executionConfig.Name)
 	if state == nil || state.ExecutionConfig == nil || state.ExecutionConfig.ID != executionConfig.ID {
 		return nil, false

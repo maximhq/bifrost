@@ -217,21 +217,24 @@ func (m *authRetryClientManager) AcquireClientConn(_ *schemas.BifrostContext, _ 
 	return m.acquireConn, func() {}, nil
 }
 
+// ReconnectClient mirrors the real MCPManager.beginExclusiveClientOp
+// contract: a completed op is left in m.inflight rather than cleared, so a
+// caller that lost the race and calls AwaitReconnect afterward still finds
+// the (by-then-finished) op instead of racing a delete. A new call only
+// starts a fresh op when none is present or the previous one has finished.
 func (m *authRetryClientManager) ReconnectClient(_ string) error {
+	op := &inflightClientOp{done: make(chan struct{})}
 	m.inflightMu.Lock()
 	if m.inflight != nil {
 		select {
 		case <-m.inflight.done:
-			// Previous op already finished; fall through and replace it, the
-			// same CompareAndSwap-on-a-done-op behavior beginExclusiveClientOp
-			// uses in clientmanager.go.
+			// Previous op finished; replace it and proceed as the new winner.
 		default:
 			m.inflightMu.Unlock()
 			m.reconnectRejected.Add(1)
 			return errors.New("reconnect already in progress for this client")
 		}
 	}
-	op := &inflightClientOp{done: make(chan struct{})}
 	m.inflight = op
 	m.inflightMu.Unlock()
 
@@ -247,19 +250,8 @@ func (m *authRetryClientManager) ReconnectClient(_ string) error {
 	}
 	err := m.reconnectErr
 
-	m.inflightMu.Lock()
 	op.err = err
 	close(op.done)
-	// Deliberately not cleared to nil here: a caller that lost the race and
-	// got "already in progress" above must still be able to observe this
-	// op's outcome via AwaitReconnect after it completes — clearing
-	// immediately would let that caller poll AwaitReconnect a moment too
-	// late, see inflight == nil, and wrongly conclude nothing is (or ever
-	// was) in flight. Mirrors beginExclusiveClientOp's real behavior: the
-	// completed op is only replaced by the next ReconnectClient call, not
-	// deleted on finish. Use resetInflight for tests that need a clean
-	// no-op starting state instead.
-	m.inflightMu.Unlock()
 	return err
 }
 
