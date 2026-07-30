@@ -9,6 +9,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"strconv"
@@ -22,14 +23,29 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// MCPOauthTokenCacheManager invalidates cached per-user MCP OAuth access
+// tokens after a database write that bypasses the OAuth provider's own write
+// paths. The base server implementation evicts from local memory; a
+// clustered deployment overrides it to also notify peers so their caches
+// stay current. Handlers call it directly after successful writes, so the
+// server must always wire it (it is nil-safe internally when no provider is
+// configured, but the interface value itself must be non-nil).
+type MCPOauthTokenCacheManager interface {
+	EvictOauthTokenCacheByID(ctx context.Context, tokenID string)
+	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
+}
+
 // MCPSessionsHandler serves the sessions tab API.
 type MCPSessionsHandler struct {
 	store *lib.Config
+	// mcpOauthTokenCacheManager invalidates cached OAuth access tokens after
+	// this handler writes token rows directly through the configstore.
+	mcpOauthTokenCacheManager MCPOauthTokenCacheManager
 }
 
 // NewMCPSessionsHandler creates the handler.
-func NewMCPSessionsHandler(store *lib.Config) *MCPSessionsHandler {
-	return &MCPSessionsHandler{store: store}
+func NewMCPSessionsHandler(store *lib.Config, mcpOauthTokenCacheManager MCPOauthTokenCacheManager) *MCPSessionsHandler {
+	return &MCPSessionsHandler{store: store, mcpOauthTokenCacheManager: mcpOauthTokenCacheManager}
 }
 
 // RegisterRoutes registers the sessions tab routes.
@@ -666,6 +682,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
 		return
 	}
+	h.mcpOauthTokenCacheManager.EvictOauthTokenCacheByID(ctx, tok.ID)
 	logger.Debug("[mcp/sessions] revoked: token=%s mcp_client=%s mode=%s", rowID, tok.MCPClientID, tok.AuthMode)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }

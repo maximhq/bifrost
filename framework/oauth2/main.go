@@ -68,6 +68,15 @@ type OAuth2Provider struct {
 	// RevokeToken's database I/O. Sharing p.mu would stall flow init/cleanup
 	// reads behind unrelated revoke traffic.
 	tempTokens atomic.Pointer[temptoken.Service]
+
+	// userTokens caches per-user access-token lookups keyed by
+	// (auth mode, identity, mcp client). It owns its own locking and must
+	// never be guarded by p.mu, for the same reason tempTokens is not:
+	// p.mu is write-locked across token-endpoint network I/O, and a cached
+	// read that had to wait on it would lose the entire point of the cache.
+	// Write paths in this file evict inline; handler-level database writes
+	// that bypass the provider evict through the exported eviction methods.
+	userTokens *userTokenCache
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -79,6 +88,7 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 	return &OAuth2Provider{
 		configStore:    configStore,
 		retryBaseDelay: time.Second,
+		userTokens:     newUserTokenCache(defaultUserTokenCacheCapacity),
 	}
 }
 
@@ -309,6 +319,9 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 				return fmt.Errorf("oauth refresh permanently rejected but status update failed (mcp_client=%s auth_mode=%s upstream_status=%d): %w",
 					token.MCPClientID, token.AuthMode, permErr.StatusCode, markErr)
 			}
+			// The row is no longer 'active'; drop any cached copy so lookups
+			// surface the re-auth requirement instead of a dead access token.
+			p.EvictUserTokenByID(token.ID)
 			logger.Debug("OAuth refresh permanently rejected; token marked needs_reauth: mcp_client=%s auth_mode=%s upstream_status=%d",
 				token.MCPClientID, token.AuthMode, permErr.StatusCode)
 			return fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
@@ -343,6 +356,10 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 	if !updated {
 		return fmt.Errorf("token was reauthorized or rotated during refresh, discarding this refresh: %w", schemas.ErrOAuth2TokenExpired)
 	}
+
+	// Drop any cached copy of the old access token; the next lookup reads
+	// the freshly written row.
+	p.EvictUserTokenByID(token.ID)
 
 	logger.Debug("OAuth token refreshed successfully: token_id=%s auth_mode=%s", token.ID, token.AuthMode)
 
@@ -394,6 +411,12 @@ func (p *OAuth2Provider) ForceRefreshAccessToken(ctx *schemas.BifrostContext, co
 		if token == nil {
 			return schemas.ErrOAuth2TokenNotFound
 		}
+		// Force-refresh means the caller just saw the current access token
+		// rejected upstream. Drop the cached copy for this binding up front,
+		// in addition to RefreshAccessToken's own post-write eviction, so
+		// the follow-up lookup re-reads the database even if the refresh
+		// call itself fails.
+		p.EvictUserToken(mode, identity, config.ID)
 		return p.RefreshAccessToken(ctx, token.ID)
 	default:
 		return fmt.Errorf("force-refresh is not supported for MCP auth type %q", config.AuthType)
@@ -459,6 +482,7 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 	if err := p.configStore.DeleteSharedOauthTokensByConfigID(ctx, oauthConfigID); err != nil {
 		return fmt.Errorf("failed to delete token: %w", err)
 	}
+	p.EvictUserTokenByID(token.ID)
 
 	logger.Debug("OAuth token revoked", "oauth_config_id", oauthConfigID)
 
@@ -922,6 +946,10 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 		p.cleanupFlow(ctx, flow.ID)
 		return err
 	}
+	// CreateOauthToken upserts by binding and rewrites tokenRecord.ID to the
+	// reused row's ID when one existed, so this evicts exactly the row that
+	// was written. A fresh row has nothing cached and the evict is a no-op.
+	p.EvictUserTokenByID(tokenRecord.ID)
 
 	// Flow row's purpose ends here — same reasoning as CompleteUserOAuthFlow
 	// (see cleanupFlow): the token row is the durable record now. Harmless
@@ -1521,6 +1549,10 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
 		return "", fmt.Errorf("failed to create per-user oauth token: %w", err)
 	}
+	// CreateOauthToken upserts by binding and rewrites tokenRecord.ID to the
+	// reused row's ID when one existed, so this evicts exactly the row that
+	// was written; the next lookup for this binding reads the new credential.
+	p.EvictUserTokenByID(tokenRecord.ID)
 
 	// Token row is written; the flow row's purpose ends here. cleanupFlow
 	// deletes both the flow row (transient PKCE/state carrier — the token
@@ -1538,32 +1570,119 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 // GetUserAccessTokenByMode retrieves the upstream access token using exactly
 // one identity column determined by mode. No fallback chain. Filters
 // status='active' so orphaned rows never satisfy a lookup.
+//
+// Reads are served from an in-memory cache when possible: a cached entry
+// whose expiry has passed is dropped and the lookup falls through to the
+// database path, which owns every expiry and refresh decision. Failed
+// lookups are never cached, so a caller completing OAuth (or a token being
+// reactivated) becomes visible on the very next call.
 func (p *OAuth2Provider) GetUserAccessTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (string, error) {
+	key := userTokenCacheKey(mode, identity, mcpClientID)
+	if cached, ok := p.userTokens.Get(key); ok {
+		return cached.accessToken, nil
+	}
+	cached, err := p.userTokens.Fill(ctx, key, func() (cachedUserToken, error) {
+		return p.loadUserAccessTokenByMode(ctx, mode, identity, mcpClientID)
+	})
+	if err != nil {
+		return "", err
+	}
+	return cached.accessToken, nil
+}
+
+// loadUserAccessTokenByMode is GetUserAccessTokenByMode's cache-miss path:
+// the full database lookup, including the lazy pre-flight refresh for a
+// known-expired row with a refresh token available.
+func (p *OAuth2Provider) loadUserAccessTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (cachedUserToken, error) {
 	token, err := p.configStore.GetOauthUserTokenByMode(ctx, mode, identity, mcpClientID)
 	if err != nil {
-		return "", fmt.Errorf("failed to load per-user oauth token (mode=%s): %w", mode, err)
+		return cachedUserToken{}, fmt.Errorf("failed to load per-user oauth token (mode=%s): %w", mode, err)
 	}
 	if token == nil {
-		return "", schemas.ErrOAuth2TokenNotFound
+		return cachedUserToken{}, schemas.ErrOAuth2TokenNotFound
 	}
 
 	// Refresh only when known-expired and refresh token exists.
 	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) && strings.TrimSpace(token.RefreshToken) != "" {
 		if err := p.RefreshAccessToken(ctx, token.ID); err != nil {
-			return "", fmt.Errorf("per-user token expired and refresh failed: %w", err)
+			return cachedUserToken{}, fmt.Errorf("per-user token expired and refresh failed: %w", err)
 		}
 		token, err = p.configStore.GetOauthUserTokenByMode(ctx, mode, identity, mcpClientID)
 		if err != nil || token == nil {
-			return "", fmt.Errorf("failed to reload per-user token after refresh")
+			return cachedUserToken{}, fmt.Errorf("failed to reload per-user token after refresh")
 		}
 	}
 	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
-		return "", fmt.Errorf("per-user token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
+		return cachedUserToken{}, fmt.Errorf("per-user token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
 	}
 
 	accessToken := strings.TrimSpace(token.AccessToken)
 	if accessToken == "" {
-		return "", fmt.Errorf("per-user access token is empty after sanitization")
+		return cachedUserToken{}, fmt.Errorf("per-user access token is empty after sanitization")
 	}
-	return accessToken, nil
+	return cachedUserToken{tokenID: token.ID, accessToken: accessToken, expiresAt: token.ExpiresAt}, nil
+}
+
+// EvictUserToken drops the cached access token for one (mode, identity,
+// mcp client) binding. Side-effect only and safe to call when the cache is
+// absent; the next lookup for the binding reads the database.
+func (p *OAuth2Provider) EvictUserToken(mode schemas.MCPAuthMode, identity, mcpClientID string) {
+	if p == nil {
+		return
+	}
+	p.userTokens.Evict(userTokenCacheKey(mode, identity, mcpClientID))
+}
+
+// EvictUserTokenByID drops the cached access token backed by the given token
+// row ID, if any binding currently holds it. Side-effect only and safe to
+// call when the cache is absent or the ID is not cached.
+func (p *OAuth2Provider) EvictUserTokenByID(tokenID string) {
+	if p == nil {
+		return
+	}
+	p.userTokens.EvictByTokenID(tokenID)
+}
+
+// EvictUserTokensByMCPClient drops every cached access token bound to the
+// given MCP client, across all auth modes and identities. Used after
+// client-level mutations that invalidate its token rows as a set, such as
+// credential rotation, access reconciliation, or client deletion.
+// Side-effect only and safe to call when the cache is absent.
+func (p *OAuth2Provider) EvictUserTokensByMCPClient(mcpClientID string) {
+	if p == nil {
+		return
+	}
+	p.userTokens.EvictByMCPClient(mcpClientID)
+}
+
+// EvictUserTokensByVirtualKey drops every cached vk-mode access token bound
+// to the given virtual key, across all MCP clients. Used after virtual key
+// mutations that orphan or delete its token rows as a set. Side-effect only
+// and safe to call when the cache is absent.
+func (p *OAuth2Provider) EvictUserTokensByVirtualKey(virtualKeyID string) {
+	if p == nil {
+		return
+	}
+	p.userTokens.EvictByVirtualKey(virtualKeyID)
+}
+
+// EvictUserTokensByUser drops every cached user-mode access token bound to
+// the given user, across all MCP clients. Used after user-level mutations
+// that orphan or delete the user's token rows as a set. Side-effect only
+// and safe to call when the cache is absent.
+func (p *OAuth2Provider) EvictUserTokensByUser(userID string) {
+	if p == nil {
+		return
+	}
+	p.userTokens.EvictByUser(userID)
+}
+
+// FlushUserTokenCache drops every cached per-user access token. The coarse
+// fallback for mutations whose blast radius cannot be scoped to one client
+// or virtual key. Side-effect only.
+func (p *OAuth2Provider) FlushUserTokenCache() {
+	if p == nil {
+		return
+	}
+	p.userTokens.Flush()
 }
