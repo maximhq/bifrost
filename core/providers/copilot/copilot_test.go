@@ -61,9 +61,13 @@ func TestCopilot(t *testing.T) {
 	defer cancel()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:       schemas.Copilot,
-		ChatModel:      "gpt-4o",
-		VisionModel:    "gpt-4o",
+		Provider:  schemas.Copilot,
+		ChatModel: "gpt-4o",
+		// The `gpt-4o` alias resolves to `gpt-4o-2024-11-20` on Copilot, which
+		// rejects image inputs ("model not supported for vision"). Pin the
+		// vision test to the snapshot Copilot's /models reports as
+		// vision-capable.
+		VisionModel:    "gpt-4o-2024-05-13",
 		ReasoningModel: "gpt-5-mini",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Copilot, Model: "gpt-4o-mini"},
