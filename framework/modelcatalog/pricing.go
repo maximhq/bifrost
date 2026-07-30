@@ -56,6 +56,15 @@ func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, pr
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateRoutingEmbeddingCost prices the embedding call recorded in a
+// response's RoutingDebug stamp, independent of its CountTowardBudgets flag —
+// telemetry uses it to report routing overhead unconditionally, while
+// CalculateCost folds the same amount into the request's cost only when the
+// flag is set.
+func (mc *ModelCatalog) CalculateRoutingEmbeddingCost(routingDebug *schemas.BifrostRoutingDebug, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.RoutingEmbeddingCost(routingDebug, (*datasheet.LookupScopes)(scopes))
+}
+
 // UpsertModelPricingAttributes writes additional_attributes for every row
 // matching (model, provider) and reloads the pricing cache.
 func (mc *ModelCatalog) UpsertModelPricingAttributes(ctx context.Context, model string, provider schemas.ModelProvider, attrs map[string]string) (int64, error) {
