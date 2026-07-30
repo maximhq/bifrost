@@ -773,6 +773,52 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_APIMiddleware_DevPrefixDoesNotMatchDevices guards against the
+// prefix-matching bug where the "/api/dev" whitelist prefix (intended for the dev pprof
+// routes under "/api/dev/pprof") also matched "/api/devices", silently bypassing auth on
+// the edge-control devices route. With the trailing-slash fix, "/api/dev/pprof" must still
+// bypass auth while "/api/devices" must NOT.
+func TestAuthMiddleware_APIMiddleware_DevPrefixDoesNotMatchDevices(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	cases := []struct {
+		name           string
+		uri            string
+		wantNextCalled bool // true => route is whitelisted (auth bypassed)
+	}{
+		{name: "dev pprof is whitelisted", uri: "/api/dev/pprof", wantNextCalled: true},
+		{name: "dev pprof subpath is whitelisted", uri: "/api/dev/pprof/goroutines", wantNextCalled: true},
+		{name: "devices is NOT whitelisted", uri: "/api/devices?limit=25&offset=0", wantNextCalled: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(tc.uri)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) { nextCalled = true }
+
+			am.APIMiddleware()(next)(ctx)
+
+			if nextCalled != tc.wantNextCalled {
+				t.Fatalf("route %q: nextCalled = %v, want %v (status %d)", tc.uri, nextCalled, tc.wantNextCalled, ctx.Response.StatusCode())
+			}
+			// A non-whitelisted route with no credentials must be rejected, not passed through.
+			if !tc.wantNextCalled && ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+				t.Fatalf("route %q: expected 401 for unauthenticated non-whitelisted route, got %d", tc.uri, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
 func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *testing.T) {
 	SetLogger(&mockLogger{})
 

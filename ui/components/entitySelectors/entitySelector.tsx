@@ -21,6 +21,7 @@
 
 import { CheckIcon, ChevronDownIcon, PlusIcon } from "lucide-react";
 import { type ComponentType, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { components } from "react-select";
 
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
@@ -308,6 +309,10 @@ export function EntitySelector(props: EntitySelectorProps) {
 						if (props.multiple !== true) return;
 						props.onChange(selected.map((option) => option.value));
 					}}
+					// Dialog's centering transform turns the menu's `position: fixed`
+					// into relative-to-dialog instead of relative-to-viewport, which
+					// clips it; portaling to body escapes that ancestor entirely.
+					menuPortalTarget={typeof document !== "undefined" ? document.body : undefined}
 					// Clearing the input never reaches `reload`, so mirror every
 					// keystroke into the search state instead.
 					onInputChange={(inputValue) => onSearchChange(inputValue)}
@@ -319,24 +324,26 @@ export function EntitySelector(props: EntitySelectorProps) {
 					noOptionsMessage={() => (isError ? errorMessage : emptyMessage)}
 					views={{
 						option: (optionProps) => {
+							const { Option } = components;
 							const data = optionProps.data as Option<EntityOptionMeta>;
+							const isLast = optionProps.options[optionProps.options.length - 1] === optionProps.data;
 							return (
-								<div
+								<Option
+									{...optionProps}
 									className={cn(
 										"flex w-full cursor-pointer flex-col gap-0.5 rounded-sm p-2 text-sm",
-										optionProps.isFocused && "bg-background-highlight-primary/60",
-										optionProps.isSelected && "bg-background-highlight-primary/40",
+										optionProps.isFocused && "bg-accent",
+										isLast && "mb-2",
 									)}
-									onClick={() => optionProps.selectOption(optionProps.data)}
 								>
 									<div className="flex items-center justify-between">
-										<span className="text-content-primary font-medium">{data.label}</span>
-										{optionProps.isSelected && <span className="text-primary text-xs">Selected</span>}
+										<span className="font-medium">{data.label}</span>
+										<CheckIcon className={cn("ml-auto size-3.5 shrink-0", optionProps.isSelected ? "opacity-100" : "opacity-0")} />
 									</div>
 									{data.meta?.description && data.meta.description !== data.label && (
-										<span className="text-content-tertiary line-clamp-1 text-xs">{data.meta.description}</span>
+										<span className="text-muted-foreground line-clamp-1 text-xs">{data.meta.description}</span>
 									)}
-								</div>
+								</Option>
 							);
 						},
 					}}
