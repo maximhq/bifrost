@@ -856,7 +856,12 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 // refreshes materialized views. If readyFlag is provided and not yet true,
 // it will be set to true on the first successful refresh (recovery path when
 // the initial refresh failed). Returns a stop function for graceful shutdown.
+// A non-positive interval means maintenance is disabled: no goroutine starts
+// and the stop function is a no-op.
 func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) func() {
+	if interval <= 0 {
+		return func() {}
+	}
 	stopCh := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(interval)
