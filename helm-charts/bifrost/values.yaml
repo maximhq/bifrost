@@ -635,7 +635,7 @@ bifrost:
         # Max seconds for a single trace export (1-60). This is the only timeout on gRPC
         # exports: an endpoint that accepts the connection but never replies would
         # otherwise block an export goroutine indefinitely.
-        export_timeout: 5
+        # export_timeout: 5
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
         metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
