@@ -36,6 +36,7 @@ type BifrostConfig struct {
 	KeySelector        KeySelector   // Custom key selector function
 	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
 	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
+	ModelCatalog       ModelInfoProvider
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -131,68 +132,69 @@ func (r RequestType) Value() (driver.Value, error) {
 }
 
 const (
-	ListModelsRequest            RequestType = "list_models"
-	TextCompletionRequest        RequestType = "text_completion"
-	TextCompletionStreamRequest  RequestType = "text_completion_stream"
-	ChatCompletionRequest        RequestType = "chat_completion"
-	ChatCompletionStreamRequest  RequestType = "chat_completion_stream"
-	ResponsesRequest             RequestType = "responses"
-	ResponsesStreamRequest       RequestType = "responses_stream"
-	ResponsesRetrieveRequest     RequestType = "responses_retrieve"
-	ResponsesDeleteRequest       RequestType = "responses_delete"
-	ResponsesCancelRequest       RequestType = "responses_cancel"
-	ResponsesInputItemsRequest   RequestType = "responses_input_items"
-	EmbeddingRequest             RequestType = "embedding"
-	SpeechRequest                RequestType = "speech"
-	SpeechStreamRequest          RequestType = "speech_stream"
-	TranscriptionRequest         RequestType = "transcription"
-	TranscriptionStreamRequest   RequestType = "transcription_stream"
-	ImageGenerationRequest       RequestType = "image_generation"
-	ImageGenerationStreamRequest RequestType = "image_generation_stream"
-	ImageEditRequest             RequestType = "image_edit"
-	ImageEditStreamRequest       RequestType = "image_edit_stream"
-	ImageVariationRequest        RequestType = "image_variation"
-	VideoGenerationRequest       RequestType = "video_generation"
-	VideoRetrieveRequest         RequestType = "video_retrieve"
-	VideoDownloadRequest         RequestType = "video_download"
-	VideoDeleteRequest           RequestType = "video_delete"
-	VideoListRequest             RequestType = "video_list"
-	VideoRemixRequest            RequestType = "video_remix"
-	BatchCreateRequest           RequestType = "batch_create"
-	BatchListRequest             RequestType = "batch_list"
-	BatchRetrieveRequest         RequestType = "batch_retrieve"
-	BatchCancelRequest           RequestType = "batch_cancel"
-	BatchResultsRequest          RequestType = "batch_results"
-	BatchDeleteRequest           RequestType = "batch_delete"
-	FileUploadRequest            RequestType = "file_upload"
-	FileListRequest              RequestType = "file_list"
-	FileRetrieveRequest          RequestType = "file_retrieve"
-	FileDeleteRequest            RequestType = "file_delete"
-	CachedContentCreateRequest   RequestType = "cached_content_create"
-	CachedContentListRequest     RequestType = "cached_content_list"
-	CachedContentRetrieveRequest RequestType = "cached_content_retrieve"
-	CachedContentUpdateRequest   RequestType = "cached_content_update"
-	CachedContentDeleteRequest   RequestType = "cached_content_delete"
-	FileContentRequest           RequestType = "file_content"
-	ContainerCreateRequest       RequestType = "container_create"
-	ContainerListRequest         RequestType = "container_list"
-	ContainerRetrieveRequest     RequestType = "container_retrieve"
-	ContainerDeleteRequest       RequestType = "container_delete"
-	ContainerFileCreateRequest   RequestType = "container_file_create"
-	ContainerFileListRequest     RequestType = "container_file_list"
-	ContainerFileRetrieveRequest RequestType = "container_file_retrieve"
-	ContainerFileContentRequest  RequestType = "container_file_content"
-	ContainerFileDeleteRequest   RequestType = "container_file_delete"
-	RerankRequest                RequestType = "rerank"
-	OCRRequest                   RequestType = "ocr"
-	CountTokensRequest           RequestType = "count_tokens"
-	CompactionRequest            RequestType = "compaction"
-	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
-	PassthroughRequest           RequestType = "passthrough"
-	PassthroughStreamRequest     RequestType = "passthrough_stream"
-	UnknownRequest               RequestType = "unknown"
-	WebSocketResponsesRequest    RequestType = "websocket_responses"
-	RealtimeRequest              RequestType = "realtime"
+	ListModelsRequest              RequestType = "list_models"
+	TextCompletionRequest          RequestType = "text_completion"
+	TextCompletionStreamRequest    RequestType = "text_completion_stream"
+	ChatCompletionRequest          RequestType = "chat_completion"
+	ChatCompletionStreamRequest    RequestType = "chat_completion_stream"
+	ResponsesRequest               RequestType = "responses"
+	ResponsesStreamRequest         RequestType = "responses_stream"
+	ResponsesRetrieveRequest       RequestType = "responses_retrieve"
+	ResponsesRetrieveStreamRequest RequestType = "responses_retrieve_stream"
+	ResponsesDeleteRequest         RequestType = "responses_delete"
+	ResponsesCancelRequest         RequestType = "responses_cancel"
+	ResponsesInputItemsRequest     RequestType = "responses_input_items"
+	EmbeddingRequest               RequestType = "embedding"
+	SpeechRequest                  RequestType = "speech"
+	SpeechStreamRequest            RequestType = "speech_stream"
+	TranscriptionRequest           RequestType = "transcription"
+	TranscriptionStreamRequest     RequestType = "transcription_stream"
+	ImageGenerationRequest         RequestType = "image_generation"
+	ImageGenerationStreamRequest   RequestType = "image_generation_stream"
+	ImageEditRequest               RequestType = "image_edit"
+	ImageEditStreamRequest         RequestType = "image_edit_stream"
+	ImageVariationRequest          RequestType = "image_variation"
+	VideoGenerationRequest         RequestType = "video_generation"
+	VideoRetrieveRequest           RequestType = "video_retrieve"
+	VideoDownloadRequest           RequestType = "video_download"
+	VideoDeleteRequest             RequestType = "video_delete"
+	VideoListRequest               RequestType = "video_list"
+	VideoRemixRequest              RequestType = "video_remix"
+	BatchCreateRequest             RequestType = "batch_create"
+	BatchListRequest               RequestType = "batch_list"
+	BatchRetrieveRequest           RequestType = "batch_retrieve"
+	BatchCancelRequest             RequestType = "batch_cancel"
+	BatchResultsRequest            RequestType = "batch_results"
+	BatchDeleteRequest             RequestType = "batch_delete"
+	FileUploadRequest              RequestType = "file_upload"
+	FileListRequest                RequestType = "file_list"
+	FileRetrieveRequest            RequestType = "file_retrieve"
+	FileDeleteRequest              RequestType = "file_delete"
+	CachedContentCreateRequest     RequestType = "cached_content_create"
+	CachedContentListRequest       RequestType = "cached_content_list"
+	CachedContentRetrieveRequest   RequestType = "cached_content_retrieve"
+	CachedContentUpdateRequest     RequestType = "cached_content_update"
+	CachedContentDeleteRequest     RequestType = "cached_content_delete"
+	FileContentRequest             RequestType = "file_content"
+	ContainerCreateRequest         RequestType = "container_create"
+	ContainerListRequest           RequestType = "container_list"
+	ContainerRetrieveRequest       RequestType = "container_retrieve"
+	ContainerDeleteRequest         RequestType = "container_delete"
+	ContainerFileCreateRequest     RequestType = "container_file_create"
+	ContainerFileListRequest       RequestType = "container_file_list"
+	ContainerFileRetrieveRequest   RequestType = "container_file_retrieve"
+	ContainerFileContentRequest    RequestType = "container_file_content"
+	ContainerFileDeleteRequest     RequestType = "container_file_delete"
+	RerankRequest                  RequestType = "rerank"
+	OCRRequest                     RequestType = "ocr"
+	CountTokensRequest             RequestType = "count_tokens"
+	CompactionRequest              RequestType = "compaction"
+	MCPToolExecutionRequest        RequestType = "mcp_tool_execution"
+	PassthroughRequest             RequestType = "passthrough"
+	PassthroughStreamRequest       RequestType = "passthrough_stream"
+	UnknownRequest                 RequestType = "unknown"
+	WebSocketResponsesRequest      RequestType = "websocket_responses"
+	RealtimeRequest                RequestType = "realtime"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -263,6 +265,7 @@ const (
 	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"              // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                 // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyResolvedAlias                       BifrostContextKey = "bifrost-resolved-alias"                 // *ResolvedAlias (set by bifrost after key-level alias resolution — providers read this for model_family routing and provider-specific overrides; nil/absent when no alias matched)
+	BifrostContextKeyRoutingInfo                         BifrostContextKey = "bifrost-routing-info"                   // RoutingInfo (set by bifrost per stream attempt - DO NOT SET THIS MANUALLY) - streams carry RoutingInfo only on chunks, so the transport reads this snapshot to emit routed-identity response headers before the first chunk
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyStreamGated                         BifrostContextKey = "bifrost-stream-gated"                   // bool (set by ctx.PauseStream/ResumeStream/EndStream when a plugin first engages the pause/resume gate; provider helpers use this as a fast-path check to skip Tracer.GateSend on streams that never engage the gate)
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"            // time.Duration (per-chunk idle timeout for streaming)
@@ -286,6 +289,7 @@ const (
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
+	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo and ctx.CalculateCost - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func([]PluginLogEntry) (callback to complete trace after streaming, receives transport plugin logs - set by tracing middleware)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
@@ -384,6 +388,7 @@ const (
 	BifrostContextKeyTempTokenScope                      BifrostContextKey = "bifrost-temp-token-scope"       // string (set by auth middleware when a temp token authorized the request - names the scope from the temptoken registry)
 	BifrostContextKeyTempTokenResourceID                 BifrostContextKey = "bifrost-temp-token-resource-id" // string (set by auth middleware alongside the scope - the resource_id the token is bound to, e.g. an OAuth flow ID for mcp_auth)
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
+	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *atomic.Int64 nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt; subtract from total to get Bifrost overhead
 )
 
 const (
@@ -1258,6 +1263,19 @@ func (e *BifrostError) PopulateRoutingInfo(info RoutingInfo) {
 	syncDeprecatedFromRoutingInfo(info, &e.ExtraFields.Provider, &e.ExtraFields.OriginalModelRequested, &e.ExtraFields.ResolvedModelUsed)
 }
 
+// ToExtraFields builds a response-shaped ExtraFields snapshot from a finalized
+// RoutingInfo, deriving the deprecated triplet via the same rules as the
+// response path. Used by the transport to emit routed-identity headers for
+// streams, where per-chunk ExtraFields don't exist yet at header-write time.
+func (ri RoutingInfo) ToExtraFields(requestType RequestType) BifrostResponseExtraFields {
+	extra := BifrostResponseExtraFields{
+		RequestType: requestType,
+		RoutingInfo: ri,
+	}
+	syncDeprecatedFromRoutingInfo(ri, &extra.Provider, &extra.OriginalModelRequested, &extra.ResolvedModelUsed)
+	return extra
+}
+
 // SetFallbackRoutingInfo marks the active sub-response's RoutingInfo as a
 // fallback attempt and records the primary attempt's provider/model. Also
 // re-syncs the deprecated OriginalModelRequested to the primary model per
@@ -1678,8 +1696,13 @@ type BifrostResponseExtraFields struct {
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
 	// RoutingInfo.Model. Still populated for backward compatibility; new
 	// consumers should read from RoutingInfo.
-	ResolvedModelUsed         string             `json:"resolved_model_used,omitempty"`
-	Latency                   int64              `json:"latency"`     // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ResolvedModelUsed string `json:"resolved_model_used,omitempty"`
+	Latency           int64  `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	// UpstreamLatency is the total time spent blocked on upstream sockets across
+	// every attempt, in milliseconds. Unlike Latency it survives retries and
+	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the
+	// request never accumulated one; nil means unknown, not zero.
+	UpstreamLatency           *int64             `json:"upstream_latency,omitempty"`
 	ChunkIndex                int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest                interface{}        `json:"raw_request,omitempty"`
 	RawResponse               interface{}        `json:"raw_response,omitempty"`

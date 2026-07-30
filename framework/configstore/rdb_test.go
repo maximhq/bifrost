@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -748,6 +749,139 @@ func TestUpdateBudget(t *testing.T) {
 	assert.Equal(t, 200.0, result.MaxLimit)
 }
 
+// TestCreateBudgetWithOverride verifies finite and permanent override state round-trips through the config store.
+func TestCreateBudgetWithOverride(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	// A finite grant must carry its anchor and total, which is what the remaining
+	// count is derived from. A cycles override without them is rejected by
+	// validation rather than persisted as a lifecycle-less override.
+	grantAnchor := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	tests := []*tables.TableBudget{
+		{
+			ID:                      "budget-override-cycles",
+			MaxLimit:                100,
+			ResetDuration:           "1h",
+			LastReset:               grantAnchor,
+			OverrideAmount:          25,
+			OverrideMode:            tables.BudgetOverrideModeCycles,
+			OverrideCyclesRemaining: 4,
+			OverrideCyclesTotal:     4,
+			OverrideAnchorReset:     &grantAnchor,
+		},
+		{
+			ID:             "budget-override-forever",
+			MaxLimit:       200,
+			ResetDuration:  "1d",
+			OverrideAmount: 50,
+			OverrideMode:   tables.BudgetOverrideModeForever,
+		},
+	}
+
+	for _, budget := range tests {
+		require.NoError(t, store.CreateBudget(ctx, budget))
+		got, err := store.GetBudget(ctx, budget.ID)
+		require.NoError(t, err)
+		assert.Equal(t, budget.OverrideAmount, got.OverrideAmount)
+		assert.Equal(t, budget.OverrideMode, got.OverrideMode)
+		assert.Equal(t, budget.OverrideCyclesRemaining, got.OverrideCyclesRemaining)
+		assert.Equal(t, budget.OverrideCyclesTotal, got.OverrideCyclesTotal)
+		if budget.OverrideAnchorReset == nil {
+			assert.Nil(t, got.OverrideAnchorReset)
+			continue
+		}
+		require.NotNil(t, got.OverrideAnchorReset)
+		assert.True(t, got.OverrideAnchorReset.Equal(*budget.OverrideAnchorReset),
+			"grant anchor did not round-trip: got %s, want %s", got.OverrideAnchorReset.UTC(), budget.OverrideAnchorReset.UTC())
+	}
+}
+
+// TestUpdateBudgetOverridePreservesBudgetState verifies the partial update cannot clobber usage or base configuration.
+func TestUpdateBudgetOverridePreservesBudgetState(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	budget := &tables.TableBudget{
+		ID:            "budget-override-partial-update",
+		MaxLimit:      100,
+		ResetDuration: "1d",
+		CurrentUsage:  40,
+	}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+
+	updated, err := store.UpdateBudgetOverride(ctx, budget.ID, 25, tables.BudgetOverrideModeCycles, 4, false)
+	require.NoError(t, err)
+	assert.Equal(t, 100.0, updated.MaxLimit)
+	assert.Equal(t, "1d", updated.ResetDuration)
+	assert.Equal(t, 40.0, updated.CurrentUsage)
+	assert.Equal(t, 25.0, updated.OverrideAmount)
+	assert.Equal(t, tables.BudgetOverrideModeCycles, updated.OverrideMode)
+	assert.Equal(t, 4, updated.OverrideCyclesRemaining)
+	assert.Equal(t, 4, updated.OverrideCyclesTotal)
+	require.NotNil(t, updated.OverrideAnchorReset, "a finite grant must be anchored so its remaining count can be derived")
+
+	cleared, err := store.UpdateBudgetOverride(ctx, budget.ID, 0, "", 0, false)
+	require.NoError(t, err)
+	assert.Equal(t, 100.0, cleared.MaxLimit)
+	assert.Equal(t, 40.0, cleared.CurrentUsage)
+	assert.Zero(t, cleared.OverrideAmount)
+	assert.Empty(t, cleared.OverrideMode)
+	assert.Zero(t, cleared.OverrideCyclesRemaining)
+	assert.Zero(t, cleared.OverrideCyclesTotal)
+	assert.Nil(t, cleared.OverrideAnchorReset, "clearing must drop the grant so it cannot be re-derived")
+}
+
+// TestUpdateBudgetOverrideAnchorsAtCurrentWindow verifies a rolling grant is
+// anchored on the budget's CreatedAt lattice, so every node derives the same
+// remaining count from it.
+func TestUpdateBudgetOverrideAnchorsAtCurrentWindow(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	created := time.Now().UTC().Add(-10 * time.Hour).Truncate(time.Second)
+	budget := &tables.TableBudget{
+		ID:            "budget-override-rolling-anchor",
+		MaxLimit:      100,
+		ResetDuration: "1h",
+		CreatedAt:     created,
+		LastReset:     created,
+	}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+
+	updated, err := store.UpdateBudgetOverride(ctx, budget.ID, 25, tables.BudgetOverrideModeCycles, 2, false)
+	require.NoError(t, err)
+	require.NotNil(t, updated.OverrideAnchorReset)
+
+	// The anchor must be a lattice point: an exact number of windows past the
+	// budget's creation instant, not the wall clock at grant time.
+	offset := updated.OverrideAnchorReset.Sub(updated.CreatedAt)
+	assert.Zero(t, offset%time.Hour,
+		"grant anchor is not lattice aligned: %s past CreatedAt is not a whole number of 1h windows", offset)
+}
+
+// TestUpdateBudgetOverrideAnchorsAtCalendarPeriodStart verifies a calendar-aligned
+// grant is anchored on the calendar boundary rather than the rolling lattice.
+func TestUpdateBudgetOverrideAnchorsAtCalendarPeriodStart(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	created := time.Now().UTC().AddDate(0, 0, -10).Truncate(time.Second)
+	budget := &tables.TableBudget{
+		ID:            "budget-override-calendar-anchor",
+		MaxLimit:      100,
+		ResetDuration: "1d",
+		CreatedAt:     created,
+		LastReset:     created,
+	}
+	require.NoError(t, store.CreateBudget(ctx, budget))
+
+	updated, err := store.UpdateBudgetOverride(ctx, budget.ID, 25, tables.BudgetOverrideModeCycles, 2, true)
+	require.NoError(t, err)
+	require.NotNil(t, updated.OverrideAnchorReset)
+
+	wantAnchor := tables.GetCalendarPeriodStart("1d", time.Now())
+	assert.True(t, updated.OverrideAnchorReset.Equal(wantAnchor),
+		"calendar-aligned grant anchor should be midnight UTC today: got %s, want %s",
+		updated.OverrideAnchorReset.UTC(), wantAnchor.UTC())
+}
+
 func TestGetBudgets(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -862,6 +996,113 @@ func TestUpdateRateLimit(t *testing.T) {
 // =============================================================================
 // Virtual Key Tests
 // =============================================================================
+
+// TestGetVirtualKeysPaginated_AssignmentFilters covers how the customer / team /
+// user filters compose. A virtual key is assigned to at most one of the three, so
+// supplying several ORs them rather than narrowing to nothing.
+//
+// UserID is unresolvable in the OSS build — the VK↔user link lives in an
+// enterprise-only table — so it contributes a never-true disjunct here: a
+// user-only filter matches nothing instead of silently returning every key. It
+// deliberately does NOT suppress a customer/team disjunct supplied alongside it;
+// those are still resolvable, and dropping them would diverge from the enterprise
+// store, which returns exactly that union.
+func TestGetVirtualKeysPaginated_AssignmentFilters(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateCustomer(ctx, &tables.TableCustomer{ID: "cust-1", Name: "Customer One"}))
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Team One"}))
+
+	custID, teamID := "cust-1", "team-1"
+	seed := []*tables.TableVirtualKey{
+		{ID: "vk-cust", Name: "Customer Key", Value: *schemas.NewSecretVar("vk-cust-val"), IsActive: schemas.Ptr(true), CustomerID: &custID},
+		{ID: "vk-team", Name: "Team Key", Value: *schemas.NewSecretVar("vk-team-val"), IsActive: schemas.Ptr(true), TeamID: &teamID},
+		{ID: "vk-none", Name: "Unassigned Key", Value: *schemas.NewSecretVar("vk-none-val"), IsActive: schemas.Ptr(true)},
+	}
+	for _, vk := range seed {
+		require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	}
+
+	tests := []struct {
+		name    string
+		params  VirtualKeyQueryParams
+		wantIDs []string
+	}{
+		{
+			name:    "no filters returns every key",
+			params:  VirtualKeyQueryParams{},
+			wantIDs: []string{"vk-cust", "vk-none", "vk-team"},
+		},
+		{
+			name:    "customer only",
+			params:  VirtualKeyQueryParams{CustomerID: "cust-1"},
+			wantIDs: []string{"vk-cust"},
+		},
+		{
+			name:    "team only",
+			params:  VirtualKeyQueryParams{TeamID: "team-1"},
+			wantIDs: []string{"vk-team"},
+		},
+		{
+			name:    "customer or team",
+			params:  VirtualKeyQueryParams{CustomerID: "cust-1", TeamID: "team-1"},
+			wantIDs: []string{"vk-cust", "vk-team"},
+		},
+		{
+			// Fail closed: OSS cannot resolve the assignment, so it matches nothing
+			// rather than falling through to an unfiltered list.
+			name:    "user only matches nothing in OSS",
+			params:  VirtualKeyQueryParams{UserID: "user-1"},
+			wantIDs: nil,
+		},
+		{
+			name:    "user plus customer keeps the resolvable customer disjunct",
+			params:  VirtualKeyQueryParams{UserID: "user-1", CustomerID: "cust-1"},
+			wantIDs: []string{"vk-cust"},
+		},
+		{
+			name:    "user plus team keeps the resolvable team disjunct",
+			params:  VirtualKeyQueryParams{UserID: "user-1", TeamID: "team-1"},
+			wantIDs: []string{"vk-team"},
+		},
+		{
+			name:    "user plus customer and team keeps both resolvable disjuncts",
+			params:  VirtualKeyQueryParams{UserID: "user-1", CustomerID: "cust-1", TeamID: "team-1"},
+			wantIDs: []string{"vk-cust", "vk-team"},
+		},
+		{
+			name:    "user filter never widens a non-matching search",
+			params:  VirtualKeyQueryParams{UserID: "user-1", Search: "Unassigned"},
+			wantIDs: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vks, totalCount, err := store.GetVirtualKeysPaginated(ctx, tt.params)
+			require.NoError(t, err)
+
+			gotIDs := make([]string, 0, len(vks))
+			for _, vk := range vks {
+				gotIDs = append(gotIDs, vk.ID)
+			}
+			sort.Strings(gotIDs)
+			assert.Equal(t, tt.wantIDs, nonEmptyIDs(gotIDs))
+			// The count drives pagination, so it must agree with the page contents.
+			assert.Equal(t, int64(len(tt.wantIDs)), totalCount)
+		})
+	}
+}
+
+// nonEmptyIDs normalizes an empty slice to nil so table cases can express
+// "matches nothing" as a nil wantIDs.
+func nonEmptyIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
 
 func TestCreateVirtualKey(t *testing.T) {
 	store := setupRDBTestStore(t)
@@ -3081,4 +3322,74 @@ func TestWebhookEndpointTuningRoundTripAndHash(t *testing.T) {
 	invalid := testWebhookEndpoint("tuning-invalid")
 	invalid.MaxRetries = -1
 	assert.Error(t, invalid.Validate())
+}
+
+// TestRDBConfigStore_SyncRoutingRules covers the batch path used by config-file reloads.
+// It defers the unique-priority-per-scope check to the final state, so a valid permutation
+// (e.g. swapping two priorities) succeeds despite a transient intermediate collision, while a
+// genuine end-state duplicate still errors and a missing update target returns ErrNotFound.
+func TestRDBConfigStore_SyncRoutingRules(t *testing.T) {
+	ctx := context.Background()
+
+	rule := func(id string, priority int) tables.TableRoutingRule {
+		return *routingRuleFixture(id, priority, "openai")
+	}
+
+	tests := []struct {
+		name       string
+		toAdd      []tables.TableRoutingRule
+		toUpdate   []tables.TableRoutingRule
+		wantErrIs  error
+		wantErrSub string
+		wantFinal  map[string]int // expected priority per rule ID after the call
+	}{
+		{
+			name:      "valid priority swap succeeds",
+			toUpdate:  []tables.TableRoutingRule{rule("rule-a", 1), rule("rule-b", 0)},
+			wantFinal: map[string]int{"rule-a": 1, "rule-b": 0},
+		},
+		{
+			name:      "batch add plus swap succeeds",
+			toAdd:     []tables.TableRoutingRule{rule("rule-c", 2)},
+			toUpdate:  []tables.TableRoutingRule{rule("rule-a", 1), rule("rule-b", 0)},
+			wantFinal: map[string]int{"rule-a": 1, "rule-b": 0, "rule-c": 2},
+		},
+		{
+			name:       "final-state duplicate priority fails and rolls back",
+			toUpdate:   []tables.TableRoutingRule{rule("rule-a", 1), rule("rule-b", 1)},
+			wantErrSub: "already exists",
+			wantFinal:  map[string]int{"rule-a": 0, "rule-b": 1}, // unchanged (rolled back)
+		},
+		{
+			name:      "missing update ID returns ErrNotFound",
+			toUpdate:  []tables.TableRoutingRule{rule("rule-missing", 5)},
+			wantErrIs: ErrNotFound,
+			wantFinal: map[string]int{"rule-a": 0, "rule-b": 1}, // unchanged
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := setupRDBTestStore(t)
+			require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-a", 0, "openai")))
+			require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-b", 1, "openai")))
+
+			err := store.SyncRoutingRules(ctx, tc.toAdd, tc.toUpdate)
+			switch {
+			case tc.wantErrIs != nil:
+				require.ErrorIs(t, err, tc.wantErrIs)
+			case tc.wantErrSub != "":
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErrSub)
+			default:
+				require.NoError(t, err)
+			}
+
+			for id, want := range tc.wantFinal {
+				got, getErr := store.GetRoutingRule(ctx, id)
+				require.NoError(t, getErr)
+				require.Equalf(t, want, got.Priority, "priority for %s", id)
+			}
+		})
+	}
 }

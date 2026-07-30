@@ -456,7 +456,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -580,7 +580,9 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
-				break
+				// Already reported; returning (rather than breaking) keeps the
+				// post-loop truncation check from reporting the same stream twice.
+				return
 			}
 			if response != nil {
 				response.ID = responseID
@@ -608,11 +610,17 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
-					break
+					return
 				}
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 		}
+
+		// Cohere terminates the stream with a message-end event, which the loop
+		// returns on. Falling out of the loop means the body ended before it — a
+		// plain io.EOF, indistinguishable from a healthy close — so surface it
+		// rather than closing the channel silently.
+		providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 	}()
 
 	return responseChan, nil
@@ -737,7 +745,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 	startTime := time.Now()
 	// Make the request
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if usedLargePayloadBody {
 		providerUtils.DrainLargePayloadRemainder(ctx)
@@ -857,7 +865,9 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
-				break
+				// Already reported; returning (rather than breaking) keeps the
+				// post-loop truncation check from reporting the same stream twice.
+				return
 			}
 			// Handle each response in the slice
 			for i, response := range responses {
@@ -890,6 +900,11 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 				}
 			}
 		}
+
+		// See the chat stream above: falling out of the loop means the body ended
+		// before the terminal event, which a plain io.EOF cannot distinguish from a
+		// healthy close.
+		providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 	}()
 
 	return responseChan, nil

@@ -22,11 +22,13 @@ Bifrost integrates with **Gray Swan Cygnal Monitor** to provide AI safety monito
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `api_key` | string | Yes | - | Gray Swan API key |
+| `base_url` | string | No | `https://api.grayswan.ai` | Gray Swan API base URL. Bifrost accepts either the API root or a URL that already ends in `/cygnal/monitor`. |
 | `violation_threshold` | number | No | 0.5 | Score threshold (0-1) for triggering intervention. Lower values are more strict. |
 | `reasoning_mode` | enum | No | "off" | Analysis depth: `off` (fastest), `hybrid` (balanced), or `thinking` (most thorough) |
 | `policy_id` | string | No | - | Single custom policy ID from Gray Swan platform |
 | `policy_ids` | array | No | - | Multiple policy IDs for aggregated rule evaluation |
 | `rules` | object | No | - | Custom natural language rules as key-value pairs |
+| `timeout` | integer | No | provider default | Provider execution timeout in seconds. |
 
 ## Request Header Metadata
 

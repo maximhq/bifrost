@@ -73,7 +73,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai_passthrough/v1",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 response = client.chat.completions.create(
@@ -90,7 +90,7 @@ print(response.choices[0].message.content)
 ```bash
 curl -X POST "http://localhost:8080/openai_passthrough/v1/chat/completions" \
   -H "content-type: application/json" \
-  -H "authorization: Bearer sk-your-openai-key" \
+  -H "authorization: Bearer <YOUR-BIFROST-VIRTUAL-KEY>" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role":"user","content":"hello from passthrough"}]
@@ -110,7 +110,7 @@ import anthropic
 
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic_passthrough",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 response = client.messages.create(
@@ -128,7 +128,7 @@ print(response.content[0].text)
 ```bash
 curl -X POST "http://localhost:8080/anthropic_passthrough/v1/messages" \
   -H "content-type: application/json" \
-  -H "x-api-key: your-anthropic-key" \
+  -H "x-api-key: <YOUR-ANTHROPIC-API-KEY>" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "claude-sonnet-4-20250514",
@@ -150,7 +150,7 @@ from openai import AzureOpenAI
 
 client = AzureOpenAI(
     azure_endpoint="http://localhost:8080/azure_passthrough",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     api_version="2024-10-21",  # passed through as-is in the query string
 )
 
@@ -170,7 +170,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8080/azure_passthrough/openai/v1/",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
 )
 
 response = client.responses.create(
@@ -189,7 +189,7 @@ import anthropic
 
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/azure_passthrough",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
 )
 
 response = client.messages.create(
@@ -225,7 +225,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     http_options=HttpOptions(base_url="http://localhost:8080/genai_passthrough")
 )
 
@@ -243,7 +243,7 @@ print(response.text)
 ```bash
 curl -X POST "http://localhost:8080/genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent" \
   -H "content-type: application/json" \
-  -H "x-goog-api-key: your-gemini-key" \
+  -H "x-goog-api-key: <YOUR-GEMINI-API-KEY>" \
   -d '{
     "contents":[{"parts":[{"text":"hello from passthrough"}]}]
   }'
@@ -263,7 +263,7 @@ from google.genai.types import HttpOptions
 
 client = genai.Client(
     vertexai=True,
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     http_options=HttpOptions(base_url="http://localhost:8080/genai_passthrough")
 )
 

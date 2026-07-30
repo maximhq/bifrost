@@ -623,7 +623,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		startTime := time.Now()
 		// Make the request
-		err := provider.streamingClient.Do(req, resp)
+		err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 		latency := time.Since(startTime)
 		if err != nil {
 			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -763,6 +763,15 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan, postHookSpanFinalizer)
 			}
+
+			// The loop returns once the terminal chunk (done / usage) is emitted, so
+			// falling out of it means the body ended early — a plain io.EOF, which is
+			// indistinguishable from a healthy close. Stay quiet when something was
+			// already reported (the read-error path sets the indicator) or when the
+			// provider at least sent [DONE].
+			if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+				providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+			}
 		}()
 
 		return responseChan, nil
@@ -897,6 +906,7 @@ func (provider *VLLMProvider) CountTokens(ctx *schemas.BifrostContext, key schem
 		},
 		provider.anthropicHeaders(key),
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.logger,
 	)
 }

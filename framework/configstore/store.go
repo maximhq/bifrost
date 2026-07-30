@@ -21,6 +21,7 @@ type VirtualKeyQueryParams struct {
 	Search                             string
 	CustomerID                         string
 	TeamID                             string
+	UserID                             string // Enterprise-only: filters to VKs assigned to this user; matches nothing in OSS
 	SortBy                             string // name, budget_spent, created_at, status (default: created_at)
 	Order                              string // asc, desc (default: asc)
 	Export                             bool   // When true, skip default pagination limits (caller controls limit)
@@ -35,6 +36,7 @@ type ModelConfigsQueryParams struct {
 	Offset   int
 	Search   string
 	Scope    string // optional; filters to an exact scope value (e.g. "global", "virtual_key")
+	ScopeID  string // optional; filters to an exact scope target (e.g. a virtual key or user ID)
 	Provider string // optional; filters to an exact provider value (e.g. "openai")
 }
 
@@ -186,6 +188,7 @@ type OAuth2SessionsQueryParams struct {
 // PricingOverrideFilters holds the filters for pricing overrides.
 type PricingOverrideFilters struct {
 	ScopeKind     *string
+	UserID        *string
 	VirtualKeyID  *string
 	ProviderID    *string
 	ProviderKeyID *string
@@ -197,6 +200,7 @@ type PricingOverridesQueryParams struct {
 	Offset        int
 	Search        string
 	ScopeKind     *string
+	UserID        *string
 	VirtualKeyID  *string
 	ProviderID    *string
 	ProviderKeyID *string
@@ -352,6 +356,14 @@ type ConfigStore interface {
 	GetBudget(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableBudget, error)
 	CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
+	// UpdateBudgetOverride updates only the override state and returns the refreshed budget.
+	//
+	// A finite grant is anchored at the budget's current window boundary so every
+	// cluster node derives the same remaining-cycle count from it. calendarAligned
+	// must come from the owning entity (virtual key, team, customer or access
+	// profile) because the budget row does not persist it, and getting it wrong
+	// anchors the grant on the wrong lattice.
+	UpdateBudgetOverride(ctx context.Context, id string, amount float64, mode tables.BudgetOverrideMode, cyclesTotal int, calendarAligned bool, tx ...*gorm.DB) (*tables.TableBudget, error)
 	UpdateBudgets(ctx context.Context, budgets []*tables.TableBudget, tx ...*gorm.DB) error
 	DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error
@@ -365,6 +377,10 @@ type ConfigStore interface {
 	GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error)
 	CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
 	UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
+	// SyncRoutingRules applies a batch of creates and updates atomically, deferring the
+	// unique-priority-per-scope check until all rules are written so that a valid permutation
+	// (e.g. swapping two rules' priorities) succeeds despite a transient intermediate collision.
+	SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Model config CRUD
@@ -677,6 +693,7 @@ type ConfigStore interface {
 	CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
 	ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error)
+	ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error)
 	HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error)
 	UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error
 	CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error

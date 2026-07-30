@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/core
 
-go 1.26.4
+go 1.26.5
 
 require (
 	cloud.google.com/go v0.123.0

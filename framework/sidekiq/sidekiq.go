@@ -17,6 +17,9 @@ type Store interface {
 	GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error)
 	// ClaimSidekiqJob atomically claims a job for runnerID; returns true only for the winner.
 	ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error)
+	// ClaimPartitionedSidekiqJob claims a partitioning-keyed job only when it is next in
+	// line for its key (no other same-key job running, no older same-key job pending).
+	ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error)
 	// HeartbeatSidekiqJob bumps updated_at for a job still owned by runnerID; returns false on lost ownership.
 	HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error)
 	UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error
@@ -110,14 +113,24 @@ func (r *Runner) handlerFor(kind string) (HandlerFunc, bool) {
 // Enqueue persists a new pending job and starts it as soon as a concurrency slot is free.
 // Returns once the DB row is committed so the caller can respond immediately.
 func (r *Runner) Enqueue(ctx context.Context, id, kind, metadata, createdBy string) error {
+	return r.EnqueuePartitioned(ctx, id, kind, "", metadata, createdBy)
+}
+
+// EnqueuePartitioned is Enqueue for a job that must run serially within partitioningKey:
+// jobs sharing a non-empty key run one-at-a-time in FIFO (created_at) order across
+// the cluster (see ClaimPartitionedSidekiqJob). An empty key behaves exactly like
+// Enqueue. The eager spawn is safe either way — a not-yet-runnable partitioned job
+// simply fails to claim and is picked up later by the dispatcher.
+func (r *Runner) EnqueuePartitioned(ctx context.Context, id, kind, partitioningKey, metadata, createdBy string) error {
 	if _, ok := r.handlerFor(kind); !ok {
 		return fmt.Errorf("sidekiq: no handler registered for kind %q", kind)
 	}
 	job := &tables.TableSidekiqJob{
-		ID:       id,
-		Kind:     kind,
-		Status:   tables.SidekiqStatusPending,
-		Metadata: metadata,
+		ID:              id,
+		Kind:            kind,
+		Status:          tables.SidekiqStatusPending,
+		Metadata:        metadata,
+		PartitioningKey: partitioningKey,
 	}
 	if createdBy != "" {
 		job.CreatedByUserID = &createdBy
@@ -191,7 +204,15 @@ func (r *Runner) execute(job tables.TableSidekiqJob) {
 		}
 	}()
 
-	claimed, err := r.store.ClaimSidekiqJob(r.baseCtx, job.ID, r.runnerID, r.staleBefore())
+	var claimed bool
+	var err error
+	if job.PartitioningKey != "" {
+		// Partitioned jobs claim only when next in line for their key; a blocked one
+		// stays pending and is retried on a later dispatch tick.
+		claimed, err = r.store.ClaimPartitionedSidekiqJob(r.baseCtx, job.ID, r.runnerID, r.staleBefore(), job.PartitioningKey, job.CreatedAt)
+	} else {
+		claimed, err = r.store.ClaimSidekiqJob(r.baseCtx, job.ID, r.runnerID, r.staleBefore())
+	}
 	if err != nil {
 		r.logger.Error("sidekiq: failed to claim job %s: %v", job.ID, err)
 		return

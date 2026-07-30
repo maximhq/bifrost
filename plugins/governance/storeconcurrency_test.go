@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,13 +95,18 @@ func TestBumpRateLimitUsage_NoLostIncrements(t *testing.T) {
 func TestResetBudgetAt_ConcurrentResettersCollapse(t *testing.T) {
 	store := newStandaloneStore(t)
 	budgetID := "reset-collapse"
-	old := buildBudget(budgetID, 1000, "1h")
-	old.LastReset = time.Now().Add(-2 * time.Hour)
-	old.CurrentUsage = 999
-	store.budgets.Store(budgetID, old)
-
 	const goroutines = 128
-	newLastReset := time.Now()
+	// Exactly one window between the grant anchor and the reset target, so the
+	// derived remaining count is unambiguous: 5 granted minus 1 window closed.
+	newLastReset := time.Now().Truncate(time.Second)
+	grantAnchor := newLastReset.Add(-time.Hour)
+
+	old := buildBudget(budgetID, 1000, "1h")
+	old.CreatedAt = grantAnchor
+	old.LastReset = grantAnchor
+	old.CurrentUsage = 999
+	require.NoError(t, old.SetOverrideAt(25, configstoreTables.BudgetOverrideModeCycles, 5, grantAnchor))
+	store.budgets.Store(budgetID, old)
 
 	var successes atomic.Int64
 	var wg sync.WaitGroup
@@ -120,4 +126,5 @@ func TestResetBudgetAt_ConcurrentResettersCollapse(t *testing.T) {
 	require.NotNil(t, final)
 	assert.Equal(t, 0.0, final.CurrentUsage)
 	assert.True(t, final.LastReset.Equal(newLastReset))
+	assert.Equal(t, 4, final.OverrideCyclesRemaining, "the single winning reset should consume exactly one override cycle")
 }

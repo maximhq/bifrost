@@ -22,6 +22,13 @@ type PostgresConfig struct {
 	// interval mostly affects how quickly idle clusters notice the rolling
 	// 30-day filter window has aged.
 	MatViewRefreshInterval string `json:"matview_refresh_interval,omitempty"`
+
+	// MatViewRefreshTimeout bounds a single refresh pass. A refresh holds a pooled
+	// connection and a session-scoped advisory lock across every view; if it never
+	// finishes, every replica's pg_try_advisory_lock fails from then on and the
+	// views go permanently stale while still being served. Empty / unset derives a
+	// budget from MatViewRefreshInterval.
+	MatViewRefreshTimeout string `json:"matview_refresh_timeout,omitempty"`
 }
 
 func toPostgresConnConfig(config *PostgresConfig) *postgresconn.Config {
@@ -40,6 +47,56 @@ const defaultMatViewRefreshInterval = time.Minute
 // this is clamped up. The activity-gate skip would mostly absorb the damage,
 // but the floor stops misconfig from becoming a foot-gun.
 const minMatViewRefreshInterval = 5 * time.Second
+
+// matview refresh timeout bounds. A tick that outlives its budget is cancelled so
+// the pooled connection and the session advisory lock are released; the next tick
+// retries from scratch.
+const (
+	minMatViewRefreshTimeout = 30 * time.Second
+	maxMatViewRefreshTimeout = 30 * time.Minute
+	// matViewRefreshTimeoutFloor is the lower bound used when deriving a default
+	// from the refresh interval.
+	matViewRefreshTimeoutFloor = 5 * time.Minute
+	// matViewRefreshTimeoutIntervalFactor scales the interval into a default budget;
+	// a refresh is expected to finish well inside a few ticks.
+	matViewRefreshTimeoutIntervalFactor = 5
+)
+
+// resolveMatViewRefreshTimeout parses the configured per-tick refresh timeout.
+// When unset it derives a budget from the refresh interval rather than picking a
+// fixed number, so a deliberately slow refresh cadence gets a proportionate one.
+func resolveMatViewRefreshTimeout(raw string, interval time.Duration, logger schemas.Logger) time.Duration {
+	derived := func() time.Duration {
+		d := interval * matViewRefreshTimeoutIntervalFactor
+		if d < matViewRefreshTimeoutFloor {
+			d = matViewRefreshTimeoutFloor
+		}
+		if d > maxMatViewRefreshTimeout {
+			d = maxMatViewRefreshTimeout
+		}
+		return d
+	}
+
+	if raw == "" {
+		return derived()
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		fallback := derived()
+		logger.Warn(fmt.Sprintf("logstore: invalid matview_refresh_timeout %q (%s); using %s", raw, err, fallback))
+		return fallback
+	}
+	if d < minMatViewRefreshTimeout {
+		logger.Warn(fmt.Sprintf("logstore: matview_refresh_timeout %s is below floor %s; clamping to %s", d, minMatViewRefreshTimeout, minMatViewRefreshTimeout))
+		return minMatViewRefreshTimeout
+	}
+	if d > maxMatViewRefreshTimeout {
+		logger.Warn(fmt.Sprintf("logstore: matview_refresh_timeout %s is above cap %s; clamping to %s", d, maxMatViewRefreshTimeout, maxMatViewRefreshTimeout))
+		return maxMatViewRefreshTimeout
+	}
+	logger.Info(fmt.Sprintf("logstore: matview refresh timeout set to %s", d))
+	return d
+}
 
 // resolveMatViewRefreshInterval parses the configured duration string with
 // fallback + clamp. Logs a warning on a bad string so misconfig is noticed.
@@ -111,6 +168,13 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		logger.Error("logstore: failed to open migration connection pool: %v", err)
 		return nil, err
 	}
+	// Pin the throwaway pool small: migrations are serial DDL, and an untuned pool
+	// inherits database/sql's unlimited MaxOpenConns.
+	if err := postgresconn.ApplyMigrationPoolTuning(mDb); err != nil {
+		logger.Error("logstore: failed to tune migration connection pool: %v", err)
+		_ = closePool(mDb)
+		return nil, err
+	}
 
 	// Postgres version gate: refuse to start below 16 (matviews, partitioning,
 	// and some JSON operators we rely on depend on 16+).
@@ -146,7 +210,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return nil, err
 	}
 
-	if err := postgresconn.ApplyPoolTuning(db, pgConfig); err != nil {
+	if err := postgresconn.ApplyPoolTuning(db, pgConfig, logger); err != nil {
 		closePool(db)
 		return nil, err
 	}
@@ -199,27 +263,19 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		if db.Dialector.Name() != "postgres" {
 			return
 		}
-		maintained, err := ensureMatViews(context.Background(), db)
-		if err != nil {
+		if err := ensureMatViews(context.Background(), db); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: matview creation failed: %s (dashboard queries will use raw tables)", err))
 			return
 		}
-		if !maintained {
-			// Another replica owns the create/repair and its rebuild may not have
-			// landed, so the views we see can still be an older schema version.
-			// Confirm the shape before enabling the read path; if it isn't current
-			// the refresher flips the flag once it is.
-			shapesOK, err := matViewShapesReady(context.Background(), db)
-			if err != nil {
-				logger.Warn(fmt.Sprintf("logstore: matview shape check failed: %s (dashboard queries will use raw tables)", err))
-			}
-			if err != nil || !shapesOK {
-				logger.Info("logstore: matview maintenance is owned by another replica and views are not current yet (dashboard queries will use raw tables until they are)")
-				startMatViewRefresher(context.Background(), db, resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger), logger, &d.matViewsReady)
-				return
-			}
-		}
-		if err := refreshMatViews(context.Background(), db); err != nil {
+		refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
+		refreshTimeout := resolveMatViewRefreshTimeout(config.MatViewRefreshTimeout, refreshInterval, logger)
+
+		// The initial refresh gets the same budget as a periodic tick; on a large
+		// logs table it can be slow, and it must not hold the advisory lock forever.
+		initialCtx, cancelInitial := context.WithTimeout(context.Background(), refreshTimeout)
+		err := refreshMatViews(initialCtx, db)
+		cancelInitial()
+		if err != nil {
 			logger.Warn(fmt.Sprintf("logstore: initial matview refresh failed: %s", err))
 		} else {
 			logger.Info("logstore: materialized views are ready")
@@ -227,7 +283,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			// canUseMatView() returns false so all queries use raw tables.
 			d.matViewsReady.Store(true)
 		}
-		startMatViewRefresher(context.Background(), db, resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger), logger, &d.matViewsReady)
+		startMatViewRefresher(context.Background(), db, refreshInterval, refreshTimeout, logger, &d.matViewsReady)
 	}()
 
 	return d, nil

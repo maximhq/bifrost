@@ -17,7 +17,7 @@
   # Skip the copy-build step since we'll copy the files in the Go build stage
 
   # --- Go Build Stage: Compile the Go binary using local modules ---
-  FROM golang:1.26.4-alpine3.23@sha256:f23e8b227fb4493eabe03bede4d5a32d04092da71962f1fb79b5f7d1e6c2a17f AS builder
+  FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS builder
   WORKDIR /build
 
   # Install dependencies including gcc for CGO and sqlite

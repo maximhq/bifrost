@@ -4025,6 +4025,33 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 	}, nil
 }
 
+// vertexCountTokensUnsupportedFields lists generateContent fields that Vertex's
+// CountTokensRequest does not define, and which it rejects with a 400.
+var vertexCountTokensUnsupportedFields = []string{
+	"toolConfig",
+	"safetySettings",
+	"cachedContent",
+	"serviceTier",
+	"labels",
+}
+
+// stripVertexCountTokensUnsupportedFields drops fields the countTokens endpoint rejects.
+// systemInstruction, tools and generationConfig are supported there and must survive —
+// they contribute to the token count.
+func stripVertexCountTokensUnsupportedFields(jsonBody []byte) []byte {
+	if len(jsonBody) == 0 {
+		return jsonBody
+	}
+
+	out := jsonBody
+	for _, field := range vertexCountTokensUnsupportedFields {
+		if updated, err := providerUtils.DeleteJSONField(out, field); err == nil {
+			out = updated
+		}
+	}
+	return out
+}
+
 // CountTokens counts the number of tokens in the provided content using Vertex AI's countTokens endpoint.
 // Supports Gemini models with both text and image content.
 func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
@@ -4071,10 +4098,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		// Skip field-stripping when large payload mode is active — jsonBody is nil
 		// and the raw body will stream directly from the ingress reader.
 		if jsonBody != nil {
-			// Use sjson to delete fields directly from JSON bytes, preserving key ordering
-			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "toolConfig")
-			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "generationConfig")
-			jsonBody, _ = providerUtils.DeleteJSONField(jsonBody, "systemInstruction")
+			jsonBody = stripVertexCountTokensUnsupportedFields(jsonBody)
 		}
 	}
 
@@ -4526,7 +4550,7 @@ func (provider *VertexProvider) PassthroughStream(
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	startTime := time.Now()
-	err := activeClient.Do(fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

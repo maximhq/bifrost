@@ -1031,3 +1031,38 @@ func TestSchemaBedrockKeyConfigSTSFields(t *testing.T) {
 		}
 	})
 }
+
+// TestSchemaLiveModelsSyncInterval pins the 0-or->=60 contract on
+// framework.pricing.live_models_sync_interval. This schema is the source of
+// truth users author against, so it has to reject the same values the config
+// API rejects (ConfigHandler.updateConfig) and the file resolver silently
+// clamps (ResolveFrameworkPricingConfig). A bare "minimum": 0 accepted 1-59
+// and left the user with a config that validated and then behaved as 60.
+func TestSchemaLiveModelsSyncInterval(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		value     string
+		wantError bool
+	}{
+		{name: "zero disables the background refresh", value: "0"},
+		{name: "the minimum enabled interval is accepted", value: "60"},
+		{name: "the default is accepted", value: "3600"},
+		{name: "below the minimum but above zero is rejected", value: "59", wantError: true},
+		{name: "one second is rejected", value: "1", wantError: true},
+		{name: "negative is rejected", value: "-1", wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"framework":{"pricing":{"live_models_sync_interval":` + tt.value + `}}}`
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Errorf("live_models_sync_interval=%s should be rejected, got no error", tt.value)
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("live_models_sync_interval=%s should be valid, got: %v", tt.value, err)
+			}
+		})
+	}
+}

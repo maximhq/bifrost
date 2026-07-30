@@ -15,6 +15,7 @@ export function getScopeLabel(scope: string): string {
 	const legacy: Record<string, string> = {
 		team: "Team",
 		customer: "Customer",
+		user: "User",
 	};
 	return legacy[scope] || scope;
 }

@@ -73,7 +73,8 @@
           "        hasContent = true;",
           "    } else if (Array.isArray(j.output) && j.output.length > 0) {",
           "        shape = 'openai-responses-output';",
-          "        hasContent = j.output.some(function (o) { return o && (o.type === 'message' || o.type === 'tool_call' || o.type === 'function_call' || (o.content && o.content.length)); });",
+          "        // Responses tool-use items are all typed <tool>_call (function_call, tool_search_call, custom_tool_call, mcp_call, local_shell_call, ...). A client-execution call is a valid TERMINAL output: the model emits the call and stops, waiting for the matching *_output, so no text accompanies it.",
+          "        hasContent = j.output.some(function (o) { return o && (o.type === 'message' || /_call$/.test(o.type || '') || (o.content && o.content.length)); });",
           "    } else if (j.output && j.output.message && j.output.message.content) {",
           "        shape = 'bedrock-converse';",
           "        hasContent = j.output.message.content.length > 0;",
@@ -134,10 +135,61 @@
           "    } else if (j.type === 'file_deleted' && typeof j.id === 'string') {",
           "        shape = 'anthropic-file-deleted';",
           "        hasContent = !!j.id;",
+          "    } else if (j.object === 'response.deleted' && typeof j.id === 'string') {",
+          "        shape = 'openai-responses-deleted';",
+          "        hasContent = j.deleted === true;",
           "    }",
           "    pm.expect(hasContent, 'expected non-empty content (shape=' + shape + ', body=' + JSON.stringify(j).slice(0, 200) + ')').to.be.true;",
           "  });",
-          "}"
+          "}",
+          "",
+          "// Routed-identity response headers (x-bifrost-*): present on every successful",
+          "// inference response, streaming and non-streaming, on native /v1 and every",
+          "// drop-in integration route, and passthrough (section 9) inference routes",
+          "// (all funnel through handleRequest, so RoutingInfo is populated).",
+          "// Management/list/file/batch/count ops are excluded by the positive path",
+          "// match. Fallback/alias headers are conditional (emitted",
+          "// only when a fallback or key-alias fires) so they are not asserted here, and",
+          "// x-bifrost-routing-info-key is omitted (depends on operator key-naming).",
+          "(function () {",
+          "  if (pm.response.code < 200 || pm.response.code >= 300) { return; }",
+          "  var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
+          "  var __p = __u.split('?')[0];",
+          "  var __ends = function (s) { return __p.length >= s.length && __p.slice(-s.length) === s; };",
+          "  var __isInference =",
+          "    __ends('/chat/completions') ||",
+          "    __ends('/responses') ||",
+          "    __ends('/responses/compact') ||",
+          "    __ends('/messages') ||",
+          "    __ends(':generateContent') ||",
+          "    __ends(':streamGenerateContent') ||",
+          "    __ends(':embedContent') ||",
+          "    __ends('/converse') ||",
+          "    __ends('/converse-stream') ||",
+          "    __ends('/invoke') ||",
+          "    __ends('/invoke-with-response-stream') ||",
+          "    __ends('/v2/chat') ||",
+          "    __ends('/embeddings') ||",
+          "    __ends('/audio/speech') ||",
+          "    __ends('/audio/transcriptions') ||",
+          "    __ends('/images/generations');",
+          "  if (!__isInference) { return; }",
+          "  var __required = [",
+          "    'x-bifrost-request-type',",
+          "    'x-bifrost-provider',",
+          "    'x-bifrost-original-model',",
+          "    'x-bifrost-resolved-model',",
+          "    'x-bifrost-routing-info-provider',",
+          "    'x-bifrost-routing-info-model',",
+          "    'x-bifrost-upstream-latency-ms'",
+          "  ];",
+          "  __required.forEach(function (__h) {",
+          "    pm.test('Routed-identity header present: ' + __h, function () {",
+          "      var __v = pm.response.headers.get(__h);",
+          "      pm.expect(__v, 'missing ' + __h + ' on ' + __p).to.be.a('string').and.to.have.length.above(0);",
+          "    });",
+          "  });",
+          "})();"
         ]
       }
     }
@@ -41454,6 +41506,2776 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "29. OpenAI Responses Lifecycle + Streaming Retrieve",
+      "description": "Pins the OpenAI Responses secondary-verb lifecycle on both the native /v1/responses/{id} routes and the /openai/v1 drop-in: retrieve, streaming retrieve (GET ?stream=true, newly added — BifrostResponsesRetrieveRequest.Stream -> ResponsesRetrieveStreamRequest -> provider.ResponsesRetrieveStream), input_items, and delete. Each chain creates a background + store + stream response (id parsed from the SSE create body, so streaming retrieve resumes an actually-streamed response), verifies the verbs against the captured id, and deletes it as cleanup. Cancel is omitted (it would abort the response the streaming retrieve replays).",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: create streamed background response",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native create (streamed bg): 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('native create (streamed bg): SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "var body = pm.response.text() || '';",
+                  "var m = body.match(/\"id\":\"(resp_[A-Za-z0-9_-]+)\"/);",
+                  "pm.test('native create (streamed bg): captured streamed response id', function () { pm.expect(m, 'no resp_ id in SSE body head: ' + body.slice(0, 200)).to.not.equal(null); });",
+                  "if (m) { pm.collectionVariables.set('lcNativeRespId', m[1]); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Reply with exactly: lifecycle-ok\",\n  \"store\": true,\n  \"background\": true,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: retrieve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native retrieve: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('lcNativeRespId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: streaming retrieve (SSE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native stream retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('native stream retrieve: SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "pm.test('native stream retrieve: body is a responses SSE stream', function () { var body = pm.response.text() || ''; pm.expect(body.indexOf('data:'), 'expected SSE data lines').to.not.equal(-1); pm.expect(body.indexOf('response.'), 'expected response.* events').to.not.equal(-1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai&stream=true&starting_after=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "stream",
+                  "value": "true"
+                },
+                {
+                  "key": "starting_after",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: input_items",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native input_items: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native input_items: object list', function () { pm.expect(j.object).to.eql('list'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}/input_items?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}",
+                "input_items"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini native lifecycle: delete (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('native delete: 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native delete: deleted true', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses/{{lcNativeRespId}}?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses",
+                "{{lcNativeRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: create streamed background response",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in create (streamed bg): 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('drop-in create (streamed bg): SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "var body = pm.response.text() || '';",
+                  "var m = body.match(/\"id\":\"(resp_[A-Za-z0-9_-]+)\"/);",
+                  "pm.test('drop-in create (streamed bg): captured streamed response id', function () { pm.expect(m, 'no resp_ id in SSE body head: ' + body.slice(0, 200)).to.not.equal(null); });",
+                  "if (m) { pm.collectionVariables.set('lcOpenaiRespId', m[1]); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"input\": \"Reply with exactly: lifecycle-ok\",\n  \"store\": true,\n  \"background\": true,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: retrieve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in retrieve: id matches create', function () { pm.expect(j.id).to.eql(pm.collectionVariables.get('lcOpenaiRespId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: streaming retrieve (SSE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in stream retrieve: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('drop-in stream retrieve: SSE content-type', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, 'expected text/event-stream, got ' + ct).to.include('text/event-stream'); });",
+                  "pm.test('drop-in stream retrieve: body is a responses SSE stream', function () { var body = pm.response.text() || ''; pm.expect(body.indexOf('data:'), 'expected SSE data lines').to.not.equal(-1); pm.expect(body.indexOf('response.'), 'expected response.* events').to.not.equal(-1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}?stream=true&starting_after=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "true"
+                },
+                {
+                  "key": "starting_after",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: input_items",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in input_items: 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in input_items: object list', function () { pm.expect(j.object).to.eql('list'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}/input_items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}",
+                "input_items"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini drop-in lifecycle: delete (cleanup)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('drop-in delete: 2xx', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });",
+                  "var j = pm.response.json();",
+                  "pm.test('drop-in delete: deleted true', function () { pm.expect(j.deleted).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/{{lcOpenaiRespId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "{{lcOpenaiRespId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "30. Replicate input_images field mapping (image-to-image on /v1/images/generations)",
+      "description": "Pins Replicate image-to-image on the native /v1/images/generations path. input_images was previously dropped on the generations path because the input_images -> model-specific field mapping (image_prompt / input_image / image / input_images) was only applied on the edits path, so a request carrying input_images to a kontext model generated from the prompt alone and returned a 200 with a default 1024x1024 square image. The case sends a real landscape image (scones.jpg, 1280x853) with aspect_ratio \"match_input_image\" and asserts the output stays landscape, which proves the image reached the model rather than being silently dropped. Exhaustive per-model field mapping is covered by the Go table test TestReplicateImageGenerationInputImagesFieldMapping. A streaming variant is intentionally omitted: flux-kontext does not stream partial images, so Bifrost forwards no image bytes on the stream and there is nothing to assert on.",
+      "item": [
+        {
+          "name": "replicate/black-forest-labs/flux-kontext-pro input_images -> input_image (match_input_image)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Replicate image-to-image on the NATIVE /v1/images/generations path.",
+                  "// Regression: input_images was silently dropped on the generations path (the",
+                  "// input_images -> model-specific field mapping existed only on the edits path), so",
+                  "// kontext never received its native \"input_image\" and Replicate generated from the",
+                  "// prompt alone, returning a 200 with a default 1024x1024 SQUARE image.",
+                  "//",
+                  "// Fixture is a real landscape photo (scones.jpg, 1280x853) sent with aspect_ratio",
+                  "// \"match_input_image\": if the image reaches the model the output keeps the landscape",
+                  "// aspect ratio (width > height); if it was dropped the output is the default square.",
+                  "// Asserting landscape is what catches the silent 200 that a status-only check cannot.",
+                  "// Exhaustive per-model field mapping lives in the Go test",
+                  "// TestReplicateImageGenerationInputImagesFieldMapping.",
+                  "",
+                  "// Infra guard: skip on auth/rate/server noise. NOT 400 - a 400 here is a real",
+                  "// regression signature and must fail loudly. (The collection-level 2xx test still",
+                  "// asserts status, so kontext rate-limits/5xx surface as failures for triage.)",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "",
+                  "pm.test('images/generations returned success', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "",
+                  "var body = pm.response.json();",
+                  "pm.test('response carries an output image', function () {",
+                  "  pm.expect(body.data && body.data.length, 'no data in response: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "if (!body.data || !body.data.length) { return; }",
+                  "",
+                  "// PNG dimensions live in the IHDR chunk: width at byte 16, height at byte 20.",
+                  "function pngDims(buf) {",
+                  "  if (!buf || buf.length < 24) { return null; }",
+                  "  if (buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4E || buf[3] !== 0x47) { return null; }",
+                  "  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };",
+                  "}",
+                  "function toBuffer(stream) {",
+                  "  if (Buffer.isBuffer(stream)) { return stream; }",
+                  "  if (stream && stream.type === 'Buffer' && Array.isArray(stream.data)) { return Buffer.from(stream.data); }",
+                  "  return Buffer.from(stream);",
+                  "}",
+                  "function assertImageUsed(buf) {",
+                  "  var dims = pngDims(buf);",
+                  "  if (!dims) {",
+                  "    // Not a decodable PNG despite output_format=png - degrade to 'image present' so a",
+                  "    // format surprise does not false-fail, but surface it.",
+                  "    console.log('WARN: output was not a decodable PNG; skipped dimension check');",
+                  "    return;",
+                  "  }",
+                  "  pm.test('output keeps input landscape aspect ratio => image was used (not dropped to square)', function () {",
+                  "    pm.expect(dims.width, 'expected landscape output (input 1280x853), got ' + dims.width + 'x' + dims.height).to.be.above(dims.height);",
+                  "  });",
+                  "}",
+                  "",
+                  "var first = body.data[0];",
+                  "if (first.b64_json) {",
+                  "  assertImageUsed(Buffer.from(first.b64_json, 'base64'));",
+                  "} else if (first.url) {",
+                  "  pm.sendRequest({ url: first.url, method: 'GET' }, function (err, res) {",
+                  "    if (err) { console.log('WARN: could not download output image: ' + err); return; }",
+                  "    assertImageUsed(toBuffer(res.stream));",
+                  "  });",
+                  "} else {",
+                  "  pm.expect.fail('response image had neither url nor b64_json: ' + pm.response.text());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/black-forest-labs/flux-kontext-pro\",\n  \"prompt\": \"add a soft warm glow to the scene\",\n  \"aspect_ratio\": \"match_input_image\",\n  \"output_format\": \"png\",\n  \"input_images\": [\n    \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "31. Gemini/Vertex generationConfig.mediaResolution honored (image prompt tokens)",
+      "description": "Regression: generationConfig.mediaResolution was silently dropped in the Gemini -> Bifrost -> Gemini\nResponses conversion on the /genai generateContent path, so a Vertex/Gemini image request billed the\nmodel-default image token count regardless of MEDIA_RESOLUTION_LOW/HIGH (e.g. ~1290 instead of ~74\nprompt tokens for a 1024x1024 image). thinkingConfig survived because both conversion legs handle it;\nmediaResolution was handled by neither.\n\nFix: round mediaResolution through ExtraParams[\"media_resolution\"] in core/providers/gemini\n(convertGenerationConfigToResponsesParameters inbound + convertParamsToGenerationConfigResponses outbound).\n\nThe only external signal is usageMetadata.promptTokenCount, so each pair sends the SAME 1024x1024 image\n(folder-level prerequest sets {{mediaResImage}}) and asserts the HIGH request reports more prompt tokens\nthan the LOW request. If the field is dropped, both fall back to the same default => equal counts =>\nthe HIGH-exceeds-LOW assertion fails, independent of what the model default is. 31.1/31.2 pin the fix on\nthe GenAI route (needs only {{genaiKey}}); 31.3/31.4 pin the same invariant on Vertex (the reported\nroute) and skip cleanly if Vertex is not configured.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// 1024x1024 JPEG (base64), large enough that MEDIA_RESOLUTION_HIGH tiles into more image",
+              "// tokens than LOW. Image pixel dimensions (not content) drive Gemini image token counts.",
+              "pm.collectionVariables.set('mediaResImage', '/9j/2wCEABQODxIPDRQSEBIXFRQYHjIhHhwcHj0sLiQySUBMS0dARkVQWnNiUFVtVkVGZIhlbXd7gYKBTmCNl4x9lnN+gXwBFRcXHhoeOyEhO3xTRlN8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fP/AABEIBAAEAAMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOzpKKKACiikoELSUUUAFFJRQI8eopaKDUKKKWmMSloooAKKKWgZ65RRSVJyC0lFFABRSUUCCiiigR5PRRS1Z6AlLRRQMKKKWgYlLRRQM9UpKKKzPJCiikoEFFFFAgopKKAPMKWiitT2woopaBiUtFFABRRS0DPSqKKSsT54KKKKACikooEFFFFAjzmiilrY+nEpaKKYBRRS0DCiiigZ6DRRRXOfJhRSUUCCiiigQUlFFAHBUtFFdJ9iFFFLQMSloooGFFLRQB3FFJRXKfEBRRRQIKSiigAoopKBHGUUUtdR96JS0UUwCiiloGFFFFAzr6KKK4z89CikooEFFFFAgpKKKBHKUtFFdh+kBRRS0xhRRRQMKKWigDpqKSiuE/MgooooEFJRRQAUUUlAjnqKKWu4/UwooopjCilooAKKKKBnoNJRRXOfKBRRSUCFpKKKBBRSUUAeQUUtFBYUUUtAxKWiimMKKKWgD1qiikqTmFpKKKBBRSUUAFFFFAjymiilqjvEpaKKYBRRS0DEpaKKBnqVJRRWZ5YUUUlAgooooEFFJRQI8ypaKK0PaCiilpjEpaKKBhRS0UAekUUUlYngBRRRQIKKSigAooooEed0UUtbH0olLRRQMKKWimAUUUUDPQKSiiuc+UCikooAKKKKBBRSUUCOEpaKK6D7AKKKWmMSloooGFFLRQM7aikorlPiQooooEFFJRQIKKKSgDjqKKWuo+7EpaKKBhRS0UwCiiigZ1tFFFcZ+fBRSUUAFFFFAgpKKKBHLUtFFdh+jhRS0UAFFFFMYUUtFAzpKKSiuE/MwooooEFJRRQIKKKSgDAopaK7j9RCiiimMKKWigYUUUtAHfUlFFc58qFFFJQAtJRRQIKKSigR5FS0UUFBRRS0DEpaKKBhRRS0xnrFFFJUnOLSUUUCCikooEFFFFAHldFFLVHaJS0UUDCiilpgFFFFAz1CkoorM8wKKSigAooooEFFJRQI80paKK0PZCiiloASloopjCilooGejUUlFYnghRRRQIKKSigQUUUlAHn1FFLWx9GJS0UUDCiiloGFFFFMDvqSiiuc+WCikooEFFFFABRSUUCOGpaKK6D68KKKWgAooopjCilooGdpRSUVynxYUUUUCCikooEFFFJQI5CiilrqPugooooGFFLRQMKKKKYHV0UUVxnwAUUlFAgoopKAFpKKKBHMUtFFdh+ihRS0UDCiiigAopaKYzoqKSiuE/NAoopKAFpKKKBBRRSUCMKiloruP1EKKKKACilooGFFFLTGd5SUUVznywUUUlAgooooAKKSigR5JS0UUDCiiloASloooGFFFLQM9WoopKRiFFFFAgopKKBBRRRQI8toopao7BKWiigYUUUtAwooopgem0UUVmecFFJRQIKKKKACikooEebUtFFaHrhRRS0DEpaKKACilopjPRKKSisTwgooooAKKSigQUUUlAjgKKKWtj6ISloooGFFLRQMKKKKBnd0UUVgfLhRSUUCCiiigQUlFFAHEUtFFdB9aFFFLQMKKKKACilopjOyopKK5T4wKKKKACkoooEFFFJQI5KiilrqPuQooooAKKWigYUUUUDOpooorkPgQpKKKBBR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ilpjCiiigAopaKBnbUUlFScgUUUUAFFJRQIKKKSgRx1FFLVnoBRRRQMKKWigYUUUUDOtooorM8kKKSigQUUUlAhaSiigDlqWiitT2woopaBhRRRQAUUtFAzpKKSisT54KKKKACikooEFFFJQIwKKKWtj6cKKKKYBRS0UDCiiigZt0UUVznyYUUlFAgoopKBC0lFFAGTRRRXSfYhRS0UDCiiigApaKKBmlRSUVynxAUUUlAC0lFFAgoopKBFKilorqPvQooopgFLRRQMKKKWgZYoopK4z89FpKKKBBRRSUCFpKKKBHL0tFFaHthRRS0DEpaKKYBRRS0DPRqKKSqO0KKKKACikooEFFFFAjz2iilqTASloopgFFFLQMKKKKBne0UUUFBRSUUCCiiigQUlFFAHDUtFFBYUUUtAwooopjCilooA7SikoqTmCiiigQUlFFABRRSUCOQoopao7xKWiimAUUtFAwooooGdXRRRWZ5YUUlFAgoopKBC0lFFAjmKWiitD2goopaYwooooGFFLRQB0VFJRWJ4AUUUUCCkoooAKKKSgRhUUUtbH0oUUUUDCilopgFFFFAzZooornPlApKKKACiikoELSUUUCMuiiiug+wCilopjCiiigYUtFFAGhSUUVynxQUUUlAhaSiigAoopKBFSilorqPuwooooGFFLRTAKKKWgZNRRSVxn58LSUUUAFFFJQIWkoooEczS0UVoeyFFFLQMSloooGFFLRTA9EoopKo7wooooEFFJRQAUUUUCPP6KKWpOYSloooGFFLRTAKKKKBnd0UUUFhRSUUAFFFFAgpKKKBHEUtFFBQUUtFAwooooGFFLRTGdlRSUVJzhRRRQIKKSigQUUUlAHJUUtFUdoUUUUDCilopgFFFLQM6iiiiszzAopKKACiikoELSUUUCOapaKK0PZCilooAKKKKYwopaKBnQUUlFYnghRRRQIKSiigQUUUlAGJRS0VsfRhRRRQMKKWigYUUUtMDWooornPlgpKKKBBRRSUALSUUUCM2iiiug+vCilooAKKKWmMSloooGXqSiiuU+LCiikoELSUUUCCiikoArUUtFdR9yFFFLQMSloooGFFFLTAkoopK4z4AWkoooEFFFJQAtJRRQI5uloorQ9gKKKWgBKWiigYUUtFAz0Kikoqz0AooooEFFJRQIKKKSgDgqKKWpOQSl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5cKKSigQUUUUCCikooAs0tFFdB9aFFFLQMSloooAKKWigZRopKK5j4wKKKKACikooEFFFJQI6SikoroPrQooooEFFJRQIKKKSgDkKKKWsjwhKWiigYUUtFABRRRQM6uiiitD1wopKKACiiigQUUlFAjmKWiiszzgopaKYBRRRQMKKWigZ0VFJRVHYFFFFAgopKKBBRRSUAYVFFLSMBKWiigYUUtFAwooooA2aKKKBhRSUUCCiikoAWkoooEZVLRRQahRS0UxhRRRQAUUtFAzQopKKk5AoopKAFpKKKBBRRSUCKlFFLVnoBRRRQMKKWigYUUUUDJ6KKKzPJCkoooEFFFJQIWkoooAZS0UVqe2FFLRQMKKKKACilooGNopKKxPngoopKAFpKKKBBRRSUCJ6KWitj6cKKKKYBRS0UDCiiloGU6KKSuc+TFpKKKBBRRSUCFpKKKANCiiiug+xCilopjCiiloASloooGX6KSipOUKKKKACikooEFFFJQI5KiilrE8EKKKKYwopaKBhRRRQB1NFFFaHshRSUUCCiikoAWkoooEc1S0UVmeYFFFLQMKKKKYBRS0UDOgopKKo7QooooAKKSigQUUUlAjEoopak5wooopjCilooGFFFFAzXooooKCikooEFFFJQIWkoooAzaKKKCwopaKBhRRRTGFLRRQBeopKKk5gooooEFJRRQAUUUlAitRS0VR3hRRRTAKKWigYUUUtAySiiiszywopKKBBRRSUCFpKKKBBRRRWh7QUUtFMYUUUUDCloooAjopKKxPACiikoELSUUUAFFFJQIs0UtFbH0oUUUUDCloopgFFFLQMo0UUlc58oLSUUUAFFFJQIWkoooEaVFFFdB9gFLRRQMKKKWmMSloooAu0UlFSc4UUUUAFJRRQIKKKSgRylFFLWJ4AUUUUAFFLRQMKKKKYzp6KKK0PaCkoooEFFFJQIWkoooA5yloorM8oKKWigYUUUUDCilopgb1FJRVHeFFFFAgpKKKACiikoEY1FFLUnMFFFFABRS0UxhRRRQM1aKKKCwpKKKACiikoELSUUUCM+iiigoKKWigYUUUUDCloopjLlFJRUnOFFFJQIWkoooEFFFJQBBRS0VR2hRRRQMKKWimAUUUtAx1FFJWZ5gtJRRQAUUUlAhaSiigQ6iiitD2QopaKACiiimMKWiigZDSUUVieCFFFJQIWkoooEFFFJQBbopaK2PowooooGFLRRQMKKKWmBn0UUlc58sLSUUUCCiikoAKKKKBGpRRRXQfXhS0UUAFFFLQMSloopjLdFJRUmAUUUUCCkoooAKKKSgRy1FLRWJ88FFFFAwopaKACiiloGdJRRRWp7YUUlFABRRSUCFpKKKBHP0UUVmeUFFLRQAUUUUDCloooGblFJRVnoBRRRQIKSiigQUUUlAGRRS0VJyBRRRQMKKWigAoopaYzSooooNQpKKKBBRRSUALSUUUCKNFFFAwopaKACiiloGJS0UUDLVJRRSMQoopKBC0lFFAgoopKBEVFLRVHYFFFFAwopaKBhRRS0wCiikrM84WkoooEFFFJQAtJRRQIkooorQ9cKKWigYUUUtACUtFFMZXpKKKxPCCiikoAWkoooEFFFJQIu0UtFbH0QUUUtAxKWiigYUUUtAzNoopKwPlxaSiigQUUUlAgooooA1qKKWug+tEpaKKBhRRS0AJS0UUDOcoopawPkhKWiigYUUUtAxKWiigZ1FJRRWx9EFFJRQIKKKKBBRSUUAc5S0UVieEFFFLTGJS0UUAFFFLQM3qKSitD1wooooAKKSigQUUUUCMWiilrM84SloopgFFFLQMSloooGa1JRRVHYFFJRQIKKKKBBRSUUAZ1LRRSMAoopaBiUtFFAwopaKALlFJRQMKKKKBBRSUUAFFFJQIgoopaDUSloopjCilooAKKKKBklJRRUnIFFJRQAUUUUCCikooELS0UVZ6AUUUtAwooooGFFLRQMhopKKzPJCiiigQUUlFAgoopKALdFFLWp7YlLRRQMKKWigAooooGUKKKKxPngopKKACiikoELSUUUCNOloorY+nCilopgFFFFAwopaKBmPRSUVznyYUUUlAhaSiigQUUUlAENFFLQaCUtFFMAoopaBiUtFFAzpqSiitj6MKKKSgAooooEFFJRQI56loorE8EKKKWgYlLRRTGFFLRQBuUUUlaHshRRRQIKKSigAooooEY9FFLWZ5glLRRQMKKKWmAlLRRQM1KSiiqO0KKSigAooooEFFJRQIoUtFFSc4UUUtMYlLRRQMKKWigZaopKKCgooooEFFJRQIKKKSgCKiiloLEpaKKBhRRS0xhRRRQAtFFFScwUUlFAgooooAKSiigQ+looqjvCiilpgFFFFAwopaKBle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KBFuloooGFFFLQAlLRRQMKKWigZn0UUlIxCiiigQUUlFAgooooEalFFLVHYJS0UUDCilooGFFFFMDGooorM84KKSigQUUUUAFFJRQI3aWiitD1woopaBiUtFFABRS0UxnO0UlFYnhBRRRQAUUlFAgoopKBHT0UUtbH0QlLRRQMKKWigYUUUUDOcoopawPkhKWiigYUUtFABRRRQM16KKK6D60KKSigAoopKBC0lFFAjMpaKKwPmAopaKACiiigYUUtFAy9RSUVsfRBRRSUCFpKKKBBRRSUAVqKKWsjwgooooGFFLRQAUUUUDJaKKK0PXCikooAKKKSgQtJRRQISloorM84KKWimAUUUUDCilooGR0UlFUdgUUUlAhaSiigQUUUlAFmilopGAUUUUDCilooGFFFLQBRoopKBi0lFFAgoopKAFpKKKBGlRRRQahRS0UxhRRS0AJS0UUDMmkooqTkCiikoAWkoooEFFJRQI26KWirPQCiiloGJS0UUDCiiloGc/RRSVmeSLSUUUCCiikoELSUUUAdJRRRWp7YUtFFAwoopaAEpaKKBnL0lFFYnzwUUUlAC0lFFAgopKKBFqiilqTASloopjCilooGFFFFAGrRRRXQfXhRSUUCCiikoAWkoooEZ1LRRWB8sFFLRQMKKKKACilooGXKKSitj6MKKKSgBaSiigQUUUlAiCiilrE8EKKKKYwopaKBhRRRQA+iiitD2QpKKKBBRRSUALSUUUCFpaKKzPMCilooGFFFFMAopaKBkNFJRVHaFFFJQAtJRRQIKKKSgRbopaKkwCiiimAUUtFAwoopaBmfRRSUFC0lFFAgoopKBC0lFFAGpRRRQWFFLRQMKKKWmMSloooAx6SiipOYKKKSgQtJRRQAUUlFAjdopaKo7woopaYCUtFFAwoopaBnO0UUlZnli0lFFAgoopKBBRRRQI6aiiitD2gpaKKYwoopaBiUtFFAHK0lFFYngBRRSUCCiiigAopKKBFyiilqTnCiiigAopaKYwooooGadFFFdB9gFFJRQIKKKSgQtJRRQBRooornPlAopaKYwooooGFLRRQBaopKK2PpQoopKBC0lFFABRRSUCIqKWisTwAooooAKKWimMKKKWgYUUUVoe0FJRRQIKKKSgQtJRRQBJRRRWZ5QUUtFAwooooGFLRRTAr0UlFUd4UUUlAhaS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ooAKKSigQUUUUCOqpaKKxPCCiilpjEpaKKACilooGU6KSiuw/RQooooAKKSigQUUUUCNCiilrjPgBKWiimAUUUtAwooooGZVFFFdR90FFJRQIKKKKBBSUUUCNmloorlPiwoopaYwooooGFFLRQBg0UlFdB9eFFFFAgpKKKACiikoEdHRRS1znywUUUUwCilooGFFFFAzmKKKK2PowpKKKACiikoELSUUUCOrpaKKxPBCilopjCiiigYUUtFAHH0lFFaHshRRSUCFpKKKACiikoEdrRS0VmeYFFFFAwopaKYBRRS0DOFoooqjtCkoooAKKKSgQtJRRQI76iiipOcKKWimMKKKWgYlLRRQM89pKKKCgoopKBC0lFFAgoopKAPR6KWigsKKKWgYlLRRTGFFFLQB5nRRSVJzC0lFFAgoopKACiiigR1lLRRWJ4AUUUtMYlLRRQMKKWigCjRSUV2H6OFFFFAgopKKACiiigRpUUUtcZ+fCUtFFAwopaKYBRRRQMyKKKK6j7sKKSigAooooEFJRRQI26WiiuU+KCilooAKKKKYwopaKBnP0UlFdB9gFFFFAgpKKKBBRRSUAdLRS0VznygUUUUDCilopgFFFLQM5Wiiitj6UKKSigQUUUlAC0lFFAjrqKKKxPACilooAKKKWmMSloooGcbRSUVoe0FFFJQIWkoooEFFFJQB29FLRWZ5QUUUUDCloooGFFFLTA4OiikqjvFpKKKBBRRSUALSUUUCPQKKKKk5gpaKKACiilpjEpaKKBnndJRRQWFFFJQAtJRRQIKKSigR6TS0UUFBRRS0DEpaKKBhRRS0xnmNFFJUnOLSUUUCCikooEFFFFAHXUtFFYnz4UUUtABRRRTGFFLRQMz6KSiuw/SAooooEFFJRQIKKKSgDVoopa4z88EpaKKBhRS0UDCiiimBjUUUV1H3oUUlFAgoopKAFpKKKBG7S0UVynxAUUtFAwooooAKKWimM52ikoroPsQoopKAFpKKKBBRRSUCOnopaK5z5MKKKKBhRS0UDCiiimBylFFJWx9OLSUUUCCiikoELSUUUAdhRRRWJ88FFLRQMKKKKACloopjOLpKKK0PbCiikoAWkoooEFFJRQI7milorM8oKKKKACilooGFFFLQM4Giikqz0BaSiigQUUUlAgooooA9CoooqTkCilooGFFFLQAlLRRTGec0lFFBqFFFJQIKKKKACikooEel0UtFAwoopaAEpaKKBhRRS0DPL6KKSkYBRRRQAUUlFAgooooEdHRRSV0H1otJRRQIKKKSgAooooEaVFFFcR+bBS0UUAFFFLQMSloooGZNJRRXYfogUUUlAhaSiigQUUlFAjbopaK5D4EKKKWgYlLRRQMKKKWgZz9FFJXUfcC0lFFAgopKKBBRRRQB0lFFLXMfGCUtFFAwoopaAEpaKKBnL0lFFdB9aFFFJQAUUUUCCikooEdbS0UVgfLhRRS0DEpaKKBhRS0UDONoopK2PogooooEFFJRQIKKKKAO2oopayPCEpaKKBhRS0UAFFFFAzhKKKK0PXCikooAKKKKBBRSUUCO/paKKzPOCilopgFFFFAwopaKBnndFJRVHYFFFFAgopKKBBRRSUAek0UtFIwCiiigYUUtFAwoopaAPMaKKKBhRSUUCCiikoAWkoooEepUUUUGoUUtFMYUUUtACUtFFAzjKKKStj6MWkoooEFFFJQIKKKKANSiilriPzQSloooGFFFLQAlLRRQMx6Siiuw/RQoopKAFpKKKBBRSUUCN2loorjPgAoopaYCUtFFAwoopaBnO0UUldR90LSUUUCCikooEFFFFAjpqKKWuU+LEpaKKYwoopaBhRRRQBytJRRXQfXhRSUUCCiiigAopKKBHX0tFFc58sFFFLTAKKKKBhRS0UDOLopKK2PpAooooEFFJRQIKKKSgR3NFFLWJ4IUUUUxhRS0UDCiiigDgqKKK0PZCikooEFFFJQAtJRRQI9BpaKKzPMCiiloGFFFFMAopaKBnnNFJRVHaFFFJQAtJRRQIKKKSgR6XRRS1JzhRRRTGFFLRQMKKKKBnmFFFJQULSUUUCCiikoELSUUUAeqUUUUFhRS0UDCiiimMKWiigDiqKKStj6UWkoooEFFJRQIKKKKBGtRRS1wn5mJS0UUxhRRS0DEpaKKAMWkoorsP0cKKSigQUUUUAFFJRQI36WiiuM/PgoopaBiUtFFMAoopaBnN0UUldR92FFFFABRSUUCCiiigR1FFFLXKfFCUtFFABRRS0DEpaKKYzkqKKK6D7AKKSigQUUUUCCkoooA7GloornPlAoopaBiUtFFMAopaKBnE0UlFbH0oUUUUAFJRRQIKKKSgR3dFFLWJ4AlLRRQAUUtFAwooopjOAooorQ9oKSiigQUUUlAhaSiigD0OloorM8oKKWigYUUUUDCilopgeb0UlFUd4UUUUCCkoooAKKKSgR6bRS0VJzBRRRQAUUtFMYUUUtAzy2iiigsKSiigAoopKBC0lFFAj1aiiigoKKWigYUUUtAxKWiimM4iiikrY+lFpKKKACikooEFFFFAjYoopa4T8yEpaKKACiilpjEpaKKBmHSUUV2H6QFFJRQIKKKKBBRSUUAdDS0UVxn54FFFLQMSloooGFFLRTA5miikrqPvQooooEFFJRQAUUUUCOqoopa5T4gSloooGFFLRQAUUUUDORpKKK6T7EKKSigAooooEFFJRQI7OloornPkwopaKBhRRRQMKKWimBw9FJRWx9OFFFFAgopKKACiikoEd7RS0VifPBRRRQMKKWigAoopaBnntFFFanthRSUUAFFFJQIWkoooEejUUUVmeUFFLRQAUUUUDCloooGea0UlFWegFFFJQIWkoooEFFFJQB6fRS0VJyBRRRQMKWiigAoopaYzyuiikoNRaSiigQUUUlAC0lFFAj1iiiigYUtFFABRRS0DEpaKKBnOUUUVgfJBRS0UDCiiigYUtFFAGLRSUV3H6eFFFJQIWkoooAKKKSgRv0UtFcR+bBRRRQAUtFFAwoopaBnN0UUldh+iC0lFFAgoopKBC0lFFAjqKKKK5D4EKKWigYUUUtAxKWiigDk6Siiuo+5CiikoELSUUUCCikooA7GilorlPjAooopjCloooAKKKWgZxNFFJXQfWi0lFFABRSUUCCiiigR3VFFFYHy4UtFFAwoopaBiUtFFAzgaSiitj6IKKSigQUUUUCCikooA9DpaKKxPCCiilpjEpaKKACiiloGeb0UlFaHrhRRRQAUUlFAgooooEemUUUtZnnCUtFFMAoopaBiUtFFAzy6iiiqOwKKSigQUUUUCCkoooA9VpaKKRgFFFLQMSloooGFFLRQB5LRSUUDCiiigQUlFFABRRSUCO8ooornPlgopaKYwooooGFLRRQMw6Siiu4/UAoopKBC0lFFAgoopKAOhopaK4j80CiiigYUtFFABRRS0DOZoopK7D9FFpKKKACiikoELSUUUCOqooorjPgAopaKYBRRS0DEpaKKBnI0lFFdR90FFFJQIWkoooEFFFJQI7OilorlPiwoopaBiUtFFMYUUUtAHD0UUldB9eLSUUUCCiikoAKKKKBHeUUUtc58sJS0UUwCiiloGJS0UUDPP6Siitj6MKKKSgAooooEFFJRQI9FpaKKxPBCiiloGJS0UUxhRS0UAea0UUlaHshRRRQIKKSigAooooEenUUUtZnmCUtFFAwopaKYBRRRQM8tpKKKo7QopKKACiiigQUUlFAj1elooqTnCilopjCiiigYUUtFAzyOikooKCiiigQUUlFAgoopKAO+ooornPlQopaKACiilpjEpaKKBmDSUUV3H6kFFFJQIWkoooEFFFJQI6OilorhPzMKKKWmMSloooGFFFLQBy9FFJXYfo4tJRRQIKKKSgBaSiigR1lFFFcZ+fBS0UUDCiilpgJS0UUDOPpKKK6j7sKKKSgBaSiigQUUlFAjtaWiiuU+KCiiloASloooGFFFLTGcLRRSV0H2AtJRRQIKKSigQUUUUAd9RRS1znyglLRRQMKKKWmAUUUUDPPaSiitj6UKKSigQUUUUAFFJRQI9HpaKKxPACiiloAKKKKBhRS0UxnmdFJRWh7QUUUUCCikooEFFFJQB6jRRS1meUJS0UUDCiiloGFFFFMDyqiiiqO8KKSigQUUUlAC0lFFAj1mlooqTmCiiloAKKKKYwopaKBnkNFJRQWFFFJQAtJRRQIKKKSgR6BRRRXOfKBRS0UDCiiloASloopjOfpKKK7j9TCiikoAWkoooEFFJRQI6WilorhPzIKKKWgBKWiimMKKKWgZytFFJXYfpAtJRRQIKKSigQUUUUAddRRRXGfngUtFFAwoopaBiUtFFMDjaSiiuo+9CiikoEFFFFABRSUUCO3opaK5T4gKKKWgYlLRRQAUUUtAzg6KKSuk+xCiiigAopKKBBRRRQI9Aoopa5z5MSloooGFFFLQMSloopgedUUUVsfThRSUUCCiiigQUlFFAHpNLRRWJ88FFFLQMSloooAKKWigZ5jRSUVqe2FFFFABSUUUCCiikoEep0UUtZnkiUtFFAwopaKBhRRRQM8ooooqz0AopKKBBRRRQIKSiigD1ulooqTkCilooGFFFFABRS0Uxnj9FJRQahRRRQIKSiigAoopKBH/2Q==');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "31.1 GenAI Gemini mediaResolution LOW - record image prompt tokens (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini mediaResolution LOW request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var low = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('GenAI Gemini response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(low, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.collectionVariables.set('genaiMediaResLowPromptTokens', low);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_LOW\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.2 GenAI Gemini mediaResolution HIGH exceeds LOW - field not dropped (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini mediaResolution HIGH request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var high = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('GenAI Gemini HIGH response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(high, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var low = Number(pm.collectionVariables.get('genaiMediaResLowPromptTokens'));",
+                  "// Only assert the invariant when the LOW case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(low) && low > 0) {",
+                  "  pm.test('mediaResolution honored: HIGH image prompt tokens exceed LOW (field not dropped)', function () {",
+                  "    pm.expect(high, 'HIGH=' + high + ' must exceed LOW=' + low + '; equal counts mean mediaResolution was dropped').to.be.above(low);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_HIGH\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.3 Vertex Gemini mediaResolution LOW - record image prompt tokens (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini mediaResolution LOW request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var low = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('Vertex Gemini response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(low, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "pm.collectionVariables.set('vertexMediaResLowPromptTokens', low);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_LOW\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{vertexModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{vertexModel}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "31.4 Vertex Gemini mediaResolution HIGH exceeds LOW - field not dropped (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini mediaResolution HIGH request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var high = body && body.usageMetadata && body.usageMetadata.promptTokenCount;",
+                  "pm.test('Vertex Gemini HIGH response reports usageMetadata.promptTokenCount', function () {",
+                  "  pm.expect(high, 'promptTokenCount missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var low = Number(pm.collectionVariables.get('vertexMediaResLowPromptTokens'));",
+                  "// Only assert the invariant when the LOW case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(low) && low > 0) {",
+                  "  pm.test('mediaResolution honored: HIGH image prompt tokens exceed LOW (field not dropped)', function () {",
+                  "    pm.expect(high, 'HIGH=' + high + ' must exceed LOW=' + low + '; equal counts mean mediaResolution was dropped').to.be.above(low);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Reply with the single word: ok.\"\n        },\n        {\n          \"inline_data\": {\n            \"mime_type\": \"image/jpeg\",\n            \"data\": \"{{mediaResImage}}\"\n          }\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"mediaResolution\": \"MEDIA_RESOLUTION_HIGH\",\n    \"maxOutputTokens\": 2048\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{vertexModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{vertexModel}}:generateContent"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "32. Gemini Google Search grounding + tool combination (PR #5576)",
+      "description": "PR #5576 (Gemini Google Search grounding + tool combination). Four regressions, all of which return 200 when broken, so a status assertion alone cannot pin them:\n\n1. Grounding annotations on /v1/responses were emitted on a SEPARATE message item whose output_text was \"\" , while the real assistant text carried annotations: []. Segment start_index/end_index index into the real text, so the offsets pointed at a different item entirely. Annotations must now sit on the text block they annotate, and no empty-text message may be emitted.\n2. Only the first entry of groundingSupports[].groundingChunkIndices was read on the Responses path, so a segment backed by several sources kept one citation. Every (support, chunk) pair now yields a url_citation.\n3. Gemini rejects function declarations sent alongside googleSearch unless toolConfig.includeServerSideToolInvocations is set (Gemini 3+). Bifrost had no way to express the flag, so it silently DROPPED the caller function declarations whenever web search was present - the model could never call them. The neutral include_server_side_tool_invocations param now maps to toolConfig.includeServerSideToolInvocations, and an AUTO/unset functionCallingConfig is promoted to VALIDATED (AUTO is unsupported in that mode).\n4. On the streaming genai passthrough, groundingMetadata.searchEntryPoint was lost: the rendered-content output_item.done event carried no item, so the reverse conversion never rebuilt it. Google requires rendering Search Suggestions, so its loss is a compliance issue, not cosmetic.\n\nCases 32.3/32.4 use gemini-3.6-flash because tool combination is Gemini 3+ only.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.6-flash google_search annotations on assistant text block, no phantom message (/v1/responses) - PR #5576",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.6-flash\",\n  \"input\": \"Who won UEFA Euro 2024? Answer in two short sentences using Google Search.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"max_output_tokens\": 2000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('responses google_search: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var output = (pm.response.json() || {}).output || [];",
+                  "var textBlocks = [];",
+                  "output.forEach(function (item) {",
+                  "  if (item.type !== 'message' || !item.content) { return; }",
+                  "  item.content.forEach(function (block) {",
+                  "    if (block.type === 'output_text') { textBlocks.push(block); }",
+                  "  });",
+                  "});",
+                  "pm.test('responses google_search: at least one output_text block', function () {",
+                  "  pm.expect(textBlocks.length, 'no output_text block: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('responses google_search: no phantom empty-text message (regression PR #5576)', function () {",
+                  "  textBlocks.forEach(function (b) {",
+                  "    pm.expect(b.text, 'empty output_text block emitted - annotations were split onto a phantom message: ' + JSON.stringify(b)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "var annotated = textBlocks.filter(function (b) { return b.annotations && b.annotations.length; });",
+                  "pm.test('responses google_search: url_citation annotations present', function () {",
+                  "  pm.expect(annotated.length, 'no annotations on any output_text block: ' + pm.response.text()).to.be.above(0);",
+                  "});",
+                  "pm.test('responses google_search: annotations attached to the annotated text (regression PR #5576)', function () {",
+                  "  annotated.forEach(function (b) {",
+                  "    pm.expect(b.text, 'annotations sit on an empty text block').to.be.a('string').and.not.empty;",
+                  "    b.annotations.forEach(function (a) {",
+                  "      pm.expect(a.type, 'unexpected annotation type: ' + JSON.stringify(a)).to.eql('url_citation');",
+                  "      pm.expect(a.url, 'annotation missing url: ' + JSON.stringify(a)).to.be.a('string').and.not.empty;",
+                  "      pm.expect(a.end_index, 'annotation missing end_index: ' + JSON.stringify(a)).to.be.a('number');",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash streaming googleSearch keeps searchEntryPoint (/genai SSE) - PR #5576",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('genai stream googleSearch: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var chunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "pm.test('genai stream googleSearch: SSE chunks parsed', function () {",
+                  "  pm.expect(chunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "var queries = [];",
+                  "var rendered = '';",
+                  "chunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) {",
+                  "    var gm = cand.groundingMetadata;",
+                  "    if (!gm) { return; }",
+                  "    if (gm.webSearchQueries) { queries = queries.concat(gm.webSearchQueries); }",
+                  "    if (gm.searchEntryPoint && gm.searchEntryPoint.renderedContent) { rendered = gm.searchEntryPoint.renderedContent; }",
+                  "  });",
+                  "});",
+                  "pm.test('genai stream googleSearch: groundingMetadata present in stream', function () {",
+                  "  pm.expect(queries.length, 'no webSearchQueries in stream: ' + raw.slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('genai stream googleSearch: searchEntryPoint.renderedContent survives streaming (regression PR #5576)', function () {",
+                  "  pm.expect(rendered, 'searchEntryPoint missing from streamed groundingMetadata - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash include_server_side_tool_invocations keeps function tools with google_search (/v1/responses) - PR #5576",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-3.6-flash\",\n  \"input\": \"Call the get_weather function for Tokyo. You must use the function to answer.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\",\n            \"description\": \"City name\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"include_server_side_tool_invocations\": true,\n  \"max_output_tokens\": 2000\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('responses tool combination: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var output = (pm.response.json() || {}).output || [];",
+                  "var calls = output.filter(function (item) {",
+                  "  return item.type === 'function_call' && item.name === 'get_weather';",
+                  "});",
+                  "pm.test('responses tool combination: function declarations survive alongside google_search (regression PR #5576)', function () {",
+                  "  pm.expect(calls.length, 'no get_weather function_call - declarations were dropped when web_search was present: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash genai toolConfig.includeServerSideToolInvocations round-trip (/genai generateContent) - PR #5576",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Call the get_weather function for Tokyo. You must use the function to answer.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"functionDeclarations\": [\n        {\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ]\n          }\n        }\n      ]\n    },\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"includeServerSideToolInvocations\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('genai tool combination: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var candidates = (pm.response.json() || {}).candidates || [];",
+                  "var calls = [];",
+                  "candidates.forEach(function (cand) {",
+                  "  var parts = (cand.content && cand.content.parts) || [];",
+                  "  parts.forEach(function (p) {",
+                  "    if (p.functionCall && p.functionCall.name === 'get_weather') { calls.push(p.functionCall); }",
+                  "  });",
+                  "});",
+                  "pm.test('genai tool combination: functionDeclarations survive the round-trip alongside googleSearch (regression PR #5576)', function () {",
+                  "  pm.expect(calls.length, 'no get_weather functionCall - toolConfig.includeServerSideToolInvocations was dropped and declarations stripped: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "33. Codex additional_tools hoist + tool_search wire shapes (Bedrock Mantle)",
+      "description": "Codex code-mode models (gpt-5.6-sol, tool_mode=code_mode / use_responses_lite=true) declare their tools inside the input array as an `additional_tools` developer item rather than in the top-level `tools` param. api.openai.com accepts that item natively; Bedrock Mantle's OpenAI-compatible surface (bedrock-mantle.<region>.api.aws/openai/v1/responses) validates `input` against the standard union and rejects the whole request with 400 \"invalid request body: Invalid 'input': value did not match any expected variant\".\n\nBifrost resolves this in ToOpenAIResponsesRequest: for providers whose ResponsesFeatureSupport.AdditionalToolsItem is false (bedrock, bedrock_mantle), the item's tools are hoisted into the top-level `tools` param and the item is dropped from `input`. OpenAI keeps the item verbatim via ResponsesMessage.rawPreserved.\n\nThe nested tools are the fragile part: each entry carries its own `type` discriminator, and custom tools carry a lark `format` while namespace tools carry a nested `tools` list. A typed decode strips those, which is why the item round-trips through rawPreserved rather than a typed model.\n\nCases 33.1-33.3 pin the hoist (a 400 here means it stopped running). 33.4 pins that OpenAI still receives the item natively. 33.5-33.6 pin the sibling raw-preserved items: tool_search_call `arguments` must stay a JSON object (function_call uses a string) and tool_search_output `tools[].type` must survive replay.",
+      "item": [
+        {
+          "name": "33.1 bedrock/openai.gpt-5.6-sol additional_tools hoisted to top-level tools (no Invalid input 400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock additional_tools: additional_tools not rejected by the provider', function () {",
+                  "  pm.expect(body, 'provider rejected the additional_tools input item - the hoist did not run: ' + body).to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'provider rejected the input array: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "});",
+                  "pm.test('bedrock additional_tools: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.2 bedrock_mantle/openai.gpt-5.6-sol additional_tools hoisted to top-level tools",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock_mantle additional_tools: additional_tools not rejected by the provider', function () {",
+                  "  pm.expect(body, 'provider rejected the additional_tools input item - the hoist did not run: ' + body).to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'provider rejected the input array: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "});",
+                  "pm.test('bedrock_mantle additional_tools: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.3 bedrock_mantle/openai.gpt-5.6-sol additional_tools streaming (responses_stream prod path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"stream\": true,\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock_mantle additional_tools streaming: additional_tools not rejected by the provider', function () {",
+                  "  pm.expect(body, 'provider rejected the additional_tools input item - the hoist did not run: ' + body).to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'provider rejected the input array: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "});",
+                  "pm.test('bedrock_mantle additional_tools streaming: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('bedrock_mantle additional_tools streaming: SSE stream produced events', function () {",
+                  "  pm.expect(pm.response.text(), 'no SSE events: ' + pm.response.text()).to.include('data:');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.4 openai/gpt-5.6-sol additional_tools preserved natively on /openai/v1/responses (not hoisted)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"additional_tools\",\n      \"role\": \"developer\",\n      \"tools\": [\n        {\n          \"type\": \"custom\",\n          \"name\": \"exec\",\n          \"description\": \"Run JavaScript code to orchestrate/compose tool calls.\",\n          \"format\": {\n            \"type\": \"grammar\",\n            \"syntax\": \"lark\",\n            \"definition\": \"start: SOURCE\\nSOURCE: /[\\\\s\\\\S]+/\\n\"\n          }\n        },\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"strict\": false,\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\",\n                \"description\": \"City name.\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        },\n        {\n          \"type\": \"namespace\",\n          \"name\": \"collaboration\",\n          \"description\": \"Tools for spawning and managing sub-agents.\",\n          \"tools\": [\n            {\n              \"type\": \"function\",\n              \"name\": \"spawn_agent\",\n              \"description\": \"Spawn a sub-agent for a bounded subtask.\",\n              \"strict\": false,\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"task_name\": {\n                    \"type\": \"string\"\n                  }\n                },\n                \"required\": [\n                  \"task_name\"\n                ],\n                \"additionalProperties\": false\n              }\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with exactly: OK\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('openai additional_tools native: additional_tools not rejected by the provider', function () {",
+                  "  pm.expect(body, 'provider rejected the additional_tools input item - the hoist did not run: ' + body).to.not.include('did not match any expected variant');",
+                  "  pm.expect(body, 'provider rejected the input array: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "});",
+                  "pm.test('openai additional_tools native: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('openai additional_tools native: response has output', function () {",
+                  "  var out = (pm.response.json() || {}).output || [];",
+                  "  pm.expect(out.length, 'empty output: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.5 openai/gpt-5.6-sol tool_search client execution keeps arguments as a JSON object",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Find a tool that reports the weather, then use it for Paris.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"description\": \"Find project-specific tools needed to complete the task.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"goal\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"goal\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 128\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('openai tool_search client: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var output = (pm.response.json() || {}).output || [];",
+                  "var calls = output.filter(function (o) { return o.type === 'tool_search_call'; });",
+                  "// The model decides whether to search, so an empty result is not a failure.",
+                  "// When it does search, the wire shape is what this case pins.",
+                  "if (calls.length === 0) { pm.test.skip('openai tool_search client: model emitted no tool_search_call'); return; }",
+                  "pm.test('openai tool_search client: arguments is a JSON object, not a stringified one', function () {",
+                  "  calls.forEach(function (c) {",
+                  "    pm.expect(c.arguments, 'tool_search_call.arguments was stringified: ' + JSON.stringify(c)).to.be.an('object');",
+                  "  });",
+                  "});",
+                  "pm.test('openai tool_search client: execution preserved as client', function () {",
+                  "  calls.forEach(function (c) {",
+                  "    pm.expect(c.execution, 'execution lost: ' + JSON.stringify(c)).to.eql('client');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "33.6 openai/gpt-5.6-sol tool_search_call + tool_search_output replay round-trip",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Use the discovered tool to report the weather in Paris.\"\n        }\n      ]\n    },\n    {\n      \"type\": \"tool_search_call\",\n      \"call_id\": \"ts_harness_1\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"arguments\": {\n        \"goal\": \"weather\"\n      }\n    },\n    {\n      \"type\": \"tool_search_output\",\n      \"call_id\": \"ts_harness_1\",\n      \"execution\": \"client\",\n      \"status\": \"completed\",\n      \"tools\": [\n        {\n          \"type\": \"function\",\n          \"name\": \"get_weather\",\n          \"description\": \"Get the current weather for a city.\",\n          \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"city\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"city\"\n            ],\n            \"additionalProperties\": false\n          }\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"tool_search\",\n      \"execution\": \"client\",\n      \"description\": \"Find project-specific tools needed to complete the task.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"goal\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"goal\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('openai tool_search replay: raw-preserved items accepted on replay', function () {",
+                  "  pm.expect(body, 'provider rejected the replayed tool_search items: ' + body).to.not.include(\"Invalid 'input'\");",
+                  "  pm.expect(body, 'tool_search_call arguments were stringified on replay: ' + body).to.not.include('Mismatch type string with value object');",
+                  "  pm.expect(body, 'tool_search_output tools lost their type discriminator: ' + body).to.not.include(\"input[1].tools[0].type\");",
+                  "});",
+                  "pm.test('openai tool_search replay: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "34. Gemini/Vertex countTokens full-prompt accounting (PR #5620)",
+      "description": "Regression: CountTokens unconditionally deleted systemInstruction, generationConfig and toolConfig from the\nrequest body for BOTH Gemini and Vertex, so :countTokens reported only the \"contents\" token count. Reported\ncase: a ~7.4k-token system prompt plus a tool declaration counted as 17 tokens on Vertex.\n\nThe two endpoints need opposite request shapes, which is why one strip broke both:\n  - Gemini (generativelanguage): CountTokensRequest accepts only \"contents\" and \"generateContentRequest\".\n    systemInstruction/tools/toolConfig/generationConfig are 400 \"Unknown name\" at the top level and must be\n    wrapped in the envelope. Top-level \"contents\"/\"model\" are then SILENTLY IGNORED, so the body must carry\n    the envelope and nothing beside it. Before the fix, \"tools\" was never stripped, so any tool-bearing\n    countTokens was a hard 400 rather than an undercount.\n  - Vertex (aiplatform): CountTokensRequest takes contents/systemInstruction/tools/generationConfig FLAT and\n    has no envelope. Only toolConfig (plus safetySettings/cachedContent/serviceTier/labels) is rejected.\n\nThe /genai ingress must therefore parse both shapes and emit whichever the resolved provider requires, and\nthe Bifrost-only \"fallbacks\" routing field must be honoured for routing yet stripped before the upstream call.\n\nAssertions are relative, not absolute: token counts drift across model versions, so each provider records a\ncontents-only baseline and every later case asserts the count exceeds it. A dropped field collapses the count\nback to the baseline, which is exactly what these cases catch. 400 is deliberately NOT in the infra guard —\nfor the tools/toolConfig/fallbacks cases a 400 IS the regression signature.",
+      "item": [
+        {
+          "name": "34.1 GenAI Gemini countTokens contents-only baseline (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens contents-only request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('GenAI Gemini countTokens returns a positive totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(total).to.be.above(0);",
+                  "});",
+                  "pm.test('GenAI Gemini countTokens returns promptTokensDetails', function () {",
+                  "  pm.expect(body.promptTokensDetails, 'promptTokensDetails missing: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(body.promptTokensDetails.length).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('genaiCountTokensBaseline', total);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.2 GenAI Gemini countTokens counts a flat systemInstruction (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens accepts a flat systemInstruction', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected systemInstruction').to.not.include('Unknown name \"systemInstruction\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('a flat systemInstruction counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}",
+                  "pm.collectionVariables.set('genaiCountTokensWithSystem', total);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.3 GenAI Gemini countTokens counts flat tools + toolConfig + generationConfig (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens accepts flat tools, toolConfig and generationConfig', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected tools').to.not.include('Unknown name \"tools\"');",
+                  "  pm.expect(pm.response.text(), 'upstream rejected toolConfig').to.not.include('Unknown name \"toolConfig\"');",
+                  "  pm.expect(pm.response.text(), 'upstream rejected generationConfig').to.not.include('Unknown name \"generationConfig\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('flat tools, toolConfig and generationConfig counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\n  \"toolConfig\": {\"functionCallingConfig\":{\"mode\":\"AUTO\"}},\n  \"generationConfig\": {\"temperature\":0.2}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.4 GenAI Gemini countTokens accepts a generateContentRequest envelope (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens accepts a generateContentRequest envelope', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('GenAI Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected generateContentRequest').to.not.include('Unknown name \"generateContentRequest\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('GenAI Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('genaiCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('a generateContentRequest envelope counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"generateContentRequest\": {\n    \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n    \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n    \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.5 GenAI Gemini countTokens strips the Bifrost fallbacks field (gemini)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('GenAI Gemini countTokens accepts a Bifrost fallbacks field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('fallbacks is not forwarded verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected fallbacks').to.not.include('Unknown name \"fallbacks\"');",
+                  "});",
+                  "var total = pm.response.json().totalTokens;",
+                  "var withSystem = Number(pm.collectionVariables.get('genaiCountTokensWithSystem'));",
+                  "// Only compare when 34.2 actually recorded a value (it may have skipped).",
+                  "if (!isNaN(withSystem) && withSystem > 0) {",
+                  "  pm.test('fallbacks is routing-only and does not change the counted prompt', function () {",
+                  "    pm.expect(total, 'fallbacks altered the token count: ' + pm.response.text()).to.eql(withSystem);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n  \"fallbacks\": [\"vertex/gemini-2.5-pro\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{genaiModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.6 Vertex Gemini countTokens contents-only baseline (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini countTokens contents-only request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('Vertex Gemini countTokens returns a positive totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(total).to.be.above(0);",
+                  "});",
+                  "pm.test('Vertex Gemini countTokens returns promptTokensDetails', function () {",
+                  "  pm.expect(body.promptTokensDetails, 'promptTokensDetails missing: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(body.promptTokensDetails.length).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set('vertexCountTokensBaseline', total);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "{{vertexModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.7 Vertex Gemini countTokens counts a flat systemInstruction (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini countTokens accepts a flat systemInstruction', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected systemInstruction').to.not.include('Unknown name \"systemInstruction\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('a flat systemInstruction counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "{{vertexModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.8 Vertex Gemini countTokens keeps tools + generationConfig and strips toolConfig (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini countTokens accepts flat tools and generationConfig with toolConfig stripped', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected toolConfig').to.not.include('Unknown name \"toolConfig\"');",
+                  "  pm.expect(pm.response.text(), 'upstream rejected generationConfig').to.not.include('Unknown name \"generationConfig\"');",
+                  "  pm.expect(pm.response.text(), 'upstream rejected tools').to.not.include('Unknown name \"tools\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('flat tools and generationConfig with toolConfig stripped counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n  \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}],\n  \"generationConfig\": {\"temperature\":0.2},\n  \"toolConfig\": {\"functionCallingConfig\":{\"mode\":\"AUTO\"}}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "{{vertexModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "34.9 Vertex Gemini countTokens unwraps a generateContentRequest envelope (vertex)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Vertex Gemini countTokens accepts a generateContentRequest envelope (Vertex has none, so it must be unwrapped)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('Vertex Gemini countTokens does not forward the field verbatim to Google', function () {",
+                  "  pm.expect(pm.response.text(), 'upstream rejected generateContentRequest').to.not.include('Unknown name \"generateContentRequest\"');",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var total = body && body.totalTokens;",
+                  "pm.test('Vertex Gemini countTokens returns totalTokens', function () {",
+                  "  pm.expect(total, 'totalTokens missing: ' + pm.response.text()).to.be.a('number');",
+                  "});",
+                  "var baseline = Number(pm.collectionVariables.get('vertexCountTokensBaseline'));",
+                  "// Only assert the invariant when the baseline case actually recorded a value (it may have skipped).",
+                  "if (!isNaN(baseline) && baseline > 0) {",
+                  "  pm.test('a generateContentRequest envelope (Vertex has none, so it must be unwrapped) counted: total exceeds the contents-only baseline', function () {",
+                  "    pm.expect(total, 'prompt material was dropped from the count (' + total + ' vs baseline ' + baseline + '): ' + pm.response.text()).to.be.above(baseline);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-goog-api-key",
+                "value": "{{genaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"generateContentRequest\": {\n    \"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with the single word: acknowledged\"}]}],\n    \"systemInstruction\": {\"parts\":[{\"text\":\"You are a meticulous support assistant. Always be extremely concise, never speculate, and follow the user instructions exactly without adding commentary of any kind.\"}]},\n    \"tools\": [{\"functionDeclarations\":[{\"name\":\"probe_context\",\"description\":\"No-op compatibility probe tool used to verify tool declarations are counted.\",\"parametersJsonSchema\":{\"type\":\"object\",\"properties\":{}}}]}]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/{{vertexModel}}:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "{{vertexModel}}:countTokens"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "35. Gemini/Vertex googleSearch grounding filters + retrievalConfig (/genai)",
+      "description": "Google Search grounding fields on the /genai route that had zero harness coverage: googleSearch.excludeDomains, googleSearch.timeRangeFilter (both camelCase and snake_case), and toolConfig.retrievalConfig.latLng on the request side, plus groundingMetadata fidelity on the response side for both non-streaming and streaming.\n\nThe /genai route is NOT passthrough: the request crosses Gemini JSON -> BifrostResponsesRequest -> Gemini JSON, and the response crosses back the same way. Every one of these fields therefore has two chances to be silently dropped, and a dropped field still returns 200 - the model just quietly runs an unfiltered search. So the assertions are on response content, not status:\n\n- excludeDomains / timeRangeFilter / retrievalConfig.latLng have no distinctive response signature, so they are pinned by the fact that the provider accepts them AND still grounds. A mangled or misnamed field is a 400 INVALID_ARGUMENT from Google; a dropped tool means no groundingMetadata at all.\n- excludeDomains is Vertex-only - the Gemini Developer API does not accept it - so every case carrying it runs on Vertex alone. timeRangeFilter and retrievalConfig.latLng run on both.\n- The latLng cases additionally assert no functionCallingConfig was synthesized: Gemini rejects functionCallingConfig without function declarations, so rebuilding toolConfig for latLng must not pull one in.\n- The snake_case cases pin GoogleSearch.UnmarshalJSON's alias handling: time_range_filter on Gemini, exclude_domains + time_range_filter together on Vertex.\n- The fidelity cases pin what must survive the four conversions: webSearchQueries, a citable uri on every grounding chunk, searchEntryPoint.renderedContent (Google requires rendering Search Suggestions), and groundingSupports[].groundingChunkIndices that stay in-bounds and de-duplicated.\n\nEach case runs on both providers via the provider-prefixed model form (/genai/v1beta/models/gemini/... and /genai/v1beta/models/vertex/...), so PROVIDER=gemini and PROVIDER=vertex both exercise the full set against their own backend.\n\nNot covered here: googleSearch.searchTypes (Grounding with Google Image Search) and the imageSearchQueries / groundingChunks[].image response half. Those need an image model and are deferred - Bifrost currently also drops the generated inlineData part in streaming, because processGeminiPart matches part.ThoughtSignature before part.InlineData and consumes an image part carrying a thought signature as a signature-only reasoning item.\n\nThe chunk-index test checks in-bounds and de-duplicated indices; it cannot by itself catch a regression that keeps only the first index of a multi-source support, since one index is still valid. Folder 32 pins that fan-out on /v1/responses.",
+      "item": [
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch excludeDomains forwarded intact (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"excludeDomains\": [\n          \"wikipedia.org\"\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex excludeDomains: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex excludeDomains: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - excludeDomains was mangled or the tool was dropped: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex excludeDomains: grounding still returned with the domain filter applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex excludeDomains: no source from the excluded domain', function () {",
+                  "  (gm.groundingChunks || []).forEach(function (c) {",
+                  "    var d = (c.web && c.web.domain) || '';",
+                  "    pm.expect(d.indexOf('wikipedia.org'), 'excluded domain present in groundingChunks: ' + JSON.stringify(c)).to.eql(-1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch timeRangeFilter forwarded intact (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"timeRangeFilter\": {\n          \"startTime\": \"2024-06-01T00:00:00Z\",\n          \"endTime\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini timeRangeFilter: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('gemini timeRangeFilter: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - timeRangeFilter was mangled or the tool was dropped: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini timeRangeFilter: grounding still returned with the time filter applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch timeRangeFilter forwarded intact (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"timeRangeFilter\": {\n          \"startTime\": \"2024-06-01T00:00:00Z\",\n          \"endTime\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex timeRangeFilter: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex timeRangeFilter: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - timeRangeFilter was mangled or the tool was dropped: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex timeRangeFilter: grounding still returned with the time filter applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch excludeDomains + timeRangeFilter combined (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"excludeDomains\": [\n          \"wikipedia.org\"\n        ],\n        \"timeRangeFilter\": {\n          \"startTime\": \"2024-06-01T00:00:00Z\",\n          \"endTime\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex excludeDomains + timeRangeFilter: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex excludeDomains + timeRangeFilter: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - the combined filters were mangled or the tool was dropped: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex excludeDomains + timeRangeFilter: grounding still returned with both filters applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex excludeDomains + timeRangeFilter: no source from the excluded domain', function () {",
+                  "  (gm.groundingChunks || []).forEach(function (c) {",
+                  "    var d = (c.web && c.web.domain) || '';",
+                  "    pm.expect(d.indexOf('wikipedia.org'), 'excluded domain present in groundingChunks: ' + JSON.stringify(c)).to.eql(-1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch + toolConfig.retrievalConfig.latLng localization (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What are the best-known coffee shops in this area? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.7749,\n        \"longitude\": -122.4194\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini latLng: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('gemini latLng: no functionCallingConfig synthesized alongside retrievalConfig', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body.indexOf('FunctionCallingConfig'), 'provider rejected a synthesized functionCallingConfig - latLng must not pull one in without function declarations: ' + body.slice(0, 800)).to.eql(-1);",
+                  "});",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('gemini latLng: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - toolConfig.retrievalConfig.latLng was mangled or dropped the tool: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini latLng: grounding still returned with the location applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch + toolConfig.retrievalConfig.latLng localization (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What are the best-known coffee shops in this area? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.7749,\n        \"longitude\": -122.4194\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex latLng: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "pm.test('vertex latLng: no functionCallingConfig synthesized alongside retrievalConfig', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body.indexOf('FunctionCallingConfig'), 'provider rejected a synthesized functionCallingConfig - latLng must not pull one in without function declarations: ' + body.slice(0, 800)).to.eql(-1);",
+                  "});",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex latLng: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - toolConfig.retrievalConfig.latLng was mangled or dropped the tool: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex latLng: grounding still returned with the location applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch time_range_filter snake_case alias (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"time_range_filter\": {\n          \"start_time\": \"2024-06-01T00:00:00Z\",\n          \"end_time\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini snake_case filter: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('gemini snake_case filter: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - the snake_case time_range_filter alias was not recognised: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini snake_case filter: grounding still returned with the snake_case filter applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch exclude_domains + time_range_filter snake_case aliases (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"exclude_domains\": [\n          \"wikipedia.org\"\n        ],\n        \"time_range_filter\": {\n          \"start_time\": \"2024-06-01T00:00:00Z\",\n          \"end_time\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex snake_case filters: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex snake_case filters: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata - the snake_case filter aliases were not recognised: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex snake_case filters: grounding still returned with the snake_case filters applied', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex snake_case filters: no source from the excluded domain', function () {",
+                  "  (gm.groundingChunks || []).forEach(function (c) {",
+                  "    var d = (c.web && c.web.domain) || '';",
+                  "    pm.expect(d.indexOf('wikipedia.org'), 'excluded domain present in groundingChunks: ' + JSON.stringify(c)).to.eql(-1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch grounding fidelity: chunk indices + searchEntryPoint (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini grounding fidelity: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('gemini grounding fidelity: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata on the non-streaming genai path: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini grounding fidelity: webSearchQueries survive the round-trip', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini grounding fidelity: groundingChunks carry a citable uri', function () {",
+                  "  var chunks = gm.groundingChunks || [];",
+                  "  pm.expect(chunks.length, 'no groundingChunks: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "  chunks.forEach(function (c) {",
+                  "    var uri = (c.web && c.web.uri) || (c.image && c.image.sourceUri) || '';",
+                  "    pm.expect(uri, 'grounding chunk with no citable uri: ' + JSON.stringify(c)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('gemini grounding fidelity: groundingSupports chunk indices are in-bounds and de-duplicated', function () {",
+                  "  var supports = gm.groundingSupports || [];",
+                  "  var chunkCount = (gm.groundingChunks || []).length;",
+                  "  var totalIndices = 0;",
+                  "  supports.forEach(function (s) {",
+                  "    var idx = s.groundingChunkIndices || [];",
+                  "    totalIndices += idx.length;",
+                  "    var seen = {};",
+                  "    idx.forEach(function (i) {",
+                  "      pm.expect(i, 'groundingChunkIndices entry out of bounds (chunks=' + chunkCount + '): ' + JSON.stringify(s)).to.be.below(chunkCount);",
+                  "      pm.expect(seen[i], 'duplicate chunk index ' + i + ' in one support - annotations were merged twice: ' + JSON.stringify(s)).to.be.undefined;",
+                  "      seen[i] = true;",
+                  "    });",
+                  "  });",
+                  "  if (supports.length) {",
+                  "    pm.expect(totalIndices, 'groundingSupports present but carry no groundingChunkIndices: ' + JSON.stringify(supports).slice(0, 800)).to.be.above(0);",
+                  "  }",
+                  "});",
+                  "pm.test('gemini grounding fidelity: searchEntryPoint.renderedContent present', function () {",
+                  "  pm.expect(((gm.searchEntryPoint || {}).renderedContent) || '', 'searchEntryPoint missing - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch grounding fidelity: chunk indices + searchEntryPoint (/genai generateContent)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex grounding fidelity: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var gm = null;",
+                  "((pm.response.json() || {}).candidates || []).forEach(function (c) { if (c.groundingMetadata) { gm = c.groundingMetadata; } });",
+                  "pm.test('vertex grounding fidelity: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata on the non-streaming genai path: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex grounding fidelity: webSearchQueries survive the round-trip', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex grounding fidelity: groundingChunks carry a citable uri', function () {",
+                  "  var chunks = gm.groundingChunks || [];",
+                  "  pm.expect(chunks.length, 'no groundingChunks: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "  chunks.forEach(function (c) {",
+                  "    var uri = (c.web && c.web.uri) || (c.image && c.image.sourceUri) || '';",
+                  "    pm.expect(uri, 'grounding chunk with no citable uri: ' + JSON.stringify(c)).to.be.a('string').and.not.empty;",
+                  "  });",
+                  "});",
+                  "pm.test('vertex grounding fidelity: groundingSupports chunk indices are in-bounds and de-duplicated', function () {",
+                  "  var supports = gm.groundingSupports || [];",
+                  "  var chunkCount = (gm.groundingChunks || []).length;",
+                  "  var totalIndices = 0;",
+                  "  supports.forEach(function (s) {",
+                  "    var idx = s.groundingChunkIndices || [];",
+                  "    totalIndices += idx.length;",
+                  "    var seen = {};",
+                  "    idx.forEach(function (i) {",
+                  "      pm.expect(i, 'groundingChunkIndices entry out of bounds (chunks=' + chunkCount + '): ' + JSON.stringify(s)).to.be.below(chunkCount);",
+                  "      pm.expect(seen[i], 'duplicate chunk index ' + i + ' in one support - annotations were merged twice: ' + JSON.stringify(s)).to.be.undefined;",
+                  "      seen[i] = true;",
+                  "    });",
+                  "  });",
+                  "  if (supports.length) {",
+                  "    pm.expect(totalIndices, 'groundingSupports present but carry no groundingChunkIndices: ' + JSON.stringify(supports).slice(0, 800)).to.be.above(0);",
+                  "  }",
+                  "});",
+                  "pm.test('vertex grounding fidelity: searchEntryPoint.renderedContent present', function () {",
+                  "  pm.expect(((gm.searchEntryPoint || {}).renderedContent) || '', 'searchEntryPoint missing - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-3.6-flash googleSearch grounding survives streaming: chunk indices + searchEntryPoint (/genai SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('gemini grounding stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var sseChunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { sseChunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var gm = null;",
+                  "sseChunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) { if (cand.groundingMetadata) { gm = cand.groundingMetadata; } });",
+                  "});",
+                  "pm.test('gemini grounding stream: SSE chunks parsed', function () {",
+                  "  pm.expect(sseChunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini grounding stream: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata in any SSE chunk - grounding was lost in streaming: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('gemini grounding stream: webSearchQueries survive streaming', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries in the stream: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('gemini grounding stream: groundingSupports chunk indices are in-bounds and de-duplicated', function () {",
+                  "  var supports = gm.groundingSupports || [];",
+                  "  var chunkCount = (gm.groundingChunks || []).length;",
+                  "  var totalIndices = 0;",
+                  "  supports.forEach(function (s) {",
+                  "    var idx = s.groundingChunkIndices || [];",
+                  "    totalIndices += idx.length;",
+                  "    var seen = {};",
+                  "    idx.forEach(function (i) {",
+                  "      pm.expect(i, 'groundingChunkIndices entry out of bounds (chunks=' + chunkCount + '): ' + JSON.stringify(s)).to.be.below(chunkCount);",
+                  "      pm.expect(seen[i], 'duplicate chunk index ' + i + ' in one support - annotations were merged twice: ' + JSON.stringify(s)).to.be.undefined;",
+                  "      seen[i] = true;",
+                  "    });",
+                  "  });",
+                  "  if (supports.length) {",
+                  "    pm.expect(totalIndices, 'groundingSupports present but carry no groundingChunkIndices: ' + JSON.stringify(supports).slice(0, 800)).to.be.above(0);",
+                  "  }",
+                  "});",
+                  "pm.test('gemini grounding stream: searchEntryPoint.renderedContent present', function () {",
+                  "  pm.expect(((gm.searchEntryPoint || {}).renderedContent) || '', 'searchEntryPoint missing - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3.6-flash googleSearch grounding survives streaming: chunk indices + searchEntryPoint (/genai SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.6-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('vertex grounding stream: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var raw = pm.response.text();",
+                  "var sseChunks = [];",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  var t = line.trim();",
+                  "  if (t.indexOf('data:') !== 0) { return; }",
+                  "  var payload = t.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  try { sseChunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var gm = null;",
+                  "sseChunks.forEach(function (c) {",
+                  "  (c.candidates || []).forEach(function (cand) { if (cand.groundingMetadata) { gm = cand.groundingMetadata; } });",
+                  "});",
+                  "pm.test('vertex grounding stream: SSE chunks parsed', function () {",
+                  "  pm.expect(sseChunks.length, 'no SSE data chunks: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex grounding stream: groundingMetadata present', function () {",
+                  "  pm.expect(gm, 'no groundingMetadata in any SSE chunk - grounding was lost in streaming: ' + pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!gm) { return; }",
+                  "pm.test('vertex grounding stream: webSearchQueries survive streaming', function () {",
+                  "  pm.expect((gm.webSearchQueries || []).length, 'no webSearchQueries in the stream: ' + JSON.stringify(gm).slice(0, 800)).to.be.above(0);",
+                  "});",
+                  "pm.test('vertex grounding stream: groundingSupports chunk indices are in-bounds and de-duplicated', function () {",
+                  "  var supports = gm.groundingSupports || [];",
+                  "  var chunkCount = (gm.groundingChunks || []).length;",
+                  "  var totalIndices = 0;",
+                  "  supports.forEach(function (s) {",
+                  "    var idx = s.groundingChunkIndices || [];",
+                  "    totalIndices += idx.length;",
+                  "    var seen = {};",
+                  "    idx.forEach(function (i) {",
+                  "      pm.expect(i, 'groundingChunkIndices entry out of bounds (chunks=' + chunkCount + '): ' + JSON.stringify(s)).to.be.below(chunkCount);",
+                  "      pm.expect(seen[i], 'duplicate chunk index ' + i + ' in one support - annotations were merged twice: ' + JSON.stringify(s)).to.be.undefined;",
+                  "      seen[i] = true;",
+                  "    });",
+                  "  });",
+                  "  if (supports.length) {",
+                  "    pm.expect(totalIndices, 'groundingSupports present but carry no groundingChunkIndices: ' + JSON.stringify(supports).slice(0, 800)).to.be.above(0);",
+                  "  }",
+                  "});",
+                  "pm.test('vertex grounding stream: searchEntryPoint.renderedContent present', function () {",
+                  "  pm.expect(((gm.searchEntryPoint || {}).renderedContent) || '', 'searchEntryPoint missing - Google requires rendering Search Suggestions').to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }
