@@ -4,8 +4,9 @@ go 1.26.5
 
 require (
 	github.com/bytedance/sonic v1.15.1
-	github.com/maximhq/bifrost/core v1.7.5
-	github.com/maximhq/bifrost/framework v1.5.5
+	github.com/google/uuid v1.6.0
+	github.com/maximhq/bifrost/core v1.7.4
+	github.com/maximhq/bifrost/framework v1.5.4
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -89,7 +90,6 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect
