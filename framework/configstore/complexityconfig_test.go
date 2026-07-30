@@ -3,6 +3,8 @@ package configstore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -102,6 +104,57 @@ func TestComplexitySemanticConfigValidation(t *testing.T) {
 			require.Error(t, cfg.normalized().Validate())
 		})
 	}
+}
+
+// TestComplexityAnalyzerConfigNormalizedPreservesLexicalCrossTierDuplicates
+// keeps the legacy lexical multi-mask behavior when semantic routing is off.
+func TestComplexityAnalyzerConfigNormalizedPreservesLexicalCrossTierDuplicates(t *testing.T) {
+	cfg := testComplexityAnalyzerConfig()
+	cfg.Keywords = ComplexityEditableKeywordConfig{
+		SimpleKeywords:  []string{"Shared", "simple-only", "medium-only"},
+		MediumKeywords:  []string{"shared", "medium-only", "complex-only"},
+		ComplexKeywords: []string{"shared", "complex-only"},
+	}
+
+	normalized := cfg.Normalized()
+	assert.Equal(t, []string{"medium-only", "shared", "simple-only"}, normalized.Keywords.SimpleKeywords)
+	assert.Equal(t, []string{"complex-only", "medium-only", "shared"}, normalized.Keywords.MediumKeywords)
+	assert.Equal(t, []string{"complex-only", "shared"}, normalized.Keywords.ComplexKeywords)
+	require.NoError(t, normalized.Validate())
+}
+
+func TestComplexityAnalyzerConfigRejectsSemanticCrossTierDuplicates(t *testing.T) {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.Keywords.SimpleKeywords = []string{"Shared   phrase", "simple-only"}
+	cfg.Keywords.MediumKeywords = []string{"shared phrase", "medium-only"}
+
+	raw, err := encodeComplexityAnalyzerConfig(*cfg)
+	require.NoError(t, err)
+	_, err = DecodeComplexityAnalyzerConfig(raw)
+	require.ErrorContains(t, err, `semantic phrase "shared phrase" appears in both simple_keywords and medium_keywords`)
+}
+
+func TestComplexityAnalyzerConfigSemanticPhraseValidation(t *testing.T) {
+	t.Run("allows more than 500 phrases", func(t *testing.T) {
+		cfg := testSemanticAnalyzerConfig()
+		cfg.Keywords.SimpleKeywords = make([]string, 501)
+		for index := range cfg.Keywords.SimpleKeywords {
+			cfg.Keywords.SimpleKeywords[index] = fmt.Sprintf("simple-%d", index)
+		}
+		cfg.Keywords.MediumKeywords = []string{"medium"}
+		cfg.Keywords.ComplexKeywords = []string{"complex"}
+
+		normalized := cfg.Normalized()
+		require.NoError(t, normalized.Validate())
+	})
+
+	t.Run("per phrase character cap", func(t *testing.T) {
+		cfg := testSemanticAnalyzerConfig()
+		cfg.Keywords.SimpleKeywords = []string{strings.Repeat("界", MaxComplexitySemanticPhraseCharacters+1)}
+
+		normalized := cfg.Normalized()
+		require.ErrorContains(t, normalized.Validate(), "exceeds the 2000-character limit")
+	})
 }
 
 func TestDecodeComplexityAnalyzerConfigSemanticRoundTrip(t *testing.T) {

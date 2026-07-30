@@ -41,7 +41,7 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
-import { AnalyzerConfig } from "@/lib/types/complexityRouter";
+import { AnalyzerConfig, SemanticStatusInfo } from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
@@ -862,6 +862,13 @@ export const governanceApi = baseApi.injectEndpoints({
 			providesTags: ["ComplexityAnalyzerConfig"],
 		}),
 
+		getComplexitySemanticStatus: builder.query<SemanticStatusInfo, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-status",
+				method: "GET",
+			}),
+		}),
+
 		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
 			query: (data) => ({
 				url: "/governance/complexity-analyzer-config",
@@ -945,6 +952,7 @@ export const {
 
 	// Complexity Analyzer Config
 	useGetComplexityAnalyzerConfigQuery,
+	useGetComplexitySemanticStatusQuery,
 	useUpdateComplexityAnalyzerConfigMutation,
 	useResetComplexityAnalyzerConfigMutation,
 
