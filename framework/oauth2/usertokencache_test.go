@@ -119,9 +119,9 @@ func TestUserTokenCache_EvictByTokenID(t *testing.T) {
 
 func TestUserTokenCache_EvictByMCPClient(t *testing.T) {
 	c := newUserTokenCache(8)
-	keyA1 := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-a")
-	keyA2 := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-a")
-	keyB := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-b")
+	keyA1 := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-a", "")
+	keyA2 := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-a", "")
+	keyB := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-b", "")
 	for i, k := range []string{keyA1, keyA2, keyB} {
 		_, err := c.Fill(context.Background(), k, fillWith(testToken(fmt.Sprintf("t%d", i), "access", nil)))
 		require.NoError(t, err)
@@ -144,12 +144,12 @@ func TestUserTokenCache_EvictByMCPClient(t *testing.T) {
 
 func TestUserTokenCache_EvictByVirtualKey(t *testing.T) {
 	c := newUserTokenCache(8)
-	keyVK1A := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-a")
-	keyVK1B := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-b")
-	keyVK2 := userTokenCacheKey(schemas.MCPAuthModeVK, "vk2", "client-a")
+	keyVK1A := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-a", "")
+	keyVK1B := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-b", "")
+	keyVK2 := userTokenCacheKey(schemas.MCPAuthModeVK, "vk2", "client-a", "")
 	// A user-mode identity that happens to equal the VK ID must survive:
 	// the eviction is scoped to vk-mode entries only.
-	keyUser := userTokenCacheKey(schemas.MCPAuthModeUser, "vk1", "client-a")
+	keyUser := userTokenCacheKey(schemas.MCPAuthModeUser, "vk1", "client-a", "")
 	for i, k := range []string{keyVK1A, keyVK1B, keyVK2, keyUser} {
 		_, err := c.Fill(context.Background(), k, fillWith(testToken(fmt.Sprintf("vt%d", i), "access", nil)))
 		require.NoError(t, err)
@@ -173,12 +173,12 @@ func TestUserTokenCache_EvictByVirtualKey(t *testing.T) {
 
 func TestUserTokenCache_EvictByUser(t *testing.T) {
 	c := newUserTokenCache(8)
-	keyU1A := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-a")
-	keyU1B := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-b")
-	keyU2 := userTokenCacheKey(schemas.MCPAuthModeUser, "u2", "client-a")
+	keyU1A := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-a", "")
+	keyU1B := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-b", "")
+	keyU2 := userTokenCacheKey(schemas.MCPAuthModeUser, "u2", "client-a", "")
 	// A vk-mode identity that happens to equal the user ID must survive:
 	// the eviction is scoped to user-mode entries only.
-	keyVK := userTokenCacheKey(schemas.MCPAuthModeVK, "u1", "client-a")
+	keyVK := userTokenCacheKey(schemas.MCPAuthModeVK, "u1", "client-a", "")
 	for i, k := range []string{keyU1A, keyU1B, keyU2, keyVK} {
 		_, err := c.Fill(context.Background(), k, fillWith(testToken(fmt.Sprintf("ut%d", i), "access", nil)))
 		require.NoError(t, err)
