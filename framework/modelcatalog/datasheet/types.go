@@ -326,6 +326,8 @@ type customPricingData struct {
 type modelParametersParseResult struct {
 	Mode               *string  `json:"mode,omitempty"`
 	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
+	MaxTokens          *int     `json:"max_tokens,omitempty"`
+	MaxOutputTokens    *int     `json:"max_output_tokens,omitempty"`
 	ModelParameters    []struct {
 		ID string `json:"id"`
 	} `json:"model_parameters,omitempty"`
@@ -502,6 +504,15 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 		default:
 			addParam(mp.ID)
 		}
+	}
+
+	if parsed.MaxTokens != nil || parsed.MaxOutputTokens != nil {
+		// The datasheet uses max_tokens/max_output_tokens as capability fields.
+		// Treat all token-cap spellings as equivalent so the compat plugin keeps
+		// the canonical field for both Chat Completions and Responses requests.
+		addParam("max_tokens")
+		addParam("max_completion_tokens")
+		addParam("max_output_tokens")
 	}
 
 	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
