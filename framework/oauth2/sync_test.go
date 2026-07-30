@@ -268,6 +268,7 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 	store.oauthTokens[tokenID] = &tables.TableMCPOauthToken{
 		ID:            tokenID,
 		AuthMode:      "shared",
+		MCPClientID:   "test-mcp-client-id",
 		OauthConfigID: oauthConfigID,
 		Status:        "active",
 		AccessToken:   "old-access-token",
@@ -280,11 +281,11 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 	return oauthConfigID, tokenID
 }
 
-func newTestWorker(store *testConfigStore) *TokenRefreshWorker {
+func newTestWorker(store *testConfigStore) *OAuthTokenRefreshWorker {
 	noopLogger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	provider := NewOAuth2Provider(store, noopLogger)
 	provider.retryBaseDelay = 1 * time.Millisecond // speed up retry backoff in tests
-	return NewTokenRefreshWorker(provider, noopLogger)
+	return NewOAuthTokenRefreshWorker(provider, noopLogger)
 }
 
 func newTestProvider(store *testConfigStore) *OAuth2Provider {
@@ -855,6 +856,139 @@ func TestTokenRefreshWorker_400UnauthorizedClient_MarksNeedsReauth(t *testing.T)
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
 	assert.Equal(t, "needs_reauth", token.Status, "400 unauthorized_client must mark token needs_reauth")
+}
+
+// newRecordingRefreshHook returns a hook callback plus an accessor for the
+// (mcpClientID, authMode) pairs it has recorded, safe for concurrent use.
+func newRecordingRefreshHook() (func(string, string), func() [][2]string) {
+	var mu sync.Mutex
+	var calls [][2]string
+	hook := func(mcpClientID, authMode string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, [2]string{mcpClientID, authMode})
+	}
+	get := func() [][2]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(calls)
+	}
+	return hook, get
+}
+
+func TestTokenRefreshWorker_OnTokenRefreshed_FiresOnceOnSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "new-access-token",
+			"token_type":   "bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	seedFixtures(t, store, server.URL+"/token")
+
+	worker := newTestWorker(store)
+	hook, calls := newRecordingRefreshHook()
+	worker.SetOnTokenRefreshed(hook)
+	worker.refreshExpiredTokens(context.Background())
+
+	got := calls()
+	require.Len(t, got, 1, "hook must fire exactly once per successful refresh")
+	assert.Equal(t, "test-mcp-client-id", got[0][0])
+	assert.Equal(t, "shared", got[0][1])
+}
+
+func TestTokenRefreshWorker_OnTokenRefreshed_NoFireOnRefreshFailure(t *testing.T) {
+	failures := map[string]http.HandlerFunc{
+		"permanent 401": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "invalid_grant",
+			})
+		},
+		"transient 503": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		},
+	}
+
+	for name, handler := range failures {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(handler)
+			defer server.Close()
+
+			store := newTestConfigStore()
+			seedFixtures(t, store, server.URL+"/token")
+
+			worker := newTestWorker(store)
+			hook, calls := newRecordingRefreshHook()
+			worker.SetOnTokenRefreshed(hook)
+			worker.refreshExpiredTokens(context.Background())
+
+			assert.Empty(t, calls(), "hook must not fire when the refresh fails")
+		})
+	}
+}
+
+func TestTokenRefreshWorker_OnTokenRefreshed_NoFireWhenMCPClientIDEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "new-access-token",
+			"token_type":   "bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+	store.oauthTokens[tokenID].MCPClientID = "" // legacy row with no owning client
+
+	worker := newTestWorker(store)
+	hook, calls := newRecordingRefreshHook()
+	worker.SetOnTokenRefreshed(hook)
+	worker.refreshExpiredTokens(context.Background())
+
+	assert.Empty(t, calls(), "hook must not fire for a token with no MCP client ID")
+
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-access-token", token.AccessToken, "the refresh itself must still run")
+}
+
+func TestTokenRefreshWorker_SetOnTokenRefreshed_NilSafe(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "new-access-token",
+			"token_type":   "bearer",
+			"expires_in":   3600,
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+
+	worker := newTestWorker(store)
+	hook, calls := newRecordingRefreshHook()
+	worker.SetOnTokenRefreshed(hook)
+	worker.SetOnTokenRefreshed(nil) // clearing must be safe and must silence the hook
+
+	var nilWorker *OAuthTokenRefreshWorker
+	nilWorker.SetOnTokenRefreshed(hook) // nil receiver must not panic (constructor can return nil)
+
+	worker.refreshExpiredTokens(context.Background())
+
+	assert.Empty(t, calls(), "a cleared hook must not fire")
+
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-access-token", token.AccessToken)
 }
 
 // seedAdminOauthConfig inserts a minimal authorized oauth_config row —
