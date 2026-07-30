@@ -132,9 +132,11 @@ func (cts *ClientToolSyncer) performSync() {
 	case conn != nil:
 		// Shared-connection path (unchanged): reuse the live conn.
 		newTools, newMapping, err = cts.manager.runListToolsWithHooks(ctx, conn, clientName)
-	case config.AuthType == schemas.MCPAuthTypePerUserOauth || config.AuthType == schemas.MCPAuthTypePerUserHeaders:
+	case config.AuthType == schemas.MCPAuthTypePerUserOauth ||
+		config.AuthType == schemas.MCPAuthTypePerUserHeaders ||
+		config.AuthType == schemas.MCPAuthTypeTokenExchange:
 		// Per-user auth types never hold a persistent conn (RequiresPerCallConnection
-		// is true for both). Resolve the retained admin bootstrap credential and
+		// is true for them). Resolve the retained admin bootstrap credential and
 		// run a one-shot ephemeral connect-discover-close cycle instead.
 		newTools, newMapping, err = cts.manager.performAdminToolDiscovery(ctx, config)
 	default:

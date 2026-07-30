@@ -12,10 +12,11 @@ type OAuth2Provider interface {
 
 	// GetAdminAccessToken is GetAccessToken's admin-mode counterpart:
 	// resolves the retained bootstrap-verification credential for a
-	// per_user_oauth client's periodic tool-discovery refresh (see
+	// per-user client's periodic tool-discovery refresh (see
 	// ClientToolSyncer.performSync's per-user branch), rather than the
-	// shared-mode production credential.
-	GetAdminAccessToken(ctx context.Context, oauthConfigID string) (string, error)
+	// shared-mode production credential. Keyed by the MCP client ID, which
+	// every retained admin credential carries.
+	GetAdminAccessToken(ctx context.Context, mcpClientID string) (string, error)
 
 	// ValidateToken checks if the token is still valid
 	ValidateToken(ctx context.Context, oauthConfigID string) (bool, error)
@@ -74,6 +75,83 @@ type OAuth2Provider interface {
 	// token row is resolved — the one refresh path for every kind of MCP
 	// OAuth credential.
 	ForceRefreshAccessToken(ctx *BifrostContext, config *MCPClientConfig) error
+
+	// Delegated token exchange methods (MCPAuthTypeTokenExchange)
+
+	// TokenExchangeAvailable reports whether delegated token exchange can
+	// run (a TokenExchangeIdPResolver is installed and Available). Consulted
+	// by the create/update path to reject token_exchange clients that could
+	// never resolve.
+	TokenExchangeAvailable() bool
+
+	// GetExchangedAccessToken returns an upstream access token for config
+	// (AuthType == token_exchange), exchanging the caller's identity-provider
+	// token (BifrostContextKeyMCPInboundBearer) for one scoped to
+	// config.TokenExchange.Audience. Results are cached in memory per
+	// (auth mode, identity, mcp client) until shortly before expiry.
+	// Returns ErrExchangeSubjectTokenMissing when the request carried no
+	// caller token, ErrTokenExchangeUnavailable when no identity-provider
+	// integration is configured, and *TokenExchangeRejectedError when the
+	// provider refused the exchange.
+	GetExchangedAccessToken(ctx *BifrostContext, config *MCPClientConfig) (string, error)
+}
+
+// TokenExchangeRejectedError reports that the identity provider refused a
+// delegated token exchange: the subject token was invalid or revoked, the
+// exchange client lacks permission for the audience, or the grant is
+// disabled. Detail carries the provider's error/error_description body for
+// display; it never contains tokens.
+type TokenExchangeRejectedError struct {
+	Detail string
+}
+
+func (e *TokenExchangeRejectedError) Error() string {
+	return "identity provider rejected the token exchange: " + e.Detail
+}
+
+// TokenExchangeGrantShape selects the wire form of a delegated token
+// exchange request; identity providers differ on the grant they expose.
+type TokenExchangeGrantShape string
+
+const (
+	// TokenExchangeGrantRFC8693 is the standard token-exchange grant
+	// (grant_type=urn:ietf:params:oauth:grant-type:token-exchange, RFC 8693).
+	TokenExchangeGrantRFC8693 TokenExchangeGrantShape = "rfc8693"
+	// TokenExchangeGrantJWTBearerOBO is the jwt-bearer on-behalf-of variant
+	// (grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer with
+	// requested_token_use=on_behalf_of) used by identity providers that do
+	// not expose the RFC 8693 grant.
+	TokenExchangeGrantJWTBearerOBO TokenExchangeGrantShape = "jwt_bearer_obo"
+)
+
+// TokenExchangeIdP is the identity-provider side of one delegated token
+// exchange call: where to send it and which grant shape to use. The client
+// credentials authorized to perform the exchange live on each MCP client's
+// own token_exchange block, not here.
+type TokenExchangeIdP struct {
+	TokenEndpoint string
+	GrantShape    TokenExchangeGrantShape
+}
+
+// TokenExchangeIdPResolver supplies the identity-provider details for
+// delegated token exchange (MCPAuthTypeTokenExchange). Implementations
+// derive the token endpoint and grant shape from the deployment's
+// identity-provider integration. A nil resolver, or Available() == false,
+// means the auth type is unavailable: creation of token_exchange clients is
+// rejected and existing ones fail resolution.
+type TokenExchangeIdPResolver interface {
+	// Available reports whether delegated token exchange can run: an
+	// identity-provider integration is configured.
+	Available() bool
+
+	// Resolve returns the endpoint and grant shape for exchanges made on
+	// behalf of the given MCP client — implementations should honor a
+	// client-level authorization-server override (config.TokenExchange)
+	// where the provider supports one, falling back to the deployment's
+	// default identity-provider integration otherwise. Called per exchange
+	// (implementations should cache discovery internally) so provider
+	// reconfiguration takes effect without restarts.
+	Resolve(ctx context.Context, config *MCPClientConfig) (*TokenExchangeIdP, error)
 }
 
 // OauthConfig represents OAuth client configuration
