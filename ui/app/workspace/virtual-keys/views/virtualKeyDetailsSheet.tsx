@@ -414,6 +414,91 @@ export default function VirtualKeyDetailSheet({
 														</div>
 													</>
 												)}
+
+												{/* Model Budgets — per-model caps/rate-limits under this provider */}
+												{config.model_budgets && config.model_budgets.length > 0 && (
+													<>
+														<DottedSeparator />
+														<div className="space-y-3">
+															<h4 className="text-sm font-medium">Model Budgets</h4>
+															{config.model_budgets.map((mb, mbIdx) => (
+																<div key={`${mb.model_name}-${mbIdx}`} className="space-y-3 rounded-md border p-3">
+																	<span className="text-sm font-medium">{mb.model_name}</span>
+
+																	{/* Budgets */}
+																	{mb.budgets && mb.budgets.length > 0
+																		? mb.budgets.map((b, bIdx) => (
+																				<div key={bIdx} className="space-y-2">
+																					{!isManagedByProfile && b.id ? (
+																						<div className="flex justify-end">
+																							<BudgetOverrideDialog
+																								budget={b}
+																								onSave={(data) => saveBudgetOverride(b.id, data)}
+																								onRemove={() => clearBudgetOverride(b.id)}
+																								disabled={!canUpdateVirtualKeys}
+																								calendarAligned={virtualKey.calendar_aligned}
+																							/>
+																						</div>
+																					) : null}
+																					<UsageLine current={b.current_usage} max={getEffectiveBudgetLimit(b)} format={formatCurrency} />
+																					{hasActiveBudgetOverride(b) ? (
+																						<p className="text-muted-foreground text-xs">
+																							Base {formatCurrency(b.max_limit)} + {formatCurrency(b.override_amount ?? 0)} override
+																						</p>
+																					) : null}
+																					<div className="text-muted-foreground flex items-center justify-between text-xs">
+																						<span>
+																							Resets {parseResetPeriod(b.reset_duration)}
+																							{virtualKey.calendar_aligned && supportsCalendarAlignment(b.reset_duration) && " (calendar)"}
+																						</span>
+																						{b.last_reset ? (
+																							<span>Last reset {formatDistanceToNow(new Date(b.last_reset), { addSuffix: true })}</span>
+																						) : null}
+																					</div>
+																				</div>
+																			))
+																		: null}
+
+																	{/* Token Limits */}
+																	{mb.rate_limit?.token_max_limit != null ? (
+																		<div className="space-y-2">
+																			<span className="text-muted-foreground text-xs font-medium">TOKEN LIMITS</span>
+																			<UsageLine
+																				current={mb.rate_limit.token_current_usage}
+																				max={mb.rate_limit.token_max_limit}
+																				format={(n) => n.toLocaleString()}
+																			/>
+																			<div className="text-muted-foreground text-xs">
+																				Resets {parseResetPeriod(mb.rate_limit.token_reset_duration || "")}
+																				{virtualKey.calendar_aligned &&
+																					supportsCalendarAlignment(mb.rate_limit.token_reset_duration || "") &&
+																					" (calendar)"}
+																			</div>
+																		</div>
+																	) : null}
+
+																	{/* Request Limits */}
+																	{mb.rate_limit?.request_max_limit != null ? (
+																		<div className="space-y-2">
+																			<span className="text-muted-foreground text-xs font-medium">REQUEST LIMITS</span>
+																			<UsageLine
+																				current={mb.rate_limit.request_current_usage}
+																				max={mb.rate_limit.request_max_limit}
+																				format={(n) => n.toLocaleString()}
+																			/>
+																			<div className="text-muted-foreground text-xs">
+																				Resets {parseResetPeriod(mb.rate_limit.request_reset_duration || "")}
+																				{virtualKey.calendar_aligned &&
+																					supportsCalendarAlignment(mb.rate_limit.request_reset_duration || "") &&
+																					" (calendar)"}
+																			</div>
+																		</div>
+																	) : null}
+																</div>
+															))}
+														</div>
+													</>
+												)}
 											</div>
 										</div>
 									))}
