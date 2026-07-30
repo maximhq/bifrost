@@ -512,15 +512,18 @@ type ConfigStore interface {
 	// needs to reach the row regardless of status to delete it. Returns
 	// (nil, nil) when no shared token exists for this config.
 	GetSharedOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error)
-	// GetAdminOauthTokenByConfigID is GetSharedOauthTokenByConfigID's
+	// GetAdminOauthTokenByMCPClientID is GetSharedOauthTokenByConfigID's
 	// admin-mode counterpart — resolves the retained bootstrap-verification
-	// token for a per_user_oauth client's periodic tool-discovery refresh.
-	GetAdminOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error)
-	// GetAdminOauthTokensByConfigIDs is GetAdminOauthTokenByConfigID's batch
-	// counterpart: resolves the retained admin-mode token row for each of the
-	// given oauth_config_ids in one query, keyed by OauthConfigID. Not
-	// filtered by status; configs with no admin row are absent from the map.
-	GetAdminOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error)
+	// token for a per-user client's periodic tool-discovery refresh. Keyed
+	// by mcp_client_id because every admin row carries it, whether or not
+	// the credential has an oauth_configs template behind it. Not filtered
+	// by status. Returns (nil, nil) when no admin row exists.
+	GetAdminOauthTokenByMCPClientID(ctx context.Context, mcpClientID string) (*tables.TableMCPOauthToken, error)
+	// GetAdminOauthTokensByMCPClientIDs is GetAdminOauthTokenByMCPClientID's
+	// batch counterpart: resolves the retained admin-mode token row for each
+	// of the given MCP client IDs in one query, keyed by MCPClientID. Not
+	// filtered by status; clients with no admin row are absent from the map.
+	GetAdminOauthTokensByMCPClientIDs(ctx context.Context, mcpClientIDs []string) (map[string]*tables.TableMCPOauthToken, error)
 	// PromoteSharedOauthTokenToAdmin transactionally installs the config's
 	// fresh shared-mode token as the retained admin-mode discovery credential
 	// for mcpClientID: if an admin row already exists its credential fields
@@ -642,6 +645,19 @@ type ConfigStore interface {
 	// invalidates every existing holder's cached credential (shared, per-user,
 	// vk, session, admin alike), not just the shared one.
 	MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error
+	// MarkAdminExchangeTokenNeedsReauthByMCPClientID flips status to
+	// 'needs_reauth' on a token_exchange client's retained admin bootstrap
+	// credential (auth_mode='admin', mcp_client_id=<id>, oauth_config_id='' —
+	// token_exchange rows have no oauth_configs template, unlike
+	// per_user_oauth's admin row, so this is keyed by MCP client rather than
+	// oauth_config_id the way MarkTokensNeedsReauthByConfigID is). Called
+	// when an admin edits a token_exchange client's audience/client_id/
+	// client_secret/scopes/authorization_server_url. Unlike OAuth rotation,
+	// there is no per-user row to cascade to: end-user exchanged tokens are
+	// cached in-memory only, never persisted (see GetExchangedAccessToken's
+	// doc comment) — the admin row is the only persisted state a
+	// token_exchange config edit can invalidate.
+	MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error
 	// RotateMCPOAuthConfig updates every field of an oauth_configs row in
 	// place when ANY of them differs from what's stored (client_id,
 	// client_secret, authorize_url, token_url, registration_url, resource,

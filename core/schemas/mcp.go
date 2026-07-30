@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,13 @@ var (
 	ErrOAuth2TokenNotFound        = errors.New("per-user oauth token not found for this identity and mcp server")
 	ErrOAuth2FlowNotPending       = errors.New("oauth flow is not in pending state")
 	ErrOAuth2FlowExpired          = errors.New("oauth flow has expired")
+	// ErrTokenExchangeUnavailable means delegated token exchange cannot run:
+	// no identity-provider integration with an exchange client is configured
+	// (nil TokenExchangeIdPResolver, or Available() == false).
+	ErrTokenExchangeUnavailable = errors.New("delegated token exchange is not available: identity-provider integration with an exchange client is not configured")
+	// ErrExchangeSubjectTokenMissing means the request carried no caller
+	// identity-provider token to use as the exchange subject.
+	ErrExchangeSubjectTokenMissing = errors.New("no caller identity-provider token available to exchange")
 	// ErrMCPReconnectNotApplicable signals that the reconnect operation is not
 	// meaningful for this client type — e.g. per-user OAuth clients, where
 	// each user manages their own auth and there is no shared upstream
@@ -43,8 +51,9 @@ var (
 // to the caller. The value lands in MCPAuthRequiredError.Kind and on the wire
 // under extra_fields.mcp_auth_required.kind.
 const (
-	MCPAuthRequiredKindOAuth   = "oauth"
-	MCPAuthRequiredKindHeaders = "headers"
+	MCPAuthRequiredKindOAuth    = "oauth"
+	MCPAuthRequiredKindHeaders  = "headers"
+	MCPAuthRequiredKindExchange = "exchange"
 )
 
 // MCPAuthRequiredError is returned when a per-user MCP credential is missing
@@ -52,8 +61,11 @@ const (
 // submission) before tool execution can proceed.
 //
 // Kind discriminates which set of fields is populated:
-//   - "oauth":   AuthorizeURL, SessionID
-//   - "headers": SubmitURL, SessionID, RequiredHeaderKeys, AdminHeaderKeys
+//   - "oauth":    AuthorizeURL, SessionID
+//   - "headers":  SubmitURL, SessionID, RequiredHeaderKeys, AdminHeaderKeys
+//   - "exchange": SubjectTokenMissing, ExchangeError (no interactive flow:
+//     the caller fixes the request credential and retries; there is no URL
+//     to visit and no flow row to track)
 //
 // SessionID is shared by both Kinds: for "oauth" it is the
 // mcp_per_user_oauth_flows row ID, for "headers" the
@@ -79,6 +91,14 @@ type MCPAuthRequiredError struct {
 	SubmitURL          string   `json:"submit_url,omitempty"`
 	RequiredHeaderKeys []string `json:"required_header_keys,omitempty"`
 	AdminHeaderKeys    []string `json:"admin_header_keys,omitempty"`
+
+	// Exchange-specific fields (populated when Kind == "exchange").
+	// SubjectTokenMissing is true when the request carried no caller token to
+	// exchange; false means a token was present but the identity provider
+	// rejected the exchange, with ExchangeError carrying the provider's
+	// error/error_description for display.
+	SubjectTokenMissing bool   `json:"subject_token_missing,omitempty"`
+	ExchangeError       string `json:"exchange_error,omitempty"`
 }
 
 func (e *MCPAuthRequiredError) Error() string {
@@ -316,7 +336,83 @@ const (
 	MCPAuthTypeOauth          MCPAuthType = "oauth"            // OAuth 2.0 authentication (server-level, admin authenticates once)
 	MCPAuthTypePerUserOauth   MCPAuthType = "per_user_oauth"   // Per-user OAuth 2.0 authentication (each user authenticates individually)
 	MCPAuthTypePerUserHeaders MCPAuthType = "per_user_headers" // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
+	MCPAuthTypeTokenExchange  MCPAuthType = "token_exchange"   // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
 )
+
+// MCPTokenExchangeConfig configures delegated token exchange for one MCP
+// client (AuthType == token_exchange): which resource the exchanged token
+// must be scoped to, and the identity-provider application authorized to
+// perform the exchange for that resource. The endpoint and grant shape are
+// not configured here — they come from the deployment's identity-provider
+// integration at exchange time.
+type MCPTokenExchangeConfig struct {
+	// Audience is the resource identifier the identity provider scopes the
+	// exchanged token to (e.g. "api://jira-mcp"). Required.
+	Audience string `json:"audience"`
+	// ClientID identifies the identity-provider application authorized to
+	// perform exchanges for this audience — a dedicated registration
+	// carrying the token-exchange (or on-behalf-of) grant, not the SSO
+	// login application. Required. Supports env./vault. references.
+	ClientID *SecretVar `json:"client_id"`
+	// ClientSecret authenticates the exchange application. Omit for public
+	// clients. Supports env./vault. references.
+	ClientSecret *SecretVar `json:"client_secret,omitempty"`
+	// Scopes optionally narrows the exchanged token; joined into the OAuth
+	// scope parameter. Include "offline_access" (where the identity provider
+	// supports it) to have exchanges issue refresh tokens, which keeps the
+	// retained admin discovery credential self-renewing instead of flipping
+	// to needs_reauth when it expires.
+	Scopes []string `json:"scopes,omitempty"`
+	// AuthorizationServerURL optionally overrides where the exchange request
+	// is sent, for identity providers that bind an audience to a specific
+	// authorization server distinct from the one used for SSO login (e.g.
+	// Okta's per-resource Custom Authorization Servers). When empty, the
+	// exchange is sent to the deployment's SSO login issuer, which is
+	// correct for providers with a single tenant-wide token endpoint (Entra,
+	// Auth0).
+	AuthorizationServerURL *string `json:"authorization_server_url,omitempty"`
+}
+
+// DiffersFrom reports whether resolved's fields differ from c's, comparing
+// audience, client_id, client_secret, authorization_server_url, and scopes
+// (order-insensitive). Callers pass a fully-resolved value for resolved —
+// e.g. the update-MCP-client API's redacted-value-preserve merge, or a
+// config.json sync's "file value if declared, else keep stored" merge —
+// not a raw partial declaration. A nil receiver always differs from a
+// non-nil resolved value (first token_exchange config ever set on this
+// client); resolved == nil never differs (nothing to compare against).
+func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) bool {
+	if resolved == nil {
+		return false
+	}
+	if c == nil {
+		return true
+	}
+	if c.Audience != resolved.Audience {
+		return true
+	}
+	if !c.ClientID.Equals(resolved.ClientID) {
+		return true
+	}
+	if !c.ClientSecret.Equals(resolved.ClientSecret) {
+		return true
+	}
+	existingURL, resolvedURL := "", ""
+	if c.AuthorizationServerURL != nil {
+		existingURL = *c.AuthorizationServerURL
+	}
+	if resolved.AuthorizationServerURL != nil {
+		resolvedURL = *resolved.AuthorizationServerURL
+	}
+	if existingURL != resolvedURL {
+		return true
+	}
+	existingScopes := slices.Clone(c.Scopes)
+	resolvedScopes := slices.Clone(resolved.Scopes)
+	slices.Sort(existingScopes)
+	slices.Sort(resolvedScopes)
+	return !slices.Equal(existingScopes, resolvedScopes)
+}
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
@@ -348,10 +444,13 @@ type MCPClientConfig struct {
 	// utils.StaticConfigHeaders so admin-set values in `Headers` with the
 	// same name cannot leak through the plugin gate. Required (non-empty)
 	// when AuthType == per_user_headers; ignored otherwise.
-	PerUserHeaderKeys   []string          `json:"per_user_header_keys,omitempty"`
-	AllowedExtraHeaders WhiteList         `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
-	InProcessServer     *server.MCPServer `json:"-"`                               // MCP server instance for in-process connections (Go package only)
-	ToolsToExecute      WhiteList         `json:"tools_to_execute,omitempty"`      // Include-only list.
+	PerUserHeaderKeys []string `json:"per_user_header_keys,omitempty"`
+	// TokenExchange scopes delegated token exchange. Required (with a
+	// non-empty Audience) when AuthType == token_exchange; ignored otherwise.
+	TokenExchange       *MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
+	AllowedExtraHeaders WhiteList               `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
+	InProcessServer     *server.MCPServer       `json:"-"`                               // MCP server instance for in-process connections (Go package only)
+	ToolsToExecute      WhiteList               `json:"tools_to_execute,omitempty"`      // Include-only list.
 	// ToolsToExecute semantics:
 	// - ["*"] => all tools are included
 	// - []    => no tools are included (deny-by-default)
