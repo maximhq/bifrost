@@ -33,7 +33,7 @@ report_result() {
 
 # 1. Core Build Validation
 echo ""
-echo "📦 1/5 - Validating Core Build..."
+echo "📦 1/6 - Validating Core Build..."
 echo "-----------------------------------"
 cd core
 if go mod download && go build ./...; then
@@ -43,9 +43,30 @@ else
 fi
 cd ..
 
-# 2. Build MCP Test Servers
+# 2. UI Build & Type Check
+# Runs before the long provider suites so a broken UI fails fast.
+# `build-enterprise` is `vite build && tsc --noEmit`, so this catches both
+# bundling and type errors — e.g. a shared component renamed upstream while a
+# feature page still imports the old name. `copy-build` is deliberately not
+# used here; it would rewrite transports/bifrost-http/ui as a side effect.
 echo ""
-echo "🔌 2/5 - Building MCP Test Servers..."
+echo "🎨 2/6 - Validating UI Build..."
+echo "-----------------------------------"
+if [ -d "ui" ]; then
+  cd ui
+  if npm ci && npm run build-enterprise; then
+    report_result "UI Build" 0
+  else
+    report_result "UI Build" 1
+  fi
+  cd ..
+else
+  echo -e "${YELLOW}⚠️  ui directory not found, skipping${NC}"
+fi
+
+# 3. Build MCP Test Servers
+echo ""
+echo "🔌 3/6 - Building MCP Test Servers..."
 echo "-----------------------------------"
 MCP_BUILD_FAILED=0
 for mcp_dir in examples/mcps/*/; do
@@ -75,9 +96,9 @@ for mcp_dir in examples/mcps/*/; do
 done
 report_result "MCP Test Servers Build" $MCP_BUILD_FAILED
 
-# 3. Core Provider Tests
+# 4. Core Provider Tests
 echo ""
-echo "🔧 3/5 - Running Core Provider Tests..."
+echo "🔧 4/6 - Running Core Provider Tests..."
 echo "-----------------------------------"
 cd core
 if go test -v -run . ./...; then
@@ -87,9 +108,9 @@ else
 fi
 cd ..
 
-# 4. Governance Tests
+# 5. Governance Tests
 echo ""
-echo "🛡️  4/5 - Running Governance Tests..."
+echo "🛡️  5/6 - Running Governance Tests..."
 echo "-----------------------------------"
 if [ -d "tests/governance" ]; then
   cd tests/governance
@@ -120,9 +141,9 @@ else
   echo -e "${YELLOW}⚠️  Governance tests directory not found, skipping...${NC}"
 fi
 
-# 5. Integration Tests
+# 6. Integration Tests
 echo ""
-echo "🔗 5/5 - Running Integration Tests..."
+echo "🔗 6/6 - Running Integration Tests..."
 echo "-----------------------------------"
 if [ -d "tests/integrations" ]; then
   cd tests/integrations
