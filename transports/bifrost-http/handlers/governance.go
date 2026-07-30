@@ -2098,8 +2098,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	// VK's owner (user-keyed creds) against the new effective allowlist
 	// (explicit rows ∪ MCPs with AllowOnAllVirtualKeys=true). OSS no-ops.
 	// Must run before ReloadVirtualKey: the reload also evicts this VK's
-	// cached OAuth tokens, and an eviction that lands before these writes
-	// could be refilled from the pre-reconcile rows and then never dropped.
+	// cached OAuth tokens and header credentials, and an eviction that lands
+	// before these writes could be refilled from the pre-reconcile rows and
+	// then never dropped.
 	if req.MCPConfigs != nil && h.configStore != nil {
 		if err := h.configStore.ReconcileOauthAfterVKChange(ctx, vk.ID); err != nil {
 			logger.Error("reconcile OAuth credentials after VK %s update failed: %v", vk.ID, err)
@@ -2244,8 +2245,8 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Removing key from in-memory store. RemoveVirtualKey also evicts the
-	// VK's cached OAuth access tokens internally, covering the token rows
-	// the database delete above cascaded over.
+	// VK's cached OAuth access tokens and header credentials internally,
+	// covering the rows the database delete above cascaded over.
 	err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
 	if err != nil {
 		// But we ignore this error because its not
