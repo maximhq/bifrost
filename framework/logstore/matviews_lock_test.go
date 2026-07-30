@@ -16,6 +16,27 @@ func TestResolveMatViewRefreshIntervalDefaults(t *testing.T) {
 	assert.Equal(t, time.Minute, resolveMatViewRefreshInterval("not-a-duration", testLogger{}))
 	assert.Equal(t, minMatViewRefreshInterval, resolveMatViewRefreshInterval("1s", testLogger{}))
 	assert.Equal(t, 5*time.Minute, resolveMatViewRefreshInterval("5m", testLogger{}))
+	// "off" and non-positive durations disable maintenance rather than clamping
+	// up to the floor.
+	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("off", testLogger{}))
+	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("0s", testLogger{}))
+	assert.Equal(t, time.Duration(0), resolveMatViewRefreshInterval("-1m", testLogger{}))
+}
+
+func TestStartMatViewRefresherDisabled(t *testing.T) {
+	// A disabled interval must not start a ticker (time.NewTicker panics on
+	// non-positive intervals); the returned stop function is a no-op.
+	stop := startMatViewRefresher(context.Background(), nil, 0, time.Minute, testLogger{}, nil)
+	stop()
+}
+
+func TestSelfHealSkippedWhenMaintenanceDisabled(t *testing.T) {
+	// With maintenance disabled, self-heal must not recreate the views (a nil
+	// db would panic if the repair goroutine ran) and must not arm the
+	// single-flight state.
+	s := &RDBLogStore{matViewMaintenanceDisabled: true}
+	s.triggerMatViewSelfHeal()
+	assert.False(t, s.matViewHealInFlight.Load())
 }
 
 func TestResolveMatViewRefreshTimeoutDefaults(t *testing.T) {
