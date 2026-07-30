@@ -12,7 +12,7 @@ export type MCPConnectionState =
 	| "disabled"
 	| "needs_reauth";
 
-export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers";
+export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers" | "token_exchange";
 
 // Lifecycle states for a per-user MCP header credential row. Mirrors the
 // status column on mcp_per_user_header_credentials.
@@ -34,6 +34,31 @@ export interface MCPStdioConfig {
 export interface MCPTLSConfig {
 	insecure_skip_verify?: boolean;
 	ca_cert_pem?: SecretVar;
+}
+
+// Delegated token-exchange scoping for auth_type === "token_exchange": each
+// caller's identity-provider token is exchanged at runtime for a short-lived
+// token scoped to this server's audience. Carries no credentials — the
+// exchange endpoint and client come from the deployment's identity-provider
+// integration.
+export interface MCPTokenExchangeConfig {
+	audience: string; // Resource identifier at the identity provider, e.g. "api://jira-mcp"
+	// Identity-provider application authorized to perform exchanges for this
+	// audience — a dedicated registration carrying the token-exchange (or
+	// on-behalf-of) grant, not the SSO login application. Redacted on GET.
+	client_id: SecretVar;
+	client_secret?: SecretVar; // Omit for public clients. Redacted on GET.
+	// Optional scopes on the exchanged token. Include "offline_access" (where
+	// the identity provider supports it) so the retained admin discovery
+	// credential gets a refresh token and stays self-renewing.
+	scopes?: string[];
+	// Overrides where the exchange request is sent, for identity providers
+	// that bind an audience to a specific authorization server distinct from
+	// the one used for SSO login (e.g. Okta's per-resource Custom
+	// Authorization Servers). Leave empty to use the deployment's SSO login
+	// issuer, which is correct for providers with one tenant-wide token
+	// endpoint (Entra, Auth0).
+	authorization_server_url?: string;
 }
 
 export interface OAuthConfig {
@@ -85,6 +110,9 @@ export interface MCPClientConfig {
 	// in the credential store, not on the client config. Required (non-empty)
 	// for per_user_headers auth; ignored for all other auth types.
 	per_user_header_keys?: string[];
+	// token_exchange-only: audience/scopes the exchanged tokens are scoped to.
+	// Required (with a non-empty audience) for token_exchange auth.
+	token_exchange?: MCPTokenExchangeConfig;
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
 	// Per-client override (0 = use global, -1 = disabled). API returns NANOSECONDS
@@ -124,6 +152,11 @@ export interface CreateMCPClientRequest {
 	headers?: Record<string, SecretVar>;
 	// per_user_headers-only: admin-declared header schema (names only).
 	per_user_header_keys?: string[];
+	// token_exchange-only: audience/scopes the exchanged tokens are scoped to.
+	// Verification runs automatically as the signed-in admin (their own
+	// identity-provider token is the exchange subject); sessions without one
+	// (e.g. API-key auth) create the client in pending_verification.
+	token_exchange?: MCPTokenExchangeConfig;
 	// per_user_headers-only: a sample set of header values supplied by the
 	// admin so the server can verify upstream + discover tools in the same
 	// create call. Discarded after verification (never persisted). Mirrors
@@ -176,6 +209,7 @@ export interface UpdateMCPClientRequest {
 	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
 	tls_config?: MCPTLSConfig; // TLS configuration for HTTP/SSE connections
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
+	token_exchange?: MCPTokenExchangeConfig; // Only supported for existing token_exchange clients; omitted = preserve
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 
@@ -187,7 +221,7 @@ export interface GetMCPClientsParams {
 	server?: string;
 	// Comma-separated exact-match filters (OR semantics), mirroring the library page.
 	connection_type?: string; // http,sse,stdio
-	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers
+	auth_type?: string; // none,headers,oauth,per_user_oauth,per_user_headers,token_exchange
 	state?: string; // connected,disconnected — resolved against live engine state
 	virtual_keys?: string; // comma-separated VK IDs the client is assigned to
 	// Boolean facets — omit for "no filter".
