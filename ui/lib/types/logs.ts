@@ -617,7 +617,6 @@ export interface LogEntry {
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
 	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
-<<<<<<< HEAD
 	redaction_mapping?: RedactionMapping; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
 	app?: string; // Backend-detected client app
@@ -626,14 +625,6 @@ export interface LogEntry {
 	child_count?: number;
 	children_cost?: number;
 	children_tokens?: number;
-=======
-	redaction_mapping?: {
-		input?: Record<string, string>;
-		output?: Record<string, string>;
-	}; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
-	user_agent?: string; // Raw HTTP User-Agent of the calling client
-	app?: string; // Backend-detected client app
->>>>>>> 061d01944 (V2.0.0 (#4365))
 }
 
 // A log row as rendered by the logs table. __chainChild marks rows injected

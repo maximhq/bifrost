@@ -2243,6 +2243,7 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+<<<<<<< HEAD
   fi
 
   # -------------------------------------------------------------------------
@@ -2291,6 +2292,8 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+=======
+>>>>>>> f4a637df4 (V2.0.0 (#4365))
   fi
 
   # config_keys.bedrock_batch_role_arn (added via add_bedrock_batch_role_arn_column)

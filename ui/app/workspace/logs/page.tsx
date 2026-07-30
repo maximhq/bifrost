@@ -569,12 +569,17 @@ export default function LogsPage() {
 
 	const columns = useMemo(
 <<<<<<< HEAD
+<<<<<<< HEAD
 		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped),
 		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped],
 =======
 		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons),
 		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys],
 >>>>>>> 061d01944 (V2.0.0 (#4365))
+=======
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons),
+		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys],
+>>>>>>> f4a637df4 (V2.0.0 (#4365))
 	);
 
 	const columnIds = useMemo(
