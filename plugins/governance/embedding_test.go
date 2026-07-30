@@ -99,6 +99,44 @@ func TestGenerateEmbeddingRequestShape(t *testing.T) {
 		"embedding deadline must not inherit the caller's larger budget")
 }
 
+func TestGenerateEmbeddingsBatchesAndRestoresInputOrder(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		require.NotNil(t, req.Input)
+		assert.Nil(t, req.Input.Text)
+		assert.Equal(t, []string{"first", "second"}, req.Input.Texts)
+		return &schemas.BifrostEmbeddingResponse{
+			Data: []schemas.EmbeddingData{
+				{Index: 1, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}},
+				{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}},
+			},
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: 7},
+		}, nil
+	})
+
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	embeddings, tokens, err := plugin.generateEmbeddings(ctx, testEmbeddingSemanticConfig(), []string{"first", "second"})
+	require.NoError(t, err)
+	assert.Equal(t, [][]float32{{1, 0}, {0, 1}}, embeddings)
+	assert.Equal(t, 7, tokens)
+}
+
+func TestGenerateEmbeddingsSignalsUnsupportedBatchShape(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		// This is the shape produced by a single-input-only model such as
+		// Bedrock Titan when it receives multiple texts.
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 3), nil
+	})
+
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	_, _, err := plugin.generateEmbeddings(ctx, testEmbeddingSemanticConfig(), []string{"first", "second"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, complexity.ErrBatchEmbeddingsUnsupported))
+}
+
 func TestGenerateEmbeddingTimeoutCancelsCall(t *testing.T) {
 	plugin := &GovernancePlugin{}
 	plugin.SetEmbeddingRequestExecutor(func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {

@@ -287,12 +287,27 @@ type mockComplexityGovernanceManager struct {
 	reloadedConfig *complexity.AnalyzerConfig
 	reloadCalls    int
 	reloadErr      error
+	validationErr  error
+	semanticStatus complexity.SemanticStatusInfo
+	semanticErr    error
 }
 
 func (m *mockComplexityGovernanceManager) ReloadComplexityAnalyzerConfig(_ context.Context, config *complexity.AnalyzerConfig) error {
 	m.reloadCalls++
 	m.reloadedConfig = config
 	return m.reloadErr
+}
+
+// ValidateComplexityAnalyzerConfig lets configuration-handler tests emulate
+// runtime-only validation without constructing the Governance plugin.
+func (m *mockComplexityGovernanceManager) ValidateComplexityAnalyzerConfig(_ context.Context, _ *complexity.AnalyzerConfig) error {
+	return m.validationErr
+}
+
+// GetComplexitySemanticStatus lets configuration-handler tests emulate the
+// non-persisted semantic classifier state.
+func (m *mockComplexityGovernanceManager) GetComplexitySemanticStatus(_ context.Context) (complexity.SemanticStatusInfo, error) {
+	return m.semanticStatus, m.semanticErr
 }
 
 func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
@@ -407,6 +422,73 @@ func TestComplexityAnalyzerConfigPutAcceptsLegacyKeywordsAndWritesCanonicalShape
 		if strings.Contains(entry.Value, legacy) {
 			t.Fatalf("expected stored row to omit legacy field %q: %s", legacy, entry.Value)
 		}
+	}
+}
+
+// TestComplexityAnalyzerConfigPutRejectsUnavailableExternalSemanticStore proves
+// runtime dependency validation runs before an invalid config reaches storage.
+func TestComplexityAnalyzerConfigPutRejectsUnavailableExternalSemanticStore(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{validationErr: errors.New("semantic vector_store \"external\" requires a configured Bifrost VectorStore")}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+	config := complexity.DefaultAnalyzerConfig()
+	config.Semantic = &complexity.SemanticConfig{
+		Provider:       schemas.ModelProvider("openai"),
+		EmbeddingModel: "text-embedding-3-small",
+		Timeout:        time.Second,
+		VectorStore:    configstore.ComplexitySemanticVectorStoreExternal,
+	}
+
+	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, config))
+	handler.updateComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "requires a configured Bifrost VectorStore") {
+		t.Fatalf("expected external store validation error, got %s", string(ctx.Response.Body()))
+	}
+	if manager.reloadCalls != 0 {
+		t.Fatalf("invalid config must not reload, got %d reloads", manager.reloadCalls)
+	}
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored != nil {
+		t.Fatalf("invalid config must not persist, got %+v", stored)
+	}
+}
+
+// TestComplexitySemanticStatusReturnsRuntimeReadiness keeps asynchronous
+// warmup state separate from the persisted complexity analyzer configuration.
+func TestComplexitySemanticStatusReturnsRuntimeReadiness(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler := &GovernanceHandler{governanceManager: &mockComplexityGovernanceManager{
+		semanticStatus: complexity.SemanticStatusInfo{
+			State:           complexity.SemanticStatusWarming,
+			Loaded:          2,
+			Total:           3,
+			ServingPrevious: true,
+		},
+	}}
+
+	ctx := newTestRequestCtx("")
+	handler.getComplexitySemanticStatus(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var status complexity.SemanticStatusInfo
+	if err := json.Unmarshal(ctx.Response.Body(), &status); err != nil {
+		t.Fatalf("unmarshal semantic status: %v", err)
+	}
+	if status.State != complexity.SemanticStatusWarming || status.Loaded != 2 || status.Total != 3 || !status.ServingPrevious {
+		t.Fatalf("unexpected semantic status: %+v", status)
 	}
 }
 
