@@ -1563,6 +1563,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
 					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+					TokenExchange:             dbClient.TokenExchange,
 					PendingOAuthConfig:        dbClient.PendingOAuthConfig,
 					// ConfigHash must round-trip so config-file reconciliation
 					// can compare the stored hash against the file hash; an
@@ -1612,6 +1613,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
 			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+			TokenExchange:             dbClient.TokenExchange,
 			PendingOAuthConfig:        dbClient.PendingOAuthConfig,
 			// ConfigHash must round-trip so config-file reconciliation can
 			// compare the stored hash against the file hash; an empty hash
@@ -2042,6 +2044,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
 		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+		TokenExchange:             dbClient.TokenExchange,
 		PendingOAuthConfig:        dbClient.PendingOAuthConfig,
 	}, nil
 }
@@ -2160,6 +2163,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// validation rejects the row (empty PerUserHeaderKeys is
 			// invalid for per_user_headers), leaving the client orphaned.
 			PerUserHeaderKeys:  clientConfigCopy.PerUserHeaderKeys,
+			TokenExchange:      clientConfigCopy.TokenExchange,
 			PendingOAuthConfig: clientConfigCopy.PendingOAuthConfig,
 			Disabled:           clientConfigCopy.Disabled,
 			// ConfigHash has json:"-" so deepCopy loses it; use original
@@ -2173,6 +2177,29 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		}
 		return nil
 	})
+}
+
+// marshalTokenExchangeJSON serialises the token_exchange block the way
+// TableMCPClient.BeforeSave does (nil -> NULL, encrypted at rest when
+// enabled — the block carries the exchange application's client_secret),
+// for the map-based update path that bypasses GORM hooks.
+func marshalTokenExchangeJSON(cfg *schemas.MCPTokenExchangeConfig) (*string, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal token_exchange: %w", err)
+	}
+	s := string(data)
+	if encrypt.IsEnabled() && s != "" {
+		encrypted, err := encrypt.Encrypt(s)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt mcp token exchange config: %w", err)
+		}
+		s = encrypted
+	}
+	return &s, nil
 }
 
 // UpdateMCPClientConfig updates an existing MCP client configuration in the database.
@@ -2334,6 +2361,15 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		if clientConfig.PerUserHeaderKeys != nil {
 			updates["per_user_header_keys_json"] = perUserHeaderKeysJSON
 		}
+		// Mirror BeforeSave for the token_exchange block: nil means
+		// "preserve" on API updates (same convention as PerUserHeaderKeys).
+		tokenExchangeJSON, tokenExchangeErr := marshalTokenExchangeJSON(clientConfig.TokenExchange)
+		if tokenExchangeErr != nil {
+			return tokenExchangeErr
+		}
+		if tokenExchangeJSON != nil {
+			updates["token_exchange_json"] = tokenExchangeJSON
+		}
 		// Config-file driven reconciliation passes ConfigHash. In this mode we should
 		// also sync connection/auth metadata from config.json and persist the hash.
 		if clientConfigCopy.ConfigHash != "" {
@@ -2358,6 +2394,9 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			updates["auth_type"] = clientConfigCopy.AuthType
 			updates["oauth_config_id"] = clientConfigCopy.OauthConfigID
 			updates["per_user_header_keys_json"] = perUserHeaderKeysJSON
+			// Config-file mode syncs the full auth metadata, so nil here
+			// means "clear", not "preserve".
+			updates["token_exchange_json"] = tokenExchangeJSON
 			// Mirror BeforeSave: nil → NULL; non-nil → serialised JSON,
 			// encrypted at rest (the stash can carry an inline OAuth
 			// client_secret).
@@ -6500,47 +6539,50 @@ func (s *RDBConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, 
 	return nil
 }
 
-// GetAdminOauthTokenByConfigID resolves the single retained admin-mode token
-// row for a config — the bootstrap-verification credential kept alive for a
-// per_user_oauth client's periodic tool-discovery refresh (see
+// GetAdminOauthTokenByMCPClientID resolves the single retained admin-mode
+// token row for an MCP client — the bootstrap-verification credential kept
+// alive for a per-user client's periodic tool-discovery refresh (see
 // GetSharedOauthTokenByConfigID's doc comment for the parallel shared-mode
-// case; this mirrors it exactly, just auth_mode='admin' instead of 'shared').
-// Returns (nil, nil) when no admin token exists for this config.
-func (s *RDBConfigStore) GetAdminOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error) {
-	if oauthConfigID == "" {
+// case). Keyed by mcp_client_id because every admin row carries it — set at
+// promotion for per_user_oauth, at bootstrap for token_exchange (whose rows
+// have no oauth_configs template at all). Not filtered by status: callers
+// inspect token.Status themselves. Returns (nil, nil) when no admin token
+// exists for this client.
+func (s *RDBConfigStore) GetAdminOauthTokenByMCPClientID(ctx context.Context, mcpClientID string) (*tables.TableMCPOauthToken, error) {
+	if mcpClientID == "" {
 		return nil, nil
 	}
 	var token tables.TableMCPOauthToken
-	result := s.DB().WithContext(ctx).Where("oauth_config_id = ? AND auth_mode = ?", oauthConfigID, "admin").First(&token)
+	result := s.DB().WithContext(ctx).Where("mcp_client_id = ? AND auth_mode = ?", mcpClientID, "admin").First(&token)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to get admin oauth token by config id: %w", result.Error)
+		return nil, fmt.Errorf("failed to get admin oauth token by mcp client id: %w", result.Error)
 	}
 	return &token, nil
 }
 
-// GetAdminOauthTokensByConfigIDs is GetAdminOauthTokenByConfigID's batch
-// counterpart, styled after GetOauthConfigsByIDs: one query resolving the
-// retained admin-mode token row for each of the given oauth_config_ids,
-// keyed by OauthConfigID. Not filtered by status: callers inspect
-// token.Status themselves (the registry list projects 'needs_reauth' rows
-// into a response-only state). Configs with no admin row are simply absent
-// from the map. Empty input returns an empty map without querying.
-func (s *RDBConfigStore) GetAdminOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
-	if len(oauthConfigIDs) == 0 {
+// GetAdminOauthTokensByMCPClientIDs is GetAdminOauthTokenByMCPClientID's
+// batch counterpart, styled after GetOauthConfigsByIDs: one query resolving
+// the retained admin-mode token row for each of the given MCP client IDs,
+// keyed by MCPClientID. Not filtered by status: callers inspect token.Status
+// themselves (the registry list projects 'needs_reauth' rows into a
+// response-only state). Clients with no admin row are simply absent from the
+// map. Empty input returns an empty map without querying.
+func (s *RDBConfigStore) GetAdminOauthTokensByMCPClientIDs(ctx context.Context, mcpClientIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
+	if len(mcpClientIDs) == 0 {
 		return map[string]*tables.TableMCPOauthToken{}, nil
 	}
 	var tokens []tables.TableMCPOauthToken
 	if err := s.DB().WithContext(ctx).
-		Where("oauth_config_id IN ? AND auth_mode = ?", oauthConfigIDs, "admin").
+		Where("mcp_client_id IN ? AND auth_mode = ?", mcpClientIDs, "admin").
 		Find(&tokens).Error; err != nil {
 		return nil, fmt.Errorf("failed to batch-get admin oauth tokens: %w", err)
 	}
 	result := make(map[string]*tables.TableMCPOauthToken, len(tokens))
 	for i := range tokens {
-		result[tokens[i].OauthConfigID] = &tokens[i]
+		result[tokens[i].MCPClientID] = &tokens[i]
 	}
 	return result, nil
 }
@@ -6691,11 +6733,12 @@ func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.Tab
 			Where("auth_mode = ? AND mcp_client_id = ?", "shared", token.MCPClientID).
 			First(&existing).Error
 	case token.AuthMode == "admin" && token.MCPClientID != "":
-		// Mirrors the shared-mode branch above: exactly one admin-mode
-		// row per mcp_client_id (idx_mcp_oauth_tokens_admin_mcp), so a
-		// second admin verification for the same client must reuse this
-		// row rather than falling through to Create and violating that
-		// unique index.
+		// Admin rows written directly (token_exchange bootstrap; the
+		// per_user_oauth admin row is installed via
+		// PromoteSharedOauthTokenToAdmin instead): one per MCP client
+		// (idx_mcp_oauth_tokens_admin_mcp), so a second admin write for
+		// the same client must reuse this row rather than falling
+		// through to Create and violating that unique index.
 		lookupErr = dbForUpdate(txDB).
 			Where("auth_mode = ? AND mcp_client_id = ?", "admin", token.MCPClientID).
 			First(&existing).Error
@@ -6846,11 +6889,18 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 		Where("auth_mode IN ?", authModes).
 		Where("status = ?", "active").
 		Where("expires_at IS NOT NULL AND expires_at < ?", before).
-		Where("EXISTS (?)",
+		// Two liveness shapes: rows linked through an oauth_configs template
+		// (shared / per_user_oauth), and rows bound directly to an MCP
+		// client with no template (token_exchange admin credentials, whose
+		// oauth_config_id is empty).
+		Where("EXISTS (?) OR (mcp_oauth_tokens.oauth_config_id = '' AND EXISTS (?))",
 			s.DB().Model(&tables.TableMCPClient{}).
 				Select("1").
 				Joins("JOIN oauth_configs ON oauth_configs.id = config_mcp_clients.oauth_config_id").
-				Where("oauth_configs.id = mcp_oauth_tokens.oauth_config_id AND config_mcp_clients.disabled = ?", false)).
+				Where("oauth_configs.id = mcp_oauth_tokens.oauth_config_id AND config_mcp_clients.disabled = ?", false),
+			s.DB().Model(&tables.TableMCPClient{}).
+				Select("1").
+				Where("config_mcp_clients.client_id = mcp_oauth_tokens.mcp_client_id AND config_mcp_clients.disabled = ?", false)).
 		Find(&tokens)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
@@ -7216,6 +7266,28 @@ func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oa
 		Update("status", "needs_reauth")
 	if result.Error != nil {
 		return fmt.Errorf("failed to mark tokens needs_reauth for oauth config %s: %w", oauthConfigID, result.Error)
+	}
+	return nil
+}
+
+// MarkAdminExchangeTokenNeedsReauthByMCPClientID flips status to
+// 'needs_reauth' on a single row: the token_exchange client's retained admin
+// bootstrap credential (auth_mode='admin', mcp_client_id=<id>,
+// oauth_config_id='' — see isExchangeBackedTokenRow in framework/oauth2 for
+// the same row shape). The oauth_config_id='' filter excludes a
+// per_user_oauth client's admin row, which is keyed by mcp_client_id too but
+// carries a real oauth_config_id and is already covered by
+// MarkTokensNeedsReauthByConfigID.
+func (s *RDBConfigStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error {
+	if mcpClientID == "" {
+		return nil
+	}
+	result := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPOauthToken{}).
+		Where("mcp_client_id = ? AND auth_mode = ? AND oauth_config_id = ?", mcpClientID, "admin", "").
+		Update("status", "needs_reauth")
+	if result.Error != nil {
+		return fmt.Errorf("failed to mark admin exchange token needs_reauth for mcp client %s: %w", mcpClientID, result.Error)
 	}
 	return nil
 }

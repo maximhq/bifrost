@@ -456,6 +456,24 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 		return nil
 	}
 
+	// Token-exchange clients with no DiscoveredTools have not had their
+	// one-time admin verification run yet (which also retains the admin
+	// discovery credential). Park in pending_verification like
+	// per-user-headers; the per-call path takes over once verified.
+	if config.AuthType == schemas.MCPAuthTypeTokenExchange && len(config.DiscoveredTools) == 0 {
+		m.mu.Lock()
+		if client, exists := m.clientMap[config.ID]; exists {
+			if config.ConnectionString != nil {
+				url := config.ConnectionString.GetValue()
+				client.ConnectionInfo.ConnectionURL = &url
+			}
+			client.State = schemas.MCPConnectionStatePendingVerification
+		}
+		m.mu.Unlock()
+		m.logger.Debug("%s Token-exchange MCP client '%s' registered in pending_verification (awaiting admin verification)", MCPLogPrefix, config.Name)
+		return nil
+	}
+
 	// Per-user auth types: skip persistent connection. Auth is per-request at
 	// runtime. The admin verifies the configuration via a sample login before
 	// this is called, and tools are populated separately via SetClientTools().
@@ -807,7 +825,10 @@ func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *sche
 		return nil, nil, fmt.Errorf("failed to resolve admin credential: %w", err)
 	}
 	switch config.AuthType {
-	case schemas.MCPAuthTypePerUserOauth:
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange:
+		// Both resolve to a bearer credential (the retained bootstrap token,
+		// or a client-credentials token for token exchange), so they share
+		// the bearer-based one-shot verification path.
 		accessToken := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
 		if accessToken == "" {
 			return nil, nil, fmt.Errorf("admin credential resolved no access token")
@@ -1140,6 +1161,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		TLSConfig:             updatedConfig.TLSConfig,
 		PerUserHeaderKeys:     slices.Clone(updatedConfig.PerUserHeaderKeys),
 		PendingOAuthConfig:    updatedConfig.PendingOAuthConfig,
+		TokenExchange:         updatedConfig.TokenExchange,
 	}
 
 	// Atomically replace the config pointer

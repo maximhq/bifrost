@@ -11,82 +11,81 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGetAdminOauthTokenByConfigID pins the admin-mode counterpart of
+// TestGetAdminOauthTokenByMCPClientID pins the admin-mode counterpart of
 // GetSharedOauthTokenByConfigID: it must resolve the auth_mode='admin' row
-// for a config and must not cross-match a 'shared'-mode row on the same
-// oauth_config_id, since the two modes back entirely different callers
+// for an MCP client and must not cross-match a 'shared'-mode row on the same
+// mcp_client_id, since the two modes back entirely different callers
 // (GetAdminAccessToken vs GetAccessToken).
-func TestGetAdminOauthTokenByConfigID(t *testing.T) {
+func TestGetAdminOauthTokenByMCPClientID(t *testing.T) {
 	s := setupRDBTestStore(t)
 	ctx := context.Background()
 	now := time.Now()
 
 	require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
-		ID: "tok-admin", AuthMode: "admin", OauthConfigID: "cfg-1", Status: "active",
+		ID: "tok-admin", AuthMode: "admin", OauthConfigID: "cfg-1", MCPClientID: "client-1", Status: "active",
 		AccessToken: "at-admin", TokenType: "Bearer", CreatedAt: now, UpdatedAt: now,
 	}).Error)
 	require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
-		ID: "tok-shared", AuthMode: "shared", OauthConfigID: "cfg-1", Status: "active",
+		ID: "tok-shared", AuthMode: "shared", OauthConfigID: "cfg-1", MCPClientID: "client-1", Status: "active",
 		AccessToken: "at-shared", TokenType: "Bearer", CreatedAt: now, UpdatedAt: now,
 	}).Error)
 
-	got, err := s.GetAdminOauthTokenByConfigID(ctx, "cfg-1")
+	got, err := s.GetAdminOauthTokenByMCPClientID(ctx, "client-1")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Equal(t, "tok-admin", got.ID, "must resolve the admin-mode row, not the shared-mode row for the same config")
+	assert.Equal(t, "tok-admin", got.ID, "must resolve the admin-mode row, not the shared-mode row for the same client")
 
-	// A config with no admin-mode row at all resolves to (nil, nil).
-	got, err = s.GetAdminOauthTokenByConfigID(ctx, "cfg-no-admin")
+	// A client with no admin-mode row at all resolves to (nil, nil).
+	got, err = s.GetAdminOauthTokenByMCPClientID(ctx, "client-no-admin")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 
-	// Empty oauthConfigID short-circuits to (nil, nil) without querying.
-	got, err = s.GetAdminOauthTokenByConfigID(ctx, "")
+	// Empty mcpClientID short-circuits to (nil, nil) without querying.
+	got, err = s.GetAdminOauthTokenByMCPClientID(ctx, "")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
 
-// TestGetAdminOauthTokensByConfigIDs pins the batch counterpart of
-// GetAdminOauthTokenByConfigID: one query keyed by oauth_config_id, admin
+// TestGetAdminOauthTokensByMCPClientIDs pins the batch counterpart of
+// GetAdminOauthTokenByMCPClientID: one query keyed by mcp_client_id, admin
 // rows only, no status filter (needs_reauth rows must come back so the
 // registry list can project them), and empty input short-circuits.
-func TestGetAdminOauthTokensByConfigIDs(t *testing.T) {
+func TestGetAdminOauthTokensByMCPClientIDs(t *testing.T) {
 	s := setupRDBTestStore(t)
 	ctx := context.Background()
 	now := time.Now()
 
 	rows := []*tables.TableMCPOauthToken{
-		{ID: "tok-a-active", AuthMode: "admin", OauthConfigID: "cfg-a", Status: "active",
+		{ID: "tok-a-active", AuthMode: "admin", MCPClientID: "client-a", Status: "active",
 			AccessToken: "x", TokenType: "Bearer", CreatedAt: now, UpdatedAt: now},
-		{ID: "tok-b-reauth", AuthMode: "admin", OauthConfigID: "cfg-b", Status: "needs_reauth",
+		// token_exchange-shaped admin row: no oauth_config_id at all.
+		{ID: "tok-b-reauth", AuthMode: "admin", MCPClientID: "client-b", Status: "needs_reauth",
 			AccessToken: "x", TokenType: "Bearer", CreatedAt: now, UpdatedAt: now},
-		// Non-admin rows on the same configs must be excluded.
-		{ID: "tok-a-shared", AuthMode: "shared", OauthConfigID: "cfg-a", Status: "active",
+		// Non-admin rows on the same clients must be excluded.
+		{ID: "tok-a-shared", AuthMode: "shared", MCPClientID: "client-a", Status: "active",
 			AccessToken: "x", TokenType: "Bearer", CreatedAt: now, UpdatedAt: now},
-		{ID: "tok-b-user", AuthMode: "user", OauthConfigID: "cfg-b", Status: "needs_reauth",
-			AccessToken: "x", TokenType: "Bearer", CreatedAt: now, UpdatedAt: now},
-		// A config with only a shared row must be absent from the result.
-		{ID: "tok-c-shared", AuthMode: "shared", OauthConfigID: "cfg-c", Status: "active",
+		// A client with only a shared row must be absent from the result.
+		{ID: "tok-c-shared", AuthMode: "shared", MCPClientID: "client-c", Status: "active",
 			AccessToken: "x", TokenType: "Bearer", CreatedAt: now, UpdatedAt: now},
 	}
 	for _, r := range rows {
 		require.NoError(t, s.DB().Create(r).Error)
 	}
 
-	got, err := s.GetAdminOauthTokensByConfigIDs(ctx, []string{"cfg-a", "cfg-b", "cfg-c", "cfg-missing"})
+	got, err := s.GetAdminOauthTokensByMCPClientIDs(ctx, []string{"client-a", "client-b", "client-c", "client-missing"})
 	require.NoError(t, err)
 	require.Len(t, got, 2)
-	require.NotNil(t, got["cfg-a"])
-	assert.Equal(t, "tok-a-active", got["cfg-a"].ID)
-	assert.Equal(t, "active", got["cfg-a"].Status)
-	require.NotNil(t, got["cfg-b"], "needs_reauth admin rows must be returned, not filtered by status")
-	assert.Equal(t, "tok-b-reauth", got["cfg-b"].ID)
-	assert.Equal(t, "needs_reauth", got["cfg-b"].Status)
-	assert.NotContains(t, got, "cfg-c", "a config with only non-admin rows must be absent")
-	assert.NotContains(t, got, "cfg-missing")
+	require.NotNil(t, got["client-a"])
+	assert.Equal(t, "tok-a-active", got["client-a"].ID)
+	assert.Equal(t, "active", got["client-a"].Status)
+	require.NotNil(t, got["client-b"], "needs_reauth admin rows must be returned, not filtered by status")
+	assert.Equal(t, "tok-b-reauth", got["client-b"].ID)
+	assert.Equal(t, "needs_reauth", got["client-b"].Status)
+	assert.NotContains(t, got, "client-c", "a client with only non-admin rows must be absent")
+	assert.NotContains(t, got, "client-missing")
 
 	// Empty input returns an empty map without querying.
-	got, err = s.GetAdminOauthTokensByConfigIDs(ctx, nil)
+	got, err = s.GetAdminOauthTokensByMCPClientIDs(ctx, nil)
 	require.NoError(t, err)
 	assert.Empty(t, got)
 }
@@ -161,7 +160,7 @@ func TestPromoteSharedOauthTokenToAdmin_ReplacesExistingAdminRow(t *testing.T) {
 
 	require.NoError(t, s.PromoteSharedOauthTokenToAdmin(ctx, "cfg-1", "client-1"))
 
-	admin, err := s.GetAdminOauthTokenByConfigID(ctx, "cfg-1")
+	admin, err := s.GetAdminOauthTokenByMCPClientID(ctx, "client-1")
 	require.NoError(t, err)
 	require.NotNil(t, admin)
 	assert.Equal(t, "tok-admin", admin.ID, "existing admin row's ID must be preserved")
@@ -201,7 +200,7 @@ func TestPromoteSharedOauthTokenToAdmin_RetagsWhenNoAdminRow(t *testing.T) {
 
 	require.NoError(t, s.PromoteSharedOauthTokenToAdmin(ctx, "cfg-1", "client-1"))
 
-	admin, err := s.GetAdminOauthTokenByConfigID(ctx, "cfg-1")
+	admin, err := s.GetAdminOauthTokenByMCPClientID(ctx, "client-1")
 	require.NoError(t, err)
 	require.NotNil(t, admin)
 	assert.Equal(t, "tok-shared", admin.ID, "the shared row itself must be retagged, keeping its ID")
@@ -244,7 +243,7 @@ func TestPromoteSharedOauthTokenToAdmin_ClearsStrayShareRows(t *testing.T) {
 
 		require.NoError(t, s.PromoteSharedOauthTokenToAdmin(ctx, "cfg-1", "client-1"))
 
-		admin, err := s.GetAdminOauthTokenByConfigID(ctx, "cfg-1")
+		admin, err := s.GetAdminOauthTokenByMCPClientID(ctx, "client-1")
 		require.NoError(t, err)
 		require.NotNil(t, admin)
 		assert.Equal(t, "at-fresh", admin.AccessToken, "the active shared row must be the one promoted, not the stale one")
@@ -271,7 +270,7 @@ func TestPromoteSharedOauthTokenToAdmin_ClearsStrayShareRows(t *testing.T) {
 
 		require.NoError(t, s.PromoteSharedOauthTokenToAdmin(ctx, "cfg-2", "client-2"))
 
-		admin, err := s.GetAdminOauthTokenByConfigID(ctx, "cfg-2")
+		admin, err := s.GetAdminOauthTokenByMCPClientID(ctx, "client-2")
 		require.NoError(t, err)
 		require.NotNil(t, admin)
 		assert.Equal(t, "tok-shared-active-2", admin.ID, "the active shared row must be retagged in place")
@@ -309,7 +308,7 @@ func TestPromoteSharedOauthTokenToAdmin_Errors(t *testing.T) {
 
 	require.Error(t, s.PromoteSharedOauthTokenToAdmin(ctx, "cfg-1", "client-1"), "non-active shared row must error")
 
-	admin, err := s.GetAdminOauthTokenByConfigID(ctx, "cfg-1")
+	admin, err := s.GetAdminOauthTokenByMCPClientID(ctx, "client-1")
 	require.NoError(t, err)
 	require.NotNil(t, admin)
 	assert.Equal(t, "needs_reauth", admin.Status, "a failed promotion must leave the admin row untouched")

@@ -431,6 +431,24 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// The 'error' behavior rejects exactly the requests token_exchange
+	// clients rely on (an identity token alongside a virtual key), so the
+	// two settings are mutually exclusive — mirrored by the MCP client
+	// create path rejecting token_exchange while it is 'error'. Checked up
+	// front, alongside the other validations above: everything below this
+	// point applies live in-memory mutations before the DB write at the end
+	// of this handler, so a rejection here must happen before any of that
+	// runs — otherwise a 400 would leave runtime state changed with nothing
+	// persisted.
+	if payload.ClientConfig.DualCredentialConflictBehavior == configstoreTables.DualCredentialConflictBehaviorError && h.store.MCPConfig != nil {
+		for _, mcpClient := range h.store.MCPConfig.ClientConfigs {
+			if mcpClient.AuthType == schemas.MCPAuthTypeTokenExchange {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("dual_credential_conflict_behavior cannot be set to 'error' while MCP client %q uses auth_type 'token_exchange'; delete that client first or choose 'prefer_idp'/'prefer_vk'", mcpClient.Name))
+				return
+			}
+		}
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
@@ -543,7 +561,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
 	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
 
-	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp)
+	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp).
+	// The conflict-vs-token_exchange validation already ran up front, before
+	// any live mutation.
 	if payload.ClientConfig.DualCredentialConflictBehavior != "" {
 		updatedConfig.DualCredentialConflictBehavior = payload.ClientConfig.DualCredentialConflictBehavior
 	}
