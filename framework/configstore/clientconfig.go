@@ -1547,6 +1547,19 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash the token_exchange scoping block so edits to it in config.json
+	// drift the hash and trigger reconciliation. Same JSON-column-first
+	// fallback shape as PendingOAuthConfig above, for the same reason.
+	if m.TokenExchangeJSON != nil && *m.TokenExchangeJSON != "" {
+		hash.Write([]byte(*m.TokenExchangeJSON))
+	} else if m.TokenExchange != nil {
+		data, err := json.Marshal(m.TokenExchange)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil

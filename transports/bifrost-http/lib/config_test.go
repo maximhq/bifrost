@@ -1464,11 +1464,11 @@ func (m *MockConfigStore) GetSharedOauthTokenByConfigID(ctx context.Context, oau
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetAdminOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error) {
+func (m *MockConfigStore) GetAdminOauthTokenByMCPClientID(ctx context.Context, mcpClientID string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetAdminOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
+func (m *MockConfigStore) GetAdminOauthTokensByMCPClientIDs(ctx context.Context, mcpClientIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
 	return map[string]*tables.TableMCPOauthToken{}, nil
 }
 
@@ -1563,6 +1563,10 @@ func (m *MockConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, o
 	for _, tok := range m.oauthTokensByConfigID[oauthConfigID] {
 		tok.Status = "needs_reauth"
 	}
+	return nil
+}
+
+func (m *MockConfigStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx context.Context, mcpClientID string) error {
 	return nil
 }
 

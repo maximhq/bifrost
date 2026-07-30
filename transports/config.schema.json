@@ -4838,9 +4838,39 @@
             "headers",
             "oauth",
             "per_user_oauth",
-            "per_user_headers"
+            "per_user_headers",
+            "token_exchange"
           ],
           "description": "Authentication type for MCP connection"
+        },
+        "token_exchange": {
+          "type": "object",
+          "description": "Delegated token-exchange configuration for auth_type 'token_exchange': each caller's identity-provider token is exchanged at runtime for a short-lived token scoped to this server's audience. The exchange endpoint and grant shape come from the deployment's identity-provider integration; the application performing the exchange is configured here. Requires user-identity authentication to be available. The MCP client lands in `pending_verification` state at boot; an admin verifies it once from the UI (as themselves).",
+          "properties": {
+            "audience": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Resource identifier the exchanged token is scoped to at the identity provider (e.g. 'api://jira-mcp')"
+            },
+            "client_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Identity-provider application authorized to perform exchanges for this audience — a dedicated registration carrying the token-exchange (or on-behalf-of) grant, not the SSO login application. Can use env. or vault. prefix."
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "Secret for the exchange application; omit for public clients. Can use env. or vault. prefix."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional scopes to request on the exchanged token. Include 'offline_access' (where the identity provider supports it) so exchanges issue refresh tokens, keeping the retained admin discovery credential self-renewing."
+            }
+          },
+          "required": ["audience", "client_id"],
+          "additionalProperties": false
         },
         "oauth_config": {
           "type": "object",
@@ -5052,6 +5082,25 @@
           "then": {
             "not": {
               "required": ["per_user_header_keys"]
+            }
+          }
+        },
+        {
+          "$comment": "token_exchange requires its scoping block (audience), and the block only applies to that auth type; forbid it elsewhere so a misplaced declaration fails validation instead of being silently ignored.",
+          "if": {
+            "properties": {
+              "auth_type": {
+                "const": "token_exchange"
+              }
+            },
+            "required": ["auth_type"]
+          },
+          "then": {
+            "required": ["token_exchange"]
+          },
+          "else": {
+            "not": {
+              "required": ["token_exchange"]
             }
           }
         }
