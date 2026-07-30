@@ -135,7 +135,7 @@ func (p *OAuth2Provider) ExchangeAdminCredential(ctx context.Context, config *sc
 
 // RetainExchangeAdminCredential persists the outcome of a successful admin
 // verification as the retained auth_mode='admin' token row for config — the
-// discovery credential the tool syncer and TokenRefreshWorker keep alive,
+// discovery credential the tool syncer and OAuthTokenRefreshWorker keep alive,
 // mirroring what PromoteSharedOauthTokenToAdmin does for per-user OAuth
 // bootstrap. Upserts: a repair replaces the existing row's credential.
 func (p *OAuth2Provider) RetainExchangeAdminCredential(ctx context.Context, config *schemas.MCPClientConfig, response *schemas.OAuth2TokenExchangeResponse) error {

@@ -22,6 +22,11 @@ const (
 	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
 	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
 	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
+	// MCPSharedAuthRetryReconnectBudget is the longest a failing shared-connection
+	// tool call waits for the reconnect it triggered before surfacing the original
+	// auth failure. The reconnect itself keeps running in the background when the
+	// budget elapses. Also capped by the calling request's own remaining deadline.
+	MCPSharedAuthRetryReconnectBudget = 10 * time.Second
 )
 
 // ============================================================================
@@ -42,7 +47,7 @@ type MCPManager struct {
 	serverRunning        bool                               // Track whether local MCP server is running
 	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
 	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
-	reconnectingClients  sync.Map                           // Tracks in-flight reconnect attempts per client ID (map[string]bool)
+	reconnectingClients  sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
 	bootClientConfigs    []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
 	connectOnce          sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
 
