@@ -3,14 +3,15 @@ package oauth2
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// TokenRefreshWorker manages automatic token refresh for expiring OAuth tokens
-type TokenRefreshWorker struct {
+// OAuthTokenRefreshWorker manages automatic token refresh for expiring OAuth tokens
+type OAuthTokenRefreshWorker struct {
 	provider        *OAuth2Provider
 	refreshInterval time.Duration
 	lookAheadWindow time.Duration // How far ahead to look for expiring tokens
@@ -34,10 +35,16 @@ type TokenRefreshWorker struct {
 	stopOnce  sync.Once
 	cancel    context.CancelFunc
 	logger    schemas.Logger
+
+	// onTokenRefreshed, when set, is invoked after each successful proactive
+	// refresh with the token's owning MCP client ID and auth mode. Stored as
+	// an atomic pointer because the worker goroutine reads it while the
+	// serving layer installs it after the worker has already started.
+	onTokenRefreshed atomic.Pointer[func(mcpClientID, authMode string)]
 }
 
-// NewTokenRefreshWorker creates a new token refresh worker
-func NewTokenRefreshWorker(provider *OAuth2Provider, logger schemas.Logger) *TokenRefreshWorker {
+// NewOAuthTokenRefreshWorker creates a new token refresh worker
+func NewOAuthTokenRefreshWorker(provider *OAuth2Provider, logger schemas.Logger) *OAuthTokenRefreshWorker {
 	if logger == nil {
 		logger = bifrost.NewNoOpLogger()
 	}
@@ -45,7 +52,7 @@ func NewTokenRefreshWorker(provider *OAuth2Provider, logger schemas.Logger) *Tok
 		logger.Warn("config store is nil, skipping token refresh worker")
 		return nil
 	}
-	return &TokenRefreshWorker{
+	return &OAuthTokenRefreshWorker{
 		provider:        provider,
 		refreshInterval: 5 * time.Minute,             // Check every 5 minutes
 		lookAheadWindow: 5 * time.Minute,             // Refresh tokens expiring in next 5 minutes
@@ -55,8 +62,26 @@ func NewTokenRefreshWorker(provider *OAuth2Provider, logger schemas.Logger) *Tok
 	}
 }
 
+// SetOnTokenRefreshed registers a callback invoked after each successful
+// proactive token refresh, with the owning MCP client ID and the token's
+// auth mode. It lets the serving layer react to a freshened credential, for
+// example by recycling a connection that captured the old one. Tokens with
+// no MCP client ID (legacy rows) never fire the callback. Safe to call at
+// any time, including while the worker is running; passing nil clears the
+// callback.
+func (w *OAuthTokenRefreshWorker) SetOnTokenRefreshed(cb func(mcpClientID, authMode string)) {
+	if w == nil {
+		return
+	}
+	if cb == nil {
+		w.onTokenRefreshed.Store(nil)
+		return
+	}
+	w.onTokenRefreshed.Store(&cb)
+}
+
 // Start begins the token refresh worker in a background goroutine
-func (w *TokenRefreshWorker) Start(ctx context.Context) {
+func (w *OAuthTokenRefreshWorker) Start(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
 	go w.run(runCtx)
@@ -66,7 +91,7 @@ func (w *TokenRefreshWorker) Start(ctx context.Context) {
 // Stop gracefully stops the token refresh worker. Safe to call multiple times
 // — guarded by sync.Once so a redundant call from a secondary shutdown path
 // can't panic by re-closing the channel.
-func (w *TokenRefreshWorker) Stop() {
+func (w *OAuthTokenRefreshWorker) Stop() {
 	w.stopOnce.Do(func() {
 		// Cancel any in-flight refresh so a blocked DB call unwinds promptly,
 		// then signal run() to exit its ticker loop.
@@ -79,7 +104,7 @@ func (w *TokenRefreshWorker) Stop() {
 }
 
 // run is the main worker loop
-func (w *TokenRefreshWorker) run(ctx context.Context) {
+func (w *OAuthTokenRefreshWorker) run(ctx context.Context) {
 	ticker := time.NewTicker(w.refreshInterval)
 	defer ticker.Stop()
 
@@ -99,7 +124,7 @@ func (w *TokenRefreshWorker) run(ctx context.Context) {
 }
 
 // refreshExpiredTokens queries and refreshes tokens that are expiring soon
-func (w *TokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
+func (w *OAuthTokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
 	expiryThreshold := time.Now().Add(w.lookAheadWindow)
 
 	// Get tokens expiring before the threshold, restricted to the configured
@@ -128,17 +153,20 @@ func (w *TokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
 			w.logger.Debug("Failed to refresh token: token_id: %s, mcp_client_id: %s, error: %s", token.ID, token.MCPClientID, err.Error())
 		} else {
 			w.logger.Debug("Successfully refreshed token: %s", token.ID)
+			if cb := w.onTokenRefreshed.Load(); cb != nil && token.MCPClientID != "" {
+				(*cb)(token.MCPClientID, token.AuthMode)
+			}
 		}
 	}
 }
 
 // SetRefreshInterval updates the refresh check interval (for testing)
-func (w *TokenRefreshWorker) SetRefreshInterval(interval time.Duration) {
+func (w *OAuthTokenRefreshWorker) SetRefreshInterval(interval time.Duration) {
 	w.refreshInterval = interval
 }
 
 // SetLookAheadWindow updates the look-ahead window for token expiry (for testing)
-func (w *TokenRefreshWorker) SetLookAheadWindow(window time.Duration) {
+func (w *OAuthTokenRefreshWorker) SetLookAheadWindow(window time.Duration) {
 	w.lookAheadWindow = window
 }
 

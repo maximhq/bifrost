@@ -532,7 +532,7 @@ type ConfigStore interface {
 	// Errors if the shared row is missing or not status='active'.
 	PromoteSharedOauthTokenToAdmin(ctx context.Context, oauthConfigID, mcpClientID string) error
 	// GetExpiringOauthTokens is filtered to authModes via `auth_mode IN
-	// (...)`. Backs TokenRefreshWorker, whose AuthModes field decides which
+	// (...)`. Backs OAuthTokenRefreshWorker, whose AuthModes field decides which
 	// holder types get proactive background refresh (defaults to shared +
 	// admin — other per-user tokens otherwise refresh lazily/inline on
 	// lookup via GetOauthUserTokenByMode).
