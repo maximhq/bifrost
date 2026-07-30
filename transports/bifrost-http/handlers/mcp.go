@@ -60,11 +60,12 @@ type MCPHandler struct {
 	mcpManager        MCPManager
 	governanceManager GovernanceManager
 	oauthHandler      *OAuthHandler
-	// mcpOauthTokenCacheManager invalidates cached OAuth access tokens after
-	// mutations that rewrite or delete token rows through the configstore
-	// (credential rotation, access reconciliation). Always wired by the
-	// server; see the interface doc for the non-nil requirement.
-	mcpOauthTokenCacheManager MCPOauthTokenCacheManager
+	// mcpCredentialCacheManager invalidates cached per-user credentials
+	// (OAuth access tokens and header credentials) after mutations that
+	// rewrite or delete their rows through the configstore (credential
+	// rotation, needs_update schema flips, access reconciliation). Always
+	// wired by the server; see the interface doc for the non-nil requirement.
+	mcpCredentialCacheManager MCPCredentialCacheManager
 }
 
 // NewMCPHandler creates a new MCP handler instance
@@ -74,7 +75,7 @@ func NewMCPHandler(
 	client *bifrost.Bifrost,
 	store *lib.Config,
 	oauthHandler *OAuthHandler,
-	mcpOauthTokenCacheManager MCPOauthTokenCacheManager,
+	mcpCredentialCacheManager MCPCredentialCacheManager,
 ) *MCPHandler {
 	return &MCPHandler{
 		client:                    client,
@@ -82,7 +83,7 @@ func NewMCPHandler(
 		mcpManager:                mcpManager,
 		governanceManager:         governanceManager,
 		oauthHandler:              oauthHandler,
-		mcpOauthTokenCacheManager: mcpOauthTokenCacheManager,
+		mcpCredentialCacheManager: mcpCredentialCacheManager,
 	}
 }
 
@@ -1996,7 +1997,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if rotated {
-			h.mcpOauthTokenCacheManager.EvictOauthTokenCacheByMCPClient(ctx, id)
+			h.mcpCredentialCacheManager.EvictOauthTokenCacheByMCPClient(ctx, id)
 			// Rotation just cascaded every token bound to this oauth_config to
 			// needs_reauth in the DB, but the in-memory client above only had
 			// its ExecutionConfig replaced — its live connection, if any, is
@@ -2030,6 +2031,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx, existingConfig.ID); err != nil {
 			logger.Error(fmt.Sprintf("failed to flip per-user header credentials to needs_update for client %s: %v", existingConfig.ID, err))
+		} else {
+			// Cached copies still carry the pre-flip status and values; drop
+			// them so the next lookup reads the needs_update rows.
+			h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByMCPClient(ctx, existingConfig.ID)
 		}
 	}
 
@@ -2165,9 +2170,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			if err := h.store.ConfigStore.ReconcileMCPHeadersAfterMCPChange(ctx, id); err != nil {
 				logger.Error(fmt.Sprintf("reconcile per-user-headers credentials after MCP %s update failed: %v", id, err))
 			}
-			// Reconciliation may have orphaned or reactivated token rows;
-			// cached copies no longer reflect the database.
-			h.mcpOauthTokenCacheManager.EvictOauthTokenCacheByMCPClient(ctx, id)
+			// Reconciliation may have orphaned or reactivated token and
+			// credential rows; cached copies no longer reflect the database.
+			h.mcpCredentialCacheManager.EvictOauthTokenCacheByMCPClient(ctx, id)
+			h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByMCPClient(ctx, id)
 		}
 	}
 
@@ -2197,8 +2203,8 @@ func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// RemoveMCPClient also evicts the client's cached OAuth access tokens
-	// internally, covering the token rows the database delete above
-	// cascaded over.
+	// and header credentials internally, covering the rows the database
+	// delete above cascaded over.
 	if err := h.mcpManager.RemoveMCPClient(ctx, id); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to remove MCP client: %v", err))
 		return

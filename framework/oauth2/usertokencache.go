@@ -2,9 +2,6 @@ package oauth2
 
 import (
 	"context"
-	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -44,41 +41,20 @@ type userTokenCache struct {
 }
 
 // userTokenCacheKey builds the cache key for a (mode, identity, mcp client)
-// binding. Length-prefixed rather than NUL-separated: identity is a
-// caller-asserted string (see the doc comment above), so a NUL-separated
-// scheme would let an identity value containing "\x00" forge a component
-// boundary — e.g. (mode, "a\x00b", "c") and (mode, "a", "b\x00c") would build
-// the identical key, letting one binding's cached access token be served to
-// another. Prefixing each component with its own byte length makes that
-// forgery impossible regardless of what bytes a component contains.
+// binding. identity is a caller-asserted string (see the doc comment
+// above) with no charset restriction, so this goes through
+// lrucache.EncodeKey rather than a plain separator join — see its doc
+// comment for why a naive join lets an identity value forge a component
+// boundary and alias two distinct bindings onto one cache entry.
 func userTokenCacheKey(mode schemas.MCPAuthMode, identity, mcpClientID string) string {
-	return fmt.Sprintf("%d:%s%d:%s%d:%s", len(mode), mode, len(identity), identity, len(mcpClientID), mcpClientID)
+	return lrucache.EncodeKey(string(mode), identity, mcpClientID)
 }
 
 // splitUserTokenCacheKey is userTokenCacheKey's inverse, for the scoped
-// eviction predicates. ok is false for a key that isn't in the
-// length-prefixed form userTokenCacheKey builds (impossible for keys this
-// package produces).
+// eviction predicates.
 func splitUserTokenCacheKey(key string) (mode, identity, clientID string, ok bool) {
-	rest := key
-	parts := make([]string, 0, 3)
-	for range 3 {
-		i := strings.IndexByte(rest, ':')
-		if i < 0 {
-			return "", "", "", false
-		}
-		n, err := strconv.Atoi(rest[:i])
-		if err != nil || n < 0 {
-			return "", "", "", false
-		}
-		rest = rest[i+1:]
-		if n > len(rest) {
-			return "", "", "", false
-		}
-		parts = append(parts, rest[:n])
-		rest = rest[n:]
-	}
-	if rest != "" {
+	parts, ok := lrucache.DecodeKey(key, 3)
+	if !ok {
 		return "", "", "", false
 	}
 	return parts[0], parts[1], parts[2], true
