@@ -41,23 +41,35 @@ type userTokenCache struct {
 }
 
 // userTokenCacheKey builds the cache key for a (mode, identity, mcp client)
-// binding. identity is a caller-asserted string (see the doc comment
-// above) with no charset restriction, so this goes through
-// lrucache.EncodeKey rather than a plain separator join — see its doc
-// comment for why a naive join lets an identity value forge a component
-// boundary and alias two distinct bindings onto one cache entry.
-func userTokenCacheKey(mode schemas.MCPAuthMode, identity, mcpClientID string) string {
-	return lrucache.EncodeKey(string(mode), identity, mcpClientID)
+// binding, plus an optional subject discriminator. identity is a
+// caller-asserted string (see the doc comment above) with no charset
+// restriction, so this goes through lrucache.EncodeKey rather than a plain
+// separator join — see its doc comment for why a naive join lets an
+// identity value forge a component boundary and alias two distinct
+// bindings onto one cache entry.
+//
+// subjectDiscriminator exists for token_exchange: MCPAuthModeVK's identity
+// is the shared, stable virtual-key row ID, not the actual bearer credential
+// validated on this request — without a discriminator, two callers
+// presenting the same virtual key but different (e.g. different end users')
+// bearer tokens would collide on one cache entry and one caller's exchanged
+// upstream token would be served to the other. Callers outside token
+// exchange pass "" here; every existing (mode, identity, mcpClientID)
+// binding keeps its exact same key, and the scoped eviction predicates
+// below ignore this component so VK-/user-level bulk eviction still matches
+// every subject sharing that identity.
+func userTokenCacheKey(mode schemas.MCPAuthMode, identity, mcpClientID, subjectDiscriminator string) string {
+	return lrucache.EncodeKey(string(mode), identity, mcpClientID, subjectDiscriminator)
 }
 
 // splitUserTokenCacheKey is userTokenCacheKey's inverse, for the scoped
 // eviction predicates.
-func splitUserTokenCacheKey(key string) (mode, identity, clientID string, ok bool) {
-	parts, ok := lrucache.DecodeKey(key, 3)
+func splitUserTokenCacheKey(key string) (mode, identity, clientID, subjectDiscriminator string, ok bool) {
+	parts, ok := lrucache.DecodeKey(key, 4)
 	if !ok {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
-	return parts[0], parts[1], parts[2], true
+	return parts[0], parts[1], parts[2], parts[3], true
 }
 
 func newUserTokenCache(capacity int) *userTokenCache {
@@ -125,8 +137,24 @@ func (c *userTokenCache) EvictByMCPClient(mcpClientID string) {
 		return
 	}
 	c.cache.EvictWhere(func(key string) bool {
-		_, _, clientID, ok := splitUserTokenCacheKey(key)
+		_, _, clientID, _, ok := splitUserTokenCacheKey(key)
 		return ok && clientID == mcpClientID
+	})
+}
+
+// EvictByBinding removes every cached entry for a (mode, identity,
+// mcpClientID) binding, across every subjectDiscriminator. Used for
+// token_exchange's force-refresh, which knows the binding but not the
+// specific bearer token's fingerprint (and, for auth_type token_exchange,
+// several distinct subject tokens can be cached under the same binding —
+// see userTokenCacheKey's doc comment).
+func (c *userTokenCache) EvictByBinding(mode schemas.MCPAuthMode, identity, mcpClientID string) {
+	if c == nil || identity == "" || mcpClientID == "" {
+		return
+	}
+	c.cache.EvictWhere(func(key string) bool {
+		keyMode, keyIdentity, keyClientID, _, ok := splitUserTokenCacheKey(key)
+		return ok && keyMode == string(mode) && keyIdentity == identity && keyClientID == mcpClientID
 	})
 }
 
@@ -138,7 +166,7 @@ func (c *userTokenCache) EvictByVirtualKey(virtualKeyID string) {
 		return
 	}
 	c.cache.EvictWhere(func(key string) bool {
-		mode, identity, _, ok := splitUserTokenCacheKey(key)
+		mode, identity, _, _, ok := splitUserTokenCacheKey(key)
 		return ok && mode == string(schemas.MCPAuthModeVK) && identity == virtualKeyID
 	})
 }
@@ -151,7 +179,7 @@ func (c *userTokenCache) EvictByUser(userID string) {
 		return
 	}
 	c.cache.EvictWhere(func(key string) bool {
-		mode, identity, _, ok := splitUserTokenCacheKey(key)
+		mode, identity, _, _, ok := splitUserTokenCacheKey(key)
 		return ok && mode == string(schemas.MCPAuthModeUser) && identity == userID
 	})
 }

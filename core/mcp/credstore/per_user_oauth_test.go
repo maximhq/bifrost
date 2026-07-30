@@ -66,6 +66,12 @@ func (f *fakeOAuth2Provider) ForceRefreshAccessToken(ctx *schemas.BifrostContext
 	return errors.New("not implemented")
 }
 
+func (f *fakeOAuth2Provider) TokenExchangeAvailable() bool { return false }
+
+func (f *fakeOAuth2Provider) GetExchangedAccessToken(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) (string, error) {
+	return "", errors.New("not implemented")
+}
+
 func newTestOAuthContext() *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyMCPSessionID, "sess-1")

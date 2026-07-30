@@ -31,6 +31,7 @@ type testConfigStore struct {
 	oauthTokens  map[string]*tables.TableMCPOauthToken
 	oauthFlows   map[string]*tables.TableMCPOauthFlow
 	clientConfig *configstore.ClientConfig
+	mcpClients   map[string]*schemas.MCPClientConfig
 }
 
 func newTestConfigStore() *testConfigStore {
@@ -83,14 +84,14 @@ func (s *testConfigStore) GetSharedOauthTokenByConfigID(_ context.Context, oauth
 	return nil, nil
 }
 
-// GetAdminOauthTokenByConfigID is GetSharedOauthTokenByConfigID's admin-mode
-// counterpart — the test-double equivalent of the real store's
-// (oauth_config_id, auth_mode='admin') lookup, used by GetAdminAccessToken.
-func (s *testConfigStore) GetAdminOauthTokenByConfigID(_ context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error) {
+// GetAdminOauthTokenByMCPClientID is GetSharedOauthTokenByConfigID's
+// admin-mode counterpart — the test-double equivalent of the real store's
+// (mcp_client_id, auth_mode='admin') lookup, used by GetAdminAccessToken.
+func (s *testConfigStore) GetAdminOauthTokenByMCPClientID(_ context.Context, mcpClientID string) (*tables.TableMCPOauthToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, token := range s.oauthTokens {
-		if token.OauthConfigID == oauthConfigID && token.AuthMode == "admin" {
+		if token.MCPClientID == mcpClientID && token.AuthMode == "admin" {
 			return bifrost.Ptr(*token), nil
 		}
 	}

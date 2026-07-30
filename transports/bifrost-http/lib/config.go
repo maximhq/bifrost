@@ -1724,6 +1724,12 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 				logger.Warn("skipping MCP client config %q from config file: %v", c.Name, err)
 				continue
 			}
+			if c.AuthType == schemas.MCPAuthTypeTokenExchange {
+				if isEnterprise, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool); !isEnterprise {
+					logger.Error("skipping MCP client config %q from config file: auth_type 'token_exchange' is not supported", c.Name)
+					continue
+				}
+			}
 			// oauth_config_id is server-managed state — a credentials-row
 			// reference produced by admin authorization — not a declarative
 			// input. A file-supplied value is at best redundant (the sync
@@ -1861,6 +1867,16 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 		fileClient.PerUserHeaderKeys = existing.PerUserHeaderKeys
 	}
 
+	// Same rule for the token_exchange scoping block: audience/scopes edits
+	// apply (the update API accepts them too), but a token_exchange client
+	// must keep a block with a non-empty audience.
+	if fileClient.AuthType == schemas.MCPAuthTypeTokenExchange &&
+		(fileClient.TokenExchange == nil || strings.TrimSpace(fileClient.TokenExchange.Audience) == "") &&
+		existing.TokenExchange != nil {
+		logger.Warn("token_exchange cannot be emptied for MCP client %q (auth_type 'token_exchange'); keeping the stored block", existing.Name)
+		fileClient.TokenExchange = existing.TokenExchange
+	}
+
 	fileClient.OauthConfigID = existing.OauthConfigID
 	if len(fileClient.DiscoveredTools) == 0 {
 		fileClient.DiscoveredTools = existing.DiscoveredTools
@@ -1970,6 +1986,64 @@ func rotateMCPOauthConfigFromFile(ctx context.Context, store configstore.ConfigS
 	return incomplete
 }
 
+// rotateMCPTokenExchangeConfigFromFile cascades needs_reauth on the retained
+// admin exchange credential when a config.json edit changes the
+// token_exchange scoping block (audience/client_id/client_secret/
+// authorization_server_url/scopes), mirroring the update-MCP-client API's
+// shouldMarkExchangeNeedsReauth path. Unlike oauth_config there is no
+// separate table row to rotate — the block lives directly on the MCP
+// client row and is already applied via
+// mcpClientConfigToTable/applyMCPClientPinnedStateToRow; this only handles
+// the reauth cascade side effect. No-op when the file doesn't declare a
+// token_exchange block or nothing actually changed.
+//
+// Only fields the file explicitly sets participate in the diff — an
+// absent/empty client_id or client_secret means "not declared" (e.g. still
+// resolving from a secret ref), not a request to clear it, mirroring
+// rotateMCPOauthConfigFromFile's treatment of oauth_config.client_id/
+// client_secret. The resolved value (file-declared fields layered onto the
+// stored ones) is what's diffed via MCPTokenExchangeConfig.DiffersFrom, the
+// same method the update-MCP-client API uses against its own
+// redaction-resolved request value.
+func rotateMCPTokenExchangeConfigFromFile(ctx context.Context, store configstore.ConfigStore, clientID, clientName string, fileBlock, existing *schemas.MCPTokenExchangeConfig) {
+	if store == nil || fileBlock == nil || existing == nil {
+		return
+	}
+	resolved := *existing
+	if fileBlock.Audience != "" {
+		resolved.Audience = fileBlock.Audience
+	}
+	if fileBlock.ClientID.IsSet() {
+		if fileBlock.ClientID.GetValue() != "" {
+			resolved.ClientID = fileBlock.ClientID
+		} else {
+			logger.Warn("token_exchange.client_id declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
+		}
+	}
+	if fileBlock.ClientSecret.IsSet() {
+		if fileBlock.ClientSecret.GetValue() != "" {
+			resolved.ClientSecret = fileBlock.ClientSecret
+		} else {
+			logger.Warn("token_exchange.client_secret declared for MCP client %q resolves to an empty value; keeping the stored value", clientName)
+		}
+	}
+	if fileBlock.AuthorizationServerURL != nil && *fileBlock.AuthorizationServerURL != "" {
+		resolved.AuthorizationServerURL = fileBlock.AuthorizationServerURL
+	}
+	if len(fileBlock.Scopes) > 0 {
+		resolved.Scopes = fileBlock.Scopes
+	}
+
+	if !existing.DiffersFrom(&resolved) {
+		return
+	}
+	if err := store.MarkAdminExchangeTokenNeedsReauthByMCPClientID(ctx, clientID); err != nil {
+		logger.Warn("failed to mark admin exchange credential needs_reauth for MCP client %q from config file: %v", clientName, err)
+		return
+	}
+	logger.Warn("rotated token_exchange config for MCP client %q from config file; admin exchange credential must be re-verified", clientName)
+}
+
 // authorizedOauthRowForComparison loads the oauth_configs row backing an
 // already-authorized client so an edited file oauth_config block can be
 // detected by pinMCPClientImmutableFields. Returns nil whenever there is
@@ -2020,6 +2094,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.ConnectionString = clientConfig.ConnectionString
 	row.StdioConfig = clientConfig.StdioConfig
 	row.PerUserHeaderKeys = mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys)
+	row.TokenExchange = clientConfig.TokenExchange
 	row.OauthConfigID = clientConfig.OauthConfigID
 	row.DiscoveredTools = clientConfig.DiscoveredTools
 	row.DiscoveredToolNameMapping = clientConfig.DiscoveredToolNameMapping
@@ -2074,6 +2149,7 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 					// edit does not reset a verified client.
 					authorizedOauth := authorizedOauthRowForComparison(ctx, config.ConfigStore, newClientConfig, existingClientConfig)
 					incompleteRotation := rotateMCPOauthConfigFromFile(ctx, config.ConfigStore, existingClientConfig.Name, newClientConfig.PendingOAuthConfig, authorizedOauth)
+					rotateMCPTokenExchangeConfigFromFile(ctx, config.ConfigStore, existingClientConfig.ID, existingClientConfig.Name, newClientConfig.TokenExchange, existingClientConfig.TokenExchange)
 					warnIgnoredImmutableMCPFields(existingClientConfig.Name, pinMCPClientImmutableFields(newClientConfig, existingClientConfig))
 					applyMCPClientPinnedStateToRow(&fileClientRow, newClientConfig)
 					fileClientRow.ClientID = existingClientConfig.ID
@@ -2212,6 +2288,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		DiscoveredTools:           clientConfig.DiscoveredTools,
 		DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
 		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
+		TokenExchange:             clientConfig.TokenExchange,
 		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,
 		ConfigHash:                clientConfig.ConfigHash,
 	}, nil
@@ -2300,6 +2377,7 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 					fileClient.ConfigHash = existing.ConfigHash
 					fileRow.ConfigHash = existing.ConfigHash
 				}
+				rotateMCPTokenExchangeConfigFromFile(ctx, config.ConfigStore, existing.ID, existing.Name, fileClient.TokenExchange, existing.TokenExchange)
 			}
 			changedImmutable := pinMCPClientImmutableFields(fileClient, existing)
 			if fileEdited {
@@ -6569,6 +6647,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
 	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
+	c.MCPConfig.ClientConfigs[configIndex].TokenExchange = updatedConfig.TokenExchange
 
 	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
 	// is registered at runtime. We call the core bifrost methods directly (not the
@@ -6787,6 +6866,17 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 	}
 	if config.OauthClientSecret != nil {
 		configCopy.OauthClientSecret = config.OauthClientSecret.Redacted()
+	}
+
+	// Redact the token-exchange application credentials. Copy the struct
+	// first — configCopy shares the pointer with the live config, and
+	// Redacted() returns a fresh SecretVar so the live block is never
+	// mutated.
+	if config.TokenExchange != nil {
+		exchangeCopy := *config.TokenExchange
+		exchangeCopy.ClientID = exchangeCopy.ClientID.Redacted()
+		exchangeCopy.ClientSecret = exchangeCopy.ClientSecret.Redacted()
+		configCopy.TokenExchange = &exchangeCopy
 	}
 
 	// Redact credentials inside the inline `oauth_config` bootstrap block.
