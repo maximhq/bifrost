@@ -493,6 +493,54 @@ func TestClickHouseSearchAndStats(t *testing.T) {
 	assert.ElementsMatch(t, []string{"gpt-4o", "claude-sonnet-4-5"}, models)
 }
 
+func TestClickHousePaginatedLogListsPreserveLatestVersions(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	sessionID := "ch-list-session"
+	largeHistory := fmt.Sprintf(`[{"role":"user","content":"%s"}]`, strings.Repeat("x", 64*1024))
+
+	for i := 0; i < 6; i++ {
+		entry := chTestLog(fmt.Sprintf("ch-list-%d", i), ts.Add(time.Duration(i)*time.Second))
+		entry.ParentRequestID = &sessionID
+		entry.InputHistory = largeHistory
+		entry.ResponsesInputHistory = largeHistory
+		entry.ContentSummary = strings.Repeat("s", 64*1024)
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+	}
+
+	require.NoError(t, store.Update(ctx, "ch-list-4", map[string]interface{}{
+		"status":          "success",
+		"content_summary": "latest version",
+	}))
+
+	result, err := store.SearchLogs(ctx, SearchFilters{}, PaginationOptions{
+		Limit:  2,
+		Offset: 1,
+		SortBy: "timestamp",
+		Order:  "desc",
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 2)
+	assert.Equal(t, "ch-list-4", result.Logs[0].ID)
+	assert.Equal(t, "success", result.Logs[0].Status)
+	assert.Equal(t, "latest version", result.Logs[0].ContentSummary)
+	assert.Equal(t, "ch-list-3", result.Logs[1].ID)
+	assert.Equal(t, int64(6), result.Pagination.TotalCount)
+
+	sessionResult, err := store.GetSessionLogs(ctx, sessionID, PaginationOptions{
+		Limit:  2,
+		Offset: 1,
+		Order:  "desc",
+	})
+	require.NoError(t, err)
+	require.Len(t, sessionResult.Logs, 2)
+	assert.Equal(t, "ch-list-4", sessionResult.Logs[0].ID)
+	assert.Equal(t, "success", sessionResult.Logs[0].Status)
+	assert.Equal(t, "ch-list-3", sessionResult.Logs[1].ID)
+	assert.Equal(t, int64(6), sessionResult.Count)
+}
+
 func TestClickHouseDeleteLogs(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
