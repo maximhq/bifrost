@@ -13,7 +13,10 @@ MCPAuthType:
 
 OAuthConfigRequest:
   type: object
-  description: OAuth configuration for MCP client creation
+  description: |
+    OAuth configuration for an MCP client. Used both when creating a client
+    (initiates the OAuth flow) and when updating one (rotates the stored
+    OAuth config in place; see MCPClientUpdateRequest.oauth_config).
   properties:
     client_id:
       allOf:
@@ -47,6 +50,12 @@ OAuthConfigRequest:
       description: |
         OAuth scopes requested. Optional - can be discovered from server_url if not provided.
         Example: ["read", "write"]
+    resource:
+      type: string
+      description: |
+        Resource indicator (RFC 8707) sent on authorization and token requests.
+        Optional - identifies the protected MCP resource the token is intended
+        for, when the upstream provider supports resource indicators.
 
 OAuthFlowInitiation:
   type: object

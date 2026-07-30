@@ -78,6 +78,14 @@ ClientConfig:
     mcp_tool_execution_timeout:
       type: integer
       description: Timeout for MCP tool execution in seconds
+    mcp_tool_sync_interval:
+      type: integer
+      description: >
+        Global tool-list sync interval in minutes for MCP clients. Applies to
+        clients whose per-client tool_sync_interval is 0 or omitted; a
+        per-client positive value overrides it and a per-client negative value
+        disables syncing for that client. When 0 or unset, a 10-minute default
+        applies.
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode
