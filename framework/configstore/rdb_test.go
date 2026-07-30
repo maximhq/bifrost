@@ -3323,3 +3323,73 @@ func TestWebhookEndpointTuningRoundTripAndHash(t *testing.T) {
 	invalid.MaxRetries = -1
 	assert.Error(t, invalid.Validate())
 }
+
+// TestRDBConfigStore_SyncRoutingRules covers the batch path used by config-file reloads.
+// It defers the unique-priority-per-scope check to the final state, so a valid permutation
+// (e.g. swapping two priorities) succeeds despite a transient intermediate collision, while a
+// genuine end-state duplicate still errors and a missing update target returns ErrNotFound.
+func TestRDBConfigStore_SyncRoutingRules(t *testing.T) {
+	ctx := context.Background()
+
+	rule := func(id string, priority int) tables.TableRoutingRule {
+		return *routingRuleFixture(id, priority, "openai")
+	}
+
+	tests := []struct {
+		name       string
+		toAdd      []tables.TableRoutingRule
+		toUpdate   []tables.TableRoutingRule
+		wantErrIs  error
+		wantErrSub string
+		wantFinal  map[string]int // expected priority per rule ID after the call
+	}{
+		{
+			name:      "valid priority swap succeeds",
+			toUpdate:  []tables.TableRoutingRule{rule("rule-a", 1), rule("rule-b", 0)},
+			wantFinal: map[string]int{"rule-a": 1, "rule-b": 0},
+		},
+		{
+			name:      "batch add plus swap succeeds",
+			toAdd:     []tables.TableRoutingRule{rule("rule-c", 2)},
+			toUpdate:  []tables.TableRoutingRule{rule("rule-a", 1), rule("rule-b", 0)},
+			wantFinal: map[string]int{"rule-a": 1, "rule-b": 0, "rule-c": 2},
+		},
+		{
+			name:       "final-state duplicate priority fails and rolls back",
+			toUpdate:   []tables.TableRoutingRule{rule("rule-a", 1), rule("rule-b", 1)},
+			wantErrSub: "already exists",
+			wantFinal:  map[string]int{"rule-a": 0, "rule-b": 1}, // unchanged (rolled back)
+		},
+		{
+			name:      "missing update ID returns ErrNotFound",
+			toUpdate:  []tables.TableRoutingRule{rule("rule-missing", 5)},
+			wantErrIs: ErrNotFound,
+			wantFinal: map[string]int{"rule-a": 0, "rule-b": 1}, // unchanged
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := setupRDBTestStore(t)
+			require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-a", 0, "openai")))
+			require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("rule-b", 1, "openai")))
+
+			err := store.SyncRoutingRules(ctx, tc.toAdd, tc.toUpdate)
+			switch {
+			case tc.wantErrIs != nil:
+				require.ErrorIs(t, err, tc.wantErrIs)
+			case tc.wantErrSub != "":
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErrSub)
+			default:
+				require.NoError(t, err)
+			}
+
+			for id, want := range tc.wantFinal {
+				got, getErr := store.GetRoutingRule(ctx, id)
+				require.NoError(t, getErr)
+				require.Equalf(t, want, got.Priority, "priority for %s", id)
+			}
+		})
+	}
+}

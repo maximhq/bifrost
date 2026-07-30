@@ -3383,18 +3383,12 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
-		// Create routing rules (new from config.json)
-		for _, rule := range routingRulesToAdd {
-			if err := config.ConfigStore.CreateRoutingRule(ctx, &rule, tx); err != nil {
-				return fmt.Errorf("failed to create routing rule %s: %w", rule.ID, err)
-			}
-		}
-
-		// Update routing rules (config.json changed)
-		for _, rule := range routingRulesToUpdate {
-			if err := config.ConfigStore.UpdateRoutingRule(ctx, &rule, tx); err != nil {
-				return fmt.Errorf("failed to update routing rule %s: %w", rule.ID, err)
-			}
+		// Apply routing rules as a batch so the unique-priority-per-scope check runs against
+		// the final state, not intermediate steps. A valid permutation (e.g. swapping two
+		// rules' priorities) transiently duplicates a priority mid-sync but is not a real
+		// conflict; a genuine end-state duplicate still errors.
+		if err := config.ConfigStore.SyncRoutingRules(ctx, routingRulesToAdd, routingRulesToUpdate, tx); err != nil {
+			return fmt.Errorf("failed to sync routing rules: %w", err)
 		}
 
 		// Create pricing overrides (new from config.json)
