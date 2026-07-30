@@ -103,6 +103,12 @@ type GovernancePlugin struct {
 	// then and during teardown. Atomic because classification reads it on the
 	// request hot path while plugin reloads may re-wire it.
 	embeddingRequestExecutor atomic.Pointer[EmbeddingRequestExecutor]
+
+	// warmupEmbedUsageObserver is wired by the HTTP server (to the telemetry
+	// plugin's routing overhead counters) via SetWarmupEmbedUsageObserver; nil
+	// until then. Atomic because warmup fires it from a background worker while
+	// plugin reloads may re-wire it.
+	warmupEmbedUsageObserver atomic.Pointer[WarmupEmbedUsageObserver]
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -1422,6 +1428,10 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
+	// Stamp routing-classification telemetry before postHookWorker runs so its
+	// CalculateCost call (and every later post-hook, e.g. telemetry) sees it.
+	stampRoutingDebug(ctx, result, requestType, isFinalChunk)
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
