@@ -14,7 +14,9 @@ import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
 import { CreateMCPClientRequest, SecretVar, MCPAuthType, MCPConnectionType, MCPStdioConfig, MCPTLSConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { Info } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -68,12 +70,20 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const { toast } = useToast();
 	const [createMCPClient] = useCreateMCPClientMutation();
 
+	// Token exchange is backed by the deployment's identity-provider
+	// integration, so the option only renders when one is enabled. The exact
+	// exchange-client requirement is enforced server-side at create; a missing
+	// tokenExchangeClient section surfaces as the create error.
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE });
+	const idpConfigured = !!scimProviders?.some((p) => (p as { enabled?: boolean }).enabled);
+
 	const [isLoading, setIsLoading] = useState(false);
 	const [argsText, setArgsText] = useState("");
 	// STDIO env vars as a name→value map. Empty value = pass the bare name so the
 	// stdio process reads it from Bifrost's host environment.
 	const [envVars, setEnvVars] = useState<Record<string, string>>({});
 	const [scopesText, setScopesText] = useState("");
+	const [tokenExchangeScopesText, setTokenExchangeScopesText] = useState("");
 	const [resourceText, setResourceText] = useState("");
 	const [oauthFlow, setOauthFlow] = useState<{
 		authorizeUrl: string;
@@ -93,11 +103,13 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const [headersFlow, setHeadersFlow] = useState<{ payload: CreateMCPClientRequest } | null>(null);
 
 	// UI splits the canonical `auth_type` into two dropdowns:
-	//   - authKind: none | headers | oauth
-	//   - authScope: shared | per_user (hidden when authKind = none)
+	//   - authKind: none | headers | oauth | token_exchange
+	//   - authScope: shared | per_user (hidden when authKind is none or
+	//     token_exchange — exchange is inherently per-caller, with no shared
+	//     variant to scope)
 	// They recombine into the wire `auth_type` ("oauth", "per_user_oauth",
-	// "headers", "per_user_headers", "none") so the backend contract is
-	// unchanged.
+	// "headers", "per_user_headers", "token_exchange", "none") so the backend
+	// contract is unchanged.
 	const [authScope, setAuthScope] = useState<"shared" | "per_user">("shared");
 
 	const methods = useForm<CreateMCPClientRequest>({ defaultValues: emptyForm });
@@ -107,16 +119,18 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const authType = watch("auth_type");
 	const headers = watch("headers");
 
-	const authKind: "none" | "headers" | "oauth" =
+	const authKind: "none" | "headers" | "oauth" | "token_exchange" =
 		authType === "oauth" || authType === "per_user_oauth"
 			? "oauth"
 			: authType === "headers" || authType === "per_user_headers"
 				? "headers"
-				: "none";
+				: authType === "token_exchange"
+					? "token_exchange"
+					: "none";
 
-	const applyAuthKind = (kind: "none" | "headers" | "oauth") => {
-		if (kind === "none") {
-			setValue("auth_type", "none");
+	const applyAuthKind = (kind: "none" | "headers" | "oauth" | "token_exchange") => {
+		if (kind === "none" || kind === "token_exchange") {
+			setValue("auth_type", kind);
 			return;
 		}
 		if (kind === "oauth") {
@@ -159,6 +173,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			setArgsText("");
 			setEnvVars({});
 			setScopesText("");
+			setTokenExchangeScopesText("");
 			setResourceText("");
 			setOauthFlow(null);
 			setHeadersFlow(null);
@@ -217,6 +232,19 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					description: "OAuth resource must be an absolute URI without a fragment.",
 					variant: "destructive",
 				});
+				hasErrors = true;
+			}
+		}
+
+		if (authType === "token_exchange") {
+			const audience = data.token_exchange?.audience?.trim() || "";
+			if (!audience) {
+				setError("token_exchange.audience", { message: "Audience is required for token exchange" });
+				hasErrors = true;
+			}
+			const exchangeClientId = data.token_exchange?.client_id;
+			if (!exchangeClientId?.value && !exchangeClientId?.ref) {
+				setError("token_exchange.client_id", { message: "Exchange client ID is required for token exchange" });
 				hasErrors = true;
 			}
 		}
@@ -280,6 +308,21 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					? data.headers
 					: undefined,
 			per_user_header_keys: authType === "per_user_headers" ? perUserHeaderKeys : undefined,
+			token_exchange:
+				authType === "token_exchange"
+					? {
+						audience: data.token_exchange?.audience?.trim() || "",
+						client_id: data.token_exchange?.client_id ?? emptySecretVar,
+						client_secret:
+							data.token_exchange?.client_secret?.value ||
+								data.token_exchange?.client_secret?.type === "env" ||
+								data.token_exchange?.client_secret?.type === "vault"
+								? data.token_exchange.client_secret
+								: undefined,
+						scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
+						authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+					}
+					: undefined,
 			tools_to_execute: ["*"],
 		};
 
@@ -505,12 +548,18 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 												<SelectItem value="oauth" data-testid="auth-type-oauth">
 													OAuth 2.0
 												</SelectItem>
+												{IS_ENTERPRISE && idpConfigured && (
+													<SelectItem value="token_exchange" data-testid="auth-type-token-exchange">
+														Token Exchange (On-Behalf-Of)
+													</SelectItem>
+												)}
 											</SelectContent>
 										</Select>
 									</FormItem>
 
-									{/* Auth Scope — only meaningful when there's an auth flow */}
-									{authKind !== "none" && (
+									{/* Auth Scope — only meaningful when there's an auth flow with a
+									    shared variant; token exchange is inherently per-caller */}
+									{authKind !== "none" && authKind !== "token_exchange" && (
 										<FormItem className="w-full">
 											<FormLabel>Auth Scope</FormLabel>
 											<Select value={authScope} onValueChange={(value: "shared" | "per_user") => applyAuthScope(value)}>
@@ -604,6 +653,155 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											    dialog that opens on Create — mirrors the OAuth flow
 											    where the verification step is also a dialog, not an
 											    inline panel. */}
+										</div>
+									)}
+
+									{authType === "token_exchange" && (
+										<div className="space-y-4" data-testid="token-exchange-fields">
+											<p className="text-muted-foreground text-sm">
+												Each caller's identity token is exchanged automatically for a short-lived token scoped to this server - users never
+												authenticate to it individually, and this server connects per tool call instead of holding a shared connection.
+												Callers must authenticate with their identity provider token; virtual keys alone cannot use this server. Creating
+												the server verifies it as you, using your own signed-in identity.
+											</p>
+											<FormField
+												control={control}
+												name="token_exchange.audience"
+												render={({ field }) => (
+													<FormItem>
+														<div className="flex items-center gap-2">
+															<FormLabel>Audience</FormLabel>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-xs">
+																		<p>
+																			The resource identifier this server is registered as at your identity provider. Exchanged tokens are
+																			scoped to it.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+														<FormControl>
+															<Input
+																data-testid="token-exchange-audience-input"
+																placeholder="api://my-mcp-server"
+																value={field.value || ""}
+																onChange={(e) => {
+																	field.onChange(e.target.value);
+																	clearErrors("token_exchange.audience");
+																}}
+															/>
+														</FormControl>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+											<FormField
+												control={control}
+												name="token_exchange.client_id"
+												render={({ field }) => (
+													<FormItem>
+														<div className="flex items-center gap-2">
+															<FormLabel>Exchange Client ID</FormLabel>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-xs">
+																		<p>
+																			A dedicated application at your identity provider with the token exchange (or on-behalf-of) grant
+																			enabled and permission to request this audience. Not the SSO login application.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+														<SecretVarInput
+															value={field.value}
+															onChange={(value) => {
+																field.onChange(value);
+																clearErrors("token_exchange.client_id");
+															}}
+															placeholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
+															data-testid="token-exchange-client-id-input"
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+											<FormField
+												control={control}
+												name="token_exchange.client_secret"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel>Exchange Client Secret (optional)</FormLabel>
+														<SecretVarInput
+															value={field.value}
+															onChange={field.onChange}
+															placeholder="env.EXCHANGE_CLIENT_SECRET"
+															maskNonEnvValue
+															data-testid="token-exchange-client-secret-input"
+														/>
+														<p className="text-muted-foreground text-xs">Omit for public clients.</p>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+											<FormField
+												control={control}
+												name="token_exchange.authorization_server_url"
+												render={({ field }) => (
+													<FormItem>
+														<div className="flex items-center gap-2">
+															<FormLabel>Authorization Server URL (optional)</FormLabel>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-xs">
+																		<p>
+																			Only needed when the audience above is registered on a different authorization server than the one
+																			your SSO login uses - for example, Okta&apos;s per-resource Custom Authorization Servers. Leave blank
+																			to use your SSO login&apos;s issuer, which is correct for most providers.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+														<FormControl>
+															<Input
+																data-testid="token-exchange-authorization-server-url-input"
+																placeholder="https://your-domain.okta.com/oauth2/your-auth-server-id"
+																value={field.value || ""}
+																onChange={(e) => field.onChange(e.target.value)}
+															/>
+														</FormControl>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+											<div className="space-y-1">
+												<div className="space-y-0.5">
+													<div className="text-sm font-medium">Scopes (optional)</div>
+													<p className="text-muted-foreground text-sm">
+														Comma-separated scopes to request on exchanged tokens. Include <code>offline_access</code> (where your identity
+														provider supports it) so the retained discovery credential can renew itself in the background.
+													</p>
+												</div>
+												<Textarea
+													data-testid="token-exchange-scopes-textarea"
+													className="h-20"
+													placeholder="jira.read, jira.write, offline_access"
+													value={tokenExchangeScopesText}
+													onChange={(e) => setTokenExchangeScopesText(e.target.value)}
+												/>
+											</div>
 										</div>
 									)}
 

@@ -103,7 +103,10 @@ export default function MCPClientSheet({
 	hasNext = false,
 }: MCPClientSheetProps) {
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
-	const isPerUserAuth = mcpClient.config.auth_type === "per_user_oauth" || mcpClient.config.auth_type === "per_user_headers";
+	const isPerUserAuth =
+		mcpClient.config.auth_type === "per_user_oauth" ||
+		mcpClient.config.auth_type === "per_user_headers" ||
+		mcpClient.config.auth_type === "token_exchange";
 	const [updateMCPClient, { isLoading: isUpdating }] = useUpdateMCPClientMutation();
 
 	const { toast } = useToast();
@@ -128,6 +131,7 @@ export default function MCPClientSheet({
 	const [allowedExtraHeadersRaw, setAllowedExtraHeadersRaw] = useState<string>((mcpClient.config.allowed_extra_headers || []).join(", "));
 	const [perUserHeaderKeysRaw, setPerUserHeaderKeysRaw] = useState<string>((mcpClient.config.per_user_header_keys || []).join(", "));
 	const [oauthScopesRaw, setOauthScopesRaw] = useState<string>((mcpClient.config.oauth_scopes || []).join(", "));
+	const [tokenExchangeScopesRaw, setTokenExchangeScopesRaw] = useState<string>((mcpClient.config.token_exchange?.scopes || []).join(", "));
 	// Persists names for newly added VKs so they survive search result changes
 	const [localVKNames, setLocalVKNames] = useState<Record<string, string>>({});
 
@@ -151,6 +155,10 @@ export default function MCPClientSheet({
 		setOauthScopesRaw((mcpClient.config.oauth_scopes || []).join(", "));
 	}, [mcpClient.config.oauth_scopes]);
 
+	useEffect(() => {
+		setTokenExchangeScopesRaw((mcpClient.config.token_exchange?.scopes || []).join(", "));
+	}, [mcpClient.config.token_exchange?.scopes]);
+
 	// Name lookup: server response names → names captured when a key was picked.
 	// Every row is one or the other, so the selector's results aren't needed here.
 	const vkNameByID = useMemo<Record<string, string>>(() => {
@@ -170,6 +178,7 @@ export default function MCPClientSheet({
 		[allToolNames],
 	);
 	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
+	const supportsTokenExchangeCredentialUpdate = mcpClient.config.auth_type === "token_exchange";
 
 	const addVKConfig = ({ value: vkId, label }: { value: string; label: string }) => {
 		setLocalVKNames((prev) => ({ ...prev, [vkId]: label }));
@@ -226,6 +235,18 @@ export default function MCPClientSheet({
 					resource: mcpClient.config.oauth_resource,
 				}
 				: undefined,
+			// Unlike oauth_config, token_exchange is replaced wholesale server-side
+			// (only client_id/client_secret get redacted-value preservation) — so
+			// every field, not just the ones the user edits, must be pre-populated
+			// with its current stored value rather than left blank.
+			token_exchange: supportsTokenExchangeCredentialUpdate
+				? {
+					audience: mcpClient.config.token_exchange?.audience,
+					client_id: mcpClient.config.token_exchange?.client_id,
+					client_secret: mcpClient.config.token_exchange?.client_secret,
+					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+				}
+				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
 					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
@@ -262,6 +283,18 @@ export default function MCPClientSheet({
 					resource: mcpClient.config.oauth_resource,
 				}
 				: undefined,
+			// Unlike oauth_config, token_exchange is replaced wholesale server-side
+			// (only client_id/client_secret get redacted-value preservation) — so
+			// every field, not just the ones the user edits, must be pre-populated
+			// with its current stored value rather than left blank.
+			token_exchange: supportsTokenExchangeCredentialUpdate
+				? {
+					audience: mcpClient.config.token_exchange?.audience,
+					client_id: mcpClient.config.token_exchange?.client_id,
+					client_secret: mcpClient.config.token_exchange?.client_secret,
+					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+				}
+				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
 					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
@@ -269,11 +302,13 @@ export default function MCPClientSheet({
 				}
 				: undefined,
 		});
-	}, [form, mcpClient, supportsOAuthCredentialUpdate]);
+	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate]);
 
 	const initialOauthScopesRaw = (mcpClient.config.oauth_scopes || []).join(", ");
 	const oauthScopesDirty = oauthScopesRaw !== initialOauthScopesRaw;
-	const isDirty = form.formState.isDirty || vkConfigsDirty || oauthScopesDirty;
+	const initialTokenExchangeScopesRaw = (mcpClient.config.token_exchange?.scopes || []).join(", ");
+	const tokenExchangeScopesDirty = tokenExchangeScopesRaw !== initialTokenExchangeScopesRaw;
+	const isDirty = form.formState.isDirty || vkConfigsDirty || oauthScopesDirty || tokenExchangeScopesDirty;
 	// dirtyFields tracks deep changes vs. the pre-populated default values —
 	// used both to gate the rotation warning below and, in onSubmit, to only
 	// rotate when the user actually changed a field. Every oauth_config field
@@ -287,6 +322,17 @@ export default function MCPClientSheet({
 		form.formState.dirtyFields.oauth_config?.registration_url ||
 		form.formState.dirtyFields.oauth_config?.resource ||
 		oauthScopesDirty
+	);
+	// Same rationale as oauthCredentialsDirty: any touched token_exchange
+	// field gates both the cache-eviction warning below and, in onSubmit,
+	// whether the block is sent at all (see the comment there on why it must
+	// be sent whole, not just the changed field).
+	const tokenExchangeCredentialsDirty = !!(
+		form.formState.dirtyFields.token_exchange?.audience ||
+		form.formState.dirtyFields.token_exchange?.client_id ||
+		form.formState.dirtyFields.token_exchange?.client_secret ||
+		form.formState.dirtyFields.token_exchange?.authorization_server_url ||
+		tokenExchangeScopesDirty
 	);
 
 	const handleNavigate = useCallback(
@@ -338,6 +384,18 @@ export default function MCPClientSheet({
 			// form state either way, so re-enabling before a later save still
 			// submits the edited values.
 			const shouldRotateOAuthCredentials = supportsOAuthCredentialUpdate && !data.disabled && oauthCredentialsDirty;
+			// Unlike oauth_config, the backend replaces token_exchange wholesale
+			// (it only preserves client_id/client_secret when they round-trip the
+			// redacted sentinel) — so whenever anything in this block changed, the
+			// full current state (including untouched fields) must be resent, not
+			// just the edited field, or untouched fields would be cleared.
+			const shouldUpdateTokenExchange = supportsTokenExchangeCredentialUpdate && tokenExchangeCredentialsDirty;
+			const tokenExchangeScopes = tokenExchangeScopesRaw.trim()
+				? tokenExchangeScopesRaw
+					.split(",")
+					.map((s) => s.trim())
+					.filter(Boolean)
+				: [];
 			await updateMCPClient({
 				id: mcpClient.config.client_id,
 				data: {
@@ -363,6 +421,15 @@ export default function MCPClientSheet({
 							registration_url: data.oauth_config?.registration_url || undefined,
 							scopes: oauthScopes,
 							resource: data.oauth_config?.resource || undefined,
+						}
+						: undefined,
+					token_exchange: shouldUpdateTokenExchange
+						? {
+							audience: data.token_exchange?.audience?.trim() || "",
+							client_id: data.token_exchange?.client_id ?? { value: "", ref: "" },
+							client_secret: data.token_exchange?.client_secret,
+							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+							scopes: tokenExchangeScopes,
 						}
 						: undefined,
 					tls_config:
@@ -507,9 +574,11 @@ export default function MCPClientSheet({
 								</SheetTitle>
 								<SheetDescription>
 									{mcpClient.state === "pending_verification"
-										? mcpClient.config.auth_type === "per_user_oauth"
-											? "This client was declared in config.json. An admin sign-in is needed to verify the OAuth setup and discover tools; Bifrost keeps it on file to refresh the tool list periodically. Each user will still authenticate individually when they use this server."
-											: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
+										? mcpClient.config.auth_type === "token_exchange"
+											? "This server needs a one-time verification: Bifrost exchanges your signed-in identity token, tests the connection, and discovers tools. Callers then have their own identity tokens exchanged automatically on every tool call."
+											: mcpClient.config.auth_type === "per_user_oauth"
+												? "This client was declared in config.json. An admin sign-in is needed to verify the OAuth setup and discover tools; Bifrost keeps it on file to refresh the tool list periodically. Each user will still authenticate individually when they use this server."
+												: "This client was declared in config.json and needs a one-time OAuth authorization before it can be used."
 										: mcpClient.state === "needs_reauth"
 											? isPerUserAuth
 												? "The admin credential Bifrost keeps on file to refresh this server's tool list needs repair. End-user credentials and tool calls are unaffected. Use Refresh admin credential from the server's actions menu to fix it."
@@ -1174,6 +1243,128 @@ export default function MCPClientSheet({
 															</FormItem>
 														)}
 													/>
+												</div>
+											</AccordionContent>
+										</AccordionItem>
+									</Accordion>
+								) : null}
+								{supportsTokenExchangeCredentialUpdate ? (
+									<Accordion type="single" collapsible className="w-full">
+										<AccordionItem value="token-exchange-advanced" className="border-b-0">
+											<AccordionTrigger className="py-0" data-testid="token-exchange-advanced-trigger">
+												<span className="text-sm font-medium">Token Exchange Advanced Settings</span>
+											</AccordionTrigger>
+											<AccordionContent className="space-y-4 pt-4 pb-0">
+												<p className="text-muted-foreground text-sm">
+													Connection type and auth type cannot be changed. Every field here is resent on save, so update the ones you mean
+													to change and leave the rest as shown.
+												</p>
+												{tokenExchangeCredentialsDirty && (
+													<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+														<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+														<p>
+															Changing any token exchange field immediately evicts every cached exchanged token for this server. The next
+															tool call for each caller re-exchanges a fresh token.
+														</p>
+													</div>
+												)}
+												<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+													<FormField
+														control={form.control}
+														name="token_exchange.audience"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Audience</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		disabled={!hasUpdateMCPClientAccess}
+																		placeholder="api://my-mcp-server"
+																		data-testid="mcpclient-input-token-exchange-audience"
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="token_exchange.client_id"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Exchange Client ID</FormLabel>
+																<FormControl>
+																	<SecretVarInput
+																		data-testid="mcpclient-input-token-exchange-client-id"
+																		placeholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
+																		disabled={!hasUpdateMCPClientAccess}
+																		redactNonEnvValue
+																		value={field.value}
+																		onChange={field.onChange}
+																	/>
+																</FormControl>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="token_exchange.client_secret"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Exchange Client Secret</FormLabel>
+																<FormControl>
+																	<SecretVarInput
+																		data-testid="mcpclient-input-token-exchange-client-secret"
+																		placeholder="env.EXCHANGE_CLIENT_SECRET"
+																		disabled={!hasUpdateMCPClientAccess}
+																		hideValueWhenEnv
+																		redactNonEnvValue
+																		value={field.value}
+																		onChange={field.onChange}
+																	/>
+																</FormControl>
+																<p className="text-muted-foreground text-xs">Omit for public clients.</p>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormField
+														control={form.control}
+														name="token_exchange.authorization_server_url"
+														render={({ field }) => (
+															<FormItem className="flex flex-col gap-2">
+																<FormLabel>Authorization Server URL</FormLabel>
+																<FormControl>
+																	<Input
+																		{...field}
+																		value={field.value ?? ""}
+																		disabled={!hasUpdateMCPClientAccess}
+																		placeholder="https://your-domain.okta.com/oauth2/your-auth-server-id"
+																		data-testid="mcpclient-input-token-exchange-authorization-server-url"
+																	/>
+																</FormControl>
+																<p className="text-muted-foreground text-xs">
+																	Leave blank to use the deployment's SSO login issuer.
+																</p>
+																<FormMessage />
+															</FormItem>
+														)}
+													/>
+													<FormItem className="flex flex-col gap-2">
+														<FormLabel>Scopes</FormLabel>
+														<FormControl>
+															<Input
+																value={tokenExchangeScopesRaw}
+																disabled={!hasUpdateMCPClientAccess}
+																onChange={(e) => setTokenExchangeScopesRaw(e.target.value)}
+																placeholder="jira.read, jira.write, offline_access"
+																data-testid="mcpclient-input-token-exchange-scopes"
+															/>
+														</FormControl>
+														<p className="text-muted-foreground text-xs">Comma-separated.</p>
+													</FormItem>
 												</div>
 											</AccordionContent>
 										</AccordionItem>
