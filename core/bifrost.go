@@ -5046,6 +5046,10 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	defer func() {
 		ctx.StampUpstreamLatency()
 		resp.PopulateUpstreamLatency(ctx)
+		if resp != nil && bifrostErr == nil {
+			cost := ctx.CalculateCost(resp)
+			resp.GetExtraFields().Cost = &cost
+		}
 	}()
 
 	// Try the primary provider first

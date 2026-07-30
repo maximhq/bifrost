@@ -1,5 +1,6 @@
 - fix: carry tool-result `is_error` through the chat completions surface so Anthropic replay and Bedrock Converse status reflect failed tool calls [@AidanAllchin](https://github.com/AidanAllchin)
 - fix: preserve encrypted reasoning as a Bedrock replay signature when translating Responses history [@zachgersh](https://github.com/zachgersh)
+[feat]: expose calculated cost on completed responses [@oritmosko](https://github.com/oritmosko)
 - feat: add proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)
 - feat: add `WithFasthttpBufferSizes` option to `HTTPClientFactory` for configurable SCIM read/write buffers, fixing failures when IdP token endpoints return headers larger than the 4KB default (#5808)
 - fix: move SSE heartbeat handling into a common structure so client-disconnect detection is proactive instead of only firing on the next write attempt (#5850)

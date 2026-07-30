@@ -1,3 +1,4 @@
+[feat]: return calculated cost in x-bifrost-cost-usd [@oritmosko](https://github.com/oritmosko)
 ## ✨ Features
 
 - **WebSocket Proxy Support** — Realtime and Responses WebSocket connections now route through the configured provider-level proxy (HTTP, SOCKS5, env-based) instead of always dialing direct
