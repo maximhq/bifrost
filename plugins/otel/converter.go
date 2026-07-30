@@ -225,6 +225,11 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 		if disableContentLogging && schemas.IsContentAttribute(k) {
 			continue
 		}
+		// Overhead is not exported to connectors; it is still computed and stored in
+		// the logs DB. Skip it here so it does not ride the exported span.
+		if k == schemas.AttrBifrostOverheadDurationMs {
+			continue
+		}
 		kv := anyToKeyValue(k, v)
 		if kv != nil {
 			kvs = append(kvs, kv)

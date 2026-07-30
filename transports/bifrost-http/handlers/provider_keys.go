@@ -314,6 +314,88 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, redactedKey)
 }
 
+// refreshProviderModels handles POST /api/providers/{provider}/refresh-models.
+// Re-runs list-models across every enabled key of the provider and returns the
+// provider's keys with their freshly resolved discovery status.
+func (h *ProviderHandler) refreshProviderModels(ctx *fasthttp.RequestCtx) {
+	provider, err := getProviderFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
+		return
+	}
+
+	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
+		if errors.Is(err, lib.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
+		return
+	}
+
+	if err := h.modelsManager.RefreshLiveModelsForAllKeys(ctx, provider); err != nil {
+		if errors.Is(err, ErrRefreshInProgress) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to refresh models: %v", err))
+		return
+	}
+
+	// Read back after the refresh so the caller sees the statuses this pass
+	// produced rather than the ones it started from.
+	keys, err := h.inMemoryStore.GetProviderKeysRedacted(provider)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider keys: %v", err))
+		return
+	}
+
+	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
+}
+
+// refreshProviderKeyModels handles
+// POST /api/providers/{provider}/keys/{key_id}/refresh-models. Re-runs
+// list-models for one key and returns it with its freshly resolved status.
+func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
+	provider, err := getProviderFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider: %v", err))
+		return
+	}
+
+	keyID, err := getKeyIDFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if _, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID); err != nil {
+		if errors.Is(err, lib.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider key not found: %v", err))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider key: %v", err))
+		return
+	}
+
+	if err := h.modelsManager.RefreshLiveModelsForKey(ctx, provider, keyID); err != nil {
+		if errors.Is(err, ErrRefreshInProgress) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to refresh models: %v", err))
+		return
+	}
+
+	refreshedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider key: %v", err))
+		return
+	}
+
+	SendJSON(ctx, refreshedKey)
+}
+
 // mergeUpdatedKey merges an updated key with the old raw version, preserving
 // stored values for masked placeholders. A placeholder without a stored
 // counterpart is rejected so it can never reach persistence.
@@ -383,7 +465,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 	}
 
 	if mergedKey.BedrockKeyConfig != nil {
-		var accessKey, secretKey, sessionToken, region, arn, roleARN, externalID, sessionName *schemas.SecretVar
+		var accessKey, secretKey, sessionToken, region, arn, roleARN, externalID, sessionName, batchRoleARN *schemas.SecretVar
 		if oldRawKey.BedrockKeyConfig != nil {
 			accessKey = &oldRawKey.BedrockKeyConfig.AccessKey
 			secretKey = &oldRawKey.BedrockKeyConfig.SecretKey
@@ -393,6 +475,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			roleARN = oldRawKey.BedrockKeyConfig.RoleARN
 			externalID = oldRawKey.BedrockKeyConfig.ExternalID
 			sessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
+			batchRoleARN = oldRawKey.BedrockKeyConfig.BatchRoleARN
 		}
 		for _, item := range []struct {
 			incoming *schemas.SecretVar
@@ -407,6 +490,7 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			{mergedKey.BedrockKeyConfig.RoleARN, roleARN, "bedrock_key_config.role_arn"},
 			{mergedKey.BedrockKeyConfig.ExternalID, externalID, "bedrock_key_config.external_id"},
 			{mergedKey.BedrockKeyConfig.RoleSessionName, sessionName, "bedrock_key_config.session_name"},
+			{mergedKey.BedrockKeyConfig.BatchRoleARN, batchRoleARN, "bedrock_key_config.batch_role_arn"},
 		} {
 			if err := preserve(item.incoming, item.stored, item.field); err != nil {
 				return schemas.Key{}, err

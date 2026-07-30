@@ -15,11 +15,17 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage } from "@/lib/store";
-import { useDeleteProviderKeyMutation, useGetProviderKeysQuery, useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
+import {
+	useDeleteProviderKeyMutation,
+	useGetProviderKeysQuery,
+	useRefreshProviderKeyModelsMutation,
+	useRefreshProviderModelsMutation,
+	useUpdateProviderKeyMutation,
+} from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
+import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, RefreshCwIcon, TrashIcon } from "lucide-react";
 import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
@@ -93,14 +99,49 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const [updateProviderKey, { isLoading: isUpdatingProviderKey }] = useUpdateProviderKeyMutation();
 	const [deleteProviderKey, { isLoading: isDeletingProviderKey }] = useDeleteProviderKeyMutation();
+	const [refreshProviderModels, { isLoading: isRefreshingProvider }] = useRefreshProviderModelsMutation();
+	const [refreshProviderKeyModels] = useRefreshProviderKeyModelsMutation();
 	const { data: keys = [] } = useGetProviderKeysQuery(provider.name);
 	const isMutatingProviderKey = isUpdatingProviderKey || isDeletingProviderKey;
 	const [togglingKeyIds, setTogglingKeyIds] = useState<Set<string>>(new Set());
+	const [refreshingKeyIds, setRefreshingKeyIds] = useState<Set<string>>(new Set());
 	const [showAddNewKeyDialog, setShowAddNewKeyDialog] = useState<{ show: boolean; keyId: string | null } | undefined>(undefined);
 	const [showDeleteKeyDialog, setShowDeleteKeyDialog] = useState<{ show: boolean; keyId: string } | undefined>(undefined);
 
 	function handleAddKey() {
 		setShowAddNewKeyDialog({ show: true, keyId: null });
+	}
+
+	// The server serialises refreshes per provider and answers 409 while one is
+	// running, so the whole group is disabled during either kind of refresh
+	// rather than letting a second click bounce off the backend.
+	const isRefreshing = isRefreshingProvider || refreshingKeyIds.size > 0;
+
+	async function handleRefreshProviderModels() {
+		try {
+			await refreshProviderModels(provider.name).unwrap();
+			toast.success("Model list refreshed", {
+				description: `Re-checked every enabled ${entityLabel} for ${provider.name}.`,
+			});
+		} catch (err) {
+			toast.error("Failed to refresh model list", { description: getErrorMessage(err) });
+		}
+	}
+
+	async function handleRefreshKeyModels(keyId: string, keyName: string) {
+		setRefreshingKeyIds((prev) => new Set(prev).add(keyId));
+		try {
+			await refreshProviderKeyModels({ provider: provider.name, keyId }).unwrap();
+			toast.success("Model list refreshed", { description: `Re-checked ${keyName}.` });
+		} catch (err) {
+			toast.error("Failed to refresh model list", { description: getErrorMessage(err) });
+		} finally {
+			setRefreshingKeyIds((prev) => {
+				const next = new Set(prev);
+				next.delete(keyId);
+				return next;
+			});
+		}
 	}
 
 	return (
@@ -157,6 +198,24 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					<div className="flex items-center gap-2">Configured {entityLabelPlural}</div>
 					<div className="flex items-center gap-2">
 						{headerActions}
+						{hasUpdateProviderAccess ? (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										variant="outline"
+										disabled={isRefreshing}
+										data-testid="provider-refresh-models"
+										onClick={handleRefreshProviderModels}
+									>
+										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
+										{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent className="max-w-xs">
+									Re-check what models this provider serves. Otherwise this runs on the interval set in Model Settings.
+								</TooltipContent>
+							</Tooltip>
+						) : null}
 						{!isKeyless && hasUpdateProviderAccess ? (
 							<Button
 								disabled={!hasUpdateProviderAccess}
@@ -255,7 +314,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																	</button>
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs break-words">
-																	{key.description} — verify the secret reference is configured on the server
+																	{key.description}; verify the secret reference is configured on the server
 																</TooltipContent>
 															</Tooltip>
 														) : (
@@ -316,6 +375,36 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										</TableCell>
 										<TableCell className="text-right">
 											<div className="flex items-center justify-end space-x-2">
+												{hasUpdateProviderAccess ? (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															{/* A disabled button receives no hover or focus events, so the
+															    tooltip is triggered from a focusable wrapper instead. */}
+															<span tabIndex={!isKeyEnabled ? 0 : undefined}>
+																<Button
+																	variant="ghost"
+																	size="icon"
+																	// A disabled key is never fetched, so refreshing it
+																	// would report a failure the user cannot act on.
+																	disabled={isRefreshing || !isKeyEnabled}
+																	data-testid={`key-refresh-models-${key.name}`}
+																	aria-label={`Refresh model list for ${key.name}`}
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		handleRefreshKeyModels(key.id, key.name);
+																	}}
+																>
+																	<RefreshCwIcon className={cn("h-4 w-4", refreshingKeyIds.has(key.id) && "animate-spin")} />
+																</Button>
+															</span>
+														</TooltipTrigger>
+														<TooltipContent>
+															{isKeyEnabled
+																? `Refresh model list for this ${entityLabel}`
+																: `Enable this ${entityLabel} to refresh its model list`}
+														</TooltipContent>
+													</Tooltip>
+												) : null}
 												{hasUpdateProviderAccess || hasDeleteProviderAccess ? (
 													<ProviderKeyActionsMenu
 														keyId={key.id}

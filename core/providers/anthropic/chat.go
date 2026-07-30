@@ -11,6 +11,41 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// documentPlaceholderText is prepended to a message whose content holds
+// document blocks but no text block. Anthropic requires a text block alongside
+// documents ("A text block must be included when using documents") and
+// separately rejects text blocks that are empty or whitespace-only ("text
+// content blocks must contain non-whitespace text"), so the placeholder has to
+// be non-whitespace. Being non-whitespace also makes it survive the
+// trailing-whitespace trim applied to a final assistant prefill below.
+const documentPlaceholderText = "."
+
+// hasAnthropicDocumentBlock reports whether any of the content blocks is a
+// document block, i.e. whether the message needs an accompanying text block.
+func hasAnthropicDocumentBlock(blocks []AnthropicContentBlock) bool {
+	for _, b := range blocks {
+		if b.Type == AnthropicContentBlockTypeDocument {
+			return true
+		}
+	}
+	return false
+}
+
+// leadingAnthropicReasoningBlockCount returns the number of thinking and
+// redacted_thinking blocks at the head of the content slice. Anthropic requires
+// a thinking-enabled assistant turn to begin with its thinking blocks, so any
+// block injected into the message has to start at this index instead of 0.
+func leadingAnthropicReasoningBlockCount(blocks []AnthropicContentBlock) int {
+	count := 0
+	for _, b := range blocks {
+		if b.Type != AnthropicContentBlockTypeThinking && b.Type != AnthropicContentBlockTypeRedactedThinking {
+			break
+		}
+		count++
+	}
+	return count
+}
+
 // convertFunctionToolToAnthropic turns an OpenAI-style function tool
 // (schemas.ChatTool with non-nil Function) into an AnthropicTool.
 // Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
@@ -848,6 +883,39 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 
 					content = append(content, toolUse)
+				}
+			}
+
+			// Anthropic rejects a message whose content contains a document
+			// block with no accompanying text block ("A text block must be
+			// included when using documents"). Insert a placeholder so
+			// document-only messages still validate.
+			if hasAnthropicDocumentBlock(content) {
+				filtered := content[:0]
+				hasUsableText := false
+				for _, b := range content {
+					if b.Type == AnthropicContentBlockTypeText {
+						if b.Text == nil || strings.TrimSpace(*b.Text) == "" {
+							continue
+						}
+						hasUsableText = true
+					}
+					filtered = append(filtered, b)
+				}
+				content = filtered
+				if !hasUsableText {
+					// A thinking-enabled assistant turn must begin with its
+					// thinking/redacted_thinking blocks, so the placeholder goes
+					// after them rather than at index 0.
+					at := leadingAnthropicReasoningBlockCount(content)
+					withPlaceholder := make([]AnthropicContentBlock, 0, len(content)+1)
+					withPlaceholder = append(withPlaceholder, content[:at]...)
+					withPlaceholder = append(withPlaceholder, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: schemas.Ptr(documentPlaceholderText),
+					})
+					withPlaceholder = append(withPlaceholder, content[at:]...)
+					content = withPlaceholder
 				}
 			}
 

@@ -6,7 +6,6 @@ package logging
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -243,6 +242,32 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 }
 
+const (
+	// maxDeferredUsageWatchers caps goroutines parked waiting for trailing usage on
+	// large-payload requests. Generous, because each one is idle on a channel receive;
+	// it exists so a pathological burst cannot grow the goroutine set without limit.
+	maxDeferredUsageWatchers = 2048
+	// deferredUsageRetries / deferredUsageBackoff control how long we wait for the
+	// batch writer to land the row before giving up. Backoff doubles per attempt:
+	// 250ms, 500ms, 1s.
+	deferredUsageRetries   = 3
+	deferredUsageBackoff   = 250 * time.Millisecond
+	deferredUsageDBTimeout = 10 * time.Second
+)
+
+// sleepCtx sleeps for d, returning false if the plugin context is cancelled first.
+// Cleanup waits on p.wg, so an uncancellable sleep here delays shutdown.
+func (p *LoggerPlugin) sleepCtx(d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-p.ctx.Done():
+		return false
+	}
+}
+
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -252,11 +277,32 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 	if !ok || deferredChan == nil {
 		return
 	}
+	// Cap the watcher goroutines themselves. deferredUsageSem below only limits how
+	// many updates touch the DB concurrently; the goroutine is created before it is
+	// acquired and then parks on the channel receive, so without this the live
+	// goroutine count tracks in-flight large-payload requests rather than the limit.
+	select {
+	case p.deferredUsageWatchSem <- struct{}{}:
+	default:
+		if n := p.droppedDeferredUsage.Add(1); n == 1 || n%1000 == 0 {
+			p.logger.Warn("deferred usage update dropped for request %s: %d watchers already parked (%d dropped so far)", requestID, maxDeferredUsageWatchers, n)
+		}
+		return
+	}
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		defer func() { <-p.deferredUsageWatchSem }()
 		// Large-response phase B closes this channel after trailing usage extraction completes.
-		deferredUsage, chanOpen := <-deferredChan
+		var deferredUsage *schemas.BifrostLLMUsage
+		var chanOpen bool
+		select {
+		case deferredUsage, chanOpen = <-deferredChan:
+		case <-p.ctx.Done():
+			// Plugin is shutting down; stop waiting for trailing usage.
+			return
+		}
 		if !chanOpen || deferredUsage == nil {
 			return
 		}
@@ -267,6 +313,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		case p.deferredUsageSem <- struct{}{}:
 			defer func() { <-p.deferredUsageSem }()
 		default:
+			p.droppedDeferredUsage.Add(1)
 			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", requestID)
 			return
 		}
@@ -281,27 +328,44 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			usageUpdates["cached_read_tokens"] = tempEntry.CachedReadTokens
 		}
 
-		// Check if log entry present in the store
-		// exponential backoff with jitter and 3 retries
-		// then fail
+		// Wait for the batch writer to land the row, then patch usage onto it.
+		// This whole loop holds a deferredUsageSem slot, and dropping is immediate
+		// once the slots are full, so the phase is bounded twice over. The backoff is
+		// short: the previous 2s/4s/8s schedule meant a handful of slow lookups
+		// stalled every deferred update for 14s and dropped the rest. And a single
+		// deadline covers all attempts rather than one per attempt, because the ctx
+		// also covers waiting for a pool connection: a per-attempt budget let a slow
+		// store hold a slot for ~30s and drop everything arriving in that window.
+		retryCtx, cancelRetry := context.WithTimeout(p.ctx, deferredUsageDBTimeout)
+		defer cancelRetry()
 		var found bool
-		var findErr error
-		for i := 0; i < 3; i++ {
-			found, findErr = p.store.IsLogEntryPresent(p.ctx, requestID)
+		for attempt := range deferredUsageRetries {
+			presentResult, findErr := p.store.IsLogEntryPresent(retryCtx, requestID)
 			if findErr != nil {
 				p.logger.Warn("failed to check if log entry is present for request %s: %v", requestID, findErr)
-				continue
-			}
-			if found {
+			} else if presentResult {
+				found = true
 				break
 			}
-			time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second * 2)
+			// Budget spent: the remaining attempts would fail instantly, so don't
+			// sleep through backoffs that cannot help.
+			if retryCtx.Err() != nil {
+				break
+			}
+			// Sleep on the error path too, otherwise a DB error burns every retry
+			// in microseconds, exactly when the store needs time to recover.
+			if attempt < deferredUsageRetries-1 && !p.sleepCtx(deferredUsageBackoff<<attempt) {
+				return
+			}
 		}
 		if !found {
-			p.logger.Warn("log entry not found for request %s after 3 retries. failed to update deferred usage for large payload request", requestID)
+			p.logger.Warn("log entry not found for request %s after %d retries. failed to update deferred usage for large payload request", requestID, deferredUsageRetries)
 			return
 		}
-		if updErr := p.store.Update(p.ctx, requestID, usageUpdates); updErr != nil {
+
+		updCtx, cancel := context.WithTimeout(p.ctx, deferredUsageDBTimeout)
+		defer cancel()
+		if updErr := p.store.Update(updCtx, requestID, usageUpdates); updErr != nil {
 			p.logger.Warn("failed to update deferred usage for request %s: %v", requestID, updErr)
 		}
 	}()
@@ -312,7 +376,13 @@ type RecalculateCostResult struct {
 	TotalMatched int64 `json:"total_matched"`
 	Updated      int   `json:"updated"`
 	Skipped      int   `json:"skipped"`
-	Remaining    int64 `json:"remaining"`
+	// Unpriceable is the subset of Skipped left alone because their pricing inputs
+	// could not be recovered (for example, a failed object-storage fetch) rather than
+	// because there was nothing to charge. Surfaced separately so
+	// a caller can distinguish "no cost applies" from "we refused to write a number
+	// we knew would be wrong".
+	Unpriceable int   `json:"unpriceable,omitempty"`
+	Remaining   int64 `json:"remaining"`
 }
 
 // RecalculateCostProgress represents a progress event from a cost backfill operation.
@@ -440,6 +510,8 @@ type LoggerPlugin struct {
 	writeQueue                   chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                       atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem             chan struct{}         // Limits concurrent deferred usage DB updates
+	deferredUsageWatchSem        chan struct{}         // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
+	droppedDeferredUsage         atomic.Int64          // Deferred usage updates dropped because a semaphore was full
 	clusterNodeID                atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
 	batchCtx                     context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
 	batchCancel                  context.CancelFunc    // Cancels batchCtx
@@ -489,6 +561,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		writerConfig:                 writerConfig,
 		writeQueue:                   make(chan *writeQueueEntry, writerConfig.WriteQueueCapacity),
 		deferredUsageSem:             make(chan struct{}, writerConfig.DeferredUsageConcurrency),
+		deferredUsageWatchSem:        make(chan struct{}, maxDeferredUsageWatchers),
 		batchCtx:                     batchCtx,
 		batchCancel:                  batchCancel,
 		batchWriterDone:              make(chan struct{}),

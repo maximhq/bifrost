@@ -32,6 +32,40 @@ type LogStore interface {
 	FindAllDistinct(ctx context.Context, query any, fields ...string) ([]*Log, error)
 	HasLogs(ctx context.Context) (bool, error)
 	SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
+	// SearchLogsForBilling is SearchLogs projected for cost recomputation: exactly the
+	// columns pricing reads and nothing else, with each modality payload pulled only
+	// for the request types that bill on it.
+	//
+	// It does NOT hydrate offloaded payloads — that would put every row's payload in
+	// memory at once. Callers walk the result in BillingHydrationChunkSize slices,
+	// calling HydrateBillingChunk and then ReleaseBillingPayloads on each.
+	SearchLogsForBilling(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
+	// HydrateBillingChunk restores offloaded pricing inputs for a small slice of rows.
+	// It skips rows that already carry everything pricing needs, so a store with
+	// nothing offloaded performs no I/O at all.
+	//
+	// BillingHydrationResult.Unpriceable carries the IDs whose inputs could not be
+	// recovered — for example, a missing object or unavailable object storage. Callers
+	// must skip those rather than price them: the
+	// denormalized fallback usage omits the cache breakdown, and pricing it charges
+	// every cached token at the full input rate. Hydrated carries the IDs actually
+	// fetched, which are the only rows worth passing to BulkBackfillBillingPayloads.
+	//
+	// Pass at most BillingHydrationChunkSize rows and release them before requesting
+	// more; the whole point is to bound how many payloads are resident at once.
+	HydrateBillingChunk(ctx context.Context, logs []*Log) (BillingHydrationResult, error)
+	// BulkBackfillBillingPayloads writes pricing inputs recovered from object storage
+	// back into their rows, so a later recompute reads them from the database instead
+	// of fetching the object again.
+	//
+	// This makes recompute self-healing: the first pass over a window pays the object
+	// fetches, and every pass after it is served entirely from the DB. It is
+	// opportunistic by design — only rows that were actually fetched get backfilled, so
+	// there is no table-wide migration and no scan.
+	//
+	// Callers should treat a failure as non-fatal: the cost update is the job's real
+	// output, and a missed backfill only means the next run fetches again.
+	BulkBackfillBillingPayloads(ctx context.Context, updates map[string]BillingPayloadBackfill) error
 	GetSessionLogs(ctx context.Context, sessionID string, pagination PaginationOptions) (*SessionDetailResult, error)
 	GetSessionSummary(ctx context.Context, sessionID string) (*SessionSummaryResult, error)
 	GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error)

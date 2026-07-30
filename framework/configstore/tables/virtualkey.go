@@ -341,20 +341,10 @@ func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
 			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
 		}
 	}
-	for i := range vk.Budgets {
-		vk.Budgets[i].IsCalendarAligned = vk.CalendarAligned
-	}
-	if vk.RateLimit != nil {
-		vk.RateLimit.IsCalendarAligned = vk.CalendarAligned
-	}
+	StampCalendarAlignment(vk.CalendarAligned, vk.Budgets, vk.RateLimit)
 	for i := range vk.ProviderConfigs {
 		pc := &vk.ProviderConfigs[i]
-		for j := range pc.Budgets {
-			pc.Budgets[j].IsCalendarAligned = vk.CalendarAligned
-		}
-		if pc.RateLimit != nil {
-			pc.RateLimit.IsCalendarAligned = vk.CalendarAligned
-		}
+		StampCalendarAlignment(vk.CalendarAligned, pc.Budgets, pc.RateLimit)
 	}
 	return nil
 }

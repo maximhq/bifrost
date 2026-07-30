@@ -107,11 +107,6 @@ func (t *TableTeam) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 	}
-	for i := range t.Budgets {
-		t.Budgets[i].IsCalendarAligned = t.CalendarAligned
-	}
-	if t.RateLimit != nil {
-		t.RateLimit.IsCalendarAligned = t.CalendarAligned
-	}
+	StampCalendarAlignment(t.CalendarAligned, t.Budgets, t.RateLimit)
 	return nil
 }

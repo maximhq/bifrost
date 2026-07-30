@@ -489,11 +489,23 @@ models-parameters:
   get:
     operationId: getModelParameters
     summary: Get model parameters
-    description: Returns the available parameter definitions for models.
+    description: >-
+      Returns the available parameter definitions for a model. The model ID
+      is resolved against the model-parameters catalog with fallbacks, so
+      provider-qualified IDs returned by /v1/models (e.g. "openai/gpt-4o",
+      "openrouter/openai/gpt-4o") and bare aliases of provider-qualified
+      catalog entries resolve to the same record as the stored key.
     tags:
       - Providers
     security:
       - ManagementBearerAuth: []
+    parameters:
+      - name: model
+        in: query
+        required: true
+        description: Model ID to get parameters for; provider-qualified IDs are resolved automatically
+        schema:
+          type: string
     responses:
       '200':
         description: Successful response
@@ -502,6 +514,8 @@ models-parameters:
             schema:
               type: object
               additionalProperties: true
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 

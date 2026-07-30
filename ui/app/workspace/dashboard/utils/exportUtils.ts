@@ -208,8 +208,7 @@ export interface DashboardData {
 	mcpTopToolsData: MCPTopToolsResponse | null;
 }
 
-export type ExportTab =
-	| "all"
+export type DashboardTab =
 	| "overview"
 	| "provider-usage"
 	| "rankings"
@@ -219,6 +218,27 @@ export type ExportTab =
 	| "user-rankings"
 	| "virtual-key-rankings"
 	| "mcp";
+
+export type ExportTab = DashboardTab | "all";
+
+/**
+ * Every exportable tab, in the order sections appear in a full export.
+ * Single source of truth for the tab labels shown in the export menu and as
+ * PDF section headings, and for the DOM ids the PDF capture reads.
+ */
+export const DASHBOARD_EXPORT_TABS: { value: DashboardTab; label: string; sectionId: string }[] = [
+	{ value: "overview", label: "Overview", sectionId: "dashboard-section-overview" },
+	{ value: "provider-usage", label: "Provider Usage", sectionId: "dashboard-section-provider-usage" },
+	{ value: "rankings", label: "Model Rankings", sectionId: "dashboard-section-rankings" },
+	{ value: "mcp", label: "MCP Usage", sectionId: "dashboard-section-mcp" },
+	{ value: "team-rankings", label: "Team Rankings", sectionId: "dashboard-section-team-rankings" },
+	{ value: "customer-rankings", label: "Customer Rankings", sectionId: "dashboard-section-customer-rankings" },
+	{ value: "bu-rankings", label: "BU Rankings", sectionId: "dashboard-section-bu-rankings" },
+	{ value: "user-rankings", label: "User Rankings", sectionId: "dashboard-section-user-rankings" },
+	{ value: "virtual-key-rankings", label: "Virtual Key Rankings", sectionId: "dashboard-section-virtual-key-rankings" },
+];
+
+export const getExportTabLabel = (tab: DashboardTab): string => DASHBOARD_EXPORT_TABS.find((t) => t.value === tab)?.label ?? "Current Tab";
 
 /** Return all CSV sections for the selected scope. Each entry becomes its own sheet / file section. */
 export function getCSVSections(data: DashboardData, tab: ExportTab): { name: string; csv: CSVData }[] {

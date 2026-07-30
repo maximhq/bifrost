@@ -4,6 +4,8 @@
 @source "../app/**/*.tsx";
 @source "../node_modules/streamdown/dist/*.js";
 @source "../../../bifrost-enterprise/ui/**/*.tsx";
+/* app/enterprise is a symlink the scanner won't follow — point at the real path */
+@source "../../../bifrost-enterprise/enterprise-ui/**/*.tsx";
 
 @custom-variant dark (&:is(.dark *));
 

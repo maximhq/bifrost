@@ -542,7 +542,10 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	path := fmt.Sprintf("openai/v1/responses?api-version=%s", resolveAPIVersion(ctx, AzureAPIVersionPreview))
+	path := "openai/v1/responses"
+	if v := resolveAPIVersion(ctx, ""); v != "" {
+		path += "?api-version=" + v
+	}
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -611,7 +614,11 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		if err != nil {
 			return nil, err
 		}
-		url = fmt.Sprintf("%s/openai/v1/responses?api-version=%s", endpoint, resolveAPIVersion(ctx, AzureAPIVersionPreview))
+		path := "openai/v1/responses"
+		if v := resolveAPIVersion(ctx, ""); v != "" {
+			path += "?api-version=" + v
+		}
+		url = fmt.Sprintf("%s/%s", endpoint, path)
 
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIResponsesStreaming(
@@ -777,7 +784,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 	startTime := time.Now()
 	// Make the request
-	requestErr := provider.client.Do(req, resp)
+	requestErr := providerUtils.DoStreamingRequest(ctx, provider.client, req, resp)
 	latency := time.Since(startTime)
 	if requestErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -998,8 +1005,12 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			finalResponse.BackfillParams(request)
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &finalResponse, nil, nil), responseChan, postHookSpanFinalizer)
-		} else if chunkIndex >= 0 && !doneReceived {
-			provider.logger.Warn("Stream ended without receiving [DONE] marker after %d chunks", chunkIndex+1)
+		} else if !doneReceived {
+			// The audio stream ended without its only completion signal, so the
+			// bytes already forwarded are a truncated clip. A server-side warning
+			// alone left the caller unable to tell that from a complete one, so
+			// surface it on the stream too.
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 		}
 
 		// Response is released via deferred ReleaseStreamingResponse(resp) above.
@@ -2571,7 +2582,10 @@ func (provider *AzureProvider) Compaction(ctx *schemas.BifrostContext, key schem
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	path := fmt.Sprintf("openai/v1/responses/compact?api-version=%s", resolveAPIVersion(ctx, AzureAPIVersionPreview))
+	path := "openai/v1/responses/compact"
+	if v := resolveAPIVersion(ctx, ""); v != "" {
+		path += "?api-version=" + v
+	}
 	return openai.HandleOpenAICompactionRequest(
 		ctx,
 		provider.client,
@@ -3524,7 +3538,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	startTime := time.Now()
 
-	err = activeClient.Do(fasthttpReq, resp)
+	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -3608,11 +3622,17 @@ func (provider *AzureProvider) buildPassthroughURL(ctx *schemas.BifrostContext, 
 			rawQuery = values.Encode()
 		}
 	case strings.Contains(path, "/openai/v1/responses"):
-		// Responses API requires api-version=preview.
-		values, _ := url.ParseQuery(rawQuery)
-		if values.Get("api-version") == "" {
-			values.Set("api-version", resolveAPIVersion(ctx, AzureAPIVersionPreview))
-			rawQuery = values.Encode()
+		// The versionless v1 API omits api-version by default — Azure OpenAI v1
+		// GA and Azure AI Foundry project endpoints reject it outright on /v1
+		// paths. Only attach it if the caller didn't already supply one and the
+		// user explicitly configured an override.
+		if values, err := url.ParseQuery(rawQuery); err == nil {
+			if values.Get("api-version") == "" {
+				if v := resolveAPIVersion(ctx, ""); v != "" {
+					values.Set("api-version", v)
+					rawQuery = values.Encode()
+				}
+			}
 		}
 	case strings.Contains(path, "/openai/deployments/"):
 		// Classic /deployments/ routes require api-version. Inject a default if absent.

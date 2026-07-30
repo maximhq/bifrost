@@ -461,6 +461,16 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
+	// service_tier can arrive before a trailing usage-only or synthetic terminal
+	// chunk, so retain the newest non-nil value rather than reading only the
+	// highest-index chunk.
+	tierChunkIndex := -1
+	for _, streamChunk := range accumulator.ChatStreamChunks {
+		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
+			data.ServiceTier = streamChunk.ServiceTier
+			tierChunkIndex = streamChunk.ChunkIndex
+		}
+	}
 	// The highest-index chunk can carry a nil finish_reason (a usage-only chunk,
 	// or the synthetic terminal chunk the OpenAI-compatible handler appends after
 	// forwarding finish_reason on a content chunk). Fall back to the newest chunk
@@ -574,6 +584,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		// Extract token usage
 		if result.ChatResponse.Usage != nil && result.ChatResponse.Usage.TotalTokens > 0 {
 			chunk.TokenUsage = result.ChatResponse.Usage
+		}
+		if result.ChatResponse.ServiceTier != nil {
+			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ChatResponse.ServiceTier))
 		}
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if result.ChatResponse.ExtraFields.RawResponse != nil {

@@ -426,7 +426,7 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest || reqType == schemas.PassthroughStreamRequest || reqType == schemas.WebSocketResponsesRequest || reqType == schemas.RealtimeRequest
+	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.ResponsesRetrieveStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest || reqType == schemas.PassthroughStreamRequest || reqType == schemas.WebSocketResponsesRequest || reqType == schemas.RealtimeRequest
 }
 
 func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, error) {
@@ -486,7 +486,7 @@ func isPassthroughRequestType(reqType schemas.RequestType) bool {
 // isResponsesLifecycleRequestType returns true for OpenAI Responses API lifecycle HTTP verbs.
 func isResponsesLifecycleRequestType(reqType schemas.RequestType) bool {
 	switch reqType {
-	case schemas.ResponsesRetrieveRequest, schemas.ResponsesDeleteRequest, schemas.ResponsesCancelRequest, schemas.ResponsesInputItemsRequest:
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesRetrieveStreamRequest, schemas.ResponsesDeleteRequest, schemas.ResponsesCancelRequest, schemas.ResponsesInputItemsRequest:
 		return true
 	default:
 		return false

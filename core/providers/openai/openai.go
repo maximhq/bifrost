@@ -497,7 +497,7 @@ func HandleOpenAITextCompletionStreaming(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		latency := time.Since(startTime)
@@ -733,6 +733,14 @@ func HandleOpenAITextCompletionStreaming(
 			if !providerUtils.ProviderSendsDoneMarker(providerName) && finishReason != nil {
 				break
 			}
+		}
+
+		// See HandleOpenAIChatCompletionStreaming: a plain io.EOF cannot distinguish a
+		// finished provider from a dead connection, so a terminal marker is required
+		// before synthesizing the final chunk.
+		if !providerUtils.SSEStreamEndedOnMarker(sseReader) && finishReason == nil {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			return
 		}
 
 		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, request.Model, created)
@@ -1078,7 +1086,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1409,6 +1417,24 @@ func HandleOpenAIChatCompletionStreaming(
 					break
 				}
 			}
+		}
+
+		// A dying upstream closes the connection on a chunk boundary, which fasthttp
+		// reports as a plain io.EOF — the same read result as a properly terminated
+		// body. Truncation is therefore only detectable semantically: require an
+		// explicit [DONE], a finish_reason, or (on the fallback path) a terminal
+		// Responses event before synthesizing a final chunk. Without one, emitting
+		// the synthetic chunk would hand the client a clean, content-free completion
+		// that is indistinguishable from a provider that generated zero tokens.
+		terminalSignalSeen := providerUtils.SSEStreamEndedOnMarker(sseReader)
+		if isResponsesToChatCompletionsFallback {
+			terminalSignalSeen = terminalSignalSeen || pendingFinalEvent != nil
+		} else {
+			terminalSignalSeen = terminalSignalSeen || finishReason != nil
+		}
+		if !terminalSignalSeen {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			return
 		}
 
 		if isResponsesToChatCompletionsFallback {
@@ -1762,7 +1788,7 @@ func HandleOpenAIResponsesStreaming(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1864,6 +1890,10 @@ func HandleOpenAIResponsesStreaming(
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// The read error is already reported; returning (rather than
+					// breaking) keeps the post-loop truncation check from reporting
+					// the same dead stream a second time.
+					return
 				}
 				break
 			}
@@ -1871,9 +1901,8 @@ func HandleOpenAIResponsesStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostResponsesStreamResponse
-			// TODO fix this
 			if customResponseHandler != nil {
-				rawRequest, rawResponse, bifrostErr := customResponseHandler([]byte(jsonData), &response, nil, false, false)
+				rawRequest, rawResponse, bifrostErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
 				if bifrostErr != nil {
 					if sendBackRawRequest {
 						bifrostErr.ExtraFields.RawRequest = rawRequest
@@ -1884,6 +1913,9 @@ func HandleOpenAIResponsesStreaming(
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 					return
+				}
+				if sendBackRawResponse {
+					response.ExtraFields.RawResponse = jsonData
 				}
 			} else {
 				if err := sonic.UnmarshalString(jsonData, &response); err != nil {
@@ -1902,79 +1934,88 @@ func HandleOpenAIResponsesStreaming(
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
 				}
-
-				if response.Type == schemas.ResponsesStreamResponseTypeError {
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
-						IsBifrostError: false,
-						Error:          &schemas.ErrorField{},
-					}
-
-					if response.Message != nil {
-						bifrostErr.Error.Message = *response.Message
-					}
-					if response.Param != nil {
-						bifrostErr.Error.Param = *response.Param
-					}
-					if response.Code != nil {
-						bifrostErr.Error.Code = response.Code
-					}
-					if response.Error != nil {
-						if response.Error.Message != "" && bifrostErr.Error.Message == "" {
-							bifrostErr.Error.Message = response.Error.Message
-						}
-						if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-							bifrostErr.Error.Code = &response.Error.Code
-						}
-					}
-					if response.Response != nil && response.Response.Error != nil {
-						if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
-							bifrostErr.Error.Message = response.Response.Error.Message
-						}
-						if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
-							bifrostErr.Error.Code = schemas.Ptr(response.Response.Error.Code)
-						}
-					}
-
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
-					return
-				}
-
-				// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
-				// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
-				if response.Type == schemas.ResponsesStreamResponseTypeFailed {
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
-						IsBifrostError: false,
-						Error:          &schemas.ErrorField{},
-					}
-					if response.Response != nil && response.Response.Error != nil {
-						bifrostErr.Error.Message = response.Response.Error.Message
-						bifrostErr.Error.Code = &response.Response.Error.Code
-					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
-					return
-				}
-
-				response.ExtraFields.ChunkIndex = response.SequenceNumber
-				if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
-					// Set raw request if enabled
-					if sendBackRawRequest {
-						providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
-					}
-					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-					return
-				}
-
-				response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
-				lastChunkTime = time.Now()
-
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
+
+			if response.Type == schemas.ResponsesStreamResponseTypeError {
+				bifrostErr := &schemas.BifrostError{
+					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
+					IsBifrostError: false,
+					Error:          &schemas.ErrorField{},
+				}
+
+				if response.Message != nil {
+					bifrostErr.Error.Message = *response.Message
+				}
+				if response.Param != nil {
+					bifrostErr.Error.Param = *response.Param
+				}
+				if response.Code != nil {
+					bifrostErr.Error.Code = response.Code
+				}
+				if response.Error != nil {
+					if response.Error.Message != "" && bifrostErr.Error.Message == "" {
+						bifrostErr.Error.Message = response.Error.Message
+					}
+					if response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
+						bifrostErr.Error.Code = &response.Error.Code
+					}
+				}
+				if response.Response != nil && response.Response.Error != nil {
+					if response.Response.Error.Message != "" && bifrostErr.Error.Message == "" {
+						bifrostErr.Error.Message = response.Response.Error.Message
+					}
+					if response.Response.Error.Code != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code == "") {
+						bifrostErr.Error.Code = new(response.Response.Error.Code)
+					}
+				}
+
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
+				return
+			}
+
+			// Some providers (e.g. Fireworks) send response.failed on HTTP 200 streams
+			// instead of a pre-stream 4xx. Convert to BifrostError for consistent handling.
+			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
+				bifrostErr := &schemas.BifrostError{
+					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeFailed)),
+					IsBifrostError: false,
+					Error:          &schemas.ErrorField{},
+				}
+				if response.Response != nil && response.Response.Error != nil {
+					bifrostErr.Error.Message = response.Response.Error.Message
+					bifrostErr.Error.Code = &response.Response.Error.Code
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
+				return
+			}
+
+			response.ExtraFields.ChunkIndex = response.SequenceNumber
+			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+				// Set raw request if enabled
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+				}
+				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+				return
+			}
+
+			response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+			lastChunkTime = time.Now()
+
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+		}
+
+		// The loop returns as soon as a terminal event (completed / incomplete /
+		// failed / error) arrives, so falling out of it means the body ended without
+		// one. A plain io.EOF cannot distinguish that from a healthy close, so
+		// surface it rather than closing the channel silently — a silent close is
+		// indistinguishable to the client from a stream that just stopped emitting.
+		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 		}
 	}()
 
@@ -2393,7 +2434,7 @@ func HandleOpenAISpeechStreamRequest(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -2551,6 +2592,15 @@ func HandleOpenAISpeechStreamRequest(
 			}
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan, postHookSpanFinalizer)
+		}
+
+		// The loop returns on speech.audio.done (the usage-bearing terminal event),
+		// so falling out means the body ended early — a plain io.EOF that cannot be
+		// told from a healthy close. Without this the caller receives a silently
+		// truncated audio clip. Stay quiet when a read error was already reported
+		// (it sets the indicator) or when the provider at least sent [DONE].
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 		}
 	}()
 
@@ -2901,7 +2951,7 @@ func HandleOpenAITranscriptionStreamRequest(
 
 	startTime := time.Now()
 	// Make the request
-	err := client.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -3068,6 +3118,15 @@ func HandleOpenAITranscriptionStreamRequest(
 			}
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan, postHookSpanFinalizer)
+		}
+
+		// The loop returns on transcript.text.done (or the usage-bearing chunk), so
+		// falling out means the body ended early — a plain io.EOF that cannot be told
+		// from a healthy close, leaving the caller with a silently truncated
+		// transcript. No raw request is attached: this endpoint sends multipart form
+		// data, not JSON.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
 		}
 	}()
 
@@ -3343,7 +3402,7 @@ func HandleOpenAIImageGenerationStreaming(
 
 	startTime := time.Now()
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -3440,7 +3499,13 @@ func HandleOpenAIImageGenerationStreaming(
 					return
 				}
 				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// The read error is already reported; returning (rather than
+					// breaking) keeps the post-loop truncation check from reporting
+					// the same dead stream a second time.
+					return
 				}
 				break
 			}
@@ -3624,6 +3689,14 @@ func HandleOpenAIImageGenerationStreaming(
 			if isCompleted {
 				return
 			}
+		}
+
+		// The loop returns on image_generation.completed, so falling out means the
+		// body ended early — a plain io.EOF that cannot be told from a healthy
+		// close. Without this the caller keeps only the partial images and never
+		// learns the final one is missing.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 		}
 	}()
 
@@ -4829,7 +4902,7 @@ func HandleOpenAIImageEditStreamRequest(
 
 	startTime := time.Now()
 	// Make the request
-	err := client.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -4925,8 +4998,13 @@ func HandleOpenAIImageEditStreamRequest(
 					return
 				}
 				if readErr != io.EOF {
-					logger.Warn(fmt.Sprintf("Error reading stream: %v", readErr))
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// The read error is already reported; returning (rather than
+					// breaking) keeps the post-loop truncation check from reporting
+					// the same dead stream a second time.
+					return
 				}
 				break
 			}
@@ -5106,6 +5184,15 @@ func HandleOpenAIImageEditStreamRequest(
 			if isCompleted {
 				return
 			}
+		}
+
+		// The loop returns on image_edit.completed, so falling out means the body
+		// ended early — a plain io.EOF that cannot be told from a healthy close.
+		// Without this the caller keeps only the partial images and never learns the
+		// final one is missing. No raw request is attached: this endpoint sends
+		// multipart form data, not JSON.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
 		}
 	}()
 
@@ -7460,7 +7547,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 
 	startTime := time.Now()
 
-	err := activeClient.Do(fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

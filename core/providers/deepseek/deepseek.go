@@ -521,6 +521,7 @@ func (provider *DeepSeekProvider) CountTokens(ctx *schemas.BifrostContext, key s
 		},
 		provider.anthropicHeaders(key),
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.logger,
 	)
 }

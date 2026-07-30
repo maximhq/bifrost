@@ -213,7 +213,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 										data-testid="mcp-add-envs-input"
 										{...register("envs")}
 									/>
-									<p className="text-muted-foreground text-xs">Only names — users supply values at install time.</p>
+									<p className="text-muted-foreground text-xs">Only names; users supply values at install time.</p>
 								</div>
 							</div>
 						)}
@@ -250,7 +250,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 									data-testid="mcp-add-header-keys-input"
 									{...register("required_header_keys")}
 								/>
-								<p className="text-muted-foreground text-xs">Only names — users supply values at install time.</p>
+								<p className="text-muted-foreground text-xs">Only names; users supply values at install time.</p>
 							</div>
 						)}
 

@@ -108,7 +108,7 @@ func listenToReplicateStreamURL(
 
 	// Make request
 	startTime := time.Now()
-	err := client.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, client, req, resp)
 	latency := time.Since(startTime)
 	fasthttp.ReleaseRequest(req)
 

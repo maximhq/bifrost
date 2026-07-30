@@ -135,6 +135,13 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 		}
 	}
 
+	// Routed-identity headers from the error itself (provider/model/request-type +
+	// routing_info incl. is-fallback). Callers forward provider headers before this,
+	// so bifrost identity wins. No bifrostCtx here, so the ctx-only fallback-index /
+	// upstream-latency headers are omitted on native errors — the routing_info-*
+	// headers still carry which provider ran and whether a fallback fired.
+	lib.ApplyBifrostErrorResponseHeaders(ctx, nil, bifrostErr.ExtraFields)
+
 	ctx.SetContentType("application/json")
 	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
