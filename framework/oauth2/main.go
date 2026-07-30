@@ -38,6 +38,13 @@ const (
 	// terminalStatusUpdateTimeout bounds the detached needs_reauth status
 	// write after a permanent OAuth rejection (see refreshAccessTokenLocked).
 	terminalStatusUpdateTimeout = 10 * time.Second
+
+	// maxTokenEndpointResponseBytes caps how much of an OAuth token endpoint
+	// response callTokenEndpoint reads. A legitimate response is a small
+	// JSON object; this only guards against an unbounded/misbehaving
+	// endpoint, mirroring the cap core/providers/utils/largeresponse.go uses
+	// for provider error bodies.
+	maxTokenEndpointResponseBytes = 512 * 1024
 )
 
 // OAuth2Provider implements the schemas.OAuth2Provider interface
@@ -76,7 +83,15 @@ type OAuth2Provider struct {
 	// read that had to wait on it would lose the entire point of the cache.
 	// Write paths in this file evict inline; handler-level database writes
 	// that bypass the provider evict through the exported eviction methods.
+	// Exchanged tokens (token_exchange auth) share this cache: same key
+	// scheme, same expiry-as-miss validator, same lifecycle evictions —
+	// they just carry no token row ID because nothing is persisted for them.
 	userTokens *userTokenCache
+
+	// exchangeIdP holds the identity-provider resolver backing delegated
+	// token exchange. Same atomic-pointer rationale as tempTokens: written
+	// once at startup, read on the request path, and never guarded by p.mu.
+	exchangeIdP atomic.Pointer[schemas.TokenExchangeIdPResolver]
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -180,8 +195,11 @@ func (p *OAuth2Provider) resolveAccessToken(ctx context.Context, token *tables.T
 		return "", fmt.Errorf("oauth token is not active, status: %s: %w", token.Status, schemas.ErrOAuth2TokenExpired)
 	}
 
-	// Refresh only when the token has known expiry and a refresh token is available.
-	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) && strings.TrimSpace(token.RefreshToken) != "" {
+	// Refresh only when the token has known expiry and a renewal path: a
+	// refresh token, or the identity-provider integration for
+	// token-exchange admin rows (which can re-mint without one).
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) &&
+		(strings.TrimSpace(token.RefreshToken) != "" || isExchangeBackedTokenRow(token)) {
 		// Attempt automatic refresh
 		if err := p.RefreshAccessToken(ctx, token.ID); err != nil {
 			return "", fmt.Errorf("token expired and refresh failed: %w", err)
@@ -206,16 +224,18 @@ func (p *OAuth2Provider) resolveAccessToken(ctx context.Context, token *tables.T
 }
 
 // GetAdminAccessToken is GetAccessToken's admin-mode counterpart: resolves
-// the retained bootstrap-verification credential for a per_user_oauth
-// client's periodic tool-discovery refresh (ClientToolSyncer.performSync),
-// rather than the shared-mode production credential.
-func (p *OAuth2Provider) GetAdminAccessToken(ctx context.Context, oauthConfigID string) (string, error) {
-	token, err := p.configStore.GetAdminOauthTokenByConfigID(ctx, oauthConfigID)
+// the retained bootstrap-verification credential for a per-user client's
+// periodic tool-discovery refresh (ClientToolSyncer.performSync), rather
+// than the shared-mode production credential. Keyed by the MCP client ID,
+// which every admin row carries regardless of whether an oauth_configs
+// template sits behind the credential.
+func (p *OAuth2Provider) GetAdminAccessToken(ctx context.Context, mcpClientID string) (string, error) {
+	token, err := p.configStore.GetAdminOauthTokenByMCPClientID(ctx, mcpClientID)
 	if err != nil {
 		return "", fmt.Errorf("failed to load admin oauth token: %w", err)
 	}
 	if token == nil {
-		return "", fmt.Errorf("no admin token linked to oauth config")
+		return "", fmt.Errorf("no admin token retained for this MCP client")
 	}
 	return p.resolveAccessToken(ctx, token)
 }
@@ -267,6 +287,14 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 	}
 	if token == nil {
 		return fmt.Errorf("oauth token not found: %s", tokenID)
+	}
+
+	// Token-exchange admin rows have no oauth_configs template; renewal runs
+	// through the identity-provider integration instead of the template's
+	// token endpoint (and may not need a refresh token at all — the
+	// client-credentials fallback re-mints).
+	if isExchangeBackedTokenRow(token) {
+		return p.refreshExchangeAdminToken(ctx, token)
 	}
 
 	if strings.TrimSpace(token.RefreshToken) == "" {
@@ -418,6 +446,19 @@ func (p *OAuth2Provider) ForceRefreshAccessToken(ctx *schemas.BifrostContext, co
 		// call itself fails.
 		p.EvictUserToken(mode, identity, config.ID)
 		return p.RefreshAccessToken(ctx, token.ID)
+	case schemas.MCPAuthTypeTokenExchange:
+		// Nothing is persisted for callers' exchanged tokens, so
+		// force-refresh is evict + re-exchange: drop the cached copy for
+		// this binding and perform a fresh exchange so the retry that
+		// follows sends a token the identity provider just minted.
+		mode := ctx.MCPAuthMode()
+		identity := ctx.MCPIdentity(mode)
+		if identity == "" {
+			return schemas.ErrExchangeSubjectTokenMissing
+		}
+		p.EvictExchangedToken(mode, identity, config.ID)
+		_, err := p.GetExchangedAccessToken(ctx, config)
+		return err
 	default:
 		return fmt.Errorf("force-refresh is not supported for MCP auth type %q", config.AuthType)
 	}
@@ -1181,7 +1222,11 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		// Capped read: an OAuth token endpoint response is normally a small
+		// JSON object, but nothing stops a misconfigured or malicious
+		// endpoint from streaming an unbounded body — matching the 512KB cap
+		// core/providers/utils/largeresponse.go uses for error bodies.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenEndpointResponseBytes))
 		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response: %w", err)
@@ -1583,7 +1628,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 // lookups are never cached, so a caller completing OAuth (or a token being
 // reactivated) becomes visible on the very next call.
 func (p *OAuth2Provider) GetUserAccessTokenByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (string, error) {
-	key := userTokenCacheKey(mode, identity, mcpClientID)
+	key := userTokenCacheKey(mode, identity, mcpClientID, "")
 	if cached, ok := p.userTokens.Get(key); ok {
 		return cached.accessToken, nil
 	}
@@ -1636,7 +1681,7 @@ func (p *OAuth2Provider) EvictUserToken(mode schemas.MCPAuthMode, identity, mcpC
 	if p == nil {
 		return
 	}
-	p.userTokens.Evict(userTokenCacheKey(mode, identity, mcpClientID))
+	p.userTokens.Evict(userTokenCacheKey(mode, identity, mcpClientID, ""))
 }
 
 // EvictUserTokenByID drops the cached access token backed by the given token

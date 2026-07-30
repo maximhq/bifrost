@@ -39,7 +39,10 @@ func seedAccessToken(store *testConfigStore, oauthConfigID, authMode, tokenID, a
 		ID:            tokenID,
 		AuthMode:      authMode,
 		OauthConfigID: oauthConfigID,
-		Status:        "active",
+		// Admin rows are looked up by mcp_client_id (the key every admin row
+		// carries); the tests reuse the same identifier for both lookups.
+		MCPClientID: oauthConfigID,
+		Status:      "active",
 		AccessToken:   accessToken,
 		RefreshToken:  refreshToken,
 		TokenType:     "Bearer",
@@ -182,7 +185,7 @@ func TestAccessToken_MissingToken_ReturnsError(t *testing.T) {
 			token, err := g.get(provider, context.Background(), oauthConfigID)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "no")
-			assert.Contains(t, err.Error(), "token linked to oauth config")
+			assert.Contains(t, err.Error(), "token", "a missing row must surface as a plain no-token error")
 			assert.Empty(t, token)
 		})
 	}

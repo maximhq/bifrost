@@ -116,7 +116,7 @@ func (r *perUserOAuthResolver) AdminConnectionHeaders(ctx context.Context, confi
 	if config.OauthConfigID == nil || *config.OauthConfigID == "" {
 		return nil, fmt.Errorf("per-user OAuth client %q has no linked oauth config", config.Name)
 	}
-	accessToken, err := r.provider.GetAdminAccessToken(ctx, *config.OauthConfigID)
+	accessToken, err := r.provider.GetAdminAccessToken(ctx, config.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get admin access token for MCP server %s: %w", config.Name, err)
 	}

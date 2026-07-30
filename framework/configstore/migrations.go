@@ -464,6 +464,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"drop_oauth_config_pkce_columns"}, run: migrationDropOauthConfigPKCEColumns},
 	{IDs: []string{"drop_oauth_config_token_id_column"}, run: migrationDropOauthConfigTokenIDColumn},
 	{IDs: []string{"add_mcp_admin_auth_mode_indexes"}, run: migrationAddMCPAdminAuthModeIndexes},
+	{IDs: []string{"add_mcp_client_token_exchange_json_column"}, run: migrationAddMCPClientTokenExchangeJSONColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10011,6 +10012,43 @@ func migrationAddMCPClientPendingOAuthConfigJSONColumn(ctx context.Context, db *
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_client_pending_oauth_config_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientTokenExchangeJSONColumn adds the token_exchange_json
+// column to config_mcp_clients: the audience/scopes/fallback scoping block
+// for auth_type='token_exchange' clients. NULL for all other auth types; the
+// block carries no credentials.
+func migrationAddMCPClientTokenExchangeJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_token_exchange_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&tables.TableMCPClient{}, "token_exchange_json") {
+				if err := mig.AddColumn(&tables.TableMCPClient{}, "token_exchange_json"); err != nil {
+					return fmt.Errorf("failed to add token_exchange_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&tables.TableMCPClient{}, "token_exchange_json") {
+				if err := mig.DropColumn(&tables.TableMCPClient{}, "token_exchange_json"); err != nil {
+					return fmt.Errorf("failed to drop token_exchange_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_mcp_client_token_exchange_json_column migration: %s", err.Error())
 	}
 	return nil
 }
