@@ -10,6 +10,7 @@ import {
 	useGetMCPHistogramQuery,
 	useGetMCPLogsQuery,
 	useGetMCPLogsStatsQuery,
+	useGetUserAgentMappingsQuery,
 } from "@/lib/store";
 import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
@@ -327,7 +328,18 @@ export default function MCPLogsPage() {
 		[statsData],
 	);
 
-	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
+	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
+	const customAppIcons = useMemo(() => {
+		const icons: Record<string, string> = {};
+		for (const mapping of userAgentMappingsData?.mappings ?? []) {
+			if (mapping.app && mapping.logo && mapping.logo_mime) {
+				icons[mapping.app] = `data:${mapping.logo_mime};base64,${mapping.logo}`;
+			}
+		}
+		return icons;
+	}, [userAgentMappingsData?.mappings]);
+
+	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons), [customAppIcons, handleDelete, hasDeleteAccess]);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
