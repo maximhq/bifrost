@@ -23,29 +23,33 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// MCPOauthTokenCacheManager invalidates cached per-user MCP OAuth access
-// tokens after a database write that bypasses the OAuth provider's own write
-// paths. The base server implementation evicts from local memory; a
-// clustered deployment overrides it to also notify peers so their caches
-// stay current. Handlers call it directly after successful writes, so the
-// server must always wire it (it is nil-safe internally when no provider is
-// configured, but the interface value itself must be non-nil).
-type MCPOauthTokenCacheManager interface {
+// MCPCredentialCacheManager invalidates cached per-user MCP credentials
+// (OAuth access tokens and header credentials) after a database write that
+// bypasses the owning provider's own write paths. The base server
+// implementation evicts from local memory; a clustered deployment overrides
+// it to also notify peers so their caches stay current. Handlers call it
+// directly after successful writes, so the server must always wire it (it is
+// nil-safe internally when no provider is configured, but the interface
+// value itself must be non-nil).
+type MCPCredentialCacheManager interface {
 	EvictOauthTokenCacheByID(ctx context.Context, tokenID string)
 	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
+	EvictMCPHeaderCredentialCacheByID(ctx context.Context, credentialID string)
+	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
 }
 
 // MCPSessionsHandler serves the sessions tab API.
 type MCPSessionsHandler struct {
 	store *lib.Config
-	// mcpOauthTokenCacheManager invalidates cached OAuth access tokens after
-	// this handler writes token rows directly through the configstore.
-	mcpOauthTokenCacheManager MCPOauthTokenCacheManager
+	// mcpCredentialCacheManager invalidates cached per-user credentials after
+	// this handler writes token or credential rows directly through the
+	// configstore.
+	mcpCredentialCacheManager MCPCredentialCacheManager
 }
 
 // NewMCPSessionsHandler creates the handler.
-func NewMCPSessionsHandler(store *lib.Config, mcpOauthTokenCacheManager MCPOauthTokenCacheManager) *MCPSessionsHandler {
-	return &MCPSessionsHandler{store: store, mcpOauthTokenCacheManager: mcpOauthTokenCacheManager}
+func NewMCPSessionsHandler(store *lib.Config, mcpCredentialCacheManager MCPCredentialCacheManager) *MCPSessionsHandler {
+	return &MCPSessionsHandler{store: store, mcpCredentialCacheManager: mcpCredentialCacheManager}
 }
 
 // RegisterRoutes registers the sessions tab routes.
@@ -638,6 +642,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
 			return
 		}
+		h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByID(ctx, headerCred.ID)
 		logger.Debug("[mcp/sessions] revoked header credential: id=%s mcp_client=%s mode=%s", rowID, headerCred.MCPClientID, headerCred.AuthMode)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
@@ -682,7 +687,7 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
 		return
 	}
-	h.mcpOauthTokenCacheManager.EvictOauthTokenCacheByID(ctx, tok.ID)
+	h.mcpCredentialCacheManager.EvictOauthTokenCacheByID(ctx, tok.ID)
 	logger.Debug("[mcp/sessions] revoked: token=%s mcp_client=%s mode=%s", rowID, tok.MCPClientID, tok.AuthMode)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
