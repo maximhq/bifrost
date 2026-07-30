@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -123,6 +124,10 @@ const (
 	ComplexitySemanticVectorStoreEmbedded = "embedded"
 	ComplexitySemanticVectorStoreExternal = "external"
 )
+
+// MaxComplexitySemanticPhraseCharacters bounds one exemplar's input size.
+// The number of exemplars is intentionally unrestricted.
+const MaxComplexitySemanticPhraseCharacters = 2000
 
 // DefaultComplexitySemanticTimeout bounds per-request embedding generation.
 const DefaultComplexitySemanticTimeout = 100 * time.Millisecond
@@ -345,10 +350,9 @@ type ComplexityAnalyzerConfig struct {
 	Keywords       ComplexityEditableKeywordConfig `json:"keywords"`
 	Semantic       *ComplexitySemanticConfig       `json:"semantic,omitempty"`
 	ConfigHashes   ComplexityAnalyzerConfigHashes  `json:"-"`
-	// EmbeddingFingerprint records the (model, dimension, keyword lists) the
-	// stored exemplar embeddings were computed from. Warmup compares it against
-	// the current config to decide whether to re-embed. Persisted with the
-	// config row, not exposed through API responses or config.json.
+	// EmbeddingFingerprint is reserved for config-store implementations that
+	// persist routing state. The semantic classifier verifies a VectorStore-side
+	// marker before reuse and never treats this field alone as proof vectors exist.
 	EmbeddingFingerprint string `json:"-"`
 }
 
@@ -385,6 +389,11 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if err := c.Semantic.Validate(); err != nil {
 		return err
 	}
+	if c.Semantic != nil {
+		if err := validateComplexitySemanticPhrases(c.Keywords); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -404,6 +413,44 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 		ConfigHashes:         c.ConfigHashes,
 		EmbeddingFingerprint: c.EmbeddingFingerprint,
 	}
+}
+
+// validateComplexitySemanticPhrases bounds individual inputs and rejects
+// ambiguous labels without changing lexical-only semantics.
+func validateComplexitySemanticPhrases(keywords ComplexityEditableKeywordConfig) error {
+	type tierPhrases struct {
+		name   string
+		values []string
+	}
+	tiers := []tierPhrases{
+		{name: "simple_keywords", values: keywords.SimpleKeywords},
+		{name: "medium_keywords", values: keywords.MediumKeywords},
+		{name: "complex_keywords", values: keywords.ComplexKeywords},
+	}
+	seen := make(map[string]string)
+	for _, tier := range tiers {
+		for _, phrase := range tier.values {
+			if characters := utf8.RuneCountInString(phrase); characters > MaxComplexitySemanticPhraseCharacters {
+				return fmt.Errorf(
+					"semantic phrase in %s exceeds the %d-character limit: got %d characters",
+					tier.name,
+					MaxComplexitySemanticPhraseCharacters,
+					characters,
+				)
+			}
+			normalized := strings.ToLower(strings.Join(strings.Fields(phrase), " "))
+			if previousTier, ok := seen[normalized]; ok && previousTier != tier.name {
+				return fmt.Errorf(
+					"semantic phrase %q appears in both %s and %s; assign each semantic phrase to exactly one tier",
+					phrase,
+					previousTier,
+					tier.name,
+				)
+			}
+			seen[normalized] = tier.name
+		}
+	}
+	return nil
 }
 
 // MergeComplexityAnalyzerConfig overlays file boundaries and additively merges keyword lists.
@@ -443,10 +490,11 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 		ConfigHashes:         normalizedFile.ConfigHashes,
 		EmbeddingFingerprint: normalizedBase.EmbeddingFingerprint,
 	}
-	if err := merged.Validate(); err != nil {
+	normalizedMerged := merged.Normalized()
+	if err := normalizedMerged.Validate(); err != nil {
 		return nil, err
 	}
-	return &merged, nil
+	return &normalizedMerged, nil
 }
 
 // mergeComplexitySemanticConfig overlays the file semantic settings. A nil
@@ -503,10 +551,11 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 			merged.ConfigHashes.SemanticSettings = normalizedFile.ConfigHashes.SemanticSettings
 		}
 	}
-	if err := merged.Validate(); err != nil {
+	normalizedMerged := merged.Normalized()
+	if err := normalizedMerged.Validate(); err != nil {
 		return nil, err
 	}
-	return &merged, nil
+	return &normalizedMerged, nil
 }
 
 // DecodeComplexityAnalyzerConfig decodes raw JSON into a normalized, validated config.
