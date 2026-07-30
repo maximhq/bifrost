@@ -6973,6 +6973,10 @@
           "type": "string",
           "description": "Virtual key ID (required for virtual_key* scopes)"
         },
+        "user_id": {
+          "type": "string",
+          "description": "User ID (for user-scoped pricing overrides)"
+        },
         "provider_id": {
           "type": "string",
           "description": "Provider name (required for provider* scopes; field key remains provider_id for compatibility)"
