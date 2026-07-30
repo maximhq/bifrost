@@ -140,6 +140,15 @@ type ServerCallbacks interface {
 	CloseAndMarkNeedsReauth(ctx context.Context, id string) error
 	DisableMCPClient(ctx context.Context, id string) error
 	EnableMCPClient(ctx context.Context, id string) error
+	// EvictOauthTokenCacheByID drops the cached per-user MCP OAuth access
+	// token backed by the given token row ID after a database write that
+	// bypassed the OAuth provider's own write paths.
+	EvictOauthTokenCacheByID(ctx context.Context, tokenID string)
+	// EvictOauthTokenCacheByMCPClient drops every cached per-user MCP OAuth
+	// access token bound to the given MCP client after a client-level
+	// mutation that invalidates its token rows as a set (credential
+	// rotation, access reconciliation, client deletion).
+	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
 }
 
 // LogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to log-detail responses.
@@ -323,6 +332,7 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after removing client: %v", err)
 	}
+	s.Config.OAuthProvider.EvictUserTokensByMCPClient(id)
 	return nil
 }
 
@@ -482,6 +492,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		store.DeleteModelConfigInMemory(ctx, mcID)
 	}
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
+	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	return virtualKey, nil
 }
 
@@ -504,6 +515,7 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
 	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value.GetValue())
+	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
 	return nil
 }
 
@@ -944,6 +956,47 @@ func (s *BifrostHTTPServer) ReloadWebhookEndpoint(ctx context.Context, id string
 func (s *BifrostHTTPServer) RemoveWebhookEndpoint(ctx context.Context, id string) error {
 	s.Config.RemoveWebhookEndpoint(id)
 	return nil
+}
+
+// EvictOauthTokenCacheByID drops the cached per-user MCP OAuth access token
+// backed by the given token row ID from the in-memory cache after a database
+// write. A clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictOauthTokenCacheByID(ctx context.Context, tokenID string) {
+	if s.Config == nil || s.Config.OAuthProvider == nil {
+		return
+	}
+	s.Config.OAuthProvider.EvictUserTokenByID(tokenID)
+}
+
+// EvictOauthTokenCacheByMCPClient drops every cached per-user MCP OAuth
+// access token bound to the given MCP client from the in-memory cache. A
+// clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string) {
+	if s.Config == nil || s.Config.OAuthProvider == nil {
+		return
+	}
+	s.Config.OAuthProvider.EvictUserTokensByMCPClient(mcpClientID)
+}
+
+// EvictOauthTokenCacheByVirtualKey drops every cached vk-mode MCP OAuth
+// access token bound to the given virtual key from the in-memory cache. A
+// clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictOauthTokenCacheByVirtualKey(ctx context.Context, virtualKeyID string) {
+	if s.Config == nil || s.Config.OAuthProvider == nil {
+		return
+	}
+	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(virtualKeyID)
+}
+
+// FlushOauthTokenCache drops every cached per-user MCP OAuth access token
+// from the in-memory cache. The coarse fallback for mutations whose blast
+// radius cannot be scoped to one client or virtual key. A clustered
+// deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) FlushOauthTokenCache(ctx context.Context) {
+	if s.Config == nil || s.Config.OAuthProvider == nil {
+		return
+	}
+	s.Config.OAuthProvider.FlushUserTokenCache()
 }
 
 // ReloadClientConfigFromConfigStore reloads the client config from config store
@@ -1874,9 +1927,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler := handlers.NewHealthHandler(s.Config)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
-	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler)
+	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler, callbacks)
 	mcpPerUserHeadersHandler := handlers.NewMCPPerUserHeadersHandler(callbacks, s.Config, s.TempTokens)
-	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config)
+	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config, callbacks)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
