@@ -42864,6 +42864,46 @@
                               },
                               "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "token_exchange"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "token_exchange"
+                              ],
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "token_exchange"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "token_exchange"
+                                ]
+                              },
+                              "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -42916,7 +42956,8 @@
                               "headers",
                               "oauth",
                               "per_user_oauth",
-                              "per_user_headers"
+                              "per_user_headers",
+                              "token_exchange"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -42974,6 +43015,41 @@
                               "type": "string"
                             },
                             "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
+                          },
+                          "token_exchange": {
+                            "type": "object",
+                            "required": [
+                              "audience",
+                              "client_id"
+                            ],
+                            "properties": {
+                              "audience": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+                              },
+                              "authorization_server_url": {
+                                "type": "string",
+                                "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+                              }
+                            },
+                            "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -43040,6 +43116,46 @@
                               },
                               "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "token_exchange"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "token_exchange"
+                              ],
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "token_exchange"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "token_exchange"
+                                ]
+                              },
+                              "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -43092,7 +43208,8 @@
                               "headers",
                               "oauth",
                               "per_user_oauth",
-                              "per_user_headers"
+                              "per_user_headers",
+                              "token_exchange"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -43150,6 +43267,41 @@
                               "type": "string"
                             },
                             "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
+                          },
+                          "token_exchange": {
+                            "type": "object",
+                            "required": [
+                              "audience",
+                              "client_id"
+                            ],
+                            "properties": {
+                              "audience": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+                              },
+                              "authorization_server_url": {
+                                "type": "string",
+                                "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+                              }
+                            },
+                            "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -43216,6 +43368,46 @@
                               },
                               "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "token_exchange"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "token_exchange"
+                              ],
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "token_exchange"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "token_exchange"
+                                ]
+                              },
+                              "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -43268,7 +43460,8 @@
                               "headers",
                               "oauth",
                               "per_user_oauth",
-                              "per_user_headers"
+                              "per_user_headers",
+                              "token_exchange"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -43326,6 +43519,41 @@
                               "type": "string"
                             },
                             "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
+                          },
+                          "token_exchange": {
+                            "type": "object",
+                            "required": [
+                              "audience",
+                              "client_id"
+                            ],
+                            "properties": {
+                              "audience": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+                              },
+                              "authorization_server_url": {
+                                "type": "string",
+                                "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+                              }
+                            },
+                            "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
                           },
                           "user_headers": {
                             "type": "object",
@@ -43535,6 +43763,41 @@
                       "type": "string"
                     },
                     "description": "For `per_user_headers` clients only. Cannot be set to an empty list.\nUpdating this list flips every existing active per-user credential row\nto `needs_update`; callers will be sent back to the submission form on\ntheir next tool call to satisfy the new schema. The retained admin\ndiscovery credential is flipped the same way; repair it by calling\nPOST /api/mcp/client/{id}/verify-headers with fresh sample values.\n"
+                  },
+                  "token_exchange": {
+                    "type": "object",
+                    "required": [
+                      "audience",
+                      "client_id"
+                    ],
+                    "properties": {
+                      "audience": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                      },
+                      "client_secret": {
+                        "type": "string",
+                        "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                      },
+                      "scopes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+                      },
+                      "authorization_server_url": {
+                        "type": "string",
+                        "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+                      }
+                    },
+                    "description": "For `token_exchange` clients only. Omitted preserves the stored\nconfiguration. A redacted `client_id` / `client_secret` round-tripped\nfrom a prior GET is resolved back to the stored value rather than\noverwriting it; any other change re-scopes future exchanges and\ninvalidates cached exchanged tokens for this client.\n"
                   },
                   "disabled": {
                     "type": "boolean",
@@ -44069,6 +44332,99 @@
           },
           "422": {
             "description": "Upstream verification failed with the supplied header values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{id}/verify-exchange": {
+      "post": {
+        "operationId": "verifyMCPClientExchange",
+        "summary": "Verify a pending or repair a needs_reauth token_exchange MCP client",
+        "description": "Completes admin verification for an MCP client with auth_type\n\"token_exchange\". No request body: the subject of the exchange is\nalways the signed-in admin's own identity-provider token (from an SSO\nsession or an identity-authenticated bearer request) — there is no\nmanual token input. Bifrost exchanges it exactly like a real caller's\ntoken would be exchanged, opens an upstream connection with the result,\ndiscovers the tool list, persists it, and transitions the client to\nconnected. The exchanged token (and any refresh token the identity\nprovider issued alongside it) is retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list;\nend-user tool calls always exchange the caller's own token instead.\nSynchronous; no browser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification, and a voluntary refresh of an\nalready-verified client's retained admin discovery credential —\nresubmitting always re-runs verification and retains a fresh\ncredential, whether or not it currently needs repair (mirrors POST\n/reauthorize for OAuth-based clients).\n",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client verified; tools discovered and client connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "success"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "tools_count": {
+                      "type": "integer",
+                      "description": "Number of tools discovered during verification"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Client is not auth_type \"token_exchange\", token exchange is\nunavailable (no identity-provider integration configured), or the\nrequest carries no identity-provider token to exchange (sign in\nwith your identity provider and retry)\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The identity provider rejected the exchange, or the upstream verification connection failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -81618,7 +81974,7 @@
               "needs_reauth",
               "disabled"
             ],
-            "description": "Connection state of an MCP client:\n- connected: Client is connected and ready to use\n- disconnected: Client is not connected (will be auto-recovered by health monitor)\n- error: Client is in an unrecoverable error state\n- pending_tools: Connected but tools not yet populated (per-user clients)\n- pending_verification: Declared (typically via config.json) but the one-time\n  admin verification has not been completed yet. Complete it via\n  POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /\n  per_user_oauth) or POST /api/mcp/client/{id}/verify-headers\n  (auth_type per_user_headers).\n- needs_reauth: Setup completed at least once, but a credential an admin is\n  responsible for has permanently died and needs a human to repair it.\n  For shared OAuth clients the connection credential itself was\n  rejected/expired with no silent recovery; the state is sticky (the health\n  monitor will not clobber it) until an admin runs\n  POST /api/mcp/client/{id}/reauthorize. For per-user clients this is a\n  response-only projection meaning the retained admin discovery credential\n  needs repair; end-user credentials and tool calls keep working, only\n  periodic tool-list refresh pauses. Repair via reauthorize\n  (per_user_oauth) or verify-headers with fresh sample values\n  (per_user_headers).\n- disabled: Client has been intentionally disabled; no connection or workers are active\n"
+            "description": "Connection state of an MCP client:\n- connected: Client is connected and ready to use\n- disconnected: Client is not connected (will be auto-recovered by health monitor)\n- error: Client is in an unrecoverable error state\n- pending_tools: Connected but tools not yet populated (per-user clients)\n- pending_verification: Declared (typically via config.json) but the one-time\n  admin verification has not been completed yet. Complete it via\n  POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /\n  per_user_oauth) or POST /api/mcp/client/{id}/verify-headers\n  (auth_type per_user_headers).\n- needs_reauth: Setup completed at least once, but a credential an admin is\n  responsible for has permanently died and needs a human to repair it.\n  For shared OAuth clients the connection credential itself was\n  rejected/expired with no silent recovery; the state is sticky (the health\n  monitor will not clobber it) until an admin runs\n  POST /api/mcp/client/{id}/reauthorize. For per-user clients this is a\n  response-only projection meaning the retained admin discovery credential\n  needs repair; end-user credentials and tool calls keep working, only\n  periodic tool-list refresh pauses. Repair via reauthorize\n  (per_user_oauth), verify-headers with fresh sample values\n  (per_user_headers), or verify-exchange (token_exchange, which\n  re-exchanges the signed-in admin's own identity token — no sample\n  values to supply).\n- disabled: Client has been intentionally disabled; no connection or workers are active\n"
           },
           "vk_configs": {
             "type": "array",
@@ -81722,7 +82078,8 @@
               "headers",
               "oauth",
               "per_user_oauth",
-              "per_user_headers"
+              "per_user_headers",
+              "token_exchange"
             ],
             "description": "Authentication type for the MCP connection"
           },
@@ -81770,6 +82127,41 @@
               "type": "string"
             },
             "description": "For `per_user_headers` clients only. The list of header names each end-user\nmust supply via the inline-401 flow. Header values themselves are stored\nper-user in a separate table (surfaced on `/api/mcp/sessions`).\n"
+          },
+          "token_exchange": {
+            "type": "object",
+            "required": [
+              "audience",
+              "client_id"
+            ],
+            "properties": {
+              "audience": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+              },
+              "client_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+              },
+              "client_secret": {
+                "type": "string",
+                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+              },
+              "authorization_server_url": {
+                "type": "string",
+                "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+              }
+            },
+            "description": "For `token_exchange` clients only. `client_id` and `client_secret` are\nredacted in this response.\n"
           },
           "disabled": {
             "type": "boolean",
@@ -81856,9 +82248,10 @@
           "headers",
           "oauth",
           "per_user_oauth",
-          "per_user_headers"
+          "per_user_headers",
+          "token_exchange"
         ],
-        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n"
+        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n"
       },
       "OAuthConfigRequest": {
         "type": "object",

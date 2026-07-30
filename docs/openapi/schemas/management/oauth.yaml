@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -10,6 +10,9 @@ MCPAuthType:
     - oauth: OAuth 2.0 authentication (server-level, admin authenticates once)
     - per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)
     - per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)
+    - token_exchange: Delegated token exchange (each caller's own identity-provider token is
+      exchanged for a short-lived token scoped to this server on every call; nothing is
+      stored per caller). Requires an enabled identity-provider integration (enterprise).
 
 OAuthConfigRequest:
   type: object
