@@ -226,7 +226,8 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return nil, err
 	}
 	logger.Info("logstore: runtime connection pool ready")
-	d := &RDBLogStore{db: db, logger: logger}
+	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
+	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0}
 
 	// Run all index builds sequentially in a single goroutine to prevent
 	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
@@ -271,11 +272,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 
 	// Create materialized views and start periodic refresh for dashboard queries.
 	go func() {
-		if db.Dialector.Name() != "postgres" {
-			return
-		}
-		refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
-		if refreshInterval <= 0 {
+		if db.Dialector.Name() != "postgres" || refreshInterval <= 0 {
 			return
 		}
 		if err := ensureMatViews(context.Background(), db); err != nil {

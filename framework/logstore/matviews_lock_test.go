@@ -30,6 +30,15 @@ func TestStartMatViewRefresherDisabled(t *testing.T) {
 	stop()
 }
 
+func TestSelfHealSkippedWhenMaintenanceDisabled(t *testing.T) {
+	// With maintenance disabled, self-heal must not recreate the views (a nil
+	// db would panic if the repair goroutine ran) and must not arm the
+	// single-flight state.
+	s := &RDBLogStore{matViewMaintenanceDisabled: true}
+	s.triggerMatViewSelfHeal()
+	assert.False(t, s.matViewHealInFlight.Load())
+}
+
 func TestResolveMatViewRefreshTimeoutDefaults(t *testing.T) {
 	// Unset derives from the interval: 5x, floored at 5m.
 	assert.Equal(t, matViewRefreshTimeoutFloor, resolveMatViewRefreshTimeout("", time.Minute, testLogger{}))

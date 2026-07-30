@@ -279,7 +279,7 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`). Minimum `5s`. Set `"off"` to disable matview maintenance entirely. |
+| `matview_refresh_interval` | `"1m"` | How often to refresh dashboard materialized views. Accepts any Go duration string (`"1m"`, `"5m"`, `"1h"`); positive values below `5s` are clamped up to `5s`. Set `"off"` or a zero duration (`"0s"`) to disable matview maintenance entirely. |
 
 **Notes**
 
