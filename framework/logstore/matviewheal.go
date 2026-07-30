@@ -82,6 +82,13 @@ const matViewHealCooldown = 30 * time.Second
 // - the next query against a still-stale view falls back raw and re-triggers
 // the heal, converging once the lock holder finishes.
 func (s *RDBLogStore) triggerMatViewSelfHeal() {
+	if s.matViewMaintenanceDisabled {
+		// Unreachable today (the matview read path never enables when
+		// maintenance is disabled, so no shape error can arrive), but guards
+		// the contract against a future caller: a heal would recreate views
+		// the configuration says must not exist.
+		return
+	}
 	if !s.matViewHealInFlight.CompareAndSwap(false, true) {
 		return // a heal is already running
 	}
