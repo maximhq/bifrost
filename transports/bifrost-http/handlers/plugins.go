@@ -425,6 +425,29 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid request body")
 		return
 	}
+	// A PUT that omits path/placement/order must not clear them. Clients that only
+	// toggle `enabled` or edit `config` (e.g. the update-plugin sheet in the UI) send
+	// neither, and nulling `path` turns a custom plugin into a built-in lookup that
+	// then fails with "unknown built-in plugin" while the old instance keeps running.
+	// Presence is detected on the raw body because absent and explicit null both
+	// decode to a nil pointer.
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(ctx.PostBody(), &rawFields); err != nil {
+		logger.Error("failed to unmarshal update plugin request fields: %v", err)
+		SendError(ctx, 400, "Invalid request body")
+		return
+	}
+	if existingPlugin != nil {
+		if _, sent := rawFields["path"]; !sent {
+			request.Path = existingPlugin.Path
+		}
+		if _, sent := rawFields["placement"]; !sent {
+			request.Placement = existingPlugin.Placement
+		}
+		if _, sent := rawFields["order"]; !sent {
+			request.Order = existingPlugin.Order
+		}
+	}
 	// Validate placement value
 	if request.Placement != nil && *request.Placement != "" &&
 		*request.Placement != schemas.PluginPlacementPreBuiltin &&
