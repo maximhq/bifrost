@@ -108,6 +108,31 @@ const providerConfigSchema = z.object({
 			request_reset_duration: z.string().optional(),
 		})
 		.optional(),
+	// Per-model budgets/rate-limits under this provider
+	model_budgets: z
+		.array(
+			z.object({
+				model_name: z.string().trim().min(1, "Model name is required"),
+				budgets: z
+					.array(
+						z.object({
+							id: z.string().optional(),
+							max_limit: z.number().nonnegative().optional(),
+							reset_duration: z.string().optional(),
+						}),
+					)
+					.optional(),
+				rate_limit: z
+					.object({
+						token_max_limit: z.number().int().nonnegative().optional(),
+						token_reset_duration: z.string().optional(),
+						request_max_limit: z.number().int().nonnegative().optional(),
+						request_reset_duration: z.string().optional(),
+					})
+					.optional(),
+			}),
+		)
+		.optional(),
 });
 
 const mcpConfigSchema = z.object({
@@ -346,6 +371,22 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								request_reset_duration: config.rate_limit.request_reset_duration,
 							}
 						: undefined,
+					model_budgets: config.model_budgets?.map((mb) => ({
+						model_name: mb.model_name,
+						budgets: mb.budgets?.map((b) => ({
+							id: b.id,
+							max_limit: b.max_limit,
+							reset_duration: b.reset_duration,
+						})),
+						rate_limit: mb.rate_limit
+							? {
+									token_max_limit: mb.rate_limit.token_max_limit ?? undefined,
+									token_reset_duration: mb.rate_limit.token_reset_duration,
+									request_max_limit: mb.rate_limit.request_max_limit ?? undefined,
+									request_reset_duration: mb.rate_limit.request_reset_duration,
+								}
+							: undefined,
+					})),
 				})) || [],
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
@@ -534,31 +575,50 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		form.setValue("requestResetDuration", "1h", { shouldDirty: true });
 	};
 
+	// Build a request rate-limit payload from the form's rate-limit fields. Returns the field
+	// values when a limit is set, {} to clear an existing rate limit (removal), or undefined.
+	const normalizeRateLimit = (
+		rl: { token_max_limit?: number; token_reset_duration?: string; request_max_limit?: number; request_reset_duration?: string } | undefined,
+		hadExisting: boolean,
+	) => {
+		const hasToken = rl?.token_max_limit !== undefined;
+		const hasRequest = rl?.request_max_limit !== undefined;
+		if (hasToken || hasRequest) {
+			return {
+				token_max_limit: rl?.token_max_limit ?? null,
+				token_reset_duration: hasToken ? rl?.token_reset_duration || "1h" : null,
+				request_max_limit: rl?.request_max_limit ?? null,
+				request_reset_duration: hasRequest ? rl?.request_reset_duration || "1h" : null,
+			};
+		}
+		return hadExisting ? {} : undefined;
+	};
+
 	const normalizeProviderConfigs = (configs: typeof providerConfigs, existingConfigs?: VirtualKey["provider_configs"]): any[] => {
-		return configs.map((config) => ({
-			...config,
-			budgets: config.budgets?.filter((b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined),
-			weight: config.weight ?? null,
-			rate_limit: (() => {
-				const hasTokenMaxLimit = config.rate_limit?.token_max_limit !== undefined;
-				const hasRequestMaxLimit = config.rate_limit?.request_max_limit !== undefined;
-				if (hasTokenMaxLimit || hasRequestMaxLimit) {
-					return {
-						token_max_limit: config.rate_limit?.token_max_limit ?? null,
-						token_reset_duration: hasTokenMaxLimit ? config.rate_limit?.token_reset_duration || "1h" : null,
-						request_max_limit: config.rate_limit?.request_max_limit ?? null,
-						request_reset_duration: hasRequestMaxLimit ? config.rate_limit?.request_reset_duration || "1h" : null,
-					};
-				}
-
-				const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
-				if (existingConfig?.rate_limit) {
-					return {};
-				}
-
-				return undefined;
-			})(),
-		}));
+		return configs.map((config) => {
+			const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
+			return {
+				...config,
+				budgets: config.budgets?.filter((b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined),
+				weight: config.weight ?? null,
+				rate_limit: normalizeRateLimit(config.rate_limit, !!existingConfig?.rate_limit),
+				// Full desired per-model set: drop unfilled models, keep an empty array so the
+				// backend prunes any per-model budgets removed here.
+				model_budgets: (config.model_budgets || [])
+					.filter((mb) => mb.model_name && mb.model_name.trim() !== "")
+					.map((mb) => {
+						const existingMB = existingConfig?.model_budgets?.find((m) => m.model_name === mb.model_name.trim());
+						return {
+							model_name: mb.model_name.trim(),
+							budgets: (mb.budgets || []).filter(
+								(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+							),
+							rate_limit: normalizeRateLimit(mb.rate_limit, !!existingMB?.rate_limit),
+						};
+					})
+					.filter((mb) => mb.budgets.length > 0 || mb.rate_limit !== undefined),
+			};
+		});
 	};
 
 	const parseResetDurationMs = (duration?: string) => {
@@ -1137,6 +1197,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 														providerLabel={providerLabel}
 														iconProvider={iconProvider}
 														providerKeys={providerKeys}
+														showModelBudgets
 														onRemove={() => handleRemoveProvider(index)}
 														value={{
 															providerName: config.provider,
@@ -1146,6 +1207,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															keyIds: config.key_ids || [],
 															budgets: config.budgets || [],
 															rateLimit: config.rate_limit ?? null,
+															modelBudgets: (config.model_budgets || []).map((mb) => ({
+																model_name: mb.model_name,
+																budgets: mb.budgets || [],
+																rate_limit: mb.rate_limit,
+															})),
 														}}
 														onChange={(next) => {
 															const updated = [...providerConfigs];
@@ -1162,6 +1228,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																	reset_config: l.reset_config,
 																})),
 																rate_limit: next.rateLimit ?? undefined,
+																model_budgets: next.modelBudgets,
 															};
 															form.setValue("providerConfigs", updated, {
 																shouldDirty: true,
