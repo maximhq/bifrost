@@ -290,6 +290,15 @@ if err != nil {
 }
 ```
 
+### Reconnection behavior
+
+How a client reconnects, and whether tool calls are affected while it does, depends on its connection type:
+
+- **HTTP and SSE clients reconnect make-before-break.** Bifrost dials the new connection first; the existing connection keeps serving tool calls for the whole dial. Once the new connection is ready, the swap is atomic, and only then is the old connection closed. In practice this means credential rotation, reauthorization, and the automatic-refresh recycle described in [Automatic refresh](./auth/oauth#automatic-refresh) don't cause downtime for these clients.
+- **STDIO and in-process clients reconnect close-first.** The existing connection (and, for STDIO, its subprocess) is closed before the new one is dialed, so there's a brief window where the client has no connection. This is deliberate: a STDIO reconnect spawns a new subprocess, and many STDIO servers hold exclusive resources (lockfiles, bound ports, singleton sockets) that a second instance can't acquire while the first is still running. STDIO reconnects are also almost always crash recovery, where the existing connection is already dead and there's nothing to keep serving.
+
+Either way, a tool call that lands during a reconnect window is covered by [Auth failure recovery](./tool-execution#auth-failure-recovery) when the failure is auth-shaped; other failures during a close-first window surface as a normal connection error and are retried by the caller.
+
 ### Request ID Tracking
 
 For Agent Mode operations, Bifrost can track intermediate tool executions:

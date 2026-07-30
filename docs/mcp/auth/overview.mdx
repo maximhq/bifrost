@@ -55,6 +55,8 @@ Connection-state semantics (`connected`, `disconnected`, `error`, shown on the M
 - **`pending_verification`**: all five auth types, including `oauth`, `per_user_oauth`, and `per_user_headers`, can be declared in `config.json`, and the three that need an admin verification step (the two OAuth variants plus `per_user_headers`) land in this state at boot. The MCP Gateway UI surfaces an **Authorize** / **Verify** CTA on each pending row that runs the same verification flow the Web UI Create form uses. See each auth type's page for the `config.json` shape.
 - **`needs_reauth`**: on a server-level client, the connection credential itself died and must be reauthorized via the **Reauthorize** button on the client sheet (or [`POST /api/mcp/client/{id}/reauthorize`](./oauth#reauthorization)). On a per-user client, it means the admin credential Bifrost retains to refresh the server's tool list needs repair; end-user credentials and tool calls keep working, only tool-list refresh pauses until an admin repairs it from the client sheet: **Repair OAuth** (the same reauthorize flow) for [`per_user_oauth`](./per-user-oauth#admin-discovery-credential), or **Update headers** (re-running `verify-headers` with fresh sample values) for [`per_user_headers`](./per-user-headers#admin-discovery-credential).
 
+Short of that permanent case, token rotation and reauthorization never require downtime for HTTP/SSE server-level clients: reconnection is [make-before-break](../gateway#reconnection-behavior), so the existing connection keeps serving tool calls until the new one is ready.
+
 ---
 
 ## Pick your auth type
