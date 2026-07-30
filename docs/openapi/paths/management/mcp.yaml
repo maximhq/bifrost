@@ -550,6 +550,75 @@ client-verify-headers:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+client-verify-exchange:
+  post:
+    operationId: verifyMCPClientExchange
+    summary: Verify a pending or repair a needs_reauth token_exchange MCP client
+    description: |
+      Completes admin verification for an MCP client with auth_type
+      "token_exchange". No request body: the subject of the exchange is
+      always the signed-in admin's own identity-provider token (from an SSO
+      session or an identity-authenticated bearer request) — there is no
+      manual token input. Bifrost exchanges it exactly like a real caller's
+      token would be exchanged, opens an upstream connection with the result,
+      discovers the tool list, persists it, and transitions the client to
+      connected. The exchanged token (and any refresh token the identity
+      provider issued alongside it) is retained as the admin discovery
+      credential the periodic tool syncer uses to refresh the tool list;
+      end-user tool calls always exchange the caller's own token instead.
+      Synchronous; no browser flow.
+
+      Serves two situations: the one-time bootstrap verification for a client
+      sitting in pending_verification, and a voluntary refresh of an
+      already-verified client's retained admin discovery credential —
+      resubmitting always re-runs verification and retains a fresh
+      credential, whether or not it currently needs repair (mirrors POST
+      /reauthorize for OAuth-based clients).
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Client verified; tools discovered and client connected
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [success]
+                message:
+                  type: string
+                tools_count:
+                  type: integer
+                  description: Number of tools discovered during verification
+      '400':
+        description: |
+          Client is not auth_type "token_exchange", token exchange is
+          unavailable (no identity-provider integration configured), or the
+          request carries no identity-provider token to exchange (sign in
+          with your identity provider and retry)
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '422':
+        description: The identity provider rejected the exchange, or the upstream verification connection failed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 # ─── MCP Sessions (per-user credentials + pending flows) ─────────────────────
 
 sessions:
