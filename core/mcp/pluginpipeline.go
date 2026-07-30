@@ -159,11 +159,16 @@ func (m *MCPManager) RunWithPluginPipeline(
 		startOpSpan(req)
 		resp, opErr := op(req)
 		if opErr != nil {
-			return resp, &schemas.BifrostError{
+			bErr := &schemas.BifrostError{
 				IsBifrostError: false,
 				Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 				ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 			}
+			var authRequiredErr *schemas.MCPAuthRequiredError
+			if errors.As(opErr, &authRequiredErr) {
+				bErr.ExtraFields.MCPAuthRequired = authRequiredErr
+			}
+			return resp, bErr
 		}
 		return resp, nil
 	}
@@ -240,6 +245,10 @@ func (m *MCPManager) RunWithPluginPipeline(
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 			ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
+		}
+		var authRequiredErr *schemas.MCPAuthRequiredError
+		if errors.As(opErr, &authRequiredErr) {
+			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
 		}
 	}
 
