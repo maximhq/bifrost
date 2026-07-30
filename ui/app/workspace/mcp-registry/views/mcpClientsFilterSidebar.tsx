@@ -58,6 +58,7 @@ const AUTH_TYPE_OPTIONS: FilterOption[] = [
 	{ value: "oauth", label: "OAuth" },
 	{ value: "per_user_oauth", label: "Per-User OAuth" },
 	{ value: "per_user_headers", label: "Per-User Headers" },
+	{ value: "token_exchange", label: "Token Exchange" },
 ];
 
 // Connection state is runtime, not a column — the backend resolves these
