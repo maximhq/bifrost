@@ -284,6 +284,18 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["MCPClients"],
 		}),
+
+		// Verify a token_exchange MCP client (pending_verification bootstrap, or
+		// needs_reauth repair). No body: the backend exchanges the signed-in
+		// admin's own identity-provider token, verifies upstream, discovers
+		// tools, and retains the admin discovery credential.
+		verifyMCPClientExchange: builder.mutation<{ status: string; message: string; tools_count: number }, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/verify-exchange`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
 	}),
 });
 
@@ -304,4 +316,5 @@ export const {
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
 	useVerifyMCPClientHeadersMutation,
+	useVerifyMCPClientExchangeMutation,
 } = mcpApi;
