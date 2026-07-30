@@ -270,6 +270,8 @@ Background refresh only runs while the MCP client is enabled. Disabling a client
 
 Transient refresh failures (network blips, provider hiccups) keep retrying silently. Only a permanent rejection (the provider refuses the refresh token outright) flips the token to `needs_reauth`.
 
+A successful background refresh doesn't just update the stored token: for shared clients it immediately recycles the live connection so it starts using the fresh credential. The recycle is [make-before-break](../gateway#reconnection-behavior) for HTTP and SSE clients, so the connection keeps serving tool calls throughout, and token expiry normally passes with zero failed calls. In a multi-node deployment, only the node that performed the refresh recycles its own connection; the other nodes' connections heal on their next auth failure via the retry described in [Auth failure recovery](../tool-execution#auth-failure-recovery).
+
 <Warning>
 **Some providers only issue a refresh token when you explicitly ask for one.** Google is the canonical case: without `access_type=offline&prompt=consent` on the authorize URL, the grant contains only an access token, and the client lands in `needs_reauth` at every token expiry (roughly hourly for Google). Bifrost preserves any query parameters already present on the configured `authorize_url`, so append the provider's offline-access parameters there, e.g. `"authorize_url": "https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent"`.
 </Warning>
