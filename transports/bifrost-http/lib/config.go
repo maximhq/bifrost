@@ -606,9 +606,9 @@ type Config struct {
 	pluginStatusMu sync.RWMutex
 	pluginStatus   map[string]schemas.PluginStatus // name -> status
 
-	OAuthProvider      *oauth2.OAuth2Provider
-	TokenRefreshWorker *oauth2.TokenRefreshWorker
-	OAuthSweepWorker   *oauth2.PerUserOAuthSweepWorker
+	OAuthProvider           *oauth2.OAuth2Provider
+	OAuthTokenRefreshWorker *oauth2.OAuthTokenRefreshWorker
+	OAuthSweepWorker        *oauth2.PerUserOAuthSweepWorker
 
 	// MCPHeadersProvider backs MCPAuthTypePerUserHeaders credential storage.
 	// Constructed alongside OAuthProvider and passed into the Bifrost core
@@ -4916,11 +4916,15 @@ func initFrameworkConfig(ctx context.Context, config *Config, configData *Config
 	// OAuthProvider for MCPAuthTypePerUserHeaders clients.
 	config.MCPHeadersProvider = mcp_headers.NewProvider(config.ConfigStore, logger)
 
-	// Start token refresh worker for automatic OAuth token refresh
-	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
-	if config.TokenRefreshWorker != nil {
-		config.TokenRefreshWorker.Start(ctx)
-	}
+	// Construct the OAuth token refresh worker, but don't start it here: Start
+	// runs an immediate refresh sweep synchronously with launching its
+	// goroutine, and this point in startup is well before any MCP client is
+	// dialed or the server's SetOnTokenRefreshed reconnect callback is wired
+	// up (see its registration in server.go). A refresh landing in that gap
+	// would leave nothing to trigger the affected client's reconnect until
+	// the next scheduled sweep or a call happens to fail — the server starts
+	// the worker itself, right after that callback is installed.
+	config.OAuthTokenRefreshWorker = oauth2.NewOAuthTokenRefreshWorker(config.OAuthProvider, logger)
 
 	// Start per-user OAuth sweep worker: expires stale pending flows and reaps
 	// long-orphaned token rows. Orphan retention defaults to 30 days.
@@ -5404,15 +5408,15 @@ func (c *Config) GetKVStore() *kvstore.Store {
 }
 
 // Close gracefully shuts down all background components associated with the Config.
-// This includes ModelCatalog sync worker, TokenRefreshWorker, KVStore cleanup loop,
+// This includes ModelCatalog sync worker, OAuthTokenRefreshWorker, KVStore cleanup loop,
 // ConfigStore, LogsStore, and VectorStore. It should be called when the Config is
 // no longer needed to prevent goroutine leaks.
 func (c *Config) Close(ctx context.Context) {
 	if c.ModelCatalog != nil {
 		c.ModelCatalog.Cleanup()
 	}
-	if c.TokenRefreshWorker != nil {
-		c.TokenRefreshWorker.Stop()
+	if c.OAuthTokenRefreshWorker != nil {
+		c.OAuthTokenRefreshWorker.Stop()
 	}
 	if c.OAuthSweepWorker != nil {
 		c.OAuthSweepWorker.Stop()
