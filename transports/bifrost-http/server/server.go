@@ -2556,6 +2556,41 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// enterprise ones — registered after that snapshot, causing the client to fail
 	// and only recover on a later health-monitor reconnect).
 	s.Client.ConnectConfiguredMCPClients(s.Ctx)
+	// A proactively refreshed shared OAuth token leaves the live MCP connection
+	// still holding the old bearer (the credential is baked into the transport
+	// at connect time), so recycle the connection as soon as the refresh worker
+	// lands a fresh token instead of waiting for a call to fail. Installed only
+	// after the boot dial above so the worker's first sweep cannot race client
+	// construction. In-flight calls on the old connection may fail once during
+	// the recycle; the reactive auth-failure retry covers them. Per-user
+	// (non-shared) tokens have no persistent connection, so they are skipped.
+	if s.Config.OAuthTokenRefreshWorker != nil {
+		s.Config.OAuthTokenRefreshWorker.SetOnTokenRefreshed(func(mcpClientID, authMode string) {
+			if authMode != "shared" {
+				return
+			}
+			// Run in a goroutine: a reconnect can take minutes worst-case and
+			// must not block the worker's sequential refresh loop. Expected
+			// no-op outcomes (a reconnect already in progress, or a client
+			// type reconnect does not apply to) surface here as errors and
+			// are deliberately logged at Debug only.
+			go func() {
+				if err := s.ReconnectMCPClient(s.Ctx, mcpClientID); err != nil {
+					logger.Debug("MCP client %s was not reconnected after a proactive token refresh: %v", mcpClientID, err)
+					return
+				}
+				logger.Debug("recycled shared MCP connection for client %s after a proactive token refresh", mcpClientID)
+			}()
+		})
+		// Started here, not at construction (lib/config.go): Start's first
+		// refresh sweep runs immediately, synchronously with launching its
+		// goroutine. Starting any earlier — before the callback above is
+		// wired up and before the boot dial above has run — would let a
+		// refresh land with nothing to trigger the affected client's
+		// reconnect, leaving a live connection on the old bearer until the
+		// next scheduled sweep or a call happens to fail.
+		s.Config.OAuthTokenRefreshWorker.Start(s.Ctx)
+	}
 	// Serve a minimal robots.txt so crawlers/CLI tools (e.g. Claude Code) don't
 	// trigger 404 warnings when probing the host before marketplace fetches.
 	s.Router.GET("/robots.txt", func(ctx *fasthttp.RequestCtx) {
