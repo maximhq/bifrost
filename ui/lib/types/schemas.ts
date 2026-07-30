@@ -1196,6 +1196,18 @@ export const mcpClientUpdateSchema = z.object({
 			resource: z.string().optional(),
 		})
 		.optional(),
+	token_exchange: z
+		.object({
+			audience: z.string().trim().min(1, "Audience is required"),
+			client_id: secretVarSchema.optional(),
+			client_secret: secretVarSchema.optional(),
+			authorization_server_url: z
+				.string()
+				.optional()
+				.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Authorization Server URL must start with http:// or https://" }),
+			scopes: z.array(z.string()).optional(),
+		})
+		.optional(),
 	tls_config: z
 		.object({
 			insecure_skip_verify: z.boolean().optional(),

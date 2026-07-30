@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -25,6 +26,7 @@ import {
 	useReauthorizeMCPClientMutation,
 	useReconnectMCPClientMutation,
 	useUpdateMCPClientMutation,
+	useVerifyMCPClientExchangeMutation,
 	useVerifyMCPClientHeadersMutation,
 } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
@@ -58,12 +60,14 @@ function MCPClientActionsMenu({
 	isReconnecting,
 	isAuthorizing,
 	isReauthorizing,
+	isVerifyingExchange,
 	isPerUserAuth,
 	onEdit,
 	onReconnect,
 	onAuthorize,
 	onReauthorize,
 	onRefreshHeaders,
+	onVerifyExchange,
 	onDelete,
 }: {
 	client: MCPClient;
@@ -72,12 +76,14 @@ function MCPClientActionsMenu({
 	isReconnecting: boolean;
 	isAuthorizing: boolean;
 	isReauthorizing: boolean;
+	isVerifyingExchange: boolean;
 	isPerUserAuth: boolean;
 	onEdit: (client: MCPClient) => void;
 	onReconnect: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
 	onReauthorize: (client: MCPClient) => void;
 	onRefreshHeaders: (client: MCPClient) => void;
+	onVerifyExchange: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
@@ -194,6 +200,24 @@ function MCPClientActionsMenu({
 							Refresh admin credential
 						</DropdownMenuItem>
 					)}
+				{hasUpdateAccess &&
+					client.state !== "pending_verification" &&
+					client.state !== "disabled" &&
+					client.config.auth_type === "token_exchange" && (
+						<DropdownMenuItem
+							className="cursor-pointer"
+							disabled={isVerifyingExchange}
+							data-testid={`mcp-client-verify-exchange-${client.config.client_id}-menu-item`}
+							onSelect={(e) => {
+								e.preventDefault();
+								onVerifyExchange(client);
+								setIsOpen(false);
+							}}
+						>
+							<KeyRound className="h-4 w-4" />
+							Re-verify as me
+						</DropdownMenuItem>
+					)}
 				{hasDeleteAccess && (
 					<DropdownMenuItem
 						variant="destructive"
@@ -249,12 +273,20 @@ export default function MCPClientsTable({
 	const hasDeleteMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Delete);
 	const [selectedMCPClient, setSelectedMCPClient] = useState<MCPClient | null>(null);
 	const [clientToDelete, setClientToDelete] = useState<MCPClient | null>(null);
+	// Drives the token_exchange "Re-verify as me" confirm dialog. Unlike
+	// per_user_oauth/per_user_headers, verify-exchange needs no popup or
+	// sample values — it fires as soon as confirmed — but admins still need
+	// the same "what does this touch, when do I need it" context those flows
+	// get from OAuth2Authorizer/MCPHeadersAuthorizer before we exchange their
+	// identity token.
+	const [exchangeVerifyClient, setExchangeVerifyClient] = useState<MCPClient | null>(null);
 	const [showDetailSheet, setShowDetailSheet] = useState(false);
 	const { toast } = useToast();
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
 	const [authorizingClients, setAuthorizingClients] = useState<string[]>([]);
 	const [reauthorizingClients, setReauthorizingClients] = useState<string[]>([]);
+	const [verifyingExchangeClients, setVerifyingExchangeClients] = useState<string[]>([]);
 	const [togglingClientIds, setTogglingClientIds] = useState<Set<string>>(new Set());
 	// Drives the OAuth2Authorizer dialog for a config.json-bootstrapped client
 	// sitting in pending_verification, triggered from the row actions menu.
@@ -288,6 +320,7 @@ export default function MCPClientsTable({
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
 	const [reauthorizeMCPClient] = useReauthorizeMCPClientMutation();
+	const [verifyMCPClientExchange] = useVerifyMCPClientExchangeMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
 	const [updateMCPClient] = useUpdateMCPClientMutation();
 	const [initiateVerification] = useInitiateMCPClientVerificationMutation();
@@ -313,10 +346,16 @@ export default function MCPClientsTable({
 	};
 
 	const handleStartBootstrap = async (client: MCPClient) => {
-		// per_user_headers takes a synchronous form-based path; OAuth-based
-		// types kick off the existing browser flow below.
+		// per_user_headers takes a synchronous form-based path, token_exchange
+		// opens the same "Re-verify as me" confirm dialog used to repair an
+		// already-verified client; OAuth-based types kick off the existing
+		// browser flow below.
 		if (client.config.auth_type === "per_user_headers") {
 			setBootstrapHeadersClient(client);
+			return;
+		}
+		if (client.config.auth_type === "token_exchange") {
+			handleRequestVerifyExchange(client);
 			return;
 		}
 		const isPerUserOauth = client.config.auth_type === "per_user_oauth";
@@ -399,6 +438,31 @@ export default function MCPClientsTable({
 		});
 	};
 
+	// Opens the "Re-verify as me" confirm dialog for a token_exchange client.
+	// The exchange call itself is synchronous and inputless — the backend
+	// exchanges the signed-in admin's own identity token, so there's nothing
+	// to collect — but admins still need the same "what does this touch, when
+	// do I need it" context OAuth2Authorizer/MCPHeadersAuthorizer give before
+	// their identity token gets used.
+	const handleRequestVerifyExchange = (client: MCPClient) => {
+		setExchangeVerifyClient(client);
+	};
+
+	const handleVerifyExchange = async (client: MCPClient) => {
+		try {
+			setVerifyingExchangeClients((prev) => [...prev, client.config.client_id]);
+			const response = await verifyMCPClientExchange(client.config.client_id).unwrap();
+			toast({ title: "Verified", description: response.message });
+			if (refetch) {
+				await refetch();
+			}
+		} catch (error) {
+			toast({ title: "Verification failed", description: getErrorMessage(error), variant: "destructive" });
+		} finally {
+			setVerifyingExchangeClients((prev) => prev.filter((id) => id !== client.config.client_id));
+		}
+	};
+
 	const handleDelete = async (client: MCPClient) => {
 		try {
 			await deleteMCPClient(client.config.client_id).unwrap();
@@ -443,6 +507,8 @@ export default function MCPClientsTable({
 			case "oauth":
 			case "per_user_oauth":
 				return "OAuth";
+			case "token_exchange":
+				return "Token Exchange";
 			default:
 				return type;
 		}
@@ -452,6 +518,7 @@ export default function MCPClientsTable({
 		switch (type) {
 			case "per_user_oauth":
 			case "per_user_headers":
+			case "token_exchange":
 				return "Per-User";
 			case "oauth":
 			case "headers":
@@ -619,6 +686,66 @@ export default function MCPClientsTable({
 				/>
 			)}
 
+			{/* Mirrors OAuth2Authorizer's confirm-step layout (icon header, muted
+			    info box, outline-cancel + default-continue footer) so token_exchange
+			    reverification reads as the same kind of admin-credential action,
+			    not a destructive one. */}
+			<Dialog open={!!exchangeVerifyClient} onOpenChange={(next) => !next && setExchangeVerifyClient(null)}>
+				<DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
+					<DialogHeader className="border-b px-5 py-4 text-left">
+						<div className="flex items-start gap-3">
+							<div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md">
+								<KeyRound className="size-4" />
+							</div>
+							<div className="min-w-0 space-y-0.5">
+								<DialogTitle className="text-sm leading-snug font-medium">Re-verify as me</DialogTitle>
+								<DialogDescription className="text-xs leading-relaxed">
+									Renew Bifrost&apos;s own discovery credential using your identity.
+								</DialogDescription>
+							</div>
+						</div>
+					</DialogHeader>
+					<div className="space-y-3 px-5 py-4">
+						<div className="border-border bg-muted/40 text-muted-foreground flex gap-3 rounded-md border p-3.5 text-sm">
+							<span className="mt-0.5 shrink-0">
+								<KeyRound className="size-4" />
+							</span>
+							<div className="space-y-1 leading-relaxed">
+								<p>
+									This exchanges your own signed-in identity to renew Bifrost&apos;s discovery credential for{" "}
+									<strong>{exchangeVerifyClient?.config.name}</strong>.
+								</p>
+								<p className="text-muted-foreground/80 text-xs">
+									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests,
+									whose tokens are exchanged automatically on every request. You only need this if the credential badge shows
+									it&apos;s expired, but running it any time is safe.
+								</p>
+							</div>
+						</div>
+						<div className="flex justify-end gap-2">
+							<Button
+								size="sm"
+								variant="outline"
+								onClick={() => setExchangeVerifyClient(null)}
+								data-testid="verify-exchange-cancel-btn"
+							>
+								Cancel
+							</Button>
+							<Button
+								size="sm"
+								onClick={() => {
+									if (exchangeVerifyClient) void handleVerifyExchange(exchangeVerifyClient);
+									setExchangeVerifyClient(null);
+								}}
+								data-testid="verify-exchange-confirm-btn"
+							>
+								Continue
+							</Button>
+						</div>
+					</div>
+				</DialogContent>
+			</Dialog>
+
 			<div className="mb-4 flex items-center justify-between gap-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">MCP Server Catalog</h2>
@@ -702,7 +829,15 @@ export default function MCPClientsTable({
 									// Per-user auth types (OAuth + headers) don't hold a shared
 									// upstream connection, so reconnect is a no-op for them — the
 									// backend's ReconnectClient rejects with ErrMCPReconnectNotApplicable.
-									const isPerUserAuth = c.config.auth_type === "per_user_oauth" || c.config.auth_type === "per_user_headers";
+									const isPerUserAuth =
+										c.config.auth_type === "per_user_oauth" ||
+										c.config.auth_type === "per_user_headers" ||
+										c.config.auth_type === "token_exchange";
+									// Token-exchange clients hold no per-user session rows (nothing
+									// to view), unlike per_user_oauth/per_user_headers — mirrors
+									// mcpClientSheet.tsx's hasPerUserSessions.
+									const hasPerUserSessions =
+										c.config.auth_type === "per_user_oauth" || c.config.auth_type === "per_user_headers";
 									const enabledToolsCount =
 										c.state == "connected"
 											? c.config.tools_to_execute?.includes("*")
@@ -764,24 +899,30 @@ export default function MCPClientsTable({
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
-												{isPerUserAuth ? (
+												{isPerUserAuth && (c.state === "pending_verification" || c.state === "needs_reauth") ? (
+													// pending_verification and needs_reauth are actionable
+													// admin-facing states (bootstrap / repair the retained admin
+													// credential) rather than a live per-caller connection state —
+													// surface just the badge, not the sessions link, since there's
+													// nothing to view yet (unverified) or the link isn't the fix
+													// (repair via the actions menu is).
+													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
+												) : isPerUserAuth && hasPerUserSessions ? (
 													// Per-user clients never hold a shared upstream connection, so a
 													// connection-state badge here would be misleading: point to the
-													// per-user sessions this client actually has instead. The one
-													// exception is needs_reauth, which for per-user clients means the
-													// retained admin discovery credential needs repair: surface that
-													// badge next to the link so the admin can act on it.
-													<span className="flex items-center gap-2">
-														<Link
-															to="/workspace/mcp-sessions"
-															search={{ mcp_client_id: [c.config.client_id] }}
-															className="text-primary text-xs font-medium hover:underline"
-															data-testid={`mcp-client-view-sessions-${c.config.client_id}`}
-														>
-															View sessions
-														</Link>
-														{c.state === "needs_reauth" && <Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>}
-													</span>
+													// per-user sessions this client actually has instead.
+													<Link
+														to="/workspace/mcp-sessions"
+														search={{ mcp_client_id: [c.config.client_id] }}
+														className="text-primary text-xs font-medium hover:underline"
+														data-testid={`mcp-client-view-sessions-${c.config.client_id}`}
+													>
+														View sessions
+													</Link>
+												) : isPerUserAuth ? (
+													// Token exchange: no stored sessions to link to, and not in an
+													// actionable state — nothing to surface here.
+													null
 												) : (
 													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
 												)}
@@ -833,12 +974,14 @@ export default function MCPClientsTable({
 													isReconnecting={reconnectingClients.includes(c.config.client_id)}
 													isAuthorizing={authorizingClients.includes(c.config.client_id)}
 													isReauthorizing={reauthorizingClients.includes(c.config.client_id)}
+													isVerifyingExchange={verifyingExchangeClients.includes(c.config.client_id)}
 													isPerUserAuth={isPerUserAuth}
 													onEdit={handleRowClick}
 													onReconnect={(client) => void handleReconnect(client)}
 													onAuthorize={(client) => void handleStartBootstrap(client)}
 													onReauthorize={(client) => void handleReauthorize(client)}
 													onRefreshHeaders={handleRefreshHeaders}
+													onVerifyExchange={handleRequestVerifyExchange}
 													onDelete={setClientToDelete}
 												/>
 											</TableCell>
