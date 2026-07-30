@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -20,16 +21,22 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
-// InferPluginTypes determines which interface types a plugin implements
+// InferPluginTypes determines which interface types a plugin implements.
+// A .so plugin is wrapped in a DynamicPlugin, which structurally satisfies every hook
+// interface regardless of which symbols the .so actually exports, so a plain type
+// assertion reports all three types for every dynamic plugin. That made RemovePlugin
+// remove the same instance from both the LLM and MCP lists and call Cleanup() once per
+// list. The framework's As* helpers additionally check the hook function pointers, so
+// dynamic plugins are classified by the symbols they really export.
 func InferPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
 	var types []schemas.PluginType
-	if _, ok := plugin.(schemas.LLMPlugin); ok {
+	if dynamicPlugins.AsLLMPlugin(plugin) != nil {
 		types = append(types, schemas.PluginTypeLLM)
 	}
-	if _, ok := plugin.(schemas.MCPPlugin); ok {
+	if dynamicPlugins.AsMCPPlugin(plugin) != nil {
 		types = append(types, schemas.PluginTypeMCP)
 	}
-	if _, ok := plugin.(schemas.HTTPTransportPlugin); ok {
+	if dynamicPlugins.AsHTTPTransportPlugin(plugin) != nil {
 		types = append(types, schemas.PluginTypeHTTP)
 	}
 	return types
