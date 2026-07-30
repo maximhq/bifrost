@@ -133,7 +133,8 @@ func TestModelCatalogReachesPluginHooksOnRealRequest(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
 	defer ctx.Cancel()
 
-	if _, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest()); bfErr != nil {
+	resp, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest())
+	if bfErr != nil {
 		t.Fatalf("ChatCompletionRequest failed: %v", bfErr)
 	}
 
@@ -155,14 +156,17 @@ func TestModelCatalogReachesPluginHooksOnRealRequest(t *testing.T) {
 	if plugin.postCost != 0.25 {
 		t.Errorf("PostLLMHook CalculateCost = %v, want 0.25", plugin.postCost)
 	}
+	if resp.ExtraFields.Cost == nil || *resp.ExtraFields.Cost != 0.25 {
+		t.Errorf("response cost = %v, want 0.25", resp.ExtraFields.Cost)
+	}
 
 	// The arguments must arrive unchanged; a mangled provider would silently
 	// return nil for every real model.
 	if catalog.gotProvider != schemas.OpenAI || catalog.gotModel != "gpt-4o" {
 		t.Errorf("catalog saw (%q, %q), want (openai, gpt-4o)", catalog.gotProvider, catalog.gotModel)
 	}
-	if catalog.costCalls != 1 {
-		t.Errorf("CalculateRequestCost called %d times, want 1", catalog.costCalls)
+	if catalog.costCalls != 2 {
+		t.Errorf("CalculateRequestCost called %d times, want 2", catalog.costCalls)
 	}
 }
 
