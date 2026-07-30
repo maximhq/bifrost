@@ -761,6 +761,7 @@ type MCPClientState struct {
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
 	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
 	State           MCPConnectionState       // Connection state (connected, disconnected, error)
+	ConnGeneration  uint64                   `json:"-"` // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
