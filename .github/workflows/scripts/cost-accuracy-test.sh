@@ -396,6 +396,7 @@ def logs_complete(logs):
         for item in logs
     )
 
+<<<<<<< HEAD
 def describe_incomplete(item):
     # "missing token_usage or cost" on its own is not actionable: cost and token_usage
     # reach the API by different routes (cost is a column, token_usage is a JSON blob
@@ -420,13 +421,18 @@ def describe_incomplete(item):
     }
 
 LOG_POLL_ATTEMPTS = 60
+=======
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 logs = []
 logs_ready = False
 for _ in range(LOG_POLL_ATTEMPTS):
     payload = get_json("/api/logs", params)
     logs = payload.get("logs", [])
     if len(logs) >= expected_count and logs_complete(logs):
+<<<<<<< HEAD
         logs_ready = True
+=======
+>>>>>>> 061d01944 (V2.0.0 (#4365))
         break
     time.sleep(1)
 

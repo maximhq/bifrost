@@ -24,6 +24,12 @@ import {
 	History,
 	KeyRound,
 	Landmark,
+<<<<<<< HEAD
+=======
+	Hexagon,
+	BadgeCheck,
+	BadgeInfo,
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 	LaptopMinimalCheck,
 	LayoutGrid,
 	LogOut,
@@ -443,6 +449,7 @@ const SidebarItemView = ({
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl ? subItemHref.startsWith(highlightedUrl) : false;
 						const SubItemIcon = subItem.icon;
+<<<<<<< HEAD
 						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
 							? "bg-sidebar-accent text-accent-foreground"
 							: isSubItemActive
@@ -451,6 +458,17 @@ const SidebarItemView = ({
 									? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 									: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
 							}`;
+=======
+						const subItemClassName = `h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+							isSubItemHighlighted
+								? "bg-sidebar-accent text-accent-foreground"
+								: isSubItemActive
+									? "bg-sidebar-accent text-primary font-medium"
+									: subItem.hasAccess === false
+										? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+						}`;
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 						const subInner = (
 							<div className="flex w-full items-center gap-2">
 								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -1087,6 +1105,7 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
+<<<<<<< HEAD
 							{
 								title: "Branding",
 								url: "/workspace/config/branding",
@@ -1102,6 +1121,16 @@ export default function AppSidebar() {
 								hasAccess: hasSettingsAccess,
 							},
 						]
+=======
+								{
+									title: "License Info",
+									url: "/workspace/config/license",
+									icon: BadgeInfo,
+									description: "Enterprise license information",
+									hasAccess: hasSettingsAccess,
+								},
+							]
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 						: []),
 				],
 			},
@@ -1137,6 +1166,10 @@ export default function AppSidebar() {
 			hasPromptRepositoryAccess,
 			hasSkillsRepositoryAccess,
 			hasAccessProfilesAccess,
+<<<<<<< HEAD
+=======
+			hasAccessProfilesAccess,
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 			hasFeatureFlagsAccess,
 			hasDevicesAccess,
 			hasInventoryAccess,

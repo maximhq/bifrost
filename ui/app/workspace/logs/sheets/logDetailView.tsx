@@ -715,6 +715,7 @@ export function LogDetailView({
 				<div className="flex items-center gap-3">
 					{revealAvailable && (
 						<div className="flex items-center gap-2">
+<<<<<<< HEAD
 							<label htmlFor="logdetails-reveal-toggle" className="text-muted-foreground text-[11px] font-medium">
 								Show original values
 							</label>
@@ -724,6 +725,10 @@ export function LogDetailView({
 								onCheckedChange={handleToggleReveal}
 								data-testid="logdetails-reveal-toggle"
 							/>
+=======
+							<span className="text-muted-foreground text-[11px] font-medium">Show original values</span>
+							<Switch checked={revealEnabled} onCheckedChange={handleToggleReveal} data-testid="logdetails-reveal-toggle" />
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 						</div>
 					)}
 					{onClose ? (

@@ -239,7 +239,7 @@ type Log struct {
 	VideoListOutput         string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoListResponse
 	VideoDeleteOutput       string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostVideoDeleteResponse
 	CacheDebug              string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostCacheDebug
-	GuardrailDebug          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostGuardrailDebug
+	GuardrailDebug          string    `gorm:"type:text" json:"-"`                                                      // JSON serialized *schemas.BifrostGuardrailDebug
 	Latency                 *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	TokenUsage              string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
 	Cost                    *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)

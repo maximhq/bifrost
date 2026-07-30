@@ -14,7 +14,11 @@ import {
 	Status,
 	StatusBarColors,
 } from "@/lib/constants/logs";
+<<<<<<< HEAD
 import { ChatMessageContent, DisplayLogEntry, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+=======
+import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
@@ -269,7 +273,10 @@ export const createColumns = (
 	hasDeleteAccess = true,
 	metadataKeys: string[] = [],
 	customAppIcons: Record<string, string> = {},
+<<<<<<< HEAD
 	groupedView = false,
+=======
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 ): ColumnDef<LogEntry>[] => {
 	// Chevron that expands a fallback chain in the grouped view. Child rows get a
 	// corner connector instead so the hierarchy stays readable in any column order.

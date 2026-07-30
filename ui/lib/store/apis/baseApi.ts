@@ -196,7 +196,10 @@ export const baseApi = createApi({
 		"Skills",
 		"OAuth2Grants",
 		"UserAgentMappings",
+<<<<<<< HEAD
 		"Branding",
+=======
+>>>>>>> 061d01944 (V2.0.0 (#4365))
 		"Devices",
 		"CircuitBreakerPolicies",
 		"CircuitBreakerState",
