@@ -6885,7 +6885,7 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 	result := s.DB().WithContext(ctx).
 		// mcp_oauth_tokens holds both shared and per-user rows; callers
 		// decide which holder types get proactive background refresh via
-		// authModes (TokenRefreshWorker.AuthModes, shared + admin by default).
+		// authModes (OAuthTokenRefreshWorker.AuthModes, shared + admin by default).
 		Where("auth_mode IN ?", authModes).
 		Where("status = ?", "active").
 		Where("expires_at IS NOT NULL AND expires_at < ?", before).

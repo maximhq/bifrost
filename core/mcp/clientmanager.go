@@ -223,6 +223,53 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 	return clients
 }
 
+// inflightClientOp tracks one in-flight exclusive operation on a client
+// (reconnect, enable/disable, credential update). Waiters observe completion
+// through the done channel; err carries the operation's final outcome and is
+// only safe to read after done is closed.
+type inflightClientOp struct {
+	done chan struct{}
+	err  error
+}
+
+// beginExclusiveClientOp atomically registers an in-flight exclusive operation
+// for the given client ID. ok is false when another operation already holds the
+// slot, preserving the second-caller-errors contract every guarded entry point
+// relies on. On success the caller must invoke finish exactly once with the
+// operation's final error so waiters parked in AwaitReconnect get the outcome.
+func (m *MCPManager) beginExclusiveClientOp(id string) (finish func(error), ok bool) {
+	op := &inflightClientOp{done: make(chan struct{})}
+	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, op); alreadyInFlight {
+		return nil, false
+	}
+	return func(err error) {
+		op.err = err
+		close(op.done)
+		m.reconnectingClients.Delete(id)
+	}, true
+}
+
+// AwaitReconnect waits up to budget for the in-flight exclusive operation on
+// the given client (typically a reconnect) to complete. Returns (true, finalErr)
+// when the operation finished within the budget, and (false, nil) when nothing
+// is in flight or the wait timed out. A timed-out wait never cancels the
+// underlying operation; it keeps running to completion in the background.
+func (m *MCPManager) AwaitReconnect(clientID string, budget time.Duration) (bool, error) {
+	v, ok := m.reconnectingClients.Load(clientID)
+	if !ok {
+		return false, nil
+	}
+	op := v.(*inflightClientOp)
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-op.done:
+		return true, op.err
+	case <-timer.C:
+		return false, nil
+	}
+}
+
 // CloseAndMarkNeedsReauth tears down a shared client's live upstream
 // connection and flips it to NeedsReauth, without attempting a new dial.
 // Used after OAuth credential rotation: RotateMCPOAuthConfig has already
@@ -237,11 +284,12 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 //
 // Returns:
 //   - error: if the client does not exist or has no persistent connection
-func (m *MCPManager) CloseAndMarkNeedsReauth(id string) error {
-	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, true); alreadyInFlight {
+func (m *MCPManager) CloseAndMarkNeedsReauth(id string) (retErr error) {
+	finish, ok := m.beginExclusiveClientOp(id)
+	if !ok {
 		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
 	}
-	defer m.reconnectingClients.Delete(id)
+	defer func() { finish(retErr) }()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -284,12 +332,13 @@ func (m *MCPManager) CloseAndMarkNeedsReauth(id string) error {
 //
 // Returns:
 //   - error: Any error that occurred during reconnection
-func (m *MCPManager) ReconnectClient(id string) error {
+func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 	// Acquire per-client reconnect/update guard before reading config snapshot.
-	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+	finish, ok := m.beginExclusiveClientOp(id)
+	if !ok {
 		return fmt.Errorf("reconnect already in progress for this client")
 	}
-	defer m.reconnectingClients.Delete(id)
+	defer func() { finish(retErr) }()
 
 	m.mu.Lock()
 	client, ok := m.clientMap[id]
@@ -932,16 +981,18 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 //
 // Returns:
 //   - error: Any error that occurred during disable
-func (m *MCPManager) DisableClient(id string) error {
+func (m *MCPManager) DisableClient(id string) (retErr error) {
 	// The internal in-process client must never be disabled:
 	if id == BifrostMCPClientKey {
 		return fmt.Errorf("cannot disable internal bifrost client")
 	}
-	// Use LoadOrStore (not Load) so the check and the sentinel insertion are atomic.
-	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, true); alreadyInFlight {
+	// beginExclusiveClientOp registers atomically, so the check and the
+	// in-flight record insertion cannot race another operation.
+	finish, ok := m.beginExclusiveClientOp(id)
+	if !ok {
 		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
 	}
-	defer m.reconnectingClients.Delete(id)
+	defer func() { finish(retErr) }()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -992,7 +1043,7 @@ func (m *MCPManager) DisableClient(id string) error {
 //
 // Returns:
 //   - error: Any error that occurred during enable or connection
-func (m *MCPManager) EnableClient(id string) error {
+func (m *MCPManager) EnableClient(id string) (retErr error) {
 	m.mu.Lock()
 	clientState, ok := m.clientMap[id]
 	if !ok {
@@ -1028,12 +1079,13 @@ func (m *MCPManager) EnableClient(id string) error {
 	}
 
 	// Guard against concurrent reconnects for the same client from any caller
-	// (health monitor, manual API call, etc.). LoadOrStore is atomic — whichever
+	// (health monitor, manual API call, etc.). Registration is atomic: whichever
 	// caller arrives second gets the "already in progress" error immediately.
-	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+	finish, ok := m.beginExclusiveClientOp(id)
+	if !ok {
 		return fmt.Errorf("reconnect already in progress for this client")
 	}
-	defer m.reconnectingClients.Delete(id)
+	defer func() { finish(retErr) }()
 
 	if err := m.connectToMCPClient(m.ctx, configCopy); err != nil {
 		// Connection failed — leave the entry as Disconnected so the health monitor can
@@ -1083,11 +1135,12 @@ func (m *MCPManager) EnableClient(id string) error {
 //
 // Returns:
 //   - error: Any error that occurred during client update or tool retrieval
-func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error {
-	if _, alreadyInFlight := m.reconnectingClients.LoadOrStore(id, true); alreadyInFlight {
+func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) (retErr error) {
+	finish, ok := m.beginExclusiveClientOp(id)
+	if !ok {
 		return fmt.Errorf("reconnect or connection credential update already in progress for MCP client %s", id)
 	}
-	defer m.reconnectingClients.Delete(id)
+	defer func() { finish(retErr) }()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1208,17 +1261,18 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 //
 // Returns:
 //   - error: Any connection error; nil on success
-func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) error {
+func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) (retErr error) {
 	if newConfig == nil {
 		return fmt.Errorf("newConfig must not be nil")
 	}
 	// Hold the per-client reconnect guard for the entire read + long reconnect so
 	// UpdateClient/DisableClient cannot mutate ExecutionConfig while a failed reconnect
 	// restores the pre-attempt snapshot.
-	if _, alreadyReconnecting := m.reconnectingClients.LoadOrStore(id, true); alreadyReconnecting {
+	finish, ok := m.beginExclusiveClientOp(id)
+	if !ok {
 		return fmt.Errorf("reconnect already in progress for this client")
 	}
-	defer m.reconnectingClients.Delete(id)
+	defer func() { finish(retErr) }()
 
 	m.mu.RLock()
 	client, ok := m.clientMap[id]
