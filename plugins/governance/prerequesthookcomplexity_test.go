@@ -3,7 +3,9 @@ package governance
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -80,6 +82,160 @@ func TestPreRequestHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
 	require.Equal(t, complexity.MechanismLexical, mechanism)
 	_, ok = bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
 	require.True(t, ok, "complexity score should be recorded in context")
+}
+
+// TestPreRequestHook_SemanticComplexityUsesLastMessageAndFallsBack verifies
+// that semantic routing reaches a Governance rule, embeds only the latest user
+// turn, and returns to the shared lexical lists when semantic is unavailable.
+func TestPreRequestHook_SemanticComplexityUsesLastMessageAndFallsBack(t *testing.T) {
+	logger := NewMockLogger()
+	provider := "openai"
+	routeModel := "gpt-4o-mini"
+	semanticConfig := complexity.AnalyzerConfig{
+		TierBoundaries: complexity.DefaultTierBoundaries(),
+		Keywords: complexity.EditableKeywordConfig{
+			SimpleKeywords:  []string{"papaya amber"},
+			MediumKeywords:  []string{"cedar cobalt"},
+			ComplexKeywords: []string{"obsidian comet"},
+		},
+		Semantic: &complexity.SemanticConfig{
+			Provider:       schemas.OpenAI,
+			EmbeddingModel: "test-embedding-model",
+			Timeout:        time.Second,
+			VectorStore:    configstore.ComplexitySemanticVectorStoreEmbedded,
+		},
+	}
+
+	plugin, err := Init(
+		context.Background(),
+		&Config{IsVkMandatory: boolPtr(false)},
+		logger,
+		nil,
+		&configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: &semanticConfig,
+			RoutingRules: []configstoreTables.TableRoutingRule{
+				{
+					ID:            "semantic-simple-rule",
+					Name:          "Semantic simple route",
+					CelExpression: `complexity_tier == "SIMPLE"`,
+					Targets: []configstoreTables.TableRoutingTarget{
+						{Provider: &provider, Model: &routeModel, Weight: 1.0},
+					},
+					Enabled:  schemas.Ptr(true),
+					Scope:    "global",
+					Priority: 0,
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	var embeddedMu sync.Mutex
+	var embeddedTexts []string
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		if req == nil || req.Input == nil {
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "semantic embedding request did not contain text"}}
+		}
+		var texts []string
+		if req.Input.Text != nil {
+			texts = []string{*req.Input.Text}
+		} else {
+			texts = req.Input.Texts
+		}
+		if len(texts) == 0 {
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "semantic embedding request did not contain text"}}
+		}
+		embeddedMu.Lock()
+		embeddedTexts = append(embeddedTexts, texts...)
+		embeddedMu.Unlock()
+
+		data := make([]schemas.EmbeddingData, len(texts))
+		for index, text := range texts {
+			vector := []float64{0.5, 0.5}
+			switch text {
+			case "papaya amber":
+				vector = []float64{1, 0}
+			case "cedar cobalt":
+				vector = []float64{0, 1}
+			case "obsidian comet":
+				vector = []float64{-1, 0}
+			}
+			data[index] = schemas.EmbeddingData{
+				Index:     index,
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: vector},
+			}
+		}
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  data,
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: len(texts)},
+		}, nil
+	})
+
+	require.Eventually(t, func() bool {
+		return plugin.ComplexitySemanticStatus().State == complexity.SemanticStatusReady
+	}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
+
+	embeddedMu.Lock()
+	embeddedTexts = nil
+	embeddedMu.Unlock()
+	semanticRequest := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("obsidian comet")},
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("papaya amber")},
+			},
+		},
+	}
+	semanticCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, plugin.PreRequestHook(semanticCtx, semanticRequest))
+
+	providerOut, modelOut, _ := semanticRequest.GetRequestFields()
+	require.Equal(t, schemas.OpenAI, providerOut)
+	require.Equal(t, routeModel, modelOut)
+	require.Equal(t, complexity.TierSimple, semanticCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	require.Equal(t, complexity.MechanismSemantic, semanticCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	embeddedMu.Lock()
+	gotEmbeddedTexts := append([]string(nil), embeddedTexts...)
+	embeddedMu.Unlock()
+	require.Equal(t, []string{"papaya amber"}, gotEmbeddedTexts)
+
+	// The routing log has to name the exemplar behind the tier: SIMPLE alone
+	// cannot tell a reader whether the request resembled the phrase the operator
+	// configured or merely won an argmax over unrelated ones.
+	var semanticLogMessages []string
+	for _, entry := range semanticCtx.GetRoutingEngineLogs() {
+		semanticLogMessages = append(semanticLogMessages, entry.Message)
+	}
+	require.Contains(t, strings.Join(semanticLogMessages, "\n"), `matched="papaya amber"`)
+
+	plugin.SetEmbeddingRequestExecutor(nil)
+	lexicalRequest := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("papaya amber")},
+			},
+		},
+	}
+	lexicalCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, plugin.PreRequestHook(lexicalCtx, lexicalRequest))
+
+	providerOut, modelOut, _ = lexicalRequest.GetRequestFields()
+	require.Equal(t, schemas.OpenAI, providerOut)
+	require.Equal(t, routeModel, modelOut)
+	require.Equal(t, complexity.TierSimple, lexicalCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	require.Equal(t, complexity.MechanismLexical, lexicalCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 }
 
 func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {

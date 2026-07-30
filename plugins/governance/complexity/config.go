@@ -31,8 +31,9 @@ const (
 // analyzer is disabled). Future classifiers add their own values here
 // (e.g. "semantic", "llm").
 const (
-	MechanismLexical = "lexical"
-	MechanismSkipped = "skipped"
+	MechanismLexical  = "lexical"
+	MechanismSemantic = "semantic"
+	MechanismSkipped  = "skipped"
 )
 
 // Default boundaries are tuned to the 1.00 positive-weight scale in
@@ -74,9 +75,9 @@ func DefaultTierBoundaries() TierBoundaries {
 // DefaultEditableKeywordConfig returns the user-visible default keyword lists.
 func DefaultEditableKeywordConfig() EditableKeywordConfig {
 	return EditableKeywordConfig{
-		SimpleKeywords:  cloneStringSlice(simpleKeywords),
-		MediumKeywords:  cloneStringSlice(mediumKeywords),
-		ComplexKeywords: cloneStringSlice(complexKeywords),
+		SimpleKeywords:  sharedTierDefaults(simpleKeywords, defaultSimpleExemplars),
+		MediumKeywords:  sharedTierDefaults(mediumKeywords, defaultMediumExemplars),
+		ComplexKeywords: sharedTierDefaults(complexKeywords, defaultComplexExemplars),
 	}
 }
 
@@ -117,9 +118,9 @@ func mergeEditableKeywordsOntoDefaults(editable EditableKeywordConfig) KeywordCo
 
 func defaultFullKeywordConfig() KeywordConfig {
 	return KeywordConfig{
-		MediumKeywords:      cloneStringSlice(mediumKeywords),
-		ComplexKeywords:     cloneStringSlice(complexKeywords),
-		SimpleKeywords:      cloneStringSlice(simpleKeywords),
+		MediumKeywords:      sharedTierDefaults(mediumKeywords, defaultMediumExemplars),
+		ComplexKeywords:     sharedTierDefaults(complexKeywords, defaultComplexExemplars),
+		SimpleKeywords:      sharedTierDefaults(simpleKeywords, defaultSimpleExemplars),
 		ContinuationPhrases: cloneStringSlice(continuationPhrases),
 	}
 }

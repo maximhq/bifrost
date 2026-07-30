@@ -99,6 +99,14 @@ type complexityAnalyzerConfigReloader interface {
 	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 }
 
+type complexityAnalyzerConfigValidator interface {
+	ValidateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
+}
+
+type complexitySemanticStatusProvider interface {
+	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
+}
+
 // GovernanceHandler manages HTTP requests for governance operations
 // ScopeNameResolver returns the human-readable name for a non-global model
 // config scope target (e.g. a virtual key's Name given its ID). The second
@@ -1221,6 +1229,7 @@ func (h *GovernanceHandler) RegisterRoutesWithOverrides(r *router.Router, overri
 	r.GET("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.getComplexityAnalyzerConfig, middlewares...))
 	r.PUT("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.updateComplexityAnalyzerConfig, middlewares...))
 	r.POST("/api/governance/complexity-analyzer-config/reset", lib.ChainMiddlewares(h.resetComplexityAnalyzerConfig, middlewares...))
+	r.GET("/api/governance/complexity-analyzer-status", lib.ChainMiddlewares(h.getComplexitySemanticStatus, middlewares...))
 
 	// Virtual Key CRUD operations
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
@@ -1355,6 +1364,10 @@ func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.Request
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	if err := h.validateComplexityAnalyzerConfig(ctx, normalized); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 
 	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update complexity analyzer config: %v", err))
@@ -1393,6 +1406,32 @@ func (h *GovernanceHandler) reloadComplexityAnalyzerConfig(ctx context.Context, 
 		return fmt.Errorf("governance manager does not support complexity analyzer config reload")
 	}
 	return reloader.ReloadComplexityAnalyzerConfig(ctx, config)
+}
+
+// validateComplexityAnalyzerConfig checks runtime dependencies that static JSON
+// validation cannot prove, such as an external VectorStore being configured.
+func (h *GovernanceHandler) validateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
+	validator, ok := h.governanceManager.(complexityAnalyzerConfigValidator)
+	if !ok {
+		return fmt.Errorf("governance manager does not support complexity analyzer config validation")
+	}
+	return validator.ValidateComplexityAnalyzerConfig(ctx, config)
+}
+
+// getComplexitySemanticStatus returns the non-persisted readiness of semantic
+// complexity routing so configuration clients can distinguish saved from ready.
+func (h *GovernanceHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx) {
+	provider, ok := h.governanceManager.(complexitySemanticStatusProvider)
+	if !ok {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "governance manager does not expose semantic complexity status")
+		return
+	}
+	status, err := provider.GetComplexitySemanticStatus(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get semantic complexity status: %v", err))
+		return
+	}
+	SendJSON(ctx, status)
 }
 
 // Virtual Key CRUD Operations

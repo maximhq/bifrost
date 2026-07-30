@@ -568,8 +568,8 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("lexical", "skipped"; later "semantic", "llm")
-	complexity_score?: number; // Raw complexity score behind the tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("lexical", "semantic", "skipped")
+	complexity_score?: number; // Classifier score: lexical score or semantic cosine similarity
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
