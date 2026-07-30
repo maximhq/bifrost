@@ -35,6 +35,7 @@ type AccumulatedData struct {
 	ToolCalls             []schemas.ChatAssistantMessageToolCall
 	ErrorDetails          *schemas.BifrostError
 	TokenUsage            *schemas.BifrostLLMUsage
+	ServiceTier           *schemas.BifrostServiceTier
 	CacheDebug            *schemas.BifrostCacheDebug
 	Cost                  *float64
 	AudioOutput           *schemas.BifrostSpeechResponse
@@ -79,6 +80,7 @@ type ChatStreamChunk struct {
 	FinishReason       *string                                // If this is the final chunk
 	LogProbs           *schemas.BifrostLogProbs               // LogProbs if available
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
+	ServiceTier        *schemas.BifrostServiceTier            // Served OpenAI tier if available
 	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
@@ -92,6 +94,7 @@ type ResponsesStreamChunk struct {
 	StreamResponse     *schemas.BifrostResponsesStreamResponse // The actual stream response
 	FinishReason       *string                                 // If this is the final chunk
 	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
+	ServiceTier        *schemas.BifrostServiceTier             // Served OpenAI tier if available
 	SemanticCacheDebug *schemas.BifrostCacheDebug              // Semantic cache debug if available
 	Cost               *float64                                // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                   // Error if any

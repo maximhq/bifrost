@@ -1998,16 +1998,22 @@ func (h *LoggingHandler) getRecalculateCostStatus(ctx *fasthttp.RequestCtx) {
 // recalcJobStatus is the API view of a cost-recalculation job: the durable sidekiq
 // row fields the UI needs plus the progress counters decoded from the job metadata.
 type recalcJobStatus struct {
-	ID        string     `json:"id,omitempty"`
-	Status    string     `json:"status"`
-	Total     int64      `json:"total"`
-	Processed int        `json:"processed"`
-	Updated   int        `json:"updated"`
-	Skipped   int        `json:"skipped"`
-	Message   string     `json:"message,omitempty"`
-	LastError string     `json:"last_error,omitempty"`
-	StartedAt *time.Time `json:"started_at,omitempty"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Status    string `json:"status"`
+	Total     int64  `json:"total"`
+	Processed int    `json:"processed"`
+	Updated   int    `json:"updated"`
+	Skipped   int    `json:"skipped"`
+	// Unpriceable is the subset of Skipped whose pricing inputs could not be
+	// recovered, so the job deliberately left their cost untouched rather than
+	// writing a value it knew to be wrong. Surfaced separately because it is
+	// actionable: it usually means an offloaded payload is missing from object
+	// storage, or the rows are content-hidden and can never be repriced.
+	Unpriceable int        `json:"unpriceable,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
 }
 
 // recalcJobStatusFromRow projects a sidekiq job row into the API status, decoding
@@ -2028,6 +2034,7 @@ func recalcJobStatusFromRow(job *tables.TableSidekiqJob) recalcJobStatus {
 			status.Processed = meta.Processed
 			status.Updated = meta.Updated
 			status.Skipped = meta.Skipped
+			status.Unpriceable = meta.Unpriceable
 			status.Message = meta.Message
 		}
 	}

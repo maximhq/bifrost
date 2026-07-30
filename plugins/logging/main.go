@@ -376,7 +376,13 @@ type RecalculateCostResult struct {
 	TotalMatched int64 `json:"total_matched"`
 	Updated      int   `json:"updated"`
 	Skipped      int   `json:"skipped"`
-	Remaining    int64 `json:"remaining"`
+	// Unpriceable is the subset of Skipped left alone because their pricing inputs
+	// could not be recovered (for example, a failed object-storage fetch) rather than
+	// because there was nothing to charge. Surfaced separately so
+	// a caller can distinguish "no cost applies" from "we refused to write a number
+	// we knew would be wrong".
+	Unpriceable int   `json:"unpriceable,omitempty"`
+	Remaining   int64 `json:"remaining"`
 }
 
 // RecalculateCostProgress represents a progress event from a cost backfill operation.
