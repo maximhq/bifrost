@@ -141,6 +141,37 @@ func TestBillingRowNeedsHydration(t *testing.T) {
 			want: false,
 			why:  "the billed duration is already present",
 		},
+		// Content-hidden rows are written by a different code path (ClearPayload, which
+		// ignores the exclusion list) so the exclusion set says nothing about them.
+		{
+			name: "content-hidden chat row that kept its pricing metadata",
+			log:  Log{Object: "chat.completion", ContentHidden: true, TokenUsage: usageJSON, CacheDebug: cacheJSON},
+			want: false,
+			why:  "hiding content does not strip pricing inputs, so there is nothing in the object to recover",
+		},
+		{
+			name: "legacy content-hidden chat row",
+			log:  Log{Object: "chat.completion", ContentHidden: true, TokenUsage: "", CacheDebug: ""},
+			want: true,
+			why:  "written before pricing metadata was retained, so the object is the only source",
+		},
+		{
+			name:     "content-hidden chat row with an empty cache_debug while token_usage is config-resident",
+			log:      Log{Object: "chat.completion", ContentHidden: true, TokenUsage: usageJSON, CacheDebug: ""},
+			excluded: excludedSet("token_usage"),
+			want:     false,
+			why: "the exclusion set does not govern hidden rows: token_usage is present because " +
+				"prepareDBEntry restored it alongside cache_debug, so the empty cache_debug is the real " +
+				"answer and treating config as decisive would refetch this row on every pass forever",
+		},
+		{
+			name:     "content-hidden speech row whose payload column is configured resident",
+			log:      Log{Object: "speech", ContentHidden: true, TokenUsage: usageJSON, CacheDebug: cacheJSON},
+			excluded: excludedSet("speech_output"),
+			want:     true,
+			why: "hidden rows are cleared unfiltered, so a configured-resident modality column is " +
+				"blank anyway; trusting the config here would price the row off a missing payload",
+		},
 	}
 
 	for _, tc := range cases {
