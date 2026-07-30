@@ -11,7 +11,7 @@ import { TagInput } from "@/components/ui/tagInput";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { isRedacted } from "@/lib/utils/validation";
-import { useRefreshModelsMutation, useUpdateProviderKeyMutation, useCreateProviderKeyMutation } from "@/lib/store/apis/providersApi";
+import { useRefreshProviderModelsMutation, useUpdateProviderKeyMutation, useCreateProviderKeyMutation } from "@/lib/store/apis/providersApi";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { CheckCircle2, Copy, ExternalLink, Info, Loader2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -87,7 +87,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isCopilot = providerName === "copilot";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 	const supportsModelRefresh = MODEL_REFRESH_PROVIDERS.includes(providerName);
-	const [refreshModels, { isLoading: isRefreshingModels }] = useRefreshModelsMutation();
+	const [refreshModels, { isLoading: isRefreshingModels }] = useRefreshProviderModelsMutation();
 	const [updateProviderKey] = useUpdateProviderKeyMutation();
 	// For providers that support model refresh, enable the button only when a token
 	// is available — either a freshly obtained local token (device-login / manual)
@@ -1395,7 +1395,7 @@ function CopilotDeviceLoginSection({
 	providerName: string;
 	keyId: string | null;
 	updateProviderKey: ReturnType<typeof useUpdateProviderKeyMutation>[0];
-	refreshModels: ReturnType<typeof useRefreshModelsMutation>[0];
+	refreshModels: ReturnType<typeof useRefreshProviderModelsMutation>[0];
 	createProviderKey?: ReturnType<typeof useCreateProviderKeyMutation>[0];
 	onAutoCreated?: (newKeyId: string) => void;
 	onReauthComplete?: () => void;

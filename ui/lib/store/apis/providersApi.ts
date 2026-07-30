@@ -420,15 +420,6 @@ export const providersApi = baseApi.injectEndpoints({
 			providesTags: ["BaseModels"],
 		}),
 
-		// Refresh model cache for a specific provider
-		refreshModels: builder.mutation<{ status: string }, string>({
-			query: (provider) => ({
-				url: `/models/refresh?provider=${encodeURIComponent(provider)}`,
-				method: "POST",
-			}),
-			invalidatesTags: (_result, _error, provider) => ["Models", "BaseModels", "Providers", { type: "Providers" as const, id: provider }],
-		}),
-
 		// Get model parameters (parameters, capabilities) from local API
 		// Falls back to default parameters if the API returns an error (e.g. model not found)
 		getModelParameters: builder.query<ModelDatasheetResponse, string>({
@@ -498,7 +489,6 @@ export const {
 	useGetAllKeysQuery,
 	useGetModelsQuery,
 	useGetBaseModelsQuery,
-	useRefreshModelsMutation,
 	useLazyGetProvidersQuery,
 	useLazyGetProviderQuery,
 	useLazyGetProviderKeysQuery,
