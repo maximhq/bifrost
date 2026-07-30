@@ -1,0 +1,28 @@
+- feat: added virtual key budget overrides across DB schema, governance store, and APIs
+- feat: added user scope kinds to pricing overrides
+- feat: added user scope and `user_id` CEL variable to routing rules
+- feat: added `user_id` filter to the virtual keys list (enterprise-only, OSS fails closed)
+- feat: added `RankingLimit` filter with `all`/`limit` query params to cap or remove ranking row limits
+- feat: replaced the full `VirtualKeys` preload with `virtual_key_count` on the paginated customer list
+- feat: added partitioned sidekiq job claiming with FIFO ordering per key
+- feat: added responses retrieve stream method
+- feat: added `ModelReasoning` schema field and provider-qualified model ID resolution for model-parameters lookup
+- feat: added Bedrock batch role ARN to key config
+- feat: added Bifrost latency data to connectors
+- feat: added cached tokens to the matview and allowed matview refresh on the fly
+- fix: added `customer_id`/`business_unit_id` to matview `scopeProjection` so team-data DAC scope resolves without column errors
+- fix: corrected hybrid matview count to prevent boundary bucket over-counting in paginated log search
+- fix: reverted the matview read-path shape check that gated reads during rolling deploys
+- fix: applied query scope to single MCP tool log lookup
+- fix: corrected override counts for multinode setups
+- fix: stopped live reload from wiping the model list before sync
+- fix: added handling for model router cost calculation
+- fix: showed models/limits budget in the user detail sheet
+- fix: preserved the `tool_search` Responses API wire shape (thanks [@devonpmack](https://github.com/devonpmack)!)
+- feat: added `conn_max_idle_time` to the config and logs stores so idle physical connections are closed on a bound rather than left to the idle cap alone
+- feat: added `cache_ttl` for password-command credential resolution so the command no longer runs on every new physical connection
+- feat: added `matview_refresh_timeout` bounding a single materialized view refresh pass, so one stuck refresh no longer leaves views permanently stale across replicas
+- feat: added `live_models_sync_interval` for background provider model-list refresh
+- fix: added OTel export timeouts
+- chore: upgraded Go to 1.26.5
+- chore: upgraded core to v1.7.5

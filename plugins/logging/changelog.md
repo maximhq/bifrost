@@ -1,0 +1,5 @@
+- feat: added user scope kinds to pricing overrides
+- feat: added responses retrieve stream method support
+- fix: controlled DB connections for all cases
+- chore: upgraded Go to 1.26.5
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
