@@ -214,6 +214,12 @@ Sending both an identity token and a virtual key is fine — [`dual_credential_c
 
 ---
 
+## Try it yourself
+
+[`examples/mcps/token-exchange-demo-server`](https://github.com/maximhq/bifrost/tree/main/examples/mcps/token-exchange-demo-server) is a runnable MCP server for testing this end-to-end against a real identity provider (Okta, Entra, Keycloak, Auth0, or any generic OIDC provider). It validates every request's bearer token via real OIDC discovery and JWKS signature verification — no shortcuts — and exposes a `whoami` tool that echoes back the caller's identity claims, so you can confirm each caller's own identity reached the upstream server.
+
+---
+
 ## Next Steps
 
 - [Per-User OAuth](./per-user-oauth) — when the upstream server runs its own OAuth and doesn't trust your IdP
