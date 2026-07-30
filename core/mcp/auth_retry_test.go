@@ -154,9 +154,34 @@ type authRetryClientManager struct {
 	reconnectErr    error
 	reconnectCalls  atomic.Int32
 	reconnectSignal chan struct{}
+
+	// reconnectGate, when non-nil, blocks an in-flight ReconnectClient until
+	// the channel is closed, letting tests hold the reconnect open while the
+	// caller's bounded wait (or a concurrent second caller) races against it.
+	reconnectGate chan struct{}
+	// reconnectRejected counts callers that lost the in-flight race and got
+	// the "already in progress" error, mirroring the real manager's guard.
+	reconnectRejected atomic.Int32
+
+	// rerouteToolState, when non-nil, is what GetClientForTool returns
+	// instead of state — simulating global tool routing having picked a
+	// different client for this tool name by the time a stale lookup runs.
+	rerouteToolState *schemas.MCPClientState
+	// byNameState, when non-nil, is what GetClientByName(state.Name) returns
+	// instead of state itself — simulating the reconnected client having a
+	// different identity (e.g. a different ExecutionConfig.ID, as if it was
+	// deleted and recreated under the same name) by the time the
+	// post-reconnect reacquire runs.
+	byNameState *schemas.MCPClientState
+
+	inflightMu sync.Mutex
+	inflight   *inflightClientOp
 }
 
 func (m *authRetryClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	if m.byNameState != nil {
+		return m.byNameState
+	}
 	if m.state != nil && m.state.Name == clientName {
 		return m.state
 	}
@@ -164,6 +189,11 @@ func (m *authRetryClientManager) GetClientByName(clientName string) *schemas.MCP
 }
 
 func (m *authRetryClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+	if m.rerouteToolState != nil {
+		if _, ok := m.rerouteToolState.ToolMap[toolName]; ok {
+			return m.rerouteToolState
+		}
+	}
 	if m.state != nil {
 		if _, ok := m.state.ToolMap[toolName]; ok {
 			return m.state
@@ -176,8 +206,8 @@ func (m *authRetryClientManager) GetToolPerClient(_ context.Context) map[string]
 	return nil
 }
 
-func (m *authRetryClientManager) GetPluginPipeline() PluginPipeline            { return nil }
-func (m *authRetryClientManager) ReleasePluginPipeline(_ PluginPipeline)       {}
+func (m *authRetryClientManager) GetPluginPipeline() PluginPipeline      { return nil }
+func (m *authRetryClientManager) ReleasePluginPipeline(_ PluginPipeline) {}
 
 func (m *authRetryClientManager) AcquireClientConn(_ *schemas.BifrostContext, _ *schemas.MCPClientState) (*client.Client, func(), error) {
 	m.acquireCalls.Add(1)
@@ -188,6 +218,23 @@ func (m *authRetryClientManager) AcquireClientConn(_ *schemas.BifrostContext, _ 
 }
 
 func (m *authRetryClientManager) ReconnectClient(_ string) error {
+	m.inflightMu.Lock()
+	if m.inflight != nil {
+		select {
+		case <-m.inflight.done:
+			// Previous op already finished; fall through and replace it, the
+			// same CompareAndSwap-on-a-done-op behavior beginExclusiveClientOp
+			// uses in clientmanager.go.
+		default:
+			m.inflightMu.Unlock()
+			m.reconnectRejected.Add(1)
+			return errors.New("reconnect already in progress for this client")
+		}
+	}
+	op := &inflightClientOp{done: make(chan struct{})}
+	m.inflight = op
+	m.inflightMu.Unlock()
+
 	m.reconnectCalls.Add(1)
 	if m.reconnectSignal != nil {
 		select {
@@ -195,7 +242,54 @@ func (m *authRetryClientManager) ReconnectClient(_ string) error {
 		default:
 		}
 	}
-	return m.reconnectErr
+	if m.reconnectGate != nil {
+		<-m.reconnectGate
+	}
+	err := m.reconnectErr
+
+	m.inflightMu.Lock()
+	op.err = err
+	close(op.done)
+	// Deliberately not cleared to nil here: a caller that lost the race and
+	// got "already in progress" above must still be able to observe this
+	// op's outcome via AwaitReconnect after it completes — clearing
+	// immediately would let that caller poll AwaitReconnect a moment too
+	// late, see inflight == nil, and wrongly conclude nothing is (or ever
+	// was) in flight. Mirrors beginExclusiveClientOp's real behavior: the
+	// completed op is only replaced by the next ReconnectClient call, not
+	// deleted on finish. Use resetInflight for tests that need a clean
+	// no-op starting state instead.
+	m.inflightMu.Unlock()
+	return err
+}
+
+// resetInflight clears any completed inflight record so the next
+// ReconnectClient call starts from a clean no-op state. Only needed by tests
+// that reuse the same authRetryClientManager across multiple reconnect
+// phases and require no stale op to be observable via AwaitReconnect;
+// ReconnectClient's own CompareAndSwap-style replace makes this unnecessary
+// for tests that just call ReconnectClient again.
+func (m *authRetryClientManager) resetInflight() {
+	m.inflightMu.Lock()
+	m.inflight = nil
+	m.inflightMu.Unlock()
+}
+
+func (m *authRetryClientManager) AwaitReconnect(_ string, budget time.Duration) (bool, error) {
+	m.inflightMu.Lock()
+	op := m.inflight
+	m.inflightMu.Unlock()
+	if op == nil {
+		return false, nil
+	}
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-op.done:
+		return true, op.err
+	case <-timer.C:
+		return false, nil
+	}
 }
 
 func (m *authRetryClientManager) RunWithPluginPipeline(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest, op MCPOpFunc) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
@@ -417,26 +511,124 @@ func TestExecuteTool_AuthFailureRetry_PerUser_RetryAlsoFails(t *testing.T) {
 	}
 }
 
-// TestExecuteTool_AuthFailureRetry_Shared_FailsFastAndTriggersBackgroundReconnect
-// covers the shared-connection path: the original call fails and returns
-// immediately (no synchronous retry — a full ReconnectClient can take
-// minutes), while a background goroutine forces a refresh and reconnects so
-// the NEXT call succeeds. Asserts the goroutine actually runs, not just that
-// the immediate call failed.
-func TestExecuteTool_AuthFailureRetry_Shared_FailsFastAndTriggersBackgroundReconnect(t *testing.T) {
-	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, nil)
+// TestExecuteTool_AuthFailureRetry_Shared_RetriesAfterReconnectCompletes
+// covers the shared-connection happy path: the original call fails with a
+// 401, a background goroutine forces a refresh and reconnects, and because
+// the reconnect completes within the bounded wait budget the SAME call is
+// retried once on the healed connection and succeeds.
+func TestExecuteTool_AuthFailureRetry_Shared_RetriesAfterReconnectCompletes(t *testing.T) {
+	// Explicit idempotent hint: retry-safety fails closed on missing
+	// annotations (see TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry),
+	// so this reconnect-mechanics test needs an explicitly-safe tool to reach
+	// the retry path at all.
+	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
 
 	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
 	conn := client.NewClient(ft, client.WithSession())
 
-	reconnectSignal := make(chan struct{}, 1)
-	forceRefreshSignal := make(chan struct{}, 1)
-
-	cm := &authRetryClientManager{state: state, reconnectSignal: reconnectSignal}
-	cs := &authRetryCredStore{requiresPerCall: false, forceRefreshSignal: forceRefreshSignal}
+	cm := &authRetryClientManager{state: state, acquireConn: conn}
+	cs := &authRetryCredStore{requiresPerCall: false}
 	tm := newAuthRetryToolsManager(cm, cs)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := newAuthRetryToolCallRequest(toolName)
+
+	resp, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	if err != nil {
+		t.Fatalf("expected the retry after a completed reconnect to succeed, got error: %v", err)
+	}
+	if resp == nil || resp.ChatMessage == nil {
+		t.Fatalf("expected a populated chat message response, got %+v", resp)
+	}
+	if got := ft.CallCount(); got != 2 {
+		t.Errorf("expected 2 CallTool invocations (original + exactly 1 retry), got %d", got)
+	}
+	if got := cm.reconnectCalls.Load(); got != 1 {
+		t.Errorf("expected ReconnectClient to run exactly once, got %d", got)
+	}
+	if got := cs.forceRefreshCalls.Load(); got != 1 {
+		t.Errorf("expected the background ForceRefresh to run exactly once, got %d", got)
+	}
+	if got := cm.acquireCalls.Load(); got != 1 {
+		t.Errorf("expected AcquireClientConn to run exactly once for the retry, got %d", got)
+	}
+}
+
+// TestExecuteTool_AuthFailureRetry_Shared_RoutingChangedDuringReconnect_RejectsRetry
+// pins the gap CodeRabbit flagged: recoverSharedConnection re-resolved its
+// retry target via GetClientForTool(toolName) — global tool-name routing
+// across every client — instead of reacquiring the specific client that was
+// just reconnected. If routing picks a different client for this tool name
+// while the reconnect is in flight, the stale lookup would silently retry
+// the ORIGINAL callRequest against an unintended upstream, breaking provider
+// isolation. The retry must reacquire by the reconnected client's own name
+// and refuse to proceed if the resolved state's ExecutionConfig.ID doesn't
+// match, surfacing the original auth failure instead of retrying nowhere.
+func TestExecuteTool_AuthFailureRetry_Shared_RoutingChangedDuringReconnect_RejectsRetry(t *testing.T) {
+	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+
+	// What GetClientByName("sharedclient") resolves to by the time the
+	// post-reconnect reacquire runs: same name, but a different
+	// ExecutionConfig.ID — as if the client was deleted and recreated under
+	// the same name while the reconnect was in flight. A stale caller
+	// holding the original executionConfig must not treat this as the same
+	// client it was retrying for.
+	mismatched := &schemas.MCPClientState{
+		Name:            "sharedclient",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "sharedclient-id-v2", Name: "sharedclient"},
+		ToolMap:         state.ToolMap,
+		ToolNameMapping: map[string]string{},
+	}
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	cm := &authRetryClientManager{state: state, acquireConn: conn, byNameState: mismatched}
+	cs := &authRetryCredStore{requiresPerCall: false}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := newAuthRetryToolCallRequest(toolName)
+
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	if err == nil {
+		t.Fatalf("expected the original auth failure to surface when routing resolves to a different client, got no error")
+	}
+	if got := ft.CallCount(); got != 1 {
+		t.Errorf("must not retry against the rerouted client: expected exactly 1 CallTool invocation (the original), got %d", got)
+	}
+	if got := cm.acquireCalls.Load(); got != 0 {
+		t.Errorf("must not acquire a connection for the mismatched client, got %d AcquireClientConn calls", got)
+	}
+}
+
+// TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget
+// covers the bounded-wait give-up: the reconnect is held open past the
+// caller's remaining deadline (which caps the wait budget), so the original
+// auth failure surfaces with no retry while the reconnect keeps running in
+// the background.
+func TestExecuteTool_AuthFailureRetry_Shared_FallsBackWhenReconnectExceedsBudget(t *testing.T) {
+	// Explicit idempotent hint: retry-safety fails closed on missing
+	// annotations (see TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry),
+	// so without it this test's "no retry" assertions would pass for the
+	// wrong reason (annotation fail-closed) instead of proving the budget
+	// give-up path this test is named for.
+	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	reconnectGate := make(chan struct{})
+	defer close(reconnectGate) // let the held reconnect goroutine finish after the test
+
+	reconnectSignal := make(chan struct{}, 1)
+	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
+	cs := &authRetryCredStore{requiresPerCall: false}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	// A short caller deadline caps the reconnect wait budget well below the
+	// package const, keeping the test fast.
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(300*time.Millisecond))
 	req := newAuthRetryToolCallRequest(toolName)
 
 	start := time.Now()
@@ -444,38 +636,186 @@ func TestExecuteTool_AuthFailureRetry_Shared_FailsFastAndTriggersBackgroundRecon
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("expected the original call to fail")
+		t.Fatal("expected the original error to surface when the reconnect exceeds the budget")
 	}
 	if !errors.Is(err, ErrMCPToolCallFailed) {
 		t.Errorf("expected error to wrap ErrMCPToolCallFailed, got: %v", err)
 	}
 	if got := ft.CallCount(); got != 1 {
-		t.Errorf("shared-connection auth failures must not retry synchronously, got %d CallTool invocations", got)
-	}
-	if elapsed > 2*time.Second {
-		t.Errorf("expected the call to fail fast (no synchronous ReconnectClient), took %v", elapsed)
+		t.Errorf("expected no retry when the reconnect exceeds the budget, got %d CallTool invocations", got)
 	}
 	if got := cm.acquireCalls.Load(); got != 0 {
-		t.Errorf("shared-connection path must not call AcquireClientConn, got %d calls", got)
+		t.Errorf("AcquireClientConn must not run when the reconnect exceeds the budget, got %d calls", got)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("expected the bounded wait to give up quickly under a short caller deadline, took %v", elapsed)
 	}
 
-	// The background goroutine (ForceRefresh, then ReconnectClient) must
-	// actually run — not just the immediate failure.
-	select {
-	case <-forceRefreshSignal:
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected the background goroutine to call ForceRefresh, but it never did")
-	}
+	// The reconnect itself must still have been triggered and left running.
 	select {
 	case <-reconnectSignal:
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected the background goroutine to call ReconnectClient, but it never did")
 	}
+}
+
+// TestExecuteTool_AuthFailureRetry_Shared_ReconnectFails_OriginalErrorSurfaces
+// covers the reconnect-failed branch: the reconnect completes within budget
+// but with an error, so no retry runs and the original failure surfaces.
+func TestExecuteTool_AuthFailureRetry_Shared_ReconnectFails_OriginalErrorSurfaces(t *testing.T) {
+	// Explicit idempotent hint: retry-safety fails closed on missing
+	// annotations (see TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry),
+	// so this reconnect-mechanics test needs an explicitly-safe tool to reach
+	// the retry path at all.
+	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectErr: errors.New("dial tcp: connection refused")}
+	cs := &authRetryCredStore{requiresPerCall: false}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := newAuthRetryToolCallRequest(toolName)
+
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	if err == nil {
+		t.Fatal("expected the original error to surface when the reconnect fails")
+	}
+	if !errors.Is(err, ErrMCPToolCallFailed) {
+		t.Errorf("expected error to wrap ErrMCPToolCallFailed, got: %v", err)
+	}
+	if got := ft.CallCount(); got != 1 {
+		t.Errorf("expected no retry when the reconnect fails, got %d CallTool invocations", got)
+	}
+	if got := cm.reconnectCalls.Load(); got != 1 {
+		t.Errorf("expected ReconnectClient to run exactly once, got %d", got)
+	}
+	if got := cm.acquireCalls.Load(); got != 0 {
+		t.Errorf("AcquireClientConn must not run when the reconnect fails, got %d calls", got)
+	}
+}
+
+// TestExecuteTool_AuthFailureRetry_Shared_DestructiveNonIdempotent_ReconnectsWithoutRetry
+// pins the opt-out ordering on the shared path: a destructive, non-idempotent
+// tool must never be auto-retried, but the connection healing (background
+// force-refresh + reconnect) must still run so subsequent calls succeed.
+func TestExecuteTool_AuthFailureRetry_Shared_DestructiveNonIdempotent_ReconnectsWithoutRetry(t *testing.T) {
+	state, toolName := newAuthRetryClientState("sharedclient", "dotool", boolPtr(true), nil)
+
+	ft := &fakeCallToolTransport{callErrs: []error{errors.New("tool call failed: 401 Unauthorized")}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	reconnectSignal := make(chan struct{}, 1)
+	forceRefreshSignal := make(chan struct{}, 1)
+
+	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectSignal: reconnectSignal}
+	cs := &authRetryCredStore{requiresPerCall: false, forceRefreshSignal: forceRefreshSignal}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := newAuthRetryToolCallRequest(toolName)
+
+	_, err := tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+	if err == nil {
+		t.Fatal("expected the original error to surface for a destructive, non-idempotent tool")
+	}
+	if !errors.Is(err, ErrMCPToolCallFailed) {
+		t.Errorf("expected error to wrap ErrMCPToolCallFailed, got: %v", err)
+	}
+	if got := ft.CallCount(); got != 1 {
+		t.Errorf("destructive, non-idempotent tool must not be retried, got %d CallTool invocations", got)
+	}
+	if got := cm.acquireCalls.Load(); got != 0 {
+		t.Errorf("AcquireClientConn must not run when the retry is opted out, got %d calls", got)
+	}
+
+	// The connection healing must still run despite the retry opt-out.
+	select {
+	case <-forceRefreshSignal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the background goroutine to call ForceRefresh despite the retry opt-out, but it never did")
+	}
+	select {
+	case <-reconnectSignal:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the background goroutine to call ReconnectClient despite the retry opt-out, but it never did")
+	}
 	if got := cm.reconnectCalls.Load(); got != 1 {
 		t.Errorf("expected ReconnectClient to be triggered exactly once, got %d", got)
 	}
-	if got := cs.forceRefreshCalls.Load(); got != 1 {
-		t.Errorf("expected the background ForceRefresh to run exactly once, got %d", got)
+}
+
+// TestExecuteTool_AuthFailureRetry_Shared_Concurrent401sJoinOneReconnect
+// covers the dedup contract: two concurrent 401s on the same shared client
+// trigger only one actual reconnect; the loser of the race joins the
+// winner's in-flight attempt and both calls retry successfully once it
+// completes.
+func TestExecuteTool_AuthFailureRetry_Shared_Concurrent401sJoinOneReconnect(t *testing.T) {
+	// Explicit idempotent hint: retry-safety fails closed on missing
+	// annotations (see TestExecuteTool_AuthFailureRetry_NoAnnotations_SkipsRetry),
+	// so this reconnect-mechanics test needs an explicitly-safe tool to reach
+	// the retry path at all.
+	state, toolName := newAuthRetryClientState("sharedclient", "dotool", nil, boolPtr(true))
+
+	ft := &fakeCallToolTransport{callErrs: []error{
+		errors.New("tool call failed: 401 Unauthorized"),
+		errors.New("tool call failed: 401 Unauthorized"),
+	}}
+	conn := client.NewClient(ft, client.WithSession())
+
+	reconnectGate := make(chan struct{})
+	reconnectSignal := make(chan struct{}, 1)
+	cm := &authRetryClientManager{state: state, acquireConn: conn, reconnectGate: reconnectGate, reconnectSignal: reconnectSignal}
+	cs := &authRetryCredStore{requiresPerCall: false}
+	tm := newAuthRetryToolsManager(cm, cs)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := newAuthRetryToolCallRequest(toolName)
+			_, errs[idx] = tm.ExecuteTool(ctx, req, conn, state.ExecutionConfig, state.ToolNameMapping)
+		}(i)
+	}
+
+	// Hold the winner's reconnect open until the loser has demonstrably lost
+	// the race (got the "already in progress" rejection), then release it.
+	select {
+	case <-reconnectSignal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected a reconnect to start, but none did")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for cm.reconnectRejected.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("expected the second 401 to lose the reconnect race, but no rejection was observed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(reconnectGate)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("expected concurrent call %d to succeed after joining the shared reconnect, got: %v", i, err)
+		}
+	}
+	if got := cm.reconnectCalls.Load(); got != 1 {
+		t.Errorf("expected exactly one actual reconnect for concurrent 401s, got %d", got)
+	}
+	if got := cm.reconnectRejected.Load(); got != 1 {
+		t.Errorf("expected exactly one caller to lose the reconnect race, got %d", got)
+	}
+	if got := ft.CallCount(); got != 4 {
+		t.Errorf("expected 4 CallTool invocations (2 originals + 2 retries), got %d", got)
+	}
+	if got := cm.acquireCalls.Load(); got != 2 {
+		t.Errorf("expected each concurrent caller to acquire the healed connection once, got %d", got)
 	}
 }
 
