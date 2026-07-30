@@ -420,7 +420,7 @@ Key points:
 - **No-op when unscoped** - safe to call in any context; silently ignored outside plugin hooks
 - Logs are retrievable via `ctx.GetPluginLogs()` (read copy) or `ctx.DrainPluginLogs()` (transfer ownership)
 
-#### `ctx.GetModelInfo(provider, model)` <sup>v1.7.x+</sup>
+#### `ctx.GetModelInfo(provider, model)` <sup>v1.6.7+</sup>
 
 Returns pricing and capability metadata for a model - the same information the `/v1/models` endpoint reports. Available from every hook, and from plugins built without a `framework` dependency.
 
@@ -458,7 +458,7 @@ Key points:
 - **Provider is required** - pass the concrete provider that serves the model. Read it from `req.GetRequestFields()` in a pre-hook, or from the response's `RoutingInfo` in a post-hook, rather than inferring it from the model string
 - **Every field is optional** - the catalog is only as complete as the provider datasheet, so nil-check individual pointers too
 
-#### `ctx.CalculateCost(resp)` <sup>v1.7.x+</sup>
+#### `ctx.CalculateCost(resp)` <sup>v1.6.7+</sup>
 
 Returns the dollar cost of a completed response.
 
