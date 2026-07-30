@@ -148,12 +148,14 @@ function FilterSection({
 	defaultOpen = false,
 	loading = false,
 	onOpenChange,
+	testId,
 }: {
 	title: string;
 	children: React.ReactNode;
 	defaultOpen?: boolean;
 	loading?: boolean;
 	onOpenChange?: (open: boolean) => void;
+	testId?: string;
 }) {
 	const [open, setOpen] = useState(defaultOpen);
 
@@ -168,7 +170,10 @@ function FilterSection({
 
 	return (
 		<Collapsible open={open} onOpenChange={handleOpenChange} className="last:pb-2">
-			<CollapsibleTrigger className="flex h-8 w-full cursor-pointer items-center gap-1.5 px-2 py-2 text-sm font-medium hover:opacity-80">
+			<CollapsibleTrigger
+				className="flex h-8 w-full cursor-pointer items-center gap-1.5 px-2 py-2 text-sm font-medium hover:opacity-80"
+				data-testid={testId}
+			>
 				<ChevronDown className={cn("size-3.5 transition-transform", open ? "rotate-0" : "-rotate-90")} />
 				<span>{title}</span>
 			</CollapsibleTrigger>
@@ -455,7 +460,13 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 	const selectedSet = new Set(filters.apps || []);
 
 	return (
-		<FilterSection title="App" defaultOpen={defaultOpen || hasActive} loading={isLoading} onOpenChange={setOpened}>
+		<FilterSection
+			title="App"
+			defaultOpen={defaultOpen || hasActive}
+			loading={isLoading}
+			onOpenChange={setOpened}
+			testId="mcp-app-filter-toggle"
+		>
 			<SearchableCheckboxList
 				inputRef={searchInputRef}
 				placeholder="Search apps"

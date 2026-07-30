@@ -510,6 +510,17 @@ type PassthroughConfig struct {
 	ProviderDetector func(ctx *fasthttp.RequestCtx, model string) schemas.ModelProvider // optional: dynamic provider detection
 	StripPrefix      []string                                                           // e.g. "/openai" — stripped before forwarding
 	UpstreamURL      string                                                             // optional upstream base URL override
+	// AllowedRoutes, when non-empty, restricts the passthrough catch-all to exactly
+	// these method+path pairs instead of forwarding every request under StripPrefix.
+	AllowedRoutes []PassthroughRoute
+}
+
+// PassthroughRoute is an exact method+path pair a restricted passthrough router
+// (see PassthroughConfig.AllowedRoutes) will forward; any other request under
+// StripPrefix gets no route match (404) instead of being forwarded upstream.
+type PassthroughRoute struct {
+	Method string
+	Path   string // full path including the StripPrefix, matched exactly — no wildcard
 }
 
 // LargePayloadHook is called before body parsing to detect and set up large payload streaming.
@@ -647,10 +658,17 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 
 	if g.passthroughCfg != nil {
 		catchAll := lib.ChainMiddlewares(g.handlePassthrough, middlewares...)
-		// Register for all methods that need forwarding
-		for _, method := range []string{fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodPut, fasthttp.MethodDelete, fasthttp.MethodPatch, fasthttp.MethodHead} {
-			for _, prefix := range g.passthroughCfg.StripPrefix {
-				r.Handle(method, prefix+"/{path:*}", catchAll)
+		if len(g.passthroughCfg.AllowedRoutes) > 0 {
+			// Restricted mode: only the explicitly allowed method+path pairs are forwarded.
+			for _, allowed := range g.passthroughCfg.AllowedRoutes {
+				r.Handle(strings.ToUpper(allowed.Method), allowed.Path, catchAll)
+			}
+		} else {
+			// Register for all methods that need forwarding
+			for _, method := range []string{fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodPut, fasthttp.MethodDelete, fasthttp.MethodPatch, fasthttp.MethodHead} {
+				for _, prefix := range g.passthroughCfg.StripPrefix {
+					r.Handle(method, prefix+"/{path:*}", catchAll)
+				}
 			}
 		}
 	}

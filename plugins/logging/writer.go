@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -495,13 +496,15 @@ const (
 )
 
 // clampString truncates s to at most max bytes. The columns are sized in
-// characters but ASCII User-Agent headers make bytes a safe lower bound; a few
-// trailing multibyte runes are an acceptable trade for a guaranteed-valid insert.
+// characters but ASCII User-Agent headers make bytes a safe lower bound. A raw
+// byte-slice truncation can split a multi-byte UTF-8 rune, so ToValidUTF8
+// strips the dangling partial rune to keep the result valid UTF-8 for the
+// varchar insert.
 func clampString(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max]
+	return strings.ToValidUTF8(s[:max], "")
 }
 
 func applyUserAgent(entry *logstore.Log, userAgent string) {

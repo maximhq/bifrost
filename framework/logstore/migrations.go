@@ -284,6 +284,12 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_recreate_matviews_with_user_agent_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"logs_add_user_agent_column"}, run: migrationAddUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_user_agent_column"}, run: migrationAddUserAgentColumnToMCPToolLogs},
+	// Both this step and the "logs_recreate_matviews_with_user_agent_column" step above
+	// intentionally run the same migrationRecreateMatViewsWithUserAgentColumn function: the
+	// function was renamed from migrationRecreateMatViewsWithAppColumn (see git history), and
+	// this second step ID reconciles local DBs that recorded one of the two step IDs before the
+	// rename. The function's own logic (CreateTable-if-not-exists) is idempotent, so running it
+	// twice on a fresh DB is harmless.
 	{IDs: []string{"logs_recreate_matviews_with_app_column"}, run: migrationRecreateMatViewsWithUserAgentColumn},
 	{IDs: []string{"mcp_tool_logs_add_endpoint_columns"}, run: migrationAddEndpointColumnsToMCPToolLogs},
 }
@@ -2703,6 +2709,26 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
+		name:  "idx_logs_user_agent",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_user_agent ON logs(user_agent)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_app",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_app ON logs(app)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_user_agent",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_user_agent ON mcp_tool_logs(user_agent)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_app",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_app ON mcp_tool_logs(app)",
+	},
+	{
+		table: "logs",
 		name:  "idx_logs_cluster_node_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_id ON logs(cluster_node_id, timestamp) WHERE cluster_node_id IS NOT NULL",
 	},
@@ -3169,6 +3195,10 @@ func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gor
 // migrationAddUserAgentColumn adds the user_agent and app columns to the logs table.
 // user_agent stores the raw HTTP User-Agent verbatim; app stores the backend-
 // detected client app (Claude Code, Codex, Cursor, ...).
+//
+// Indexes on user_agent and app are built CONCURRENTLY by ensurePerformanceIndexes
+// (entries appended to performanceIndexes) so adding them does not block writes on
+// a populated table.
 func migrationAddUserAgentColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -3197,6 +3227,16 @@ func migrationAddUserAgentColumn(ctx context.Context, db *gorm.DB, logger schema
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
+			if migrator.HasIndex(&Log{}, "idx_logs_app") {
+				if err := migrator.DropIndex(&Log{}, "idx_logs_app"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasIndex(&Log{}, "idx_logs_user_agent") {
+				if err := migrator.DropIndex(&Log{}, "idx_logs_user_agent"); err != nil {
+					return err
+				}
+			}
 			if migrator.HasTable(&UserAgentMapping{}) {
 				if err := migrator.DropTable(&UserAgentMapping{}); err != nil {
 					return err
@@ -3224,6 +3264,10 @@ func migrationAddUserAgentColumn(ctx context.Context, db *gorm.DB, logger schema
 
 // migrationAddUserAgentColumnToMCPToolLogs adds the user_agent and app columns to
 // the mcp_tool_logs table, mirroring migrationAddUserAgentColumn for MCP tool calls.
+//
+// Indexes on user_agent and app are built CONCURRENTLY by ensurePerformanceIndexes
+// (entries appended to performanceIndexes) so adding them does not block writes on
+// a populated table.
 func migrationAddUserAgentColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -3247,6 +3291,16 @@ func migrationAddUserAgentColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			mg := tx.Migrator()
+			if mg.HasIndex(&MCPToolLog{}, "idx_mcp_logs_app") {
+				if err := mg.DropIndex(&MCPToolLog{}, "idx_mcp_logs_app"); err != nil {
+					return err
+				}
+			}
+			if mg.HasIndex(&MCPToolLog{}, "idx_mcp_logs_user_agent") {
+				if err := mg.DropIndex(&MCPToolLog{}, "idx_mcp_logs_user_agent"); err != nil {
+					return err
+				}
+			}
 			if mg.HasColumn(&MCPToolLog{}, "app") {
 				if err := mg.DropColumn(&MCPToolLog{}, "app"); err != nil {
 					return err
@@ -3266,7 +3320,7 @@ func migrationAddUserAgentColumnToMCPToolLogs(ctx context.Context, db *gorm.DB, 
 	return nil
 }
 
-// migrationRecreateMatViewsWithAppColumn is a marker migration: the actual
+// migrationRecreateMatViewsWithUserAgentColumn is a marker migration: the actual
 // rebuild of mv_logs_hourly (now grouped by app, not raw user_agent) and the
 // creation of mv_filter_apps happen on the next PostgreSQL startup via
 // ensureMatViews / repairMatViewShapes, which detect the required app column

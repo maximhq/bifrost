@@ -154,7 +154,7 @@ type UserAgentMapping struct {
 	App       string    `gorm:"type:varchar(128);not null;index" json:"app"`
 	Logo      []byte    `gorm:"type:bytea" json:"logo,omitempty"`
 	LogoMime  *string   `gorm:"type:varchar(128)" json:"logo_mime,omitempty"`
-	IsActive  bool      `gorm:"default:true;index" json:"is_active"`
+	IsActive  bool      `gorm:"index" json:"is_active"`
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 }

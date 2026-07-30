@@ -119,7 +119,6 @@ var mvLogsHourlyRequiredColumns = []string{
 	"business_unit_id",
 	"alias",
 	"canonical_model_name",
-	"cancelled_count",
 	"throughput_completion_tokens",
 	"throughput_latency_ms",
 	"throughput_request_count",

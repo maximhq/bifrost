@@ -154,7 +154,7 @@ func MatchUserAgent(userAgent, pattern string, matchType UserAgentMappingMatchTy
 	case UserAgentMappingMatchTypeStartsWith:
 		return strings.HasPrefix(ua, p)
 	case UserAgentMappingMatchTypeRegex:
-		re, err := regexp.Compile(pattern)
+		re, err := regexp.Compile("(?i)" + pattern)
 		return err == nil && re.MatchString(userAgent)
 	case UserAgentMappingMatchTypeContains, "":
 		return strings.Contains(ua, p)

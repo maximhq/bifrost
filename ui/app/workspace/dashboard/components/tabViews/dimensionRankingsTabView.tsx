@@ -19,11 +19,10 @@ interface DimensionRankingsTabViewProps {
 	dataKey: keyof DashboardData;
 	/** While a PDF export is rendering, show the uncapped export snapshot instead of the capped view. */
 	pdfMode?: boolean;
-	transform?: (data: DimensionRankingsResponse | null) => DimensionRankingsResponse | null;
 }
 
 export const DimensionRankingsTabView = forwardRef<DimensionRankingsTabViewHandle, DimensionRankingsTabViewProps>(
-	function DimensionRankingsTabView({ filters, active, dimension, dimensionLabel, testIdPrefix, dataKey, pdfMode, transform }, ref) {
+	function DimensionRankingsTabView({ filters, active, dimension, dimensionLabel, testIdPrefix, dataKey, pdfMode }, ref) {
 		const fetchArg = useMemo(() => ({ filters, dimension, limit: DASHBOARD_RANKINGS_LIMIT }), [filters, dimension]);
 		// Exports are never truncated: they ask for every ranked entity.
 		const exportArg = useMemo(() => ({ filters, dimension, all: true }), [filters, dimension]);
@@ -36,8 +35,6 @@ export const DimensionRankingsTabView = forwardRef<DimensionRankingsTabViewHandl
 
 		// A snapshot belongs to the filters it was fetched with - drop it when those change.
 		useEffect(() => setExportData(null), [exportArg]);
-
-		const displayData = useMemo(() => (transform ? transform(data ?? null) : (data ?? null)), [data, transform]);
 
 		const loadData = useCallback(async () => {
 			try {

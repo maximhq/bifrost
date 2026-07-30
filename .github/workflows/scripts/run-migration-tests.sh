@@ -819,7 +819,6 @@ append_dynamic_mcp_clients_insert() {
     generate_pricing_overrides_insert_postgres "$now" "$faker_sql"
     generate_mcp_library_insert_postgres "$now" "$faker_sql"
     generate_skills_repo_tables_insert_postgres "$now" "$faker_sql"
-    generate_sidekiq_insert_postgres "$now" "$faker_sql"
     generate_oauth2_issuance_tables_insert_postgres "$now" "$faker_sql"
     generate_sidekiq_insert_postgres "$now" "$past" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
@@ -842,7 +841,6 @@ append_dynamic_mcp_clients_insert() {
     generate_pricing_overrides_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_mcp_library_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_skills_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
-    generate_sidekiq_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_oauth2_issuance_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_sidekiq_insert_sqlite "$now" "$past" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
@@ -3557,11 +3555,6 @@ generate_mcp_clients_insert_postgres() {
     vals="$vals, 'oauth-config-migration-test-001'"
   fi
 
-  if column_exists_postgres "config_mcp_clients" "tool_execution_timeout"; then
-    cols="$cols, tool_execution_timeout"
-    vals="$vals, 30"
-  fi
-
   # config_mcp_clients.encryption_status (added in v1.4.8)
   if column_exists_postgres "config_mcp_clients" "encryption_status"; then
     cols="$cols, encryption_status"
@@ -3832,11 +3825,6 @@ generate_mcp_clients_insert_sqlite() {
   if column_exists_sqlite "$config_db" "config_mcp_clients" "oauth_config_id"; then
     cols="$cols, oauth_config_id"
     vals="$vals, 'oauth-config-migration-test-001'"
-  fi
-
-  if column_exists_sqlite "$config_db" "config_mcp_clients" "tool_execution_timeout"; then
-    cols="$cols, tool_execution_timeout"
-    vals="$vals, 30"
   fi
 
   # config_mcp_clients.encryption_status (added in v1.4.8)
@@ -4201,44 +4189,6 @@ generate_skills_repo_tables_insert_sqlite() {
   echo "-- skill_files (a file pointer for a skill version; points to a blob or external storage)" >> "$output_file"
   echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-001', 'skill-version-migration-001', 'scripts/run.sh', 'blob', NULL, NULL, 'skill-blob-migration-001', 'text/x-shellscript', 18, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
   echo "INSERT INTO skill_files (id, skill_version_id, path, source_type, source_url, storage_key, blob_id, mime_type, file_size_bytes, created_at, updated_at) VALUES ('skill-file-migration-002', 'skill-version-migration-002', 'reference/doc.md', 'url', 'https://example.com/doc.md', 'skills/skill-002/doc.md', NULL, 'text/markdown', 0, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
-}
-
-# Generate sidekiq (durable background-job) table INSERTs for PostgreSQL.
-# Table added in v1.6.4-era via migrationAddSidekiqTable; no FKs.
-generate_sidekiq_insert_postgres() {
-  local now="$1"
-  local output_file="$2"
-
-  if ! column_exists_postgres "sidekiq" "id"; then
-    return
-  fi
-
-  echo "" >> "$output_file"
-  echo "-- sidekiq (durable background-job queue)" >> "$output_file"
-  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-001', 'migration-test-job', 'completed', 'runner-migration-test-001', '{}', 1, '', $now, $now, $now, 'migration-tester', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
-  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-002', 'migration-test-job', 'pending', NULL, '{}', 0, NULL, $now, $now, NULL, NULL, NULL) ON CONFLICT DO NOTHING;" >> "$output_file"
-}
-
-# Generate sidekiq (durable background-job) table INSERTs for SQLite.
-generate_sidekiq_insert_sqlite() {
-  local now="$1"
-  local output_file="$2"
-  local config_db="$3"
-
-  if [ ! -f "$config_db" ]; then
-    return
-  fi
-
-  local table_exists
-  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sidekiq';" 2>/dev/null || echo "0")
-  if [ "$table_exists" != "1" ]; then
-    return
-  fi
-
-  echo "" >> "$output_file"
-  echo "-- sidekiq (durable background-job queue)" >> "$output_file"
-  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-001', 'migration-test-job', 'completed', 'runner-migration-test-001', '{}', 1, '', $now, $now, $now, 'migration-tester', $now) ON CONFLICT DO NOTHING;" >> "$output_file"
-  echo "INSERT INTO sidekiq (id, kind, status, runner_id, metadata, attempts, last_error, created_at, updated_at, started_at, created_by_user_id, completed_at) VALUES ('sidekiq-migration-test-002', 'migration-test-job', 'pending', NULL, '{}', 0, NULL, $now, $now, NULL, NULL, NULL) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Generate per-user OAuth tables INSERTs for PostgreSQL

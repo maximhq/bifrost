@@ -238,6 +238,7 @@ export const DASHBOARD_EXPORT_TABS: { value: DashboardTab; label: string; sectio
 	{ value: "bu-rankings", label: "BU Rankings", sectionId: "dashboard-section-bu-rankings" },
 	{ value: "user-rankings", label: "User Rankings", sectionId: "dashboard-section-user-rankings" },
 	{ value: "virtual-key-rankings", label: "Virtual Key Rankings", sectionId: "dashboard-section-virtual-key-rankings" },
+	{ value: "app-rankings", label: "App Rankings", sectionId: "dashboard-section-app-rankings" },
 ];
 
 export const getExportTabLabel = (tab: DashboardTab): string => DASHBOARD_EXPORT_TABS.find((t) => t.value === tab)?.label ?? "Current Tab";

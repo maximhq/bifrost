@@ -157,8 +157,14 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 }
 
 // serveDevDashboard proxies dashboard requests to the local Vite dev server.
+// Restricted to loopback clients: if the dev server happens to be bound to a
+// non-loopback address, a remote client must not be able to tunnel to
+// Vite-internal endpoints (e.g. /@fs/) via this proxy.
 func (h *UIHandler) serveDevDashboard(ctx *fasthttp.RequestCtx) bool {
 	if h.uiDevClient == nil {
+		return false
+	}
+	if !ctx.RemoteIP().IsLoopback() {
 		return false
 	}
 

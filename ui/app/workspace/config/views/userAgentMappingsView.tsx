@@ -1,3 +1,14 @@
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+	AlertDialogTrigger,
+} from "@/components/ui/alertDialog";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
@@ -187,30 +198,49 @@ export default function UserAgentMappingsView({ disabled }: UserAgentMappingsVie
 										</span>
 									</TableCell>
 									<TableCell className="text-right">
-										<DropdownMenu>
-											<DropdownMenuTrigger asChild>
-												<Button
-													type="button"
-													variant="ghost"
-													size="icon"
-													disabled={controlsDisabled}
-													aria-label="Mapping actions"
-													data-testid={`user-agent-mapping-actions-${mapping.id}`}
-												>
-													<MoreVertical className="h-4 w-4" />
-												</Button>
-											</DropdownMenuTrigger>
-											<DropdownMenuContent align="end">
-												<DropdownMenuItem onSelect={() => openEditSheet(mapping)} data-testid={`user-agent-mapping-edit-${mapping.id}`}>
-													<Pencil className="h-4 w-4" />
-													Edit
-												</DropdownMenuItem>
-												<DropdownMenuItem variant="destructive" onSelect={() => handleDelete(mapping.id)} data-testid={`user-agent-mapping-delete-${mapping.id}`}>
-													<Trash2 className="h-4 w-4" />
-													Delete
-												</DropdownMenuItem>
-											</DropdownMenuContent>
-										</DropdownMenu>
+										<AlertDialog>
+											<DropdownMenu>
+												<DropdownMenuTrigger asChild>
+													<Button
+														type="button"
+														variant="ghost"
+														size="icon"
+														disabled={controlsDisabled}
+														aria-label="Mapping actions"
+														data-testid={`user-agent-mapping-actions-${mapping.id}`}
+													>
+														<MoreVertical className="h-4 w-4" />
+													</Button>
+												</DropdownMenuTrigger>
+												<DropdownMenuContent align="end">
+													<DropdownMenuItem onSelect={() => openEditSheet(mapping)} data-testid={`user-agent-mapping-edit-${mapping.id}`}>
+														<Pencil className="h-4 w-4" />
+														Edit
+													</DropdownMenuItem>
+													<AlertDialogTrigger asChild>
+														<DropdownMenuItem variant="destructive" data-testid={`user-agent-mapping-delete-${mapping.id}`}>
+															<Trash2 className="h-4 w-4" />
+															Delete
+														</DropdownMenuItem>
+													</AlertDialogTrigger>
+												</DropdownMenuContent>
+											</DropdownMenu>
+											<AlertDialogContent>
+												<AlertDialogHeader>
+													<AlertDialogTitle>Are you sure you want to delete this mapping?</AlertDialogTitle>
+													<AlertDialogDescription>This action cannot be undone. This will permanently delete the user agent mapping.</AlertDialogDescription>
+												</AlertDialogHeader>
+												<AlertDialogFooter>
+													<AlertDialogCancel data-testid={`user-agent-mapping-delete-cancel-${mapping.id}`}>Cancel</AlertDialogCancel>
+													<AlertDialogAction
+														data-testid={`user-agent-mapping-delete-confirm-${mapping.id}`}
+														onClick={() => handleDelete(mapping.id)}
+													>
+														Delete
+													</AlertDialogAction>
+												</AlertDialogFooter>
+											</AlertDialogContent>
+										</AlertDialog>
 									</TableCell>
 								</TableRow>
 							);

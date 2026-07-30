@@ -86,6 +86,7 @@ export default function DashboardPage() {
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
 			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
 			aliases: parseAsSafeArrayOf.withDefault([]),
+			apps: parseAsSafeArrayOf.withDefault([]),
 		},
 		{
 			history: "push",
@@ -144,6 +145,7 @@ export default function DashboardPage() {
 			...(urlState.customer_ids.length > 0 && { customer_ids: urlState.customer_ids }),
 			...(urlState.business_unit_ids.length > 0 && { business_unit_ids: urlState.business_unit_ids }),
 			...(urlState.aliases.length > 0 && { aliases: urlState.aliases }),
+			...(urlState.apps.length > 0 && { apps: urlState.apps }),
 		}),
 		[
 			urlState.period,
@@ -167,6 +169,7 @@ export default function DashboardPage() {
 			urlState.customer_ids,
 			urlState.business_unit_ids,
 			urlState.aliases,
+			urlState.apps,
 		],
 	);
 
@@ -368,6 +371,7 @@ export default function DashboardPage() {
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
 				aliases: newFilters.aliases || [],
+				apps: newFilters.apps || [],
 			});
 		},
 		[setUrlState, urlState.start_time, urlState.end_time],
@@ -747,6 +751,7 @@ export default function DashboardPage() {
 									dimensionLabel="App"
 									testIdPrefix="dashboard-app-rankings"
 									dataKey="appRankingsData"
+									pdfMode={isExportingTab("app-rankings")}
 								/>
 							</div>
 						</TabsContent>

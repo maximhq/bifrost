@@ -516,6 +516,7 @@ export default function LogsPage() {
 			input: "Message",
 			provider: "Provider",
 			model: "Model",
+			app: "App",
 			latency: "Latency",
 			tokens: "Tokens",
 			cost: "Cost",
