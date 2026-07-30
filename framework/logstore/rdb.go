@@ -70,6 +70,9 @@ type RDBLogStore struct {
 	db            *gorm.DB
 	logger        schemas.Logger
 	matViewsReady atomic.Bool
+	// matViewMaintenanceDisabled records that matview_refresh_interval resolved
+	// to disabled, so the self-heal path must not recreate the views either.
+	matViewMaintenanceDisabled bool
 	// Self-heal state for the matview read path (see matviewheal.go).
 	matViewHealInFlight    atomic.Bool
 	matViewHealLastAttempt atomic.Int64 // unix nanos of the last repair attempt
