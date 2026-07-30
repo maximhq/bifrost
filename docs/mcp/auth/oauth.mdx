@@ -159,7 +159,7 @@ The same flow is scriptable: `POST /api/mcp/client/{id}/initiate-verification` (
 
 Once authorized, the OAuth credentials live in the encrypted `oauth_configs` table and the `pending_oauth_config_json` stash is cleared from the row; see [Token management](#token-management).
 
-**Lifecycle across restarts and config edits:** the authorized state is server-side and survives restarts and config.json re-syncs. Mutable fields (tool lists, headers, pricing, etc.) can be edited freely in config.json. Immutable fields — `auth_type`, `connection_type`, `connection_string`, `stdio_config`, and the `oauth_config` block — cannot be changed after creation: file edits to them are **ignored**, matching the update API (which does not accept them), and Bifrost logs a warning naming the ignored fields at the next boot. To change any of them, delete the client, update the file entry, and restart (see [Rotation](#token-management)).
+**Lifecycle across restarts and config edits:** the authorized state is server-side and survives restarts and config.json re-syncs. Mutable fields (tool lists, headers, pricing, etc.) can be edited freely in config.json. Immutable fields (`auth_type`, `connection_type`, `connection_string`, `stdio_config`) cannot be changed after creation: file edits to them are **ignored**, matching the update API (which does not accept them), and Bifrost logs a warning naming the ignored fields at the next boot. To change any of them, delete the client, update the file entry, and restart. The `oauth_config` block is different: editing it on an already-authorized client **rotates** the stored OAuth credentials in place (see [Rotation](#rotation)), with a boot warning that existing sessions must re-authenticate. Only fields present in the file participate; absent fields keep their stored values.
 
 </Tab>
 </Tabs>
@@ -206,7 +206,7 @@ Bifrost will:
 4. Continue with the standard authorize / token exchange flow
 
 <Warning>
-The `redirect_uri` Bifrost registers with the upstream provider is locked to Bifrost's current public URL (`mcp_external_client_url`, or the request `Host` header if unset). If you change Bifrost's public URL later, the upstream provider will reject the next authorize call with **"Invalid redirect URI"**. To recover, clear the stored client credentials for the affected MCP server so Bifrost re-runs DCR with the new URL.
+The `redirect_uri` Bifrost registers with the upstream provider is locked to Bifrost's current public URL (`mcp_external_client_url`, or the request `Host` header if unset). If you change Bifrost's public URL later, the upstream provider will reject the next authorize call with **"Invalid redirect URI"**. Reauthorization reuses the registered client, so it cannot fix the mismatch on its own: delete the client and recreate it so Bifrost re-runs DCR against the new URL. (For manually registered credentials, add the new redirect URI in the provider's dashboard instead, then [reauthorize](#reauthorization).)
 </Warning>
 
 ---
@@ -257,6 +257,8 @@ Status values:
 - `failed` — authorization failed or token is invalid
 - `revoked` — the token was revoked (via DELETE); the config row is retained with no live token
 
+When a stored token permanently dies later (refresh rejected, provider-side revocation), the status flips on the **token row**, not on the OAuth config: the token moves to `needs_reauth` and the MCP client's connection state shows [`needs_reauth`](#reauthorization). The OAuth config itself stays `authorized`.
+
 ### Automatic refresh
 
 Bifrost refreshes access tokens automatically using the stored refresh token, in two layers:
@@ -264,11 +266,63 @@ Bifrost refreshes access tokens automatically using the stored refresh token, in
 - **In the background** — a worker periodically refreshes tokens that are about to expire, so active clients always have a valid token ready.
 - **On use** — if a token is already expired when a request needs it, Bifrost refreshes it inline before forwarding the request.
 
-Background refresh only runs while the MCP client is enabled. Disabling a client pauses it; on re-enable, the token is refreshed on first use. If a client stays disabled long enough for the provider to expire the idle refresh token, re-authorization is required.
+Background refresh only runs while the MCP client is enabled. Disabling a client pauses it; on re-enable, the token is refreshed on first use. If a client stays disabled long enough for the provider to expire the idle refresh token, [reauthorization](#reauthorization) is required.
+
+Transient refresh failures (network blips, provider hiccups) keep retrying silently. Only a permanent rejection (the provider refuses the refresh token outright) flips the token to `needs_reauth`.
+
+<Warning>
+**Some providers only issue a refresh token when you explicitly ask for one.** Google is the canonical case: without `access_type=offline&prompt=consent` on the authorize URL, the grant contains only an access token, and the client lands in `needs_reauth` at every token expiry (roughly hourly for Google). Bifrost preserves any query parameters already present on the configured `authorize_url`, so append the provider's offline-access parameters there, e.g. `"authorize_url": "https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent"`.
+</Warning>
 
 ### Rotation
 
-Editing `oauth_config` after setup is not currently supported — the edit flow rejects it (`connection_type`, `auth_type`, and `connection_string` are likewise immutable after creation). To change OAuth credentials, scopes, or endpoints: delete the client and recreate it (UI or API). For a config.json-declared client, delete it from the dashboard, update the `oauth_config` block in the file, and restart — the client re-enters `pending_verification` and can be authorized with the new options.
+`PUT /api/mcp/client/{id}` accepts an `oauth_config` block for clients with `auth_type` `oauth` or `per_user_oauth` (400 for any other auth type). Any field can be rotated: `client_id`, `client_secret`, `authorize_url`, `token_url`, `registration_url`, `resource`, `scopes`. Rotation applies the changed fields **in place** on the same OAuth config row; it does not create a new row and does not re-run discovery or client registration.
+
+```bash
+curl -X PUT http://localhost:8080/api/mcp/client/mcp_client_abc123 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "oauth_config": {
+      "client_id": "new-client-id",
+      "client_secret": "new-client-secret"
+    }
+  }'
+```
+
+Semantics:
+
+- **Unset fields preserve stored values.** `client_id` / `client_secret` follow the SecretVar masked-placeholder convention (sending back the redacted value from a GET means "keep"); the other fields treat empty as "not provided".
+- **Any actual change cascades.** Every token bound to that OAuth config flips to `needs_reauth`, regardless of auth mode: the shared connection token, every per-user token, and the retained admin discovery credential alike. Shared clients surface it on the next reconnect; per-user callers get the standard reauth URL on their next tool call.
+- **A no-op round-trip is safe.** Re-sending the stored values does not cascade anything.
+- **Cannot run while the client is (or is being) disabled** (400; enable the client first, or send the enable and rotation as separate requests).
+
+The same rotation applies to config.json-declared clients: editing the `oauth_config` block of an already-authorized client rotates the stored config at the next boot and cascades `needs_reauth`, with a boot warning that existing sessions must re-authenticate.
+
+<Warning>
+Rotating `client_id` or `client_secret` immediately signs out every current session on the MCP client, shared and per-user alike. Everyone re-authenticates against the new credentials; for the shared connection itself, that means clicking **Reauthorize** (below).
+</Warning>
+
+### Reauthorization
+
+A shared OAuth client whose credential permanently dies lands in the **`needs_reauth`** connection state: the client was authorized and connected at least once, but the token can no longer be refreshed (provider-side revocation, expired refresh token, or a credential rotation). This is distinct from `pending_verification`, which means initial setup never completed.
+
+`needs_reauth` is sticky: the health monitor and enable/disable toggles will not flip the client back to `connected` or `disconnected`, and the **Reconnect** action is disabled for it (reconnecting cannot help when the credential itself is dead). Only a human redoing consent clears it.
+
+From the dashboard, open the client and click **Reauthorize**: Bifrost redoes the OAuth consent flow in a popup against the currently stored credentials, and on completion reconnects the client.
+
+<Frame>
+  <img src="/media/ui-mcp-needs-reauth-reauthorize.png" alt="MCP client sheet showing the red needs_reauth badge and the Reauthorize button" />
+</Frame>
+
+The same flow is scriptable via `POST /api/mcp/client/{id}/reauthorize` (`{id}` = MCP client ID):
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/mcp_client_abc123/reauthorize
+```
+
+The response is the same `pending_oauth` payload the create flow returns (`oauth_config_id`, `authorize_url`, `expires_at`, `complete_url`, `status_url`, `next_steps`): open `authorize_url` in a browser, poll `status_url` until `authorized`, then POST `complete_url`. On completion the client reconnects and the response reads `"MCP client re-authorized and reconnected successfully"`.
+
+Error cases: 400 if the client's `auth_type` is not OAuth-based, or if it never completed initial authorization (use `initiate-verification` instead); 404 for an unknown ID; 503 when no OAuth provider is configured. For `per_user_oauth` clients the endpoint repairs the retained admin discovery credential instead, and is gated accordingly; see [Per-User OAuth](./per-user-oauth#admin-discovery-credential).
 
 ### Revoke
 
@@ -351,7 +405,7 @@ The `redirect_uri` Bifrost registers and the consent URLs it builds are derived 
 See [Reverse Proxy configuration →](../../deployment-guides/config-json/client#reverse-proxy) for the full reference.
 
 <Warning>
-**Changing `mcp_external_client_url` after an upstream provider has been registered breaks already-authorized clients.** Upstream providers lock the `redirect_uri` to whatever was registered during DCR. To recover, clear the stored OAuth client credentials so Bifrost re-registers with the new URL.
+**Changing `mcp_external_client_url` after an upstream provider has been registered breaks already-authorized clients.** Upstream providers lock the `redirect_uri` to whatever was registered during DCR. To recover, delete and recreate the affected client so Bifrost re-registers with the new URL (reauthorization alone reuses the registered client and cannot fix the mismatch). For manually registered credentials, add the new redirect URI at the provider's dashboard, then [reauthorize](#reauthorization).
 </Warning>
 
 ---
@@ -370,8 +424,9 @@ See [Reverse Proxy configuration →](../../deployment-guides/config-json/client
 
 - Check that the refresh token is still valid (some providers expire refresh tokens after long idle)
 - If the client was disabled for a long stretch, background refresh was paused for it — the refresh token may have expired at the provider in the meantime
+- If the provider never issued a refresh token at all, the client will hit this at every access-token expiry; append the provider's offline-access parameters to `authorize_url` (see the warning under [Automatic refresh](#automatic-refresh))
 - Verify scopes are still sufficient
-- Re-authorize: `DELETE /api/oauth/config/{id}` then create a new client
+- Re-authorize: click **Reauthorize** on the client (or `POST /api/mcp/client/{id}/reauthorize`); see [Reauthorization](#reauthorization)
 </Accordion>
 
 <Accordion title="Callback hangs at `/api/oauth/callback`">
@@ -383,7 +438,7 @@ See [Reverse Proxy configuration →](../../deployment-guides/config-json/client
 
 <Accordion title="`Invalid redirect URI` from the upstream provider">
 
-You changed Bifrost's public URL after the upstream client was registered. Clear the stored credentials so Bifrost re-runs DCR with the new URL.
+You changed Bifrost's public URL after the upstream client was registered. Delete and recreate the client so Bifrost re-runs DCR with the new URL; for manually registered credentials, add the new redirect URI at the provider's dashboard and then [reauthorize](#reauthorization).
 </Accordion>
 </AccordionGroup>
 
@@ -396,6 +451,7 @@ You changed Bifrost's public URL after the upstream client was registered. Clear
 | `/api/mcp/client`                                | POST   | Create MCP client; returns `pending_oauth` + `authorize_url`           |
 | `/api/mcp/client/{id}/initiate-verification`     | POST   | Start authorization for a `pending_verification` client declared in config.json (`{id}` = MCP client ID); returns `authorize_url` + `status_url` + `complete_url` |
 | `/api/mcp/client/{id}/complete-oauth`            | POST   | Finalize after upstream redirect lands on `/api/oauth/callback` (`{id}` = `oauth_config_id`) |
+| `/api/mcp/client/{id}/reauthorize`               | POST   | Redo consent for a `needs_reauth` client without delete-and-recreate (`{id}` = MCP client ID); returns the same `pending_oauth` payload as create |
 | `/api/oauth/callback`                            | GET    | Upstream provider redirects here; handled internally                   |
 | `/api/oauth/config/{oauth_config_id}/status`     | GET    | Current OAuth config status + token metadata                           |
 | `/api/oauth/config/{oauth_config_id}`            | DELETE | Revoke token + remove OAuth config                                     |
