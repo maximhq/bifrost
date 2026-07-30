@@ -12,6 +12,8 @@ import (
 type BudgetOverrideMode string
 
 const (
+	// BudgetOverrideModeNone means no override is active (default/zero value).
+	BudgetOverrideModeNone BudgetOverrideMode = ""
 	// BudgetOverrideModeCycles keeps an override active for a finite number of reset cycles.
 	BudgetOverrideModeCycles BudgetOverrideMode = "cycles"
 	// BudgetOverrideModeForever keeps an override active until it is explicitly removed.
