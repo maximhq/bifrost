@@ -18,18 +18,29 @@ MCPConnectionType:
 
 MCPConnectionState:
   type: string
-  enum: [connected, disconnected, error, pending_tools, pending_verification, disabled]
+  enum: [connected, disconnected, error, pending_tools, pending_verification, needs_reauth, disabled]
   description: |
     Connection state of an MCP client:
     - connected: Client is connected and ready to use
     - disconnected: Client is not connected (will be auto-recovered by health monitor)
     - error: Client is in an unrecoverable error state
-    - pending_tools: Connected but tools not yet populated (per-user OAuth clients)
+    - pending_tools: Connected but tools not yet populated (per-user clients)
     - pending_verification: Declared (typically via config.json) but the one-time
       admin verification has not been completed yet. Complete it via
       POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /
       per_user_oauth) or POST /api/mcp/client/{id}/verify-headers
       (auth_type per_user_headers).
+    - needs_reauth: Setup completed at least once, but a credential an admin is
+      responsible for has permanently died and needs a human to repair it.
+      For shared OAuth clients the connection credential itself was
+      rejected/expired with no silent recovery; the state is sticky (the health
+      monitor will not clobber it) until an admin runs
+      POST /api/mcp/client/{id}/reauthorize. For per-user clients this is a
+      response-only projection meaning the retained admin discovery credential
+      needs repair; end-user credentials and tool calls keep working, only
+      periodic tool-list refresh pauses. Repair via reauthorize
+      (per_user_oauth) or verify-headers with fresh sample values
+      (per_user_headers).
     - disabled: Client has been intentionally disabled; no connection or workers are active
 
 MCPStdioConfig:
@@ -109,6 +120,28 @@ MCPClientCreateRequestBase:
         Whether the MCP server supports ping for health checks.
         If true, uses lightweight ping method for health checks.
         If false, uses listTools method for health checks instead.
+    tool_sync_interval:
+      type: integer
+      description: |
+        Per-client tool-list sync interval in minutes. 0 (or omitted) falls back
+        to the global mcp_tool_sync_interval client config; a negative value
+        disables periodic tool sync for this client.
+    tool_execution_timeout:
+      type: integer
+      minimum: 0
+      description: |
+        Per-client tool execution timeout in seconds. 0 (or omitted) falls back
+        to the global mcp_tool_execution_timeout client config.
+    allowed_extra_headers:
+      type: array
+      items:
+        type: string
+      description: |
+        Allowlist of request-level headers callers may forward to this MCP
+        server at execution time.
+        ["*"] => any header may be forwarded
+        [] or omitted => no extra headers are forwarded
+        ["header1", "header2"] => only the specified headers
     connection_type:
       $ref: '#/MCPConnectionType'
     auth_type:
@@ -193,9 +226,11 @@ MCPClientCreateRequestBase:
       description: |
         Used only at create time when `auth_type` is `per_user_headers`. A sample
         set of header values the admin supplies so Bifrost can run a one-time
-        upstream verify and discover the tool list. Discarded after the create
-        call — not persisted. Mirrors how the admin's temp OAuth token is used
-        for `per_user_oauth` setup.
+        upstream verify and discover the tool list. Not persisted by the create
+        call; each end-user submits their own values at runtime. To have Bifrost
+        retain an admin discovery credential for periodic tool-list refresh,
+        use POST /api/mcp/client/{id}/verify-headers, which stores the sample
+        values as that credential.
 
 MCPClientCreateRequestHTTP:
   allOf:
@@ -241,55 +276,74 @@ MCPClientCreateRequestSTDIO:
 
 MCPClientUpdateRequest:
   type: object
-  description: MCP client configuration for updating an existing client (includes tool_pricing)
-  allOf:
-    - if:
-        required: [auth_type]
-        properties:
-          auth_type:
-            const: per_user_headers
-      then:
-        required: [per_user_header_keys]
-        properties:
-          per_user_header_keys:
-            type: array
-            minItems: 1
-            items:
-              type: string
-              minLength: 1
+  description: |
+    MCP client configuration for updating an existing client (includes tool_pricing).
+    All fields are optional; omitting a field retains its existing value (PATCH
+    semantics). Immutable fields (connection_type, auth_type, connection_string,
+    stdio_config, oauth_config_id) are not accepted here; they cannot be changed
+    after creation.
   properties:
-    client_id:
-      type: string
-      description: Unique identifier for the MCP client
     name:
       type: string
       description: Display name for the MCP client
     is_code_mode_client:
       type: boolean
       description: Whether this client is available in code mode
-    connection_type:
-      $ref: '#/MCPConnectionType'
-    connection_string:
-      type: string
-      description: HTTP or SSE URL (required for HTTP or SSE connections)
-    stdio_config:
-      $ref: '#/MCPStdioConfig'
-    auth_type:
-      $ref: '#/MCPAuthType'
-      description: Authentication type for the MCP connection
-    oauth_config_id:
-      type: string
+    is_ping_available:
+      type: boolean
       description: |
-        OAuth config ID for OAuth authentication.
-        References the oauth_configs table.
-        Only relevant when auth_type is "oauth".
+        Whether the MCP server supports ping for health checks.
+        If true, uses lightweight ping method for health checks.
+        If false, uses listTools method for health checks instead.
+    tool_sync_interval:
+      type: integer
+      description: |
+        Per-client tool-list sync interval in minutes. 0 falls back to the
+        global mcp_tool_sync_interval client config; a negative value disables
+        periodic tool sync for this client.
+    tool_execution_timeout:
+      type: integer
+      minimum: 0
+      description: |
+        Per-client tool execution timeout in seconds. 0 falls back to the
+        global mcp_tool_execution_timeout client config.
     headers:
       type: object
       additionalProperties:
         type: string
       description: |
         Custom headers to include in requests.
-        Only used when auth_type is "headers".
+        Only used when auth_type is "headers". Supports env./vault. references.
+        Values echoed back redacted from a GET response are recognized and
+        preserve the stored value, so a fetch-modify-put round trip is safe.
+    allowed_extra_headers:
+      type: array
+      items:
+        type: string
+      description: |
+        Allowlist of request-level headers callers may forward to this MCP
+        server at execution time.
+        ["*"] => any header may be forwarded
+        [] => no extra headers are forwarded
+        ["header1", "header2"] => only the specified headers
+    oauth_config:
+      $ref: '../../schemas/management/oauth.yaml#/OAuthConfigRequest'
+      description: |
+        Rotates the stored OAuth configuration in place. Only accepted for
+        auth_type "oauth" or "per_user_oauth" (400 otherwise). Any provided
+        field replaces the stored value; no new config row is created and no
+        re-discovery or re-registration runs. Unset fields preserve stored
+        values: client_id/client_secret follow the SecretVar masked-placeholder
+        convention (send back the redacted placeholder from a GET response to
+        keep the stored secret), while empty strings / empty arrays on the
+        remaining fields mean "not provided".
+
+        When any field actually changes, every token bound to the OAuth config
+        is flipped to needs_reauth regardless of auth mode, shared and
+        per-user sessions alike must re-authenticate. A round trip that
+        resolves to the stored values is a no-op and does not cascade.
+        Rotation cannot run while the client is (or is being) disabled
+        (400); send those as two separate requests.
     tools_to_execute:
       type: array
       items:
@@ -331,9 +385,12 @@ MCPClientUpdateRequest:
       items:
         type: string
       description: |
-        For `per_user_headers` clients only. Updating this list flips every existing
-        active per-user credential row to `needs_update`; callers will be sent back to
-        the submission form on their next tool call to satisfy the new schema.
+        For `per_user_headers` clients only. Cannot be set to an empty list.
+        Updating this list flips every existing active per-user credential row
+        to `needs_update`; callers will be sent back to the submission form on
+        their next tool call to satisfy the new schema. The retained admin
+        discovery credential is flipped the same way; repair it by calling
+        POST /api/mcp/client/{id}/verify-headers with fresh sample values.
     disabled:
       type: boolean
       default: false
