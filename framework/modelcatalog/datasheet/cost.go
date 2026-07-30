@@ -11,7 +11,7 @@ import (
 )
 
 // CalculateCost calculates the cost of a Bifrost response.
-// It handles all request types, cache and guardrail billing, and tiered pricing.
+// It handles all request types, cache, guardrail, and routing billing, and tiered pricing.
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
 // overrides may still apply since the provider is derived from the response.
 func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupScopes) float64 {
@@ -26,20 +26,60 @@ func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupSco
 
 	extraFields := result.GetExtraFields()
 
-	// Handle semantic cache billing
-	cacheDebug := extraFields.CacheDebug
-	var requestCost float64
-	if cacheDebug != nil {
-		requestCost = s.calculateCostWithCache(result, cacheDebug, lookupScopes)
+	// The main request and each internal sidecar are independently billable.
+	// Keep a single accumulator so cache, guardrail, and routing debug metadata
+	// can coexist without one branch hiding another.
+	var cost float64
+	if extraFields != nil && extraFields.CacheDebug != nil {
+		cost = s.calculateCostWithCache(result, extraFields.CacheDebug, lookupScopes)
 	} else {
-		requestCost = s.calculateBaseCost(result, lookupScopes)
+		cost = s.calculateBaseCost(result, lookupScopes)
 	}
 
-	// Handle guardrail judge-call billing
-	if extraFields.GuardrailDebug == nil {
-		return requestCost
+	if extraFields != nil && extraFields.GuardrailDebug != nil {
+		cost += s.CalculateGuardrailCost(extraFields.GuardrailDebug, &lookupScopes)
 	}
-	return requestCost + s.CalculateGuardrailCost(extraFields.GuardrailDebug, &lookupScopes)
+
+	// Routing-classification embedding cost is budget-attributed only when
+	// governance explicitly opted the request in. Telemetry can still price it
+	// independently through RoutingEmbeddingCost.
+	if extraFields != nil && extraFields.RoutingDebug != nil && extraFields.RoutingDebug.CountTowardBudgets {
+		cost += s.RoutingEmbeddingCost(extraFields.RoutingDebug, &lookupScopes)
+	}
+
+	return cost
+}
+
+// RoutingEmbeddingCost calculates the embedding cost of a semantic routing
+// classification from its RoutingDebug stamp. Exported so telemetry can price
+// routing overhead unconditionally, while CalculateCost folds it into the
+// request cost only when RoutingDebug.CountTowardBudgets is set. If scopes is
+// nil, an empty LookupScopes is used.
+func (s *Store) RoutingEmbeddingCost(routingDebug *schemas.BifrostRoutingDebug, scopes *LookupScopes) float64 {
+	if routingDebug == nil || routingDebug.ProviderUsed == nil || routingDebug.ModelUsed == nil || routingDebug.InputTokens == nil {
+		return 0
+	}
+	// Malformed usage must never create a negative sidecar cost that subtracts
+	// from the request's budget attribution.
+	if *routingDebug.InputTokens < 0 {
+		return 0
+	}
+
+	var lookupScopes LookupScopes
+	if scopes != nil {
+		lookupScopes = *scopes
+	}
+	// The embedding can use a different provider from the main request, so its
+	// provider-scoped overrides must be resolved against the embedding provider.
+	lookupScopes.Provider = *routingDebug.ProviderUsed
+	pricing := s.resolvePricing(schemas.RoutingInfo{
+		Provider: schemas.ModelProvider(*routingDebug.ProviderUsed),
+		Model:    *routingDebug.ModelUsed,
+	}, schemas.EmbeddingRequest, lookupScopes)
+	if pricing == nil {
+		return 0
+	}
+	return float64(*routingDebug.InputTokens) * tieredInputRate(pricing, *routingDebug.InputTokens, serviceTier{})
 }
 
 // CalculateCostForUsage computes the dollar cost from a bare usage object plus

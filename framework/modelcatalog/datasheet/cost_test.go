@@ -1855,6 +1855,156 @@ func TestCalculateGuardrailCostUsesJudgeProviderWithoutCallerSelectedKey(t *test
 }
 
 // =========================================================================
+// 10b. Semantic routing billing (RoutingDebug)
+// =========================================================================
+
+// routingDebugFor builds a RoutingDebug stamp for the given embedding call.
+func routingDebugFor(provider, model string, inputTokens int, countTowardBudgets bool) *schemas.BifrostRoutingDebug {
+	return &schemas.BifrostRoutingDebug{
+		ProviderUsed:       &provider,
+		ModelUsed:          &model,
+		InputTokens:        &inputTokens,
+		CountTowardBudgets: countTowardBudgets,
+	}
+}
+
+// routingBillingTestStore has chat pricing for the request model and embedding
+// pricing for the routing classifier's model.
+func routingBillingTestStore() *Store {
+	return testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000005), OutputCostPerToken: bifrost.Ptr(0.000015),
+		},
+		makeKey("text-embedding-3-small", "openai", "embedding"): {
+			Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding",
+			InputCostPerToken: bifrost.Ptr(0.00000002),
+		},
+	})
+}
+
+func TestCalculateCost_RoutingDebugFlagOff(t *testing.T) {
+	s := routingBillingTestStore()
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:  schemas.ChatCompletionRequest,
+				RoutingInfo:  routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				RoutingDebug: routingDebugFor("openai", "text-embedding-3-small", 500, false),
+			},
+		},
+	}
+
+	// count_toward_budgets off: base cost only, routing embed adds zero.
+	cost := s.CalculateCost(resp, nil)
+	assert.InDelta(t, 0.0125, cost, 1e-12)
+}
+
+func TestCalculateCost_RoutingDebugFlagOn(t *testing.T) {
+	s := routingBillingTestStore()
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:  schemas.ChatCompletionRequest,
+				RoutingInfo:  routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				RoutingDebug: routingDebugFor("openai", "text-embedding-3-small", 500, true),
+			},
+		},
+	}
+
+	// Base cost: 1000*0.000005 + 500*0.000015 = 0.0125
+	// Routing embedding cost: 500 * 0.00000002 = 0.00001
+	cost := s.CalculateCost(resp, nil)
+	assert.InDelta(t, 0.01251, cost, 1e-12)
+}
+
+func TestCalculateCost_RoutingDebugComposesWithCacheDebug(t *testing.T) {
+	embProvider := "openai"
+	embModel := "text-embedding-3-small"
+	embTokens := 500
+
+	s := routingBillingTestStore()
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				CacheDebug: &schemas.BifrostCacheDebug{
+					CacheHit:     false,
+					ProviderUsed: &embProvider,
+					ModelUsed:    &embModel,
+					InputTokens:  &embTokens,
+				},
+				RoutingDebug: routingDebugFor("openai", "text-embedding-3-small", 250, true),
+			},
+		},
+	}
+
+	// Base cost: 0.0125
+	// Cache embedding cost: 500 * 0.00000002 = 0.00001
+	// Routing embedding cost: 250 * 0.00000002 = 0.000005
+	cost := s.CalculateCost(resp, nil)
+	assert.InDelta(t, 0.012515, cost, 1e-12)
+}
+
+func TestRoutingEmbeddingCost_Standalone(t *testing.T) {
+	s := routingBillingTestStore()
+
+	// Priced regardless of the CountTowardBudgets flag — telemetry uses this
+	// to report routing overhead unconditionally.
+	cost := s.RoutingEmbeddingCost(routingDebugFor("openai", "text-embedding-3-small", 500, false), nil)
+	assert.InDelta(t, 0.00001, cost, 1e-12)
+}
+
+func TestRoutingEmbeddingCost_MissingFields(t *testing.T) {
+	s := routingBillingTestStore()
+
+	assert.Equal(t, 0.0, s.RoutingEmbeddingCost(nil, nil))
+	assert.Equal(t, 0.0, s.RoutingEmbeddingCost(&schemas.BifrostRoutingDebug{}, nil))
+
+	provider := "openai"
+	model := "text-embedding-3-small"
+	assert.Equal(t, 0.0, s.RoutingEmbeddingCost(&schemas.BifrostRoutingDebug{
+		ProviderUsed: &provider,
+		ModelUsed:    &model,
+		// InputTokens missing
+	}, nil))
+}
+
+// A malformed provider usage payload must never produce a negative routing
+// cost: that would subtract from the request's billed cost and under-count its
+// budget attribution.
+func TestRoutingEmbeddingCost_NegativeInputTokensRejected(t *testing.T) {
+	s := routingBillingTestStore()
+
+	assert.Equal(t, 0.0, s.RoutingEmbeddingCost(routingDebugFor("openai", "text-embedding-3-small", -500, true), nil))
+
+	resp := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:  schemas.ChatCompletionRequest,
+				RoutingInfo:  routingInfoFor(schemas.OpenAI, "gpt-4o"),
+				RoutingDebug: routingDebugFor("openai", "text-embedding-3-small", -500, true),
+			},
+		},
+	}
+
+	// Base cost only — the negative routing embed contributes nothing.
+	assert.InDelta(t, 0.0125, s.CalculateCost(resp, nil), 1e-12)
+
+	// Zero stays valid and free; positive counts are unaffected.
+	assert.Equal(t, 0.0, s.RoutingEmbeddingCost(routingDebugFor("openai", "text-embedding-3-small", 0, true), nil))
+	assert.InDelta(t, 0.00001, s.RoutingEmbeddingCost(routingDebugFor("openai", "text-embedding-3-small", 500, true), nil), 1e-12)
+}
+
+// =========================================================================
 // 11. CalculateCost integration — end-to-end
 // =========================================================================
 
