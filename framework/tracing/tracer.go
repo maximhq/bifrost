@@ -13,6 +13,31 @@ import (
 	"github.com/maximhq/bifrost/framework/streaming"
 )
 
+const (
+	// maxConcurrentInjectsPerPlugin bounds how many traces may sit inside a single
+	// observability connector's Inject at once. A connector pointed at a wrong or
+	// black-holed endpoint blocks on network I/O while pinning a full trace snapshot;
+	// uncapped that is one goroutine and one snapshot per request, whose heap and
+	// scheduler pressure starves the rest of the process — notably the logging
+	// plugin's single DB batch writer, whose queue then drops rows silently.
+	// Each connector gets its own budget so a stalled one cannot crowd out a healthy one.
+	maxConcurrentInjectsPerPlugin = 1024
+
+	// flushStopTimeout bounds how long Stop waits for in-flight trace exports, so a
+	// hung collector cannot block shutdown or a config reload.
+	flushStopTimeout = 10 * time.Second
+)
+
+// obsPluginSlot pairs an observability plugin with its own concurrency budget and
+// drop counter. Isolating the budget per connector is what keeps a misconfigured
+// exporter from consuming the capacity that healthy connectors need.
+type obsPluginSlot struct {
+	plugin  schemas.ObservabilityPlugin
+	name    string
+	sem     chan struct{}
+	dropped atomic.Int64
+}
+
 // Tracer implements schemas.Tracer using TraceStore.
 // It provides the bridge between the core Tracer interface and the
 // framework's TraceStore implementation.
@@ -22,7 +47,7 @@ type Tracer struct {
 	accumulator       *streaming.Accumulator
 	pricingManager    *modelcatalog.ModelCatalog
 	logger            schemas.Logger
-	obsPlugins        atomic.Pointer[[]schemas.ObservabilityPlugin]
+	obsPlugins        atomic.Pointer[[]*obsPluginSlot]
 	cachedHdrPatterns atomic.Pointer[[]string]
 	flushWG           sync.WaitGroup
 }
@@ -36,7 +61,7 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 		accumulator:    streaming.NewAccumulator(pricingManager, logger),
 		pricingManager: pricingManager,
 		logger:         logger,
-		obsPlugins:     atomic.Pointer[[]schemas.ObservabilityPlugin]{},
+		obsPlugins:     atomic.Pointer[[]*obsPluginSlot]{},
 	}
 }
 
@@ -47,7 +72,27 @@ func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugi
 	if t == nil {
 		return
 	}
-	t.obsPlugins.Store(&obsPlugins)
+	// Build one slot per distinct plugin, each with its own concurrency budget.
+	// Deduplication by name happens here rather than on every flush, so the hot
+	// path does not rebuild a map per trace.
+	slots := make([]*obsPluginSlot, 0, len(obsPlugins))
+	seenPlugins := make(map[string]struct{}, len(obsPlugins))
+	for _, plugin := range obsPlugins {
+		if plugin == nil {
+			continue
+		}
+		name := plugin.GetName()
+		if _, exists := seenPlugins[name]; exists {
+			continue
+		}
+		seenPlugins[name] = struct{}{}
+		slots = append(slots, &obsPluginSlot{
+			plugin: plugin,
+			name:   name,
+			sem:    make(chan struct{}, maxConcurrentInjectsPerPlugin),
+		})
+	}
+	t.obsPlugins.Store(&slots)
 
 	seen := make(map[string]struct{})
 	var patterns []string
@@ -695,12 +740,34 @@ func (t *Tracer) AttachPluginLogs(traceID string, logs []schemas.PluginLogEntry)
 // Stop stops the tracer and releases its resources.
 // This stops the internal TraceStore's cleanup goroutine.
 func (t *Tracer) Stop() {
-	t.flushWG.Wait()
+	// Bounded wait: a connector blocked on an unreachable collector would otherwise
+	// hold up shutdown and config reload indefinitely (gRPC exports carry no deadline
+	// of their own).
+	t.waitForFlushes(flushStopTimeout)
 	if t.store != nil {
 		t.store.Stop()
 	}
 	if t.accumulator != nil {
 		t.accumulator.Cleanup()
+	}
+}
+
+// waitForFlushes waits for in-flight trace exports, giving up after timeout.
+// Returns true if every flush completed within the budget.
+func (t *Tracer) waitForFlushes(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		t.flushWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		if t.logger != nil {
+			t.logger.Warn("timed out after %s waiting for in-flight trace exports; continuing shutdown", timeout)
+		}
+		return false
 	}
 }
 
@@ -734,35 +801,75 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// here covers all connectors.
 		exportTrace := completedTrace.SnapshotForExport()
 
-		var obsPlugins []schemas.ObservabilityPlugin
+		// Stamp Bifrost's overhead onto the snapshot's root span now that it has
+		// ended. Done here — one write, before any connector reads the snapshot —
+		// so every trace connector sees the same value on the root span.
+		exportTrace.StampOverheadDuration()
+
+		var slots []*obsPluginSlot
 		if loaded := t.obsPlugins.Load(); loaded != nil {
-			obsPlugins = *loaded
+			slots = *loaded
 		}
-		seen := make(map[string]struct{}, len(obsPlugins))
-		for _, plugin := range obsPlugins {
-			if plugin == nil {
+
+		// Fan out rather than iterate: every connector receives the trace on its own
+		// goroutine, so a connector doing blocking network I/O can never delay another.
+		// This used to be a sequential loop, where only the builtin plugin ordering
+		// (logging before otel) kept a stalled exporter from sitting in front of the
+		// logging plugin's DB enqueue — accidental protection that any custom or
+		// reordered connector would have removed.
+		var wg sync.WaitGroup
+		for _, slot := range slots {
+			// Non-blocking acquire. A saturated connector is skipped and counted; parking
+			// yet another goroutine on it is exactly the failure this cap exists to stop.
+			select {
+			case slot.sem <- struct{}{}:
+			default:
+				// Throttled: at saturation this fires once per request, which would make
+				// the logging itself a second source of load.
+				if n := slot.dropped.Add(1); (n == 1 || n%1000 == 0) && t.logger != nil {
+					t.logger.Warn("observability plugin %s saturated at %d concurrent injects, skipped trace %s (%d skipped so far)",
+						slot.name, maxConcurrentInjectsPerPlugin, exportTrace.TraceID, n)
+				}
 				continue
 			}
-			// Isolate each plugin callback — one bad observability backend should
-			// not crash the server or prevent other plugins from receiving the trace.
-			func(plugin schemas.ObservabilityPlugin) {
-				name := "<unknown>"
+			wg.Add(1)
+			go func(slot *obsPluginSlot) {
+				defer wg.Done()
+				defer func() { <-slot.sem }()
+				// Isolate each plugin callback — one bad observability backend should
+				// not crash the server or prevent other plugins from receiving the trace.
 				defer func() {
 					if r := recover(); r != nil && t.logger != nil {
-						t.logger.Error("observability plugin %s panicked during trace injection: %v", name, r)
+						t.logger.Error("observability plugin %s panicked during trace injection: %v", slot.name, r)
 					}
 				}()
-				name = plugin.GetName()
-				if _, exists := seen[name]; exists {
-					return
+				if err := slot.plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
+					t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
 				}
-				seen[name] = struct{}{}
-				if err := plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
-					t.logger.Warn("observability plugin %s failed to inject trace: %v", name, err)
-				}
-			}(plugin)
+			}(slot)
 		}
+		// Join before the deferred ReleaseTrace runs: connectors read exportTrace, and
+		// the pooled trace it was snapshotted from must not be recycled underneath them.
+		wg.Wait()
 	})
+}
+
+// ObservabilityDropCounts returns, per observability plugin name, how many traces were
+// skipped because that plugin was already at its concurrency cap. A non-zero and rising
+// count means the connector's backend is unreachable or too slow to keep up.
+func (t *Tracer) ObservabilityDropCounts() map[string]int64 {
+	if t == nil {
+		return nil
+	}
+	loaded := t.obsPlugins.Load()
+	if loaded == nil {
+		return nil
+	}
+	counts := make(map[string]int64, len(*loaded))
+	for _, slot := range *loaded {
+		counts[slot.name] = slot.dropped.Load()
+	}
+	return counts
 }
 
 // Ensure Tracer implements schemas.Tracer at compile time

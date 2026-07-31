@@ -196,17 +196,18 @@ type Options struct {
 // LookupScopes carries the runtime identifiers used to resolve scoped pricing
 // overrides during cost calculation.
 type LookupScopes struct {
+	UserID        string
 	VirtualKeyID  string
 	SelectedKeyID string
 	Provider      string
 }
 
 // LookupScopesFromContext builds a LookupScopes from a BifrostContext. Reads
-// the governance virtual key ID (not the raw VK token) and the selected key
-// ID. provider should be the provider name string (e.g. "openai"); pass "" if
-// unavailable. Returns nil only when ctx is nil. An empty scopes value is
-// still returned when all fields are empty so global-scope overrides remain
-// evaluable.
+// the governance virtual key ID (not the raw VK token), the selected key ID,
+// and the resolved calling user ID. provider should be the provider name
+// string (e.g. "openai"); pass "" if unavailable. Returns nil only when ctx
+// is nil. An empty scopes value is still returned when all fields are empty
+// so global-scope overrides remain evaluable.
 //
 // NOT SAFE in a goroutine — reads from ctx which is cancelled when the
 // request ends. Call synchronously in PostHooks and pass the result by value
@@ -215,9 +216,11 @@ func LookupScopesFromContext(ctx *schemas.BifrostContext, provider string) *Look
 	if ctx == nil {
 		return nil
 	}
+	userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
 	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
 	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 	return &LookupScopes{
+		UserID:        userID,
 		VirtualKeyID:  virtualKeyID,
 		SelectedKeyID: selectedKeyID,
 		Provider:      provider,
@@ -234,6 +237,13 @@ const (
 	ScopeKindVirtualKey            ScopeKind = "virtual_key"
 	ScopeKindVirtualKeyProvider    ScopeKind = "virtual_key_provider"
 	ScopeKindVirtualKeyProviderKey ScopeKind = "virtual_key_provider_key"
+	// The user scope family targets the resolved calling user. It ranks
+	// below the virtual-key family and above the provider scopes during
+	// resolution: virtual-key pricing is checked first, then the user's.
+	// Within the family, more identifiers = more specific.
+	ScopeKindUser            ScopeKind = "user"
+	ScopeKindUserProvider    ScopeKind = "user_provider"
+	ScopeKindUserProviderKey ScopeKind = "user_provider_key"
 )
 
 // MatchType controls how an override pattern is matched against model names.
@@ -250,6 +260,7 @@ type Override struct {
 	ID            string                `json:"id"`
 	Name          string                `json:"name"`
 	ScopeKind     ScopeKind             `json:"scope_kind"`
+	UserID        *string               `json:"user_id,omitempty"`
 	VirtualKeyID  *string               `json:"virtual_key_id,omitempty"`
 	ProviderID    *string               `json:"provider_id,omitempty"`
 	ProviderKeyID *string               `json:"provider_key_id,omitempty"`
@@ -293,6 +304,7 @@ type costInput struct {
 type customPricingEntry struct {
 	id            string
 	scopeKind     ScopeKind
+	userID        string
 	virtualKeyID  string
 	providerID    string
 	providerKeyID string
@@ -780,6 +792,7 @@ func convertTableOverride(override *configstoreTables.TablePricingOverride) (Ove
 		ID:            override.ID,
 		Name:          override.Name,
 		ScopeKind:     ScopeKind(override.ScopeKind),
+		UserID:        override.UserID,
 		VirtualKeyID:  override.VirtualKeyID,
 		ProviderID:    override.ProviderID,
 		ProviderKeyID: override.ProviderKeyID,

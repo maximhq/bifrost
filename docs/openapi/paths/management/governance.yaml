@@ -10,7 +10,10 @@ virtual-keys:
     parameters:
       - name: from_memory
         in: query
-        description: If true, returns virtual keys from in-memory cache instead of database
+        description: >-
+          If true, returns virtual keys from in-memory cache instead of database.
+          Filtering, sorting and pagination parameters are not applied in this mode;
+          combining it with user_id is rejected with a 400.
         schema:
           type: boolean
           default: false
@@ -39,6 +42,13 @@ virtual-keys:
       - name: team_id
         in: query
         description: Filter virtual keys by team ID
+        schema:
+          type: string
+      - name: user_id
+        in: query
+        description: >-
+          Filter virtual keys by assigned user ID (enterprise only; matches no
+          virtual keys on OSS builds). Combined with customer_id/team_id using OR.
         schema:
           type: string
       - name: sort_by
@@ -74,6 +84,8 @@ virtual-keys:
           application/json:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ListVirtualKeysResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -246,6 +258,100 @@ virtual-keys-by-id:
               $ref: '../../schemas/management/common.yaml#/MessageResponse'
       '404':
         description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+virtual-keys-budget-override:
+  put:
+    operationId: updateVirtualKeyBudgetOverride
+    summary: Set virtual key budget override
+    description: |
+      Sets or replaces the spending override on one of a virtual key's budgets. The override is additive —
+      while it is active the budget is enforced against `max_limit + override_amount` — and it leaves the
+      budget's base limit, current usage, and reset schedule untouched.
+
+      Use `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows
+      (the current window counts as the first), or `mode: forever` to keep the override until it is deleted.
+      A finite grant is anchored to the budget's current reset window, so every node in a cluster derives the
+      same number of remaining cycles and a config reload cannot resurrect a spent one.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget owned by the virtual key
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Budget override applied successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Virtual key or budget not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteVirtualKeyBudgetOverride
+    summary: Remove virtual key budget override
+    description: |
+      Removes any active override from the budget, so it is enforced against its base `max_limit` again.
+      The budget's current usage and reset schedule are unchanged, and the removal is permanent — a cleared
+      grant cannot be re-derived. Safe to call on a budget that has no override.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget owned by the virtual key
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Budget override removed successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '404':
+        description: Virtual key or budget not found
         content:
           application/json:
             schema:

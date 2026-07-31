@@ -676,7 +676,7 @@ export default function AppSidebar() {
 						title: "Budgets & Limits",
 						url: "/workspace/model-limits",
 						icon: Wallet,
-						description: "Model limits",
+						description: "Budgets and rate limits",
 						hasAccess: hasGovernanceLegacyAccess,
 					},
 					{

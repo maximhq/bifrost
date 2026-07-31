@@ -39,7 +39,7 @@ func setupPerfTestDB(t *testing.T) (*RDBLogStore, *gorm.DB) {
 	err := triggerMigrations(ctx, db, testLogger{})
 	require.NoError(t, err, "migrations should succeed")
 
-	_, err = ensureMatViews(ctx, db)
+	err = ensureMatViews(ctx, db)
 	require.NoError(t, err, "matview creation should succeed")
 
 	store := &RDBLogStore{db: db}
@@ -105,8 +105,7 @@ func TestEnsureMatViewsRebuildsBadSameNameIndex(t *testing.T) {
 	require.NoError(t, db.Exec("CREATE INDEX mv_logs_hourly_uniq ON mv_logs_hourly(hour)").Error)
 	require.False(t, matviewIndexReady(t, db, "mv_logs_hourly", "mv_logs_hourly_uniq"), "same-name non-unique index should not be considered ready")
 
-	_, err := ensureMatViews(ctx, db)
-	require.NoError(t, err)
+	require.NoError(t, ensureMatViews(ctx, db))
 
 	assert.True(t, matviewIndexReady(t, db, "mv_logs_hourly", "mv_logs_hourly_uniq"), "ensureMatViews should rebuild the required unique index")
 	for _, v := range filterMatViews {

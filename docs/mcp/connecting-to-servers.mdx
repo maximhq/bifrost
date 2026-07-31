@@ -477,6 +477,10 @@ This is separate from the static `headers` field used for authentication:
 - Passing a tenant or org ID to a multi-tenant MCP server
 - Propagating trace or correlation IDs for end-to-end observability
 
+<Tip>
+Values forwarded this way come from the **caller's** request, so the upstream server must treat them as untrusted input. Headers can also be injected server-side from a plugin: an identity header callers cannot spoof (for example, the signed-in user's email), or a dynamically computed value on a shared connection (for example, a short-lived service token). See [Recipe: injecting dynamic headers server-side](../plugins/writing-go-plugin#recipe-injecting-dynamic-headers-server-side-sup-v1-5-x-sup). Plugin-injected headers pass through the same per-client allowlist.
+</Tip>
+
 ### How It Works
 
 1. An incoming request carries one or more headers matching a client's `allowed_extra_headers` pattern

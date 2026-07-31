@@ -299,7 +299,7 @@ func (provider *SarvamProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	req.SetBody(jsonBody)
 
 	startTime := time.Now()
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)

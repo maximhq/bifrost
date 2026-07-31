@@ -575,6 +575,7 @@ func (provider *SGLProvider) CountTokens(ctx *schemas.BifrostContext, key schema
 		},
 		anthropicHeaders(key),
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.logger,
 	)
 }

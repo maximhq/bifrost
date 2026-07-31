@@ -214,10 +214,16 @@ func isChatTextBlock(block schemas.ChatContentBlock) bool {
 	return block.Type == "" || block.Type == schemas.ChatContentBlockTypeText
 }
 
-// isResponsesInputTextBlock reports whether a Responses content block is input
+// isResponsesInputTextBlock reports whether a Responses content block is plain
 // text, treating an empty type as text for compatibility with normalized input.
+// output_text is accepted alongside input_text because the Anthropic→Responses
+// conversion tags user text blocks as output_text for bedrock/-prefixed models
+// (keepToolsGrouped path); rejecting them would silently disable complexity
+// routing for those clients.
 func isResponsesInputTextBlock(block schemas.ResponsesMessageContentBlock) bool {
-	return block.Type == "" || block.Type == schemas.ResponsesInputMessageContentBlockTypeText
+	return block.Type == "" ||
+		block.Type == schemas.ResponsesInputMessageContentBlockTypeText ||
+		block.Type == schemas.ResponsesOutputMessageContentTypeText
 }
 
 // appendText joins adjacent text fragments with one separating space while

@@ -39,9 +39,10 @@ type RoutingDecision struct {
 // Reuses existing configstore table types for VirtualKey, Team, Customer
 type RoutingContext struct {
 	VirtualKey               *configstoreTables.TableVirtualKey  // nil if no VK
+	UserID                   string                              // Resolved calling user id; empty when the request carries no user identity
 	Provider                 schemas.ModelProvider               // Current provider
 	Model                    string                              // Current model
-	RequestType              string                              // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
+	RequestType              string                              // Request type (e.g., "chat_completion", "embedding"); streaming requests carry a distinct "_stream" suffix (e.g., "chat_completion_stream")
 	Fallbacks                []string                            // Fallback chain: ["provider/model", ...]
 	Headers                  map[string]string                   // Request headers for dynamic routing
 	QueryParams              map[string]string                   // Query parameters for dynamic routing
@@ -101,8 +102,9 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// rules in the chain run, rather than halting with a cycle error.
 	visitedRuleIDs := map[string]struct{}{}
 
-	// Build scope chain once — it's based on the immutable VirtualKey and won't change across chain steps.
-	scopeChain := buildScopeChain(routingCtx.VirtualKey)
+	// Build scope chain once — it's based on the immutable VirtualKey and user
+	// identity and won't change across chain steps.
+	scopeChain := buildScopeChain(routingCtx.VirtualKey, routingCtx.UserID)
 
 	// Cache rules per scope upfront to avoid redundant store lookups when rules chain
 	// and we re-evaluate the scope hierarchy on subsequent steps.
@@ -350,8 +352,8 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy
 // Returns scope levels in precedence order (highest to lowest)
-// VirtualKey > Team > Customer > Global
-func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel {
+// VirtualKey > User > Team > Customer > Global
+func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey, userID string) []ScopeLevel {
 	var chain []ScopeLevel
 
 	// VirtualKey level (highest precedence)
@@ -360,7 +362,19 @@ func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel
 			ScopeName: "virtual_key",
 			ScopeID:   virtualKey.ID,
 		})
+	}
 
+	// User level: the resolved calling user. Independent of VK presence so
+	// session-authenticated requests without a virtual key still match
+	// user-scoped rules.
+	if userID != "" {
+		chain = append(chain, ScopeLevel{
+			ScopeName: "user",
+			ScopeID:   userID,
+		})
+	}
+
+	if virtualKey != nil {
 		// Team level
 		if virtualKey.Team != nil {
 			chain = append(chain, ScopeLevel{
@@ -446,7 +460,7 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 	// Basic request context
 	variables["model"] = ctx.Model
 	variables["provider"] = string(ctx.Provider)
-	variables["request_type"] = ctx.RequestType // Normalized request type (e.g., "chat_completion", "embedding")
+	variables["request_type"] = ctx.RequestType // Request type as-is; streaming variants keep their "_stream" suffix (e.g., "chat_completion_stream")
 
 	// Headers and params - normalize headers to lowercase keys for case-insensitive CEL matching
 	// This allows CEL expressions like headers["content-type"] to work regardless of how the header was sent
@@ -476,6 +490,9 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 		variables["virtual_key_id"] = ""
 		variables["virtual_key_name"] = ""
 	}
+
+	// Resolved calling user id; empty when the request carries no user identity
+	variables["user_id"] = ctx.UserID
 
 	// Extract Team context if available (from VirtualKey)
 	if ctx.VirtualKey != nil && ctx.VirtualKey.Team != nil {
@@ -641,7 +658,7 @@ func createCELEnvironment() (*cel.Env, error) {
 		// Basic request context
 		cel.Variable("model", cel.StringType),
 		cel.Variable("provider", cel.StringType),
-		cel.Variable("request_type", cel.StringType), // Normalized request type (e.g., "chat_completion", "embedding", "text_completion")
+		cel.Variable("request_type", cel.StringType), // Request type (e.g., "chat_completion", "embedding"); streaming variants are distinct values with a "_stream" suffix
 
 		// Headers and params (dynamic from request)
 		cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)),
@@ -650,6 +667,7 @@ func createCELEnvironment() (*cel.Env, error) {
 		// VirtualKey/Team/Customer context
 		cel.Variable("virtual_key_id", cel.StringType),
 		cel.Variable("virtual_key_name", cel.StringType),
+		cel.Variable("user_id", cel.StringType),
 		cel.Variable("team_id", cel.StringType),
 		cel.Variable("team_name", cel.StringType),
 		cel.Variable("customer_id", cel.StringType),

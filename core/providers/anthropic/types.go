@@ -133,6 +133,9 @@ const (
 //	     https://platform.claude.com/docs/en/agents-and-tools/mcp-connector
 //	Advisor-excl = Advisor tool Claude-API-only:
 //	     https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
+//	SO-mantle-excl = Structured outputs unsupported on the bedrock-mantle
+//	     Messages API, per the "Supported APIs or features" table:
+//	     https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html
 type ProviderFeatureSupport struct {
 	WebSearch              bool // web_search server tool (cite: A)
 	WebSearchNova          bool // web_search via nova_grounding — Bedrock Responses path only, not Chat/Converse
@@ -266,10 +269,17 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// code_interpreter tool that the endpoint rejects. Mantle's native surface
 	// does not support the Anthropic web_search / code_execution server tools
 	// either, so both stay false (no WebSearch / CodeExecution).
+	//
+	// StructuredOutputs is OFF (cite: SO-mantle-excl). AWS marks the whole
+	// feature unsupported on this endpoint — both output_config.format (which is
+	// why ToAnthropicChat/ResponsesRequest route this provider through the
+	// synthetic bf_so_* tool) and strict tool use, which 400s with
+	// "tools.0.custom.strict: Extra inputs are not permitted". Structured
+	// outputs on AWS require Converse/InvokeModel on bedrock-runtime, i.e.
+	// schemas.Bedrock, which keeps the flag on.
 	schemas.BedrockMantle: {
 		ComputerUse: true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
 		ContainerBasic:         true,
-		StructuredOutputs:      true,
 		Compaction:             true,
 		ContextEditing:         true,
 		ContextManagementField: true,

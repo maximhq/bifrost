@@ -30,6 +30,29 @@ Budget:
       format: date-time
     current_usage:
       type: number
+    override_amount:
+      type: number
+      description: Additional spend added on top of `max_limit` while the override is active. Omitted when no override is set.
+    override_mode:
+      type: string
+      description: |
+        How long the override stays active. `cycles` keeps it active for a finite number of
+        reset windows; `forever` keeps it active until it is removed. Omitted when no override is set.
+      enum:
+        - cycles
+        - forever
+    override_cycles_remaining:
+      type: integer
+      description: |
+        Reset windows the override is still valid for, including the current one. Positive only
+        for `cycles` mode; recomputed from the original grant on every reset, never decremented in place.
+    override_cycles_total:
+      type: integer
+      description: Number of reset windows the current `cycles` override was granted for. Immutable for the life of the grant.
+    override_anchor_reset:
+      type: string
+      format: date-time
+      description: Reset-window boundary at which the current `cycles` override was granted. Immutable for the life of the grant.
     team_id:
       type: string
       description: Team that owns this budget, when the budget is team-scoped
@@ -130,6 +153,47 @@ UpdateBudgetRequest:
         that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`,
         `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on
         an existing budget, current usage is reset to zero and last_reset snaps to the current period start.
+
+BudgetOverrideRequest:
+  type: object
+  description: |
+    Replaces the active override on one budget. The override is additive: it does not change the
+    budget's `max_limit`, `current_usage`, or reset schedule. Sending this request against a budget
+    that already has an override replaces that override entirely.
+  required:
+    - amount
+    - mode
+  properties:
+    amount:
+      type: number
+      description: Additional spend in dollars added on top of `max_limit` while the override is active. Must be greater than 0 and finite.
+    mode:
+      type: string
+      description: |
+        `cycles` keeps the override active for `cycles` reset windows starting with the current one.
+        `forever` keeps it active until it is removed with a DELETE.
+      enum:
+        - cycles
+        - forever
+    cycles:
+      type: integer
+      description: |
+        Number of reset windows the override stays active for, counting the current window as the first.
+        Required and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.
+      minimum: 1
+
+BudgetOverrideResponse:
+  type: object
+  description: The persisted budget and the additive limit now in force.
+  required:
+    - budget
+    - effective_max_limit
+  properties:
+    budget:
+      $ref: '#/Budget'
+    effective_max_limit:
+      type: number
+      description: '`max_limit` plus `override_amount` while an override is active; equal to `max_limit` otherwise.'
 
 CreateRateLimitRequest:
   type: object
@@ -706,9 +770,17 @@ Customer:
       items:
         $ref: '#/Team'
     virtual_keys:
-      type: array
+      type: [array, 'null']
+      description: >
+        Virtual keys owned by this customer. Omitted or returned as null by the paginated
+        list endpoint (`GET /api/governance/customers` with `limit`/`offset`/`search`),
+        which reports `virtual_key_count` instead; use the single-customer endpoint to
+        retrieve the keys themselves.
       items:
         $ref: '#/VirtualKey'
+    virtual_key_count:
+      type: integer
+      description: Number of virtual keys owned by this customer. Always populated.
     config_hash:
       type: string
     created_at:

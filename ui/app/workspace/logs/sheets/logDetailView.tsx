@@ -2196,13 +2196,13 @@ export function LogDetailView({
 
 					{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-							Large payload request — input content was streamed directly to the provider and is not available for display.
+							Large payload request: input content was streamed directly to the provider and is not available for display.
 							{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
 						</div>
 					)}
 					{log.is_large_payload_response && !log.output_message && !log.responses_output?.length && log.status !== "processing" && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-							Large payload response — response content was streamed directly to the client and is not available for display.
+							Large payload response: response content was streamed directly to the client and is not available for display.
 							{log.raw_response && " A truncated preview is available in the Raw JSON tab."}
 						</div>
 					)}

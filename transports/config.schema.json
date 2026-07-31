@@ -513,10 +513,83 @@
                 "type": "boolean",
                 "description": "Deprecated: set calendar_aligned on the owner (team / virtual key / access profile) instead. Kept for backward compatibility with older config.json files; ignored unless a reconciler promotes it to its owner.",
                 "default": false
+              },
+              "override_amount": {
+                "type": "number",
+                "description": "Amount added to max_limit while an override is active",
+                "default": 0
+              },
+              "override_mode": {
+                "type": "string",
+                "enum": ["", "cycles", "forever"],
+                "description": "How long the override stays active: 'cycles' for a finite number of reset windows, 'forever' until explicitly removed, '' for no override",
+                "default": ""
+              },
+              "override_cycles_remaining": {
+                "type": "integer",
+                "description": "Reset windows the current override still covers, including the current one. Derived state: recomputed from override_anchor_reset, override_cycles_total and last_reset, so it is never the source of truth.",
+                "default": 0
+              },
+              "override_cycles_total": {
+                "type": "integer",
+                "description": "Number of reset windows the current finite override was granted for. Immutable for the life of a grant.",
+                "default": 0
+              },
+              "override_anchor_reset": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Window boundary at which the current finite override was granted. Immutable for the life of a grant; absent when there is no finite override."
               }
             },
             "required": ["id", "max_limit", "reset_duration"],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "not": {
+                    "properties": { "override_mode": { "enum": ["cycles", "forever"] } },
+                    "required": ["override_mode"]
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "override_amount": { "const": 0 },
+                    "override_cycles_remaining": { "const": 0 },
+                    "override_cycles_total": { "const": 0 }
+                  },
+                  "not": { "required": ["override_anchor_reset"] }
+                }
+              },
+              {
+                "if": {
+                  "properties": { "override_mode": { "const": "cycles" } },
+                  "required": ["override_mode"]
+                },
+                "then": {
+                  "required": ["override_amount", "override_cycles_remaining", "override_cycles_total", "override_anchor_reset"],
+                  "properties": {
+                    "override_amount": { "exclusiveMinimum": 0 },
+                    "override_cycles_remaining": { "minimum": 1 },
+                    "override_cycles_total": { "minimum": 1 }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": { "override_mode": { "const": "forever" } },
+                  "required": ["override_mode"]
+                },
+                "then": {
+                  "required": ["override_amount"],
+                  "properties": {
+                    "override_amount": { "exclusiveMinimum": 0 },
+                    "override_cycles_remaining": { "const": 0 },
+                    "override_cycles_total": { "const": 0 }
+                  },
+                  "not": { "required": ["override_anchor_reset"] }
+                }
+              }
+            ]
           }
         },
         "rate_limits": {
@@ -1560,6 +1633,12 @@
                         "description": "Command timeout as a Go duration string (default: 10s)",
                         "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
                         "default": "10s"
+                      },
+                      "cache_ttl": {
+                        "type": "string",
+                        "description": "How long a resolved password is reused across new physical connections (Go duration string, default 60s). Without caching the command runs on every new connection. Keep this below the credential's validity window: a rotation shorter than the TTL will fail connections until the cached value expires.",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                        "default": "60s"
                       }
                     },
                     "required": ["command"],
@@ -1589,6 +1668,12 @@
                     "type": "string",
                     "description": "Maximum lifetime for physical database connections as a Go duration string",
                     "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                  },
+                  "conn_max_idle_time": {
+                    "type": "string",
+                    "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                    "default": "5m"
                   }
                 },
                 "required": [
@@ -1758,6 +1843,12 @@
                         "description": "Command timeout as a Go duration string (default: 10s)",
                         "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
                         "default": "10s"
+                      },
+                      "cache_ttl": {
+                        "type": "string",
+                        "description": "How long a resolved password is reused across new physical connections (Go duration string, default 60s). Without caching the command runs on every new connection. Keep this below the credential's validity window: a rotation shorter than the TTL will fail connections until the cached value expires.",
+                        "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                        "default": "60s"
                       }
                     },
                     "required": ["command"],
@@ -1789,10 +1880,21 @@
                     "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
                     "default": "1m"
                   },
+                  "matview_refresh_timeout": {
+                    "type": "string",
+                    "description": "Maximum time for a single materialized view refresh pass. Go duration string, min 30s, max 30m. Unset derives a budget from matview_refresh_interval (5x the interval, at least 5m). A refresh holds a pooled connection and a session advisory lock across every view, so without a bound one stuck refresh leaves the views permanently stale across all replicas.",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                  },
                   "conn_max_lifetime": {
                     "type": "string",
                     "description": "Maximum lifetime for physical database connections as a Go duration string",
                     "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                  },
+                  "conn_max_idle_time": {
+                    "type": "string",
+                    "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
+                    "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
+                    "default": "5m"
                   }
                 },
                 "required": [
@@ -3042,6 +3144,13 @@
           "description": "Protocol to use for the OTEL collector",
           "enum": ["http", "grpc"]
         },
+        "export_timeout": {
+          "type": "integer",
+          "description": "Maximum time in seconds for a single trace export. Bounds how long a slow or unreachable collector can hold an export goroutine; gRPC exports have no other timeout.",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60
+        },
         "metrics_enabled": {
           "type": "boolean",
           "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
@@ -3539,6 +3648,13 @@
           "default": 86400,
           "optional": true,
           "minimum": 3600
+        },
+        "live_models_sync_interval": {
+          "type": "integer",
+          "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Without this, a model an upstream starts serving after the gateway booted stays invisible until a restart or a key edit. Set to 0 to disable background refresh. Default is 1 hour; minimum when enabled is 60 seconds.",
+          "default": 3600,
+          "optional": true,
+          "anyOf": [{ "const": 0 }, { "minimum": 60 }]
         }
       },
       "additionalProperties": false
@@ -3887,6 +4003,10 @@
                 "session_name": {
                   "type": "string",
                   "description": "Role session name for AssumeRole (can use env. prefix)"
+                },
+                "batch_role_arn": {
+                  "type": "string",
+                  "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
                 },
                 "project_id": {
                   "type": "string",
@@ -5605,6 +5725,11 @@
           "type": "string",
           "description": "JWT audience for validation (optional)"
         },
+        "additionalScopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Extra OAuth scopes requested on top of the base openid/profile/email/offline_access set. Primarily for Custom Authorization Servers where claims like 'groups' are gated behind a scope Bifrost does not request by default."
+        },
         "userIdField": {
           "type": "string",
           "description": "JWT claim field for user ID (default: 'sub')",
@@ -6466,6 +6591,25 @@
         "rate_limit": {
           "$ref": "#/$defs/rate_limit_line"
         },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "weight": {
+          "type": ["number", "null"],
+          "description": "Load-balancer seed weight for this provider (null opts out of weighted routing / no override)",
+          "default": null
+        },
+        "model_budgets": {
+          "type": "array",
+          "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment.",
+          "items": {
+            "$ref": "#/$defs/access_profile_provider_model_budget"
+          }
+        },
         "key_ids": {
           "type": "array",
           "description": "Key IDs allowed for this provider config. Use [\"*\"] to allow all keys; empty array or omitted denies all keys. Specific IDs restrict access to those keys only.",
@@ -6475,6 +6619,28 @@
         }
       },
       "required": ["provider_name"],
+      "additionalProperties": false
+    },
+    "access_profile_provider_model_budget": {
+      "type": "object",
+      "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit",
+      "properties": {
+        "model_name": {
+          "type": "string",
+          "description": "Model this budget group applies to (scoped to the parent provider)"
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Spend budgets for this model",
+          "items": {
+            "$ref": "#/$defs/budget_line"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/rate_limit_line"
+        }
+      },
+      "required": ["model_name"],
       "additionalProperties": false
     },
     "access_profile_mcp_tool_group": {
@@ -6806,6 +6972,10 @@
         "virtual_key_id": {
           "type": "string",
           "description": "Virtual key ID (required for virtual_key* scopes)"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User ID (for user-scoped pricing overrides)"
         },
         "provider_id": {
           "type": "string",
