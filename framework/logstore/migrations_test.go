@@ -32,6 +32,23 @@ func TestMigrationAddMCPRedactionMappingColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationAddMCPPluginLogsColumn verifies the MCP plugin-log column is additive, idempotent, and preserves existing rows.
+func TestMigrationAddMCPPluginLogsColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE mcp_tool_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO mcp_tool_logs (id) VALUES (?)", "mcp-existing").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddMCPPluginLogsColumn(ctx, db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&MCPToolLog{}, "PluginLogs"))
+	require.NoError(t, migrationAddMCPPluginLogsColumn(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("mcp_tool_logs").Where("id = ?", "mcp-existing").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
 // pgTestSchema is this package's dedicated Postgres schema. Test packages
 // (configstore, configstore/tables, logstore) run in parallel against the same
 // database, so each one works in its own schema to avoid clobbering the
