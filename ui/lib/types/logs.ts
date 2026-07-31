@@ -1143,6 +1143,7 @@ export interface MCPToolLogEntry {
 	cost?: number; // Cost in dollars (per execution cost)
 	status: string; // "processing", "success", or "error"
 	metadata?: Record<string, string>;
+	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	redaction_mapping?: RedactionMapping; // Present on detail responses only when the caller has Logs:Reveal
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
