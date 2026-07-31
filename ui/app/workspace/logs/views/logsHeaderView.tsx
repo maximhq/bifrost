@@ -4,6 +4,7 @@ import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { getErrorMessage } from "@/lib/store";
 import { useGetRecalculateCostStatusQuery } from "@/lib/store/apis/logsApi";
@@ -11,7 +12,7 @@ import { getActiveTempToken } from "@/lib/store/apis/tempToken";
 import type { LogFilters as LogFiltersType, RecalcJobStatus } from "@/lib/types/logs";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
-import { Calculator, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
+import { Calculator, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { RecalculateCostDialog, type RecalculateCostMode } from "./recalculateCostDialog";
@@ -25,6 +26,9 @@ interface LogsHeaderViewProps {
 	loading?: boolean;
 	polling: boolean;
 	onPollToggle: (enabled: boolean) => void;
+	/** Grouped view: collapse fallback chains into their root request */
+	grouped: boolean;
+	onGroupedToggle: (enabled: boolean) => void;
 	period: string;
 	onPeriodChange: (period?: string, from?: Date, to?: Date) => void;
 	/** Total logs matching the current filters/time window (stats.total_requests) */
@@ -45,6 +49,8 @@ export function LogsHeaderView({
 	loading = false,
 	polling,
 	onPollToggle,
+	grouped,
+	onGroupedToggle,
 	period,
 	onPeriodChange,
 	totalLogs,
@@ -216,6 +222,25 @@ export function LogsHeaderView({
 				{polling ? <Radio className="h-4 w-4 animate-pulse" /> : <Radio className="h-4 w-4" />}
 				Live
 			</Button>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button
+						data-testid="logs-group-chains-btn"
+						variant={grouped ? "default" : "outline"}
+						size="sm"
+						className="h-7.5"
+						onClick={() => onGroupedToggle(!grouped)}
+					>
+						<ListTree className="h-4 w-4" />
+						Group
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent sideOffset={6} className="max-w-64">
+					Groups fallback attempts and linked requests under the original root request. Expand any row to view the complete request chain.
+					<br /><br />
+					This grouped view may load more slowly than the flat view for very large log tables.
+				</TooltipContent>
+			</Tooltip>
 			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
