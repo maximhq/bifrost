@@ -882,7 +882,7 @@ func CreateVertexBatchRouteConfigs(pathPrefix string) []RouteConfig {
 // (stripping any :cancel action suffix) for the native Vertex batch routes. The job ID is
 // passed bare so the provider resolves project/region from its key config.
 func extractVertexBatchPathParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-	batchID, _ := ctx.UserValue("batch_id").(string)
+	batchID, _ := clonePathParam(ctx.UserValue("batch_id"))
 	batchID = strings.TrimSuffix(batchID, ":cancel")
 
 	// Provider follows x-model-provider (Vertex by default for these native routes).
@@ -930,7 +930,7 @@ func extractGeminiBatchIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 		return errors.New("batch_id is required")
 	}
 
-	batchIDStr, ok := batchID.(string)
+	batchIDStr, ok := clonePathParam(batchID)
 	if !ok || batchIDStr == "" {
 		return errors.New("batch_id must be a non-empty string")
 	}
@@ -999,7 +999,7 @@ func extractGeminiFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		return errors.New("file_id is required")
 	}
 
-	fileIDStr, ok := fileID.(string)
+	fileIDStr, ok := clonePathParam(fileID)
 	if !ok || fileIDStr == "" {
 		return errors.New("file_id must be a non-empty string")
 	}
@@ -1091,7 +1091,7 @@ func extractGeminiCachedContentNameFromPath(ctx *fasthttp.RequestCtx, bifrostCtx
 	if nameVal == nil {
 		return errors.New("cached content name is required")
 	}
-	nameStr, ok := nameVal.(string)
+	nameStr, ok := clonePathParam(nameVal)
 	if !ok || nameStr == "" {
 		return errors.New("cached content name must be a non-empty string")
 	}
@@ -1401,7 +1401,10 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	// set in context
 	bifrostCtx.SetValue(bifrostContextKeyProvider, provider)
 
-	modelStr := model.(string)
+	modelStr, ok := clonePathParam(model)
+	if !ok {
+		return fmt.Errorf("model parameter must be a string")
+	}
 
 	// Check if this is a :predict endpoint (can be embedding or image generation)
 	isPredict := strings.HasSuffix(modelStr, ":predict")
@@ -1586,7 +1589,10 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 		return "", ""
 	}
 
-	modelStr := model.(string)
+	modelStr, ok := clonePathParam(model)
+	if !ok {
+		return "", ""
+	}
 
 	// Check if this is a count tokens request
 	if strings.HasSuffix(modelStr, ":countTokens") {
@@ -1856,7 +1862,7 @@ func extractGeminiModelMetadataParams(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	provider := getProviderFromHeader(ctx, schemas.Gemini)
 	listModelsReq.Provider = provider
 
-	modelStr, ok := model.(string)
+	modelStr, ok := clonePathParam(model)
 	if !ok || modelStr == "" {
 		return errors.New("model parameter must be a non-empty string")
 	}
@@ -1906,7 +1912,7 @@ func extractGeminiVideoOperationFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *s
 	if operationID == nil {
 		return errors.New("operation_id is required")
 	}
-	operationIDStr, ok := operationID.(string)
+	operationIDStr, ok := clonePathParam(operationID)
 	if !ok || operationIDStr == "" {
 		return errors.New("operation_id must be a non-empty string")
 	}
@@ -1928,7 +1934,7 @@ func extractGeminiVideoOperationFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *s
 		provider = schemas.ModelProvider(rawModel)
 	}
 
-	modelStr, ok := model.(string)
+	modelStr, ok := clonePathParam(model)
 	if !ok || modelStr == "" {
 		modelStr = rawModel
 	}
