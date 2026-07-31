@@ -3658,7 +3658,7 @@
           "description": "Model used to generate embeddings for complexity classification"
         },
         "timeout": {
-          "description": "Per-request embedding timeout (duration string like '100ms', or milliseconds as a number; default: 100ms). On timeout the fallback classifier is used.",
+          "description": "Per-request embedding timeout (duration string like '1500ms', or milliseconds as a number; default: 1500ms). On timeout the fallback classifier is used.",
           "oneOf": [
             {
               "type": "string",
@@ -3668,7 +3668,8 @@
               "type": "number",
               "exclusiveMinimum": 0
             }
-          ]
+          ],
+          "default": "500ms"
         },
         "fallback": {
           "type": "string",

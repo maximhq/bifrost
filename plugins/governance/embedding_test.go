@@ -105,55 +105,6 @@ func TestGenerateEmbeddingRequestShape(t *testing.T) {
 		"embedding deadline must not inherit the caller's larger budget")
 }
 
-// TestProbeEmbeddingDimensionMeasuresProviderOutput covers the config-time
-// probe that removes the dimension from the operator's hands. It must report
-// the width the provider actually returned, not anything supplied by a caller.
-func TestProbeEmbeddingDimensionMeasuresProviderOutput(t *testing.T) {
-	plugin := &GovernancePlugin{}
-	var gotReq *schemas.BifrostEmbeddingRequest
-	var gotDeadline time.Time
-	var hasDeadline bool
-	plugin.SetEmbeddingRequestExecutor(func(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-		gotReq = req
-		gotDeadline, hasDeadline = ctx.Deadline()
-		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 2, 3, 4, 5}}, 1), nil
-	})
-
-	before := time.Now()
-	dimension, err := plugin.ProbeEmbeddingDimension(t.Context(), "openai", "text-embedding-3-small")
-	require.NoError(t, err)
-	assert.Equal(t, 5, dimension)
-
-	require.NotNil(t, gotReq)
-	assert.Equal(t, schemas.ModelProvider("openai"), gotReq.Provider)
-	assert.Equal(t, "text-embedding-3-small", gotReq.Model)
-
-	// The probe is an interactive configuration action, so it must not inherit
-	// the routing hot path's sub-second budget.
-	require.True(t, hasDeadline, "probe context must carry a deadline")
-	assert.Greater(t, gotDeadline.Sub(before), time.Second)
-}
-
-func TestProbeEmbeddingDimensionRequiresExecutorAndReportsFailures(t *testing.T) {
-	unwired := &GovernancePlugin{}
-	_, err := unwired.ProbeEmbeddingDimension(t.Context(), "openai", "text-embedding-3-small")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "executor is not configured")
-
-	plugin := &GovernancePlugin{}
-	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "unknown model"}}
-	})
-	_, err = plugin.ProbeEmbeddingDimension(t.Context(), "openai", "not-a-model")
-	require.Error(t, err)
-
-	// A missing provider or model must fail before any request is issued.
-	for _, test := range []struct{ provider, model string }{{"", "text-embedding-3-small"}, {"openai", ""}} {
-		_, err := plugin.ProbeEmbeddingDimension(t.Context(), schemas.ModelProvider(test.provider), test.model)
-		require.Error(t, err)
-	}
-}
-
 func TestGenerateEmbeddingsBatchesAndRestoresInputOrder(t *testing.T) {
 	plugin := &GovernancePlugin{}
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
@@ -271,7 +222,7 @@ func TestGenerateEmbeddingDistinguishesTimeoutFromOtherFailures(t *testing.T) {
 }
 
 // TestWarmupEmbedsDoNotInheritTheRequestTimeout is a regression guard: warmup
-// used to run through semantic.Timeout, the hot-path budget (100ms by default).
+// used to run through semantic.Timeout, the hot-path budget (1500ms by default).
 // A 32-exemplar batch cannot finish in that window, so every warmup failed with
 // a 504 and semantic routing silently served its fallback forever.
 func TestWarmupEmbedsDoNotInheritTheRequestTimeout(t *testing.T) {

@@ -761,7 +761,6 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 		}
 	}
 
-
 	// Resulting budget count: the desired set if provided, else the existing set.
 	finalBudgetCount := len(mc.Budgets)
 	if d.budgetsProvided {
@@ -1220,44 +1219,6 @@ func (h *GovernanceHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx
 		return
 	}
 	SendJSON(ctx, status)
-}
-
-// probeComplexityEmbeddingDimension reports the vector width a provider/model
-// pair produces. Configuration clients call it when the operator picks a model
-// so the semantic dimension is measured rather than typed: a mistyped width is
-// undetectable until warmup fails against an already-created namespace.
-func (h *GovernanceHandler) probeComplexityEmbeddingDimension(ctx *fasthttp.RequestCtx) {
-	prober, ok := h.governanceManager.(complexityEmbeddingDimensionProber)
-	if !ok {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "governance manager does not support embedding dimension probing")
-		return
-	}
-
-	var payload ProbeEmbeddingDimensionRequest
-	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
-		return
-	}
-	if strings.TrimSpace(string(payload.Provider)) == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "provider is required")
-		return
-	}
-	if strings.TrimSpace(payload.EmbeddingModel) == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "embedding_model is required")
-		return
-	}
-
-	dimension, err := prober.ProbeComplexityEmbeddingDimension(ctx, payload.Provider, payload.EmbeddingModel)
-	if err != nil {
-		// Almost always an operator-correctable cause (unknown model, missing
-		// key, provider rejecting the request), so it is reported as a client
-		// error the form can render inline.
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to detect embedding dimension: %v", err))
-		return
-	}
-	SendJSON(ctx, ProbeEmbeddingDimensionResponse{Dimension: dimension})
 }
 
 // Virtual Key CRUD Operations
