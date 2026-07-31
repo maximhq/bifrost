@@ -3681,6 +3681,12 @@
           "exclusiveMaximum": 1,
           "description": "Similarity floor a nearest-exemplar match must clear before its tier is used; a match below it resolves through 'fallback' (default: 0, meaning the nearest exemplar always wins however unrelated it is). Compared against the backend's own score: chromem, Qdrant, Pinecone, and Redis report raw cosine similarity, Weaviate reports certainty ((cosine+1)/2), so retune when switching backends."
         },
+        "message_history_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many of the most recent user messages are combined (oldest first) into the text that gets embedded (default: 1, the latest message only). Higher values let a short follow-up inherit the intent of earlier turns, at the cost of diluting the latest message and embedding more input tokens per request. Only user turns count; system prompts and assistant replies are never embedded."
+        },
         "count_toward_budgets": {
           "type": "boolean",
           "description": "Record classification embedding cost against governance budgets (record-only, never enforced; default: false)"

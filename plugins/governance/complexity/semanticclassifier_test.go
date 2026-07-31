@@ -34,7 +34,7 @@ func TestSemanticClassifierClassifiesNearestSharedTierPhrase(t *testing.T) {
 		return classifier.Status().State == SemanticStatusReady
 	}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
 
-	result, err := classifier.Classify(context.Background(), "simple request")
+	result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "simple request"})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, TierSimple, result.Tier)
@@ -79,12 +79,95 @@ func TestSemanticClassifierNamesMatchedExemplarFromReusedGeneration(t *testing.T
 		return classifier.Status().State == SemanticStatusReady
 	}, time.Second, 10*time.Millisecond, "semantic classifier did not adopt the warmed generation")
 
-	result, err := classifier.Classify(context.Background(), "medium request")
+	result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "medium request"})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, TierMedium, result.Tier)
 	assert.Equal(t, "medium exemplar", result.MatchedExemplar)
 	assert.EqualValues(t, 0, exemplarEmbeddings.Load(), "adopting a warmed generation must not re-embed exemplars")
+}
+
+// TestSemanticInputTextAppliesMessageHistoryWindow covers how much of a
+// conversation reaches the embedding. The latest turn must always be last so
+// the text reads in conversation order, and a request with fewer turns than
+// configured must still classify on what it has.
+func TestSemanticInputTextAppliesMessageHistoryWindow(t *testing.T) {
+	input := ComplexityInput{
+		SystemText:     "you are a helpful assistant",
+		PriorUserTexts: []string{"first", "second", "third"},
+		LastUserText:   "latest",
+	}
+
+	tests := []struct {
+		name  string
+		count int
+		want  string
+	}{
+		{name: "zero falls back to the latest turn", count: 0, want: "latest"},
+		{name: "one embeds only the latest turn", count: 1, want: "latest"},
+		{name: "two adds the turn before it", count: 2, want: "third\nlatest"},
+		{name: "window spans oldest to newest", count: 3, want: "second\nthird\nlatest"},
+		{name: "count beyond history uses what exists", count: 25, want: "first\nsecond\nthird\nlatest"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, SemanticInputText(input, test.count))
+		})
+	}
+
+	// System text steers every request in a deployment alike, so including it
+	// would drag unrelated requests toward the same exemplar.
+	assert.NotContains(t, SemanticInputText(input, 10), "helpful assistant")
+
+	t.Run("blank turns are skipped", func(t *testing.T) {
+		sparse := ComplexityInput{PriorUserTexts: []string{"kept", "   ", ""}, LastUserText: "latest"}
+		assert.Equal(t, "kept\nlatest", SemanticInputText(sparse, 4))
+	})
+
+	// Blanks must not consume window slots: a request whose recent turns are
+	// blank still contributes the requested count of real turns.
+	t.Run("blank turns do not shrink the window", func(t *testing.T) {
+		sparse := ComplexityInput{PriorUserTexts: []string{"first", "second", "  ", ""}, LastUserText: "latest"}
+		assert.Equal(t, "first\nsecond\nlatest", SemanticInputText(sparse, 3))
+	})
+
+	t.Run("no user text yields nothing to embed", func(t *testing.T) {
+		assert.Empty(t, SemanticInputText(ComplexityInput{SystemText: "system only"}, 5))
+	})
+}
+
+// TestSemanticClassifierEmbedsConfiguredMessageWindow checks the classifier
+// reads the window from its own serving snapshot rather than the caller.
+func TestSemanticClassifierEmbedsConfiguredMessageWindow(t *testing.T) {
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(func() {
+		require.NoError(t, classifier.Close())
+	})
+
+	var embedded []string
+	classifier.SetEmbeddingFunc(func(ctx context.Context, semantic *SemanticConfig, text string) ([]float32, error) {
+		if vector, err := testSemanticEmbedding(ctx, semantic, text); err == nil {
+			return vector, nil
+		}
+		// Not an exemplar, so this is the classification call under test.
+		embedded = append(embedded, text)
+		return []float32{1, 0}, nil
+	})
+
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	config.Semantic.MessageHistoryCount = 2
+	classifier.Configure(&config)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusReady
+	}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
+
+	_, err := classifier.Classify(context.Background(), ComplexityInput{
+		PriorUserTexts: []string{"older turn", "previous turn"},
+		LastUserText:   "current turn",
+	})
+	require.NoError(t, err)
+	require.Len(t, embedded, 1)
+	assert.Equal(t, "previous turn\ncurrent turn", embedded[0])
 }
 
 // TestSemanticClassifierAppliesMinSimilarity covers the floor that stops the
@@ -117,7 +200,7 @@ func TestSemanticClassifierAppliesMinSimilarity(t *testing.T) {
 				return classifier.Status().State == SemanticStatusReady
 			}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
 
-			result, err := classifier.Classify(context.Background(), "borderline request")
+			result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "borderline request"})
 			require.NoError(t, err)
 			require.NotNil(t, result, "a rejected match must still be reported so callers can log the near miss")
 			assert.Equal(t, test.wantAccepted, result.Accepted)
@@ -285,7 +368,7 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 	classifier.mu.Lock()
 	v1Namespace := classifier.active.namespace
 	classifier.mu.Unlock()
-	v1Result, err := classifier.Classify(context.Background(), "routing request")
+	v1Result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
 	require.NoError(t, err)
 	require.NotNil(t, v1Result)
 	assert.Equal(t, TierSimple, v1Result.Tier)
@@ -305,7 +388,7 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 	}, time.Second, 10*time.Millisecond)
 
 	// F1 remains queryable while the first F2 embedding is deliberately blocked.
-	duringWarmup, err := classifier.Classify(context.Background(), "routing request")
+	duringWarmup, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
 	require.NoError(t, err)
 	require.NotNil(t, duringWarmup)
 	assert.Equal(t, TierSimple, duringWarmup.Tier)
@@ -321,7 +404,7 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 	activeStore := classifier.active.store
 	classifier.mu.Unlock()
 	assert.NotEqual(t, v1Namespace, v2Namespace)
-	v2Result, err := classifier.Classify(context.Background(), "routing request")
+	v2Result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
 	require.NoError(t, err)
 	require.NotNil(t, v2Result)
 	assert.Equal(t, TierComplex, v2Result.Tier)
@@ -343,7 +426,7 @@ func TestSemanticClassifierSwitchesGenerationsOnlyAfterSuccessfulWarmup(t *testi
 	}, time.Second, 10*time.Millisecond)
 
 	// A failed F3 keeps both the F2 namespace and F2 embedding configuration.
-	afterFailure, err := classifier.Classify(context.Background(), "routing request")
+	afterFailure, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "routing request"})
 	require.NoError(t, err)
 	require.NotNil(t, afterFailure)
 	assert.Equal(t, TierComplex, afterFailure.Tier)
