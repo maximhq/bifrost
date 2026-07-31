@@ -96,6 +96,11 @@ func TestComplexitySemanticConfigValidation(t *testing.T) {
 		{name: "missing provider", mutate: func(c *ComplexitySemanticConfig) { c.Provider = "" }},
 		{name: "missing embedding model", mutate: func(c *ComplexitySemanticConfig) { c.EmbeddingModel = " " }},
 		{name: "unknown vector store", mutate: func(c *ComplexitySemanticConfig) { c.VectorStore = "pgvector" }},
+		{name: "negative min similarity", mutate: func(c *ComplexitySemanticConfig) { c.MinSimilarity = -0.1 }},
+		// 1 is arithmetically legal but rejects every real match, which is a
+		// misconfiguration rather than a way to disable semantic routing.
+		{name: "min similarity at one", mutate: func(c *ComplexitySemanticConfig) { c.MinSimilarity = 1 }},
+		{name: "min similarity above one", mutate: func(c *ComplexitySemanticConfig) { c.MinSimilarity = 1.5 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -103,6 +108,18 @@ func TestComplexitySemanticConfigValidation(t *testing.T) {
 			tt.mutate(cfg)
 			require.Error(t, cfg.normalized().Validate())
 		})
+	}
+}
+
+// TestComplexitySemanticConfigMinSimilarityAccepted covers the in-range values,
+// including the zero default that keeps "nearest exemplar always wins".
+func TestComplexitySemanticConfigMinSimilarityAccepted(t *testing.T) {
+	for _, minSimilarity := range []float64{0, 0.35, 0.999} {
+		cfg := testSemanticConfig()
+		cfg.MinSimilarity = minSimilarity
+		normalized := cfg.normalized()
+		require.NoError(t, normalized.Validate())
+		assert.Equal(t, minSimilarity, normalized.MinSimilarity)
 	}
 }
 
