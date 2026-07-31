@@ -45032,6 +45032,158 @@
         }
       }
     },
+    "/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override": {
+      "put": {
+        "operationId": "updateVirtualKeyBudgetOverride",
+        "summary": "Set virtual key budget override",
+        "description": "Sets or replaces the spending override on one of a virtual key's budgets. The override is additive —\nwhile it is active the budget is enforced against `max_limit + override_amount` — and it leaves the\nbudget's base limit, current usage, and reset schedule untouched.\n\nUse `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows\n(the current window counts as the first), or `mode: forever` to keep the override until it is deleted.\nA finite grant is anchored to the budget's current reset window, so every node in a cluster derives the\nsame number of remaining cycles and a config reload cannot resurrect a spent one.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "description": "Virtual key ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of a budget owned by the virtual key",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BudgetOverrideRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override applied successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetOverrideResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Virtual key or budget not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteVirtualKeyBudgetOverride",
+        "summary": "Remove virtual key budget override",
+        "description": "Removes any active override from the budget, so it is enforced against its base `max_limit` again.\nThe budget's current usage and reset schedule are unchanged, and the removal is permanent — a cleared\ngrant cannot be re-derived. Safe to call on a budget that has no override.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "description": "Virtual key ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of a budget owned by the virtual key",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override removed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetOverrideResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Virtual key or budget not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/teams": {
       "get": {
         "operationId": "listTeams",
@@ -82134,6 +82286,31 @@
           "current_usage": {
             "type": "number"
           },
+          "override_amount": {
+            "type": "number",
+            "description": "Additional spend added on top of `max_limit` while the override is active. Omitted when no override is set."
+          },
+          "override_mode": {
+            "type": "string",
+            "description": "How long the override stays active. `cycles` keeps it active for a finite number of\nreset windows; `forever` keeps it active until it is removed. Omitted when no override is set.\n",
+            "enum": [
+              "cycles",
+              "forever"
+            ]
+          },
+          "override_cycles_remaining": {
+            "type": "integer",
+            "description": "Reset windows the override is still valid for, including the current one. Positive only\nfor `cycles` mode; recomputed from the original grant on every reset, never decremented in place.\n"
+          },
+          "override_cycles_total": {
+            "type": "integer",
+            "description": "Number of reset windows the current `cycles` override was granted for. Immutable for the life of the grant."
+          },
+          "override_anchor_reset": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Reset-window boundary at which the current `cycles` override was granted. Immutable for the life of the grant."
+          },
           "team_id": {
             "type": "string",
             "description": "Team that owns this budget, when the budget is team-scoped"
@@ -82298,6 +82475,50 @@
               "null"
             ],
             "description": "Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on an existing budget, current usage is reset to zero and last_reset snaps to the current period start.\n"
+          }
+        }
+      },
+      "BudgetOverrideRequest": {
+        "type": "object",
+        "description": "Replaces the active override on one budget. The override is additive: it does not change the\nbudget's `max_limit`, `current_usage`, or reset schedule. Sending this request against a budget\nthat already has an override replaces that override entirely.\n",
+        "required": [
+          "amount",
+          "mode"
+        ],
+        "properties": {
+          "amount": {
+            "type": "number",
+            "description": "Additional spend in dollars added on top of `max_limit` while the override is active. Must be greater than 0 and finite."
+          },
+          "mode": {
+            "type": "string",
+            "description": "`cycles` keeps the override active for `cycles` reset windows starting with the current one.\n`forever` keeps it active until it is removed with a DELETE.\n",
+            "enum": [
+              "cycles",
+              "forever"
+            ]
+          },
+          "cycles": {
+            "type": "integer",
+            "description": "Number of reset windows the override stays active for, counting the current window as the first.\nRequired and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.\n",
+            "minimum": 1
+          }
+        }
+      },
+      "BudgetOverrideResponse": {
+        "type": "object",
+        "description": "The persisted budget and the additive limit now in force.",
+        "required": [
+          "budget",
+          "effective_max_limit"
+        ],
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/Budget"
+          },
+          "effective_max_limit": {
+            "type": "number",
+            "description": "`max_limit` plus `override_amount` while an override is active; equal to `max_limit` otherwise."
           }
         }
       },

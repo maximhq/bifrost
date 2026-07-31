@@ -170,6 +170,16 @@ By default, a budget **rolls**: after `reset_duration` elapses since `last_reset
 
 Calendar alignment applies to budgets on **customers**, **teams**, **virtual keys**, and **per–provider-config** budgets. You can set it when creating a budget (`calendar_aligned` on create) or toggle it on update (`calendar_aligned` on the budget in `PUT` requests). Turning calendar alignment **on** for an existing budget resets **current usage to zero** and snaps **`last_reset`** to the current period start.
 
+### Budget overrides
+
+A budget can carry a temporary **override** that adds spending capacity on top of its configured limit without touching the base limit, current usage, or reset schedule. While an override is active, enforcement uses:
+
+```text
+Effective limit = max_limit + override_amount
+```
+
+An override lasts either for a fixed number of reset cycles (the current cycle counts as the first) or until it is explicitly removed. Manage it from the virtual key's **Budget Information** panel, or through `PUT`/`DELETE` on `/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override` — see [Budget Overrides](./virtual-keys#budget-overrides) for the UI walkthrough and API examples.
+
 ---
 
 ## Customer-scoped requests
