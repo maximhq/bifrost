@@ -14,6 +14,11 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
+// ErrEmbeddingRequestExecutorNotConfigured means the HTTP server has not
+// finished wiring the governance plugin to Bifrost's embedding request path.
+// Configuration clients can retry this transient startup state.
+var ErrEmbeddingRequestExecutorNotConfigured = errors.New("embedding request executor is not configured")
+
 // ErrEmbeddingTimeout reports that a classification embed exhausted its
 // configured budget instead of failing for a provider or configuration reason.
 // Callers need the distinction because the two mean opposite things to an
@@ -76,7 +81,7 @@ type ComplexityVectorStoreSetter interface {
 // warmupEmbeddingTimeout bounds one warmup embedding call, whether that is a
 // batch of exemplars or a single-input fallback. Warmup runs in the background
 // with no request waiting on it, so it must NOT inherit semantic.Timeout — that
-// is the hot-path budget (100ms by default), which a 32-exemplar batch cannot
+// is the hot-path budget (1500ms by default), which a 32-exemplar batch cannot
 // possibly meet. It stays bounded so a hung provider cannot pin the warmup
 // worker forever.
 const warmupEmbeddingTimeout = 60 * time.Second
@@ -274,43 +279,6 @@ func (p *GovernancePlugin) settleWarmupEmbedUsage(semantic *complexity.SemanticC
 	}
 }
 
-// probeEmbeddingTimeout bounds the configuration-time dimension probe. It is
-// deliberately far more generous than the routing timeout: an operator waiting
-// on a form can absorb a cold provider, a request in flight cannot.
-const probeEmbeddingTimeout = 30 * time.Second
-
-// probeEmbeddingText is the smallest input that still yields a full-width
-// vector — dimension is a property of the model, not of the input.
-const probeEmbeddingText = "a"
-
-// ProbeEmbeddingDimension reports the vector width a provider/model pair
-// actually produces. It exists so the dimension never has to be looked up or
-// typed by hand: a wrong value is not detectable until warmup fails, and by
-// then the namespace has already been created at the wrong width.
-//
-// This is a configuration-time action, not a routing one, so it deliberately
-// bypasses the usage-recording wrappers: the probe's cost is attributed to no
-// budget and reported to no telemetry counter.
-func (p *GovernancePlugin) ProbeEmbeddingDimension(ctx context.Context, provider schemas.ModelProvider, model string) (int, error) {
-	if p.embeddingExecutor() == nil {
-		return 0, fmt.Errorf("embedding request executor is not configured")
-	}
-	probeCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	defer probeCtx.Cancel()
-
-	embeddings, _, err := p.generateEmbeddings(probeCtx, &complexity.SemanticConfig{
-		Provider:       provider,
-		EmbeddingModel: model,
-	}, []string{probeEmbeddingText}, probeEmbeddingTimeout)
-	if err != nil {
-		return 0, err
-	}
-	if len(embeddings) != 1 || len(embeddings[0]) == 0 {
-		return 0, fmt.Errorf("provider %q returned no embedding for model %q", provider, model)
-	}
-	return len(embeddings[0]), nil
-}
-
 // CanClassifySemantically reports whether semantic classification is currently
 // viable. The executor alone is not a sufficient gate — the server wires it
 // unconditionally; the semantic config decides whether classification is
@@ -343,7 +311,7 @@ func (p *GovernancePlugin) generateEmbedding(ctx *schemas.BifrostContext, semant
 func (p *GovernancePlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic *complexity.SemanticConfig, texts []string, timeout time.Duration) ([][]float32, int, error) {
 	executor := p.embeddingExecutor()
 	if executor == nil {
-		return nil, 0, fmt.Errorf("embedding request executor is not configured")
+		return nil, 0, ErrEmbeddingRequestExecutorNotConfigured
 	}
 	if semantic == nil || semantic.Provider == "" || semantic.EmbeddingModel == "" {
 		return nil, 0, fmt.Errorf("semantic classification is not configured")
