@@ -8,6 +8,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 func testResponsesAccumulator(tb testing.TB) *Accumulator {
@@ -15,6 +16,28 @@ func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	acc := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	tb.Cleanup(acc.Cleanup)
 	return acc
+}
+
+func TestAccumulatedResponsesStreamPreservesServiceTierBeforeUsageOnlyChunk(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	requestID := "responses-service-tier"
+	flex := schemas.BifrostServiceTierFlex
+
+	require.NoError(t, acc.addResponsesStreamChunk(requestID, &ResponsesStreamChunk{
+		ChunkIndex:  1,
+		Timestamp:   time.Now(),
+		ServiceTier: &flex,
+	}, false))
+	require.NoError(t, acc.addResponsesStreamChunk(requestID, &ResponsesStreamChunk{
+		ChunkIndex: 2,
+		Timestamp:  time.Now(),
+		TokenUsage: &schemas.BifrostLLMUsage{TotalTokens: 1},
+	}, true))
+
+	data, err := acc.processAccumulatedResponsesStreamingChunks(requestID, nil, true)
+	require.NoError(t, err)
+	require.NotNil(t, data.ServiceTier)
+	require.Equal(t, schemas.BifrostServiceTierFlex, *data.ServiceTier)
 }
 
 // TestBuildResponsesMessageConcatenatesTextDeltas verifies that many streamed

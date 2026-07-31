@@ -1876,8 +1876,8 @@
                   },
                   "matview_refresh_interval": {
                     "type": "string",
-                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
-                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Positive values below 5s are clamped up to 5s. Set 'off' or a zero duration (e.g. '0s') to disable materialized-view maintenance entirely; dashboard queries fall back to the raw tables.",
+                    "pattern": "^(off|[0-9]+(ns|us|µs|ms|s|m|h))$",
                     "default": "1m"
                   },
                   "matview_refresh_timeout": {
@@ -5725,6 +5725,11 @@
           "type": "string",
           "description": "JWT audience for validation (optional)"
         },
+        "additionalScopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Extra OAuth scopes requested on top of the base openid/profile/email/offline_access set. Primarily for Custom Authorization Servers where claims like 'groups' are gated behind a scope Bifrost does not request by default."
+        },
         "userIdField": {
           "type": "string",
           "description": "JWT claim field for user ID (default: 'sub')",
@@ -6586,6 +6591,25 @@
         "rate_limit": {
           "$ref": "#/$defs/rate_limit_line"
         },
+        "blacklisted_models": {
+          "type": "array",
+          "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all; empty array or omitted blocks none.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "weight": {
+          "type": ["number", "null"],
+          "description": "Load-balancer seed weight for this provider (null opts out of weighted routing / no override)",
+          "default": null
+        },
+        "model_budgets": {
+          "type": "array",
+          "description": "Per-model budgets and rate limits scoped to this provider. Each entry targets one model and materializes as a user-scoped model config on assignment.",
+          "items": {
+            "$ref": "#/$defs/access_profile_provider_model_budget"
+          }
+        },
         "key_ids": {
           "type": "array",
           "description": "Key IDs allowed for this provider config. Use [\"*\"] to allow all keys; empty array or omitted denies all keys. Specific IDs restrict access to those keys only.",
@@ -6595,6 +6619,28 @@
         }
       },
       "required": ["provider_name"],
+      "additionalProperties": false
+    },
+    "access_profile_provider_model_budget": {
+      "type": "object",
+      "description": "Per-model budget group under an access-profile provider config, with optional per-model rate limit",
+      "properties": {
+        "model_name": {
+          "type": "string",
+          "description": "Model this budget group applies to (scoped to the parent provider)"
+        },
+        "budgets": {
+          "type": "array",
+          "description": "Spend budgets for this model",
+          "items": {
+            "$ref": "#/$defs/budget_line"
+          }
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/rate_limit_line"
+        }
+      },
+      "required": ["model_name"],
       "additionalProperties": false
     },
     "access_profile_mcp_tool_group": {
@@ -6926,6 +6972,10 @@
         "virtual_key_id": {
           "type": "string",
           "description": "Virtual key ID (required for virtual_key* scopes)"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User ID (for user-scoped pricing overrides)"
         },
         "provider_id": {
           "type": "string",

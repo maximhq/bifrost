@@ -20,12 +20,13 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
-var loggingSkipPaths = []string{"/health", "/_next", "/api/dev"}
+var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
 var realtimeTransportPaths = buildRealtimeTransportPathSet()
 
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
@@ -399,6 +400,12 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			// Get or create BifrostContext from fasthttp context
 			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			// Transport pre-hooks run before the inference path stamps the
+			// catalog, so stamp it here too — otherwise ctx.GetModelInfo would
+			// be nil in HTTPTransportPreHook but populated in every other hook.
+			if config.ModelCatalog != nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyModelCatalog, config.ModelCatalog)
+			}
 			// Acquire pooled request
 			req := schemas.AcquireHTTPRequest()
 			defer schemas.ReleaseHTTPRequest(req)
@@ -558,15 +565,10 @@ func runTransportPostHooksCaptured(capturedReq *schemas.HTTPRequest, capturedRes
 	defer schemas.ReleaseHTTPRequest(req)
 	req.Method = capturedReq.Method
 	req.Path = capturedReq.Path
-	for k, v := range capturedReq.Headers {
-		req.Headers[k] = v
-	}
-	for k, v := range capturedReq.Query {
-		req.Query[k] = v
-	}
-	for k, v := range capturedReq.PathParams {
-		req.PathParams[k] = v
-	}
+
+	maps.Copy(req.Headers, capturedReq.Headers)
+	maps.Copy(req.Query, capturedReq.Query)
+	maps.Copy(req.PathParams, capturedReq.PathParams)
 
 	httpResp := schemas.AcquireHTTPResponse()
 	defer schemas.ReleaseHTTPResponse(httpResp)
@@ -779,6 +781,43 @@ func isRealtimeTransportEndpoint(path string) bool {
 	return ok
 }
 
+func hasVirtualKeyCredential(ctx *fasthttp.RequestCtx) bool {
+	// x-bf-vk mirrors the canonical VK parser (lib.ConvertToBifrostContext): any
+	// non-empty value is accepted, no sk-bf- prefix required — the header itself
+	// is the signal, not the value shape.
+	if vkHeader := strings.TrimSpace(string(ctx.Request.Header.Peek(string(schemas.BifrostContextKeyVirtualKey)))); vkHeader != "" {
+		return true
+	}
+
+	authHeader := strings.TrimSpace(string(ctx.Request.Header.Peek("Authorization")))
+	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+		token := strings.TrimSpace(authHeader[7:])
+		if token != "" && strings.HasPrefix(strings.ToLower(token), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-api-key"))); apiKey != "" {
+		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("x-goog-api-key"))); apiKey != "" {
+		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek("api-key"))); apiKey != "" {
+		if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // AuthMiddleware is a middleware that handles authentication for the API.
 type AuthMiddleware struct {
 	store             configstore.ConfigStore
@@ -880,7 +919,7 @@ func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, ne
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		return true
-	})
+	}, true)
 }
 
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.
@@ -915,7 +954,10 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// it would whitelist /api/oauth/per-user/* (auth-via-temp-token) and
 		// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
 		// in tryTempTokenOrUnauthorized.
-		"/api/dev",
+		// Trailing slash is required: the dev routes live under "/api/dev/pprof".
+		// A bare "/api/dev" prefix also matches "/api/devices" (and any other
+		// "/api/dev*" route), which would silently bypass auth on those routes.
+		"/api/dev/",
 		// Skills serving endpoints are public — marketplace URLs cannot carry
 		// credentials securely. Management endpoints under /api/skills (without
 		// /serve/) remain authenticated.
@@ -945,11 +987,11 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 			}
 		}
 		return false
-	})
+	}, false)
 }
 
 // middleware is the core authentication middleware that checks if the request should be authenticated or not.
-func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool) schemas.BifrostHTTPMiddleware {
+func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool, allowVirtualKeyAuth bool) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			// We will first check if its API key auth
@@ -977,6 +1019,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				return
 			}
 			if isRealtimeTransportEndpoint(url) {
+				next(ctx)
+				return
+			}
+			if allowVirtualKeyAuth && hasVirtualKeyCredential(ctx) {
 				next(ctx)
 				return
 			}

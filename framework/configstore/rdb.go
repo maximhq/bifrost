@@ -4910,6 +4910,117 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 	}))
 }
 
+// SyncRoutingRules applies a batch of routing rule creates and updates atomically, deferring the
+// unique-priority-per-scope check until every rule is written. This lets a valid permutation (e.g.
+// swapping two rules' priorities) succeed despite a transient intermediate collision, while a
+// genuine end-state duplicate still errors. Used by config-file reloads that apply many rules at once.
+func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error {
+	database := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		database = tx[0]
+	}
+
+	// Validate scopeID is required for non-global scope (same guard as CreateRoutingRule/UpdateRoutingRule).
+	for _, list := range [][]tables.TableRoutingRule{toAdd, toUpdate} {
+		for i := range list {
+			if list[i].Scope != "" && list[i].Scope != "global" && list[i].ScopeID == nil {
+				return fmt.Errorf("scopeID is required for non-global scope '%s'", list[i].Scope)
+			}
+		}
+	}
+
+	type scopeRef struct {
+		scope   string
+		scopeID *string
+	}
+
+	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		seen := make(map[string]bool)
+		scopes := make([]scopeRef, 0, len(toAdd)+len(toUpdate))
+		record := func(rule *tables.TableRoutingRule) {
+			key := rule.Scope
+			if rule.ScopeID != nil {
+				key += "\x00" + *rule.ScopeID
+			}
+			if !seen[key] {
+				seen[key] = true
+				scopes = append(scopes, scopeRef{scope: rule.Scope, scopeID: rule.ScopeID})
+			}
+		}
+
+		putTargets := func(rule *tables.TableRoutingRule) error {
+			for i := range rule.Targets {
+				rule.Targets[i].RuleID = rule.ID
+				if err := tx.Create(&rule.Targets[i]).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		// Insert new rules.
+		for i := range toAdd {
+			rule := &toAdd[i]
+			targets := rule.Targets
+			rule.Targets = nil
+			if err := tx.Omit("Targets").Create(rule).Error; err != nil {
+				return err
+			}
+			rule.Targets = targets
+			if err := putTargets(rule); err != nil {
+				return err
+			}
+			record(rule)
+		}
+
+		// Update changed rules and replace their targets.
+		for i := range toUpdate {
+			rule := &toUpdate[i]
+			var existing tables.TableRoutingRule
+			if err := dbForUpdate(tx).First(&existing, "id = ?", rule.ID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrNotFound
+				}
+				return err
+			}
+			targets := rule.Targets
+			rule.Targets = nil
+			if err := tx.Omit("Targets").Save(rule).Error; err != nil {
+				return err
+			}
+			rule.Targets = targets
+			if err := tx.Where("rule_id = ?", rule.ID).Delete(&tables.TableRoutingTarget{}).Error; err != nil {
+				return err
+			}
+			if err := putTargets(rule); err != nil {
+				return err
+			}
+			record(rule)
+		}
+
+		// Deferred invariant: no two rules may share a priority within a scope's final state.
+		for _, sc := range scopes {
+			q := tx.Model(&tables.TableRoutingRule{}).Where("scope = ?", sc.scope)
+			if sc.scopeID != nil {
+				q = q.Where("scope_id = ?", *sc.scopeID)
+			} else {
+				q = q.Where("scope_id IS NULL")
+			}
+			var dup []int
+			if err := q.Group("priority").Having("COUNT(*) > 1").Pluck("priority", &dup).Error; err != nil {
+				return err
+			}
+			if len(dup) > 0 {
+				if sc.scopeID != nil {
+					return fmt.Errorf("routing rule with priority %d already exists for scope '%s' with scopeID '%s'", dup[0], sc.scope, *sc.scopeID)
+				}
+				return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", dup[0], sc.scope)
+			}
+		}
+		return nil
+	}))
+}
+
 // DeleteRoutingRule deletes a routing rule and its targets from the database.
 func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error {
 	database := s.DB()

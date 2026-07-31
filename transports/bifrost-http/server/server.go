@@ -142,6 +142,12 @@ type LogRedactionMappingResolverProvider interface {
 	GetLogRedactionMappingResolver() handlers.LogRedactionMappingResolver
 }
 
+// MCPLogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to MCP log-detail responses.
+type MCPLogRedactionMappingResolverProvider interface {
+	// GetMCPLogRedactionMappingResolver returns the resolver used by the logging handler.
+	GetMCPLogRedactionMappingResolver() handlers.MCPLogRedactionMappingResolver
+}
+
 // BifrostHTTPServer represents a HTTP server instance.
 type BifrostHTTPServer struct {
 	Ctx    *schemas.BifrostContext
@@ -1795,6 +1801,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if resolverProvider, ok := callbacks.(LogRedactionMappingResolverProvider); ok {
 			loggingHandler.SetLogRedactionMappingResolver(resolverProvider.GetLogRedactionMappingResolver())
 		}
+		if resolverProvider, ok := callbacks.(MCPLogRedactionMappingResolverProvider); ok {
+			loggingHandler.SetMCPLogRedactionMappingResolver(resolverProvider.GetMCPLogRedactionMappingResolver())
+		}
 		// Wire the sidekiq runner so cost recalculation runs as a durable background
 		// job. Registering the handler here (before RecoverIncomplete) lets a job
 		// interrupted by a restart resume on boot.
@@ -2176,6 +2185,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MCPHeadersProvider: s.Config.MCPHeadersProvider,
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
+		ModelCatalog:       s.Config.ModelCatalog,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

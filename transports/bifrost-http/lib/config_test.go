@@ -1588,6 +1588,10 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 	return nil
 }
 
+func (m *MockConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Sidekiq
 func (m *MockConfigStore) CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error {
 	return nil

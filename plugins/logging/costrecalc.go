@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,12 +13,13 @@ import (
 // CostRecalcJobKind is the sidekiq job kind used for background cost recalculation.
 const CostRecalcJobKind = "logs_recalculate_cost"
 
-// costRecalcBatchSize is the number of rows processed between checkpoints. Each
-// batch is a single SearchLogs page followed by one BulkUpdateCost and one
-// metadata checkpoint, so this also bounds how much work a crash can lose. It is
-// a var (not a const) only so tests can shrink it to exercise multi-batch paths;
-// production never reassigns it.
-var costRecalcBatchSize = 1000
+// costRecalcBatchSize is both the billing-query page size and the number of rows
+// processed between checkpoints. SearchLogsForBilling includes DB-resident modality
+// payloads, so the page itself must be as small as the subsequent hydration chunk;
+// otherwise a page of large image/audio payloads is already resident before chunked
+// object-store hydration begins. It is a var only so tests can exercise multi-batch
+// paths; production never reassigns it.
+var costRecalcBatchSize = logstore.BillingHydrationChunkSize
 
 // CostRecalcJobMeta is the durable state of a cost-recalculation job. It is stored
 // verbatim as the sidekiq job's metadata JSON, so the worker can resume from the
@@ -48,6 +50,13 @@ type CostRecalcJobMeta struct {
 	Processed int   `json:"processed"`
 	Updated   int   `json:"updated"`
 	Skipped   int   `json:"skipped"`
+	// Unpriceable is the subset of Skipped left alone because their pricing inputs
+	// could not be recovered — for example, an object-storage fetch that failed.
+	// Broken out because it means "we refused to write a number we knew
+	// would be wrong", which is actionable, whereas the rest of Skipped covers
+	// ordinary cases like a row with no usage to price. It is a subset rather than a
+	// sibling so Updated + Skipped still accounts for every Processed row.
+	Unpriceable int `json:"unpriceable,omitempty"`
 	// Message carries a human-readable completion note for the UI.
 	Message string `json:"message,omitempty"`
 }
@@ -153,7 +162,11 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 		filters.EndTime = windowEnd
 		pagination.Offset = meta.CursorOffset
 
-		searchResult, err := p.store.SearchLogs(ctx, filters, pagination)
+		// Billing reads go through SearchLogsForBilling, not SearchLogs: the list
+		// projection omits the modality output payloads and, on object-storage-backed
+		// stores, returns rows whose token_usage was blanked at write time. Pricing
+		// those degraded rows charges cached tokens at the full input rate.
+		searchResult, err := p.store.SearchLogsForBilling(ctx, filters, pagination)
 		if err != nil {
 			return snapshot(), fmt.Errorf("failed to search logs for cost recalculation: %w", err)
 		}
@@ -162,19 +175,30 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 			break
 		}
 
+		// Hydrates and prices the payload-safe page, releasing its payloads before the
+		// next query.
+		outcomes, err := p.priceLogsInChunks(ctx, batch)
+		if err != nil {
+			return snapshot(), err
+		}
+
 		costUpdates := make(map[string]float64, len(batch))
 		gotPositiveCost := make([]bool, len(batch))
 		batchSkipped := 0
+		batchUnpriceable := 0
 		for i := range batch {
 			logEntry := batch[i]
-			cost, calcErr := p.calculateCostForLog(&logEntry)
+			cost, calcErr := outcomes[i].cost, outcomes[i].err
 			if calcErr != nil {
 				batchSkipped++
+				if errors.Is(calcErr, errPricingInputsUnavailable) {
+					batchUnpriceable++
+				}
 				p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
 				continue
 			}
 			if cost <= 0 {
-				if isKnownZeroCostLog(&logEntry) {
+				if outcomes[i].knownZeroCost {
 					costUpdates[logEntry.ID] = cost
 				} else {
 					batchSkipped++
@@ -192,9 +216,10 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 			}
 			meta.Updated += len(costUpdates)
 		}
-		// Merge the skip count only once the batch is durably committed, so a retry
+		// Merge the skip counts only once the batch is durably committed, so a retry
 		// after a BulkUpdateCost failure cannot double-count the same skipped rows.
 		meta.Skipped += batchSkipped
+		meta.Unpriceable += batchUnpriceable
 		meta.Processed += len(batch)
 
 		// Advance the cursor. The lower bound is inclusive and rows that keep matching
@@ -232,5 +257,8 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 	}
 
 	meta.Message = fmt.Sprintf("Recalculated %d cost value(s); %d skipped.", meta.Updated, meta.Skipped)
+	if meta.Unpriceable > 0 {
+		meta.Message += fmt.Sprintf(" %d of those were left unchanged because their pricing inputs were unavailable.", meta.Unpriceable)
+	}
 	return snapshot(), nil
 }

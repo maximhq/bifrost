@@ -561,6 +561,16 @@ graph TB
 - **Message Queues:** Integration with message queue systems
 - **Caching Systems:** Redis, Memcached integration for state storage
 
+**Plugin-to-Bifrost Communication:**
+
+Bifrost exposes internal services to plugins as methods on the request context, so a plugin never has to be handed a service handle at construction time. The context carries a small interface handle; the implementation stays in Bifrost.
+
+- **Model catalog:** `ctx.GetModelInfo(provider, model)` returns pricing, context window and capability metadata; `ctx.CalculateCost(resp)` prices a completed response with governance overrides applied
+- **Tracing:** `ctx.SetTraceAttribute(key, value)` and the stream-control methods delegate to the active tracer
+- **Logging:** `ctx.Log(level, msg)` writes plugin-scoped entries collected per request
+
+Because these handles live on the request context rather than in plugin constructors, they reach plugins compiled as standalone `.so` binaries with no Bifrost framework dependency. Every accessor is inert - returning a zero value rather than panicking - when the backing service is not configured, which keeps a plugin portable between the HTTP gateway and Go SDK embeddings.
+
 > **📖 Integration Examples:** [Plugin Development Guide →](../../plugins/writing-go-plugin)
 
 ---
