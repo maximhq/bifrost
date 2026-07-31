@@ -42,6 +42,7 @@ import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
+import { applyRedactionMapping, hasRedactionMappingEntries } from "@/lib/utils/redaction";
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
@@ -80,18 +81,6 @@ const getRealtimeTransportBadgeClass = (value: unknown): string => {
 		default:
 			return "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-300";
 	}
-};
-
-const hasRedactionMappingEntries = (mapping?: LogEntry["redaction_mapping"]): boolean =>
-	Boolean(mapping && (Object.keys(mapping.input ?? {}).length > 0 || Object.keys(mapping.output ?? {}).length > 0));
-
-const applyRedactionMapping = (text: string | undefined, mapping?: Record<string, string>): string => {
-	if (!text || !mapping) return text || "";
-	let result = text;
-	for (const [key, value] of Object.entries(mapping)) {
-		result = result.replaceAll(`[${key}]`, value);
-	}
-	return result;
 };
 
 const formatRealtimeSource = (value: unknown): string => {
