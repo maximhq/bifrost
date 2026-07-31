@@ -489,7 +489,7 @@ export function RoutingTreeView() {
 									/>
 								</TooltipTrigger>
 								<TooltipContent side="top" className="max-w-[200px] text-center">
-									Re-entry point is fully proven by static analysis — every condition on the path evaluated to a known value.
+									Re-entry point is fully proven by static analysis; every condition on the path evaluated to a known value.
 								</TooltipContent>
 							</Tooltip>
 						</div>
@@ -524,7 +524,7 @@ export function RoutingTreeView() {
 									/>
 								</TooltipTrigger>
 								<TooltipContent side="top" className="max-w-[200px] text-center">
-									Re-entry point is a conditional — one or more conditions on the path are not fully evaluated at build time.
+									Re-entry point is a conditional; one or more conditions on the path are not fully evaluated at build time.
 								</TooltipContent>
 							</Tooltip>
 						</div>

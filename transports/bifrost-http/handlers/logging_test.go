@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -45,6 +47,82 @@ func TestShouldUseFilterDataCacheRejectsScopedContext(t *testing.T) {
 	})
 	if shouldUseFilterDataCache(ctx, "") {
 		t.Fatal("expected scoped request to bypass filterdata cache")
+	}
+}
+
+// TestShouldCacheFilterDimensions_NarrowsToRawScans verifies the cache is spent
+// only where it saves real work. Matview-backed dimensions are indexed lookups
+// and a cache entry serves exactly one caller, so they are not worth caching;
+// metadata_keys still hits the raw logs table and is.
+func TestShouldCacheFilterDimensions_NarrowsToRawScans(t *testing.T) {
+	pg := &LoggingHandler{config: &lib.Config{
+		LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypePostgres},
+	}}
+
+	cases := []struct {
+		name string
+		dims []string
+		want bool
+	}{
+		{"single matview dimension", []string{filterDimUsers}, false},
+		{"several matview dimensions", []string{filterDimUsers, filterDimTeams, filterDimModels}, false},
+		{"metadata keys alone", []string{filterDimMetadataKeys}, true},
+		{"metadata keys mixed in", []string{filterDimUsers, filterDimMetadataKeys}, true},
+		{"default all dimensions", allFilterDimensions, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pg.shouldCacheFilterDimensions(tc.dims); got != tc.want {
+				t.Fatalf("shouldCacheFilterDimensions(%v) = %v, want %v", tc.dims, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShouldCacheFilterDimensions_NonPostgresCachesEverything verifies stores
+// without matviews keep the original behaviour: there every dimension is a raw
+// 30-day DISTINCT, so none of them should lose the cache.
+func TestShouldCacheFilterDimensions_NonPostgresCachesEverything(t *testing.T) {
+	for _, h := range []*LoggingHandler{
+		{config: &lib.Config{LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeSQLite}}},
+		{config: &lib.Config{}}, // no logs-store config: fail safe, keep caching
+		{},                      // no config at all
+	} {
+		if !h.shouldCacheFilterDimensions([]string{filterDimUsers}) {
+			t.Fatal("stores without matviews must keep caching every dimension")
+		}
+	}
+}
+
+// TestFilterDataCacheIdentity_PartitionsPerCaller is the regression for
+// cross-user leakage through the filterdata cache. Filter dropdowns are
+// row-visibility-scoped, but the scope is resolved below the handler, so the
+// cache cannot detect it — two callers must therefore never share a key.
+func TestFilterDataCacheIdentity_PartitionsPerCaller(t *testing.T) {
+	withUser := func(userID string, roleID uint) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		if userID != "" {
+			ctx.SetUserValue(schemas.BifrostContextKeyUserID, userID)
+			ctx.SetUserValue(schemas.BifrostContextKeyUserRoleID, roleID)
+		}
+		return ctx
+	}
+
+	alice := filterDataCacheIdentity(withUser("alice", 2))
+	bob := filterDataCacheIdentity(withUser("bob", 2))
+	if alice == bob {
+		t.Fatalf("distinct users must not share a cache partition, both got %q", alice)
+	}
+
+	// A role change flips visibility, so it must miss the cache immediately
+	// rather than serve the old scope for the remainder of the TTL.
+	if promoted := filterDataCacheIdentity(withUser("alice", 1)); promoted == alice {
+		t.Fatalf("role change must repartition the cache, both got %q", alice)
+	}
+
+	// Unauthenticated / local-admin requests keep the single shared partition.
+	if anon := filterDataCacheIdentity(withUser("", 0)); anon != "anon" {
+		t.Fatalf("identity-less request should use the shared partition, got %q", anon)
 	}
 }
 
@@ -273,6 +351,9 @@ func (s *fakeSidekiqStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind
 }
 
 func (s *fakeSidekiqStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
+	return true, nil
+}
+func (s *fakeSidekiqStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error) {
 	return true, nil
 }
 func (s *fakeSidekiqStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {

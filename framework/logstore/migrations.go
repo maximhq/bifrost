@@ -280,6 +280,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"webhook_deliveries_add_request_id_column"}, run: migrationAddWebhookDeliveryRequestIDColumn},
 	{IDs: []string{"logs_add_content_hidden_column"}, run: migrationAddContentHiddenColumn},
 	{IDs: []string{"logs_add_server_side_fallback_model_column"}, run: migrationAddServerSideFallbackModelColumn},
+	{IDs: []string{"logs_add_billing_fidelity_columns"}, run: migrationAddBillingFidelityColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -3790,6 +3791,61 @@ func migrationAddServerSideFallbackModelColumn(ctx context.Context, db *gorm.DB,
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding server side fallback model column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBillingFidelityColumns adds the served-tier columns cost recomputation
+// needs in order to reprice a row at the rates it was actually served at:
+// service_tier, speed, and inference_geo.
+//
+// These need real columns because no existing JSON column can carry them:
+// BifrostLLMUsage tags Speed and InferenceGeo `json:"-"` so they never enter any
+// serialized usage payload, and service_tier lives on the response envelope rather than
+// on usage at all. Keeping them outside payloadFields also means they survive hybrid
+// object-storage offload and content-hidden rows, both of which blank token_usage.
+//
+// There is deliberately no backfill and no denormalized cache-token column.
+//
+// The tier columns are not backfillable even in principle — the information was never
+// captured, so pre-migration rows keep repricing at standard rates, which is the honest
+// outcome. And the cache breakdown does not need a column at all: pricing reads it from
+// token_usage (hydrated from object storage when offloaded), and a row whose payload
+// cannot be recovered is flagged by IsUsageDegraded and skipped rather than priced from
+// a lossy fallback. cached_read_tokens exists for an unrelated reason — the matviews and
+// token histograms SUM it — and nothing aggregates cache writes, so a matching column
+// would have had no consumer while requiring an effectively quadratic backfill to be
+// useful on existing rows.
+func migrationAddBillingFidelityColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_billing_fidelity_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	columns := []string{"service_tier", "speed", "inference_geo"}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &Log{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding billing fidelity columns: %s", err.Error())
 	}
 	return nil
 }

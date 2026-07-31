@@ -355,6 +355,9 @@ bifrost:
       # mcpLibraryUrl: ""
       # MCP library sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
       # mcpLibrarySyncInterval: 86400
+      # How often each provider's model list is re-fetched in the background, in seconds
+      # (default: 3600 = 1 hour, minimum: 60; set to 0 to disable background refresh)
+      # liveModelsSyncInterval: 3600
 
   # Provider configurations (add your provider keys here)
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
@@ -447,6 +450,7 @@ bifrost:
   #         region: "us-east-1"
   #         access_key: "env.AWS_ACCESS_KEY_ID"
   #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
+  #         # batch_role_arn: ""  # Optional: service role Bedrock assumes for batch S3 access; takes priority over role_arn sent in the request (can use env. prefix)
   #         project_id: ""  # Optional: Bedrock project ID scoping inference and model listing (can use env. prefix)
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
@@ -611,6 +615,7 @@ bifrost:
         #     collector_url: ""       # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
         #     trace_type: "genai_extension" # genai_extension | vercel | open_inference
         #     protocol: "grpc"        # http | grpc
+        #     export_timeout: 5       # Max seconds for one trace export (1-60); the only timeout on gRPC exports
         #     metrics_enabled: false
         #     metrics_endpoint: ""    # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
         #     metrics_push_interval: 15 # Push interval in seconds (1-300)
@@ -627,6 +632,10 @@ bifrost:
         collector_url: "" # e.g., http://otel-collector:4318 (HTTP) or otel-collector:4317 (gRPC)
         trace_type: "genai_extension" # genai_extension | vercel | open_inference
         protocol: "grpc" # http | grpc
+        # Max seconds for a single trace export (1-60). This is the only timeout on gRPC
+        # exports: an endpoint that accepts the connection but never replies would
+        # otherwise block an export goroutine indefinitely.
+        # export_timeout: 5
         # Push-based metrics export via OTLP (recommended for multi-node clusters)
         metrics_enabled: false
         metrics_endpoint: "" # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
@@ -930,6 +939,10 @@ bifrost:
       # clientSecret: ""
       # apiToken: ""
       # audience: ""
+      # # Extra OAuth scopes on top of the base openid/profile/email/offline_access set
+      # # (for Custom Authorization Servers where claims like "groups" are gated behind a scope).
+      # additionalScopes:
+      #   - "groups"
       # userIdField: "sub"
       # teamIdsField: "groups"
       # rolesField: "roles"
@@ -1153,6 +1166,20 @@ bifrost:
     #     - provider_name: "openai"
     #       all_models_allowed: false
     #       allowed_models: ["gpt-4o", "gpt-4o-mini"]
+    #       blacklisted_models: ["gpt-4o-realtime-preview"]  # Denylist wins over allowed_models; ["*"] blocks all
+    #       weight: 1.0  # Load-balancer seed weight; null/omit opts out of weighted routing
+    #       model_budgets:  # Per-model budgets + rate limits scoped to this provider
+    #         - model_name: "gpt-4o"
+    #           budgets:
+    #             - id: "ap-openai-gpt4o-budget"
+    #               max_limit: 50
+    #               reset_duration: "1M"
+    #           rate_limit:
+    #             id: "ap-openai-gpt4o-rl"
+    #             token_max_limit: 100000
+    #             token_reset_duration: "1h"
+    #             request_max_limit: 500
+    #             request_reset_duration: "1h"
     #   mcp_tool_groups:
     #     - tool_group_id: 1
     #   mcp_servers:
@@ -1338,6 +1365,7 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+    # connMaxIdleTime: "5m"  # How long an idle connection is kept. Without this the idle cap alone controls pool size, so bursts above maxIdleConns churn physical connections. Note the config store and logs store open separate pools.
 
     # Vault store for external secret management (enterprise).
     # Resolves "vault.<path>" references in config fields at load time.
@@ -1378,7 +1406,9 @@ storage:
     # PostgreSQL connection pool tuning (only applies when type is postgres)
     # maxIdleConns: 5
     # maxOpenConns: 50
+    # connMaxIdleTime: "5m"  # How long an idle connection is kept. Without this the idle cap alone controls pool size, so bursts above maxIdleConns churn physical connections. Note the config store and logs store open separate pools.
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
+    # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m). Unset derives 5x the interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.
     # ClickHouse connection settings (only applies when type is clickhouse)
     # clickhouse:
     #   host: "clickhouse.default.svc.cluster.local"  # Required
@@ -1438,6 +1468,9 @@ postgresql:
     password: ""
     # Command executed by Bifrost to produce the PostgreSQL password on stdout.
     # Use for dynamic credentials such as AWS RDS IAM auth tokens.
+    # The result is cached for cache_ttl (default 60s) and shared across new
+    # physical connections, so the command is not re-run for every connection.
+    # Keep cache_ttl below the credential's validity window.
     # passwordCommand:
     #   command: aws
     #   args:
@@ -1452,6 +1485,7 @@ postgresql:
     #     - --username
     #     - bifrost
     #   timeout: 10s
+    #   cache_ttl: 60s
     # connMaxLifetime: 10m
     database: bifrost
     sslMode: disable

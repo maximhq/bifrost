@@ -8,6 +8,22 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
+	override_amount?: number;
+	override_mode?: BudgetOverrideMode;
+	override_cycles_remaining?: number;
+}
+
+export type BudgetOverrideMode = "cycles" | "forever";
+
+export interface BudgetOverrideRequest {
+	amount: number;
+	mode: BudgetOverrideMode;
+	cycles?: number;
+}
+
+export interface BudgetOverrideResponse {
+	budget: Budget;
+	effective_max_limit: number;
 }
 
 export interface RateLimit {
@@ -31,6 +47,10 @@ export interface Team {
 	rate_limit_id?: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendar_aligned?: boolean;
+	// Number of virtual keys assigned to this team (server-computed via a
+	// correlated subquery; the list endpoints report this instead of embedding
+	// the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	customer?: Customer;
 	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
@@ -42,6 +62,9 @@ export interface Customer {
 	name: string;
 	rate_limit_id?: string;
 	calendar_aligned?: boolean;
+	// Number of virtual keys owned by this customer (server-computed; the list
+	// endpoint reports this instead of embedding the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	teams?: Team[];
 	budgets?: Budget[];
@@ -263,6 +286,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only: filters to virtual keys assigned to this user. */
+	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
 	exclude_assigned_virtual_keys?: boolean;
 	for_user_assignment?: boolean;
@@ -391,6 +416,7 @@ export interface GetModelConfigsParams {
 	offset?: number;
 	search?: string;
 	scope?: string;
+	scope_id?: string;
 	provider?: string;
 }
 
@@ -409,7 +435,10 @@ export type PricingOverrideScopeKind =
 	| "provider_key"
 	| "virtual_key"
 	| "virtual_key_provider"
-	| "virtual_key_provider_key";
+	| "virtual_key_provider_key"
+	| "user"
+	| "user_provider"
+	| "user_provider_key";
 export type PricingOverrideMatchType = "exact" | "wildcard";
 
 export interface PricingOverridePatch {
@@ -502,6 +531,7 @@ export interface PricingOverride {
 	id: string;
 	name: string;
 	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
@@ -517,6 +547,7 @@ export interface PricingOverride {
 export interface CreatePricingOverrideRequest {
 	name: string;
 	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
@@ -529,6 +560,7 @@ export interface CreatePricingOverrideRequest {
 export interface UpdatePricingOverrideRequest {
 	name?: string;
 	scope_kind?: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;

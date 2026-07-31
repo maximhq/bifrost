@@ -44,7 +44,7 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 
 func waitForUploads(t *testing.T, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if done() {
 			return
@@ -52,6 +52,21 @@ func waitForUploads(t *testing.T, done func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for upload state")
+}
+
+// waitForOffload waits until the offload is fully complete for id: the payload is in
+// object storage AND the row's has_object flag has been committed.
+//
+// processUpload does the Put first and only then updates has_object (with retries), so
+// waiting on the object store alone returns while the DB flag is still false. Any test
+// that reads has_object — or exercises a code path that branches on it, such as billing
+// hydration — must wait for the flag, not just the object.
+func waitForOffload(t *testing.T, inner LogStore, id string) {
+	t.Helper()
+	waitForUploads(t, func() bool {
+		row, err := inner.FindByID(context.Background(), id)
+		return err == nil && row.HasObject
+	})
 }
 
 func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
@@ -858,10 +873,9 @@ func TestHybrid_AttachmentsStrippedFromResponsesPreview(t *testing.T) {
 }
 
 func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
-	// token_usage is offloaded to object storage and cleared from the DB row. The
-	// denormalized prompt/completion/total columns must remain so list queries can
-	// rebuild token_usage for the UI without hydrating from S3 (same pattern as
-	// content_summary for message previews).
+	// Pricing metadata stays in the DB even when content is offloaded. List queries
+	// may still use their lightweight projection and rebuild a usage summary from
+	// denormalized counters.
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -878,6 +892,7 @@ func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 			CompletionTokens: 45,
 			TotalTokens:      165,
 		},
+		CacheDebugParsed: &schemas.BifrostCacheDebug{CacheHit: true},
 	}
 	require.NoError(t, entry.SerializeFields())
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
@@ -885,7 +900,8 @@ func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 
 	dbLog, err := inner.FindByID(ctx, "chat-tokens-1")
 	require.NoError(t, err)
-	assert.Empty(t, dbLog.TokenUsage, "token_usage should be offloaded to object storage")
+	assert.NotEmpty(t, dbLog.TokenUsage, "pricing metadata must stay in log_store")
+	assert.NotEmpty(t, dbLog.CacheDebug, "cache pricing metadata must stay in log_store")
 	assert.Equal(t, 120, dbLog.PromptTokens)
 	assert.Equal(t, 45, dbLog.CompletionTokens)
 	assert.Equal(t, 165, dbLog.TotalTokens)
@@ -901,7 +917,7 @@ func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
 
 	found, err := hybrid.FindByID(ctx, "chat-tokens-1")
 	require.NoError(t, err)
-	require.NotNil(t, found.TokenUsageParsed, "detail view should hydrate full token_usage from S3")
+	require.NotNil(t, found.TokenUsageParsed, "detail view should retain full token_usage")
 	assert.Equal(t, 165, found.TokenUsageParsed.TotalTokens)
 }
 

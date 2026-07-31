@@ -654,6 +654,15 @@
                   "description": "MCP library sync interval in seconds. Default is 24 hours. Minimum is 3600 seconds (1 hour).",
                   "default": 86400,
                   "minimum": 3600
+                },
+                "liveModelsSyncInterval": {
+                  "type": "integer",
+                  "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Set to 0 to disable background refresh. Default is 3600 (1 hour); minimum when enabled is 60 seconds.",
+                  "default": 3600,
+                  "anyOf": [
+                    {"const": 0},
+                    {"minimum": 60}
+                  ]
                 }
               },
               "additionalProperties": false
@@ -2337,6 +2346,11 @@
                         "type": "string",
                         "description": "JWT audience for validation (optional)"
                       },
+                      "additionalScopes": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Extra OAuth scopes requested on top of the base openid/profile/email/offline_access set. Primarily for Custom Authorization Servers where claims like 'groups' are gated behind a scope Bifrost does not request by default."
+                      },
                       "userIdField": {
                         "type": "string",
                         "description": "JWT claim field for user ID (default: 'sub')",
@@ -3226,7 +3240,79 @@
                           "type": "string"
                         }
                       },
+                      "required": ["id"],
                       "additionalProperties": false
+                    },
+                    "blacklisted_models": {
+                      "type": "array",
+                      "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all.",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "weight": {
+                      "type": ["number", "null"],
+                      "description": "Load-balancer seed weight for this provider (null opts out of weighted routing).",
+                      "default": null
+                    },
+                    "model_budgets": {
+                      "type": "array",
+                      "description": "Per-model budgets and rate limits scoped to this provider.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "model_name": {
+                            "type": "string"
+                          },
+                          "budgets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "max_limit": {
+                                  "type": "number"
+                                },
+                                "reset_duration": {
+                                  "type": "string"
+                                },
+                                "calendar_aligned": {
+                                  "type": "boolean",
+                                  "default": false
+                                }
+                              },
+                              "required": ["id", "max_limit", "reset_duration"],
+                              "additionalProperties": false
+                            }
+                          },
+                          "rate_limit": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "token_max_limit": {
+                                "type": "integer"
+                              },
+                              "token_reset_duration": {
+                                "type": "string"
+                              },
+                              "request_max_limit": {
+                                "type": "integer"
+                              },
+                              "request_reset_duration": {
+                                "type": "string"
+                              }
+                            },
+                            "required": ["id"],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": ["model_name"],
+                        "additionalProperties": false
+                      }
                     },
                     "key_ids": {
                       "type": "array",
@@ -3983,6 +4069,11 @@
               "type": "integer",
               "minimum": 2
             },
+            "connMaxIdleTime": {
+              "type": "string",
+              "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
             "vaultStore": {
               "type": "object",
               "description": "Vault store for external secret management",
@@ -4059,10 +4150,20 @@
               "type": "integer",
               "minimum": 2
             },
+            "connMaxIdleTime": {
+              "type": "string",
+              "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
             "matviewRefreshInterval": {
               "type": "string",
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
               "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+            },
+            "matviewRefreshTimeout": {
+              "type": "string",
+              "description": "Maximum time for a single materialized view refresh pass (min 30s, max 30m). Unset derives 5x the refresh interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
             "clickhouse": {
               "type": "object",
@@ -4260,7 +4361,7 @@
             },
             "passwordCommand": {
               "type": "object",
-              "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout for each new physical connection",
+              "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout. The result is cached for cache_ttl and shared across new physical connections",
               "properties": {
                 "command": {
                   "type": "string",
@@ -4275,6 +4376,11 @@
                 },
                 "timeout": {
                   "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "cache_ttl": {
+                  "type": "string",
+                  "description": "How long a resolved password is reused across new physical connections (default 60s). Keep below the credential's validity window.",
                   "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
                 }
               },
@@ -4820,6 +4926,13 @@
           "minimum": 1,
           "maximum": 300
         },
+        "export_timeout": {
+          "type": "integer",
+          "description": "Maximum time in seconds for a single trace export. Bounds how long a slow or unreachable collector can hold an export goroutine; gRPC exports have no other timeout.",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {
@@ -4944,6 +5057,12 @@
           "minimum": 1,
           "maximum": 300,
           "description": "Deprecated in the profiles wrapper; configure metrics_push_interval per profile instead."
+        },
+        "export_timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Deprecated in the profiles wrapper; configure export_timeout per profile instead."
         },
         "headers": {
           "type": "object",
@@ -5246,6 +5365,10 @@
             "session_name": {
               "type": "string",
               "description": "Role session name for AssumeRole (can use env. prefix)"
+            },
+            "batch_role_arn": {
+              "type": "string",
+              "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
             },
             "project_id": {
               "type": "string",
@@ -6180,6 +6303,10 @@
                   "session_name": {
                     "type": "string",
                     "description": "Role session name for AssumeRole (can use env. prefix)"
+                  },
+                  "batch_role_arn": {
+                    "type": "string",
+                    "description": "Service role ARN passed to Bedrock batch jobs for S3 access; takes priority over any role_arn sent in the request (can use env. prefix)"
                   },
                   "deployments": {
                     "type": "object",

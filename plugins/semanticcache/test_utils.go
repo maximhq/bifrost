@@ -433,7 +433,12 @@ func getMockRules() []mocker.MockRule {
 }
 
 // getMockedBifrostClient creates a Bifrost client with a mocker plugin for testing
-func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger schemas.Logger, semanticCachePlugin schemas.LLMPlugin) *bifrost.Bifrost {
+// extraPlugins, when given, are inserted between semanticCachePlugin and the
+// mocker plugin — e.g. a test-local plugin that short-circuits with a real
+// multi-chunk stream (see chunkStreamPlugin) where the mocker's single-shot
+// Response short-circuit can't exercise the case being tested. Any request
+// an extra plugin doesn't handle falls through to mocker as usual.
+func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger schemas.Logger, semanticCachePlugin schemas.LLMPlugin, extraPlugins ...schemas.LLMPlugin) *bifrost.Bifrost {
 	mockerCfg := mocker.MockerConfig{
 		Enabled: true,
 		Rules:   getMockRules(),
@@ -444,10 +449,13 @@ func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger sc
 		t.Fatalf("Failed to initialize mocker plugin: %v", err)
 	}
 
+	llmPlugins := append([]schemas.LLMPlugin{semanticCachePlugin}, extraPlugins...)
+	llmPlugins = append(llmPlugins, mockerPlugin)
+
 	account := &BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
 		Account:    account,
-		LLMPlugins: []schemas.LLMPlugin{semanticCachePlugin, mockerPlugin},
+		LLMPlugins: llmPlugins,
 		Logger:     logger,
 	})
 	if err != nil {
@@ -506,8 +514,9 @@ func ensureSharedTestNamespace(ctx context.Context, store vectorstore.VectorStor
 	return sharedTestNamespaceErr
 }
 
-// NewTestSetupWithVectorStore creates a new test setup with custom configuration and vector store type
-func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectorstore.VectorStoreType) *TestSetup {
+// NewTestSetupWithVectorStore creates a new test setup with custom configuration and vector store type.
+// extraPlugins are forwarded to getMockedBifrostClient — see its doc comment.
+func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectorstore.VectorStoreType, extraPlugins ...schemas.LLMPlugin) *TestSetup {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
@@ -550,7 +559,7 @@ func NewTestSetupWithVectorStore(t *testing.T, config *Config, storeType vectors
 	clearTestKeysWithStore(t, pluginImpl.store)
 
 	// Get a mocked Bifrost client
-	client := getMockedBifrostClient(t, ctx, logger, plugin)
+	client := getMockedBifrostClient(t, ctx, logger, plugin, extraPlugins...)
 
 	// Wire the global client as the embedding executor so semantic search works.
 	pluginImpl.SetEmbeddingRequestExecutor(throttledEmbeddingExecutor(client.EmbeddingRequest))

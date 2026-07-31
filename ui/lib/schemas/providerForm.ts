@@ -113,6 +113,7 @@ const BedrockKeyConfigSchema = z
 		role_arn: z.string().optional(),
 		external_id: z.string().optional(),
 		session_name: z.string().optional(),
+		batch_role_arn: z.string().optional(),
 		arn: z.string().optional(),
 		project_id: z.string().optional(),
 		batch_s3_config: BatchS3ConfigSchema.optional(),

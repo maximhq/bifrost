@@ -141,6 +141,104 @@ func TestRestoreRedacted_OTELProfilesHeaders(t *testing.T) {
 	}
 }
 
+// TestRestoreRedacted_KafkaSecretVarObjects covers the Kafka connector shape: secrets are
+// stored in the DB as plain strings, but the redacted GET returns plain-text SecretVars as
+// value-only objects ({"value": "supe…cret"} — ref/type are omitempty). Saving that back
+// must restore the stored string, not persist the mask.
+func TestRestoreRedacted_KafkaSecretVarObjects(t *testing.T) {
+	realPassword := "REAL-KAFKA-SASL-PASSWORD-123"
+	realCACert := "-----BEGIN CERTIFICATE-----\nREAL\n-----END CERTIFICATE-----"
+	maskedPassword := schemas.NewSecretVar(realPassword).Redacted().GetValue()
+	maskedCACert := schemas.NewSecretVar(realCACert).Redacted().GetValue()
+
+	// What MarshalForStorage stored in the DB.
+	existing := map[string]any{
+		"brokers": []any{"localhost:9092"},
+		"ca_cert": realCACert,
+		"sasl": map[string]any{
+			"mechanism": "PLAIN",
+			"username":  "kafka-user",
+			"password":  realPassword,
+		},
+	}
+	// What the UI sends back after a redacted GET, untouched.
+	incoming := map[string]any{
+		"brokers": []any{"localhost:9092"},
+		"ca_cert": map[string]any{"value": maskedCACert},
+		"sasl": map[string]any{
+			"mechanism": "PLAIN",
+			"username":  map[string]any{"value": "kafka-user"},
+			"password":  map[string]any{"value": maskedPassword},
+		},
+	}
+
+	got := restoreRedactedFromExisting(incoming, existing)
+	if got["ca_cert"] != realCACert {
+		t.Errorf("ca_cert not restored: got %v, want %q", got["ca_cert"], realCACert)
+	}
+	sasl := got["sasl"].(map[string]any)
+	if sasl["password"] != realPassword {
+		t.Errorf("sasl.password not restored: got %v, want %q", sasl["password"], realPassword)
+	}
+	// A non-redacted value-only object (username shown in clear) must pass through.
+	if u, ok := sasl["username"].(map[string]any); !ok || u["value"] != "kafka-user" {
+		t.Errorf("sasl.username should pass through unchanged, got %v", sasl["username"])
+	}
+
+	// A genuinely rotated password ({"value": ..., "ref": ""} as SecretVarInput emits)
+	// must pass through, not be clobbered by the stored value.
+	rotated := map[string]any{
+		"sasl": map[string]any{
+			"password": map[string]any{"value": "A-BRAND-NEW-PASSWORD-5678", "ref": ""},
+		},
+	}
+	got2 := restoreRedactedFromExisting(rotated, existing)
+	p, ok := got2["sasl"].(map[string]any)["password"].(map[string]any)
+	if !ok || p["value"] != "A-BRAND-NEW-PASSWORD-5678" {
+		t.Errorf("new password should pass through, got %v", got2["sasl"].(map[string]any)["password"])
+	}
+
+	// Switching to an env reference must pass through (intentional update).
+	envRef := map[string]any{
+		"sasl": map[string]any{
+			"password": map[string]any{"value": "", "ref": "env.KAFKA_PASSWORD", "type": "env"},
+		},
+	}
+	got3 := restoreRedactedFromExisting(envRef, existing)
+	p3, ok := got3["sasl"].(map[string]any)["password"].(map[string]any)
+	if !ok || p3["ref"] != "env.KAFKA_PASSWORD" {
+		t.Errorf("env ref password should pass through, got %v", got3["sasl"].(map[string]any)["password"])
+	}
+}
+
+// TestRestoreRedacted_FullyRedactedSentinel covers the telemetry (Prometheus push gateway)
+// password shape: FullyRedacted() returns the fixed "<REDACTED>" sentinel instead of the
+// prefix/suffix mask, and the stored value is a plain string.
+func TestRestoreRedacted_FullyRedactedSentinel(t *testing.T) {
+	realPassword := "REAL-PUSHGATEWAY-PASSWORD"
+	sentinel := schemas.NewSecretVar(realPassword).FullyRedacted().GetValue()
+
+	existing := map[string]any{
+		"push_gateway": map[string]any{
+			"basic_auth": map[string]any{"username": "pgw-user", "password": realPassword},
+		},
+	}
+	incoming := map[string]any{
+		"push_gateway": map[string]any{
+			"basic_auth": map[string]any{
+				"username": map[string]any{"value": "pgw-user"},
+				"password": map[string]any{"value": sentinel},
+			},
+		},
+	}
+
+	got := restoreRedactedFromExisting(incoming, existing)
+	ba := got["push_gateway"].(map[string]any)["basic_auth"].(map[string]any)
+	if ba["password"] != realPassword {
+		t.Errorf("sentinel password not restored: got %v, want %q", ba["password"], realPassword)
+	}
+}
+
 func TestUpdatePlugin_ConfigMerge(t *testing.T) {
 	SetLogger(&mockLogger{})
 

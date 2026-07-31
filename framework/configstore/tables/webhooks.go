@@ -1,6 +1,7 @@
 package tables
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -35,6 +36,12 @@ var WebhookEvents = []WebhookEvent{
 // IsValid reports whether e is a supported webhook event.
 func (e WebhookEvent) IsValid() bool {
 	return slices.Contains(WebhookEvents, e)
+}
+
+// Value implements driver.Valuer so database drivers that append typed column
+// values (e.g. clickhouse-go batch inserts) can serialize the type.
+func (e WebhookEvent) Value() (driver.Value, error) {
+	return string(e), nil
 }
 
 // TableWebhookEndpoint represents a registered webhook endpoint in the database.

@@ -79,10 +79,95 @@ const filterDataFanOutLimit = 4
 
 const defaultFilterDataLimit = 1000
 
-// shouldUseFilterDataCache reports whether a filterdata response can be shared
-// across callers without bypassing DAC-scoped query constraints.
+// filterDataMatViewBackedDims lists the dimensions served by a per-dimension
+// materialized view (see framework/logstore filterMatViews). Those reads are
+// small indexed lookups, so caching them buys little — the cache exists for the
+// dimensions that still hit the raw logs table.
+//
+// metadata_keys is the notable absentee: it has no matview and scans up to
+// maxMetadataRows recent rows, JSON-parsing each, on every dialect. It is also
+// the one dimension the logs page requests unconditionally on mount.
+var filterDataMatViewBackedDims = map[string]struct{}{
+	filterDimModels:         {},
+	filterDimAliases:        {},
+	filterDimSelectedKeys:   {},
+	filterDimVirtualKeys:    {},
+	filterDimRoutingRules:   {},
+	filterDimRoutingEngines: {},
+	filterDimStopReasons:    {},
+	filterDimTeams:          {},
+	filterDimCustomers:      {},
+	filterDimUsers:          {},
+	filterDimBusinessUnits:  {},
+}
+
+// shouldCacheFilterDimensions reports whether the requested dimensions are
+// expensive enough to be worth a cache entry.
+//
+// Caching is not free here: entries are partitioned per caller (see
+// filterDataCacheIdentity) because dropdown values are row-visibility-scoped,
+// so a cached response serves exactly one user. Spending that memory on a
+// single indexed matview read is a poor trade; spending it on a raw-table scan
+// is a good one.
+//
+// Without matviews (SQLite, or any non-Postgres store) every dimension is a raw
+// scan, so everything stays cacheable. This deliberately does not track
+// matViewsReady: that flag lives inside the store and flips on shape errors, and
+// the decision has to be made before the single-flight lock is taken — deciding
+// after the fetch would serialize concurrent callers behind each other. The cost
+// of getting it wrong during a self-heal window is a few uncached matview reads.
+func (h *LoggingHandler) shouldCacheFilterDimensions(dims []string) bool {
+	if !h.logStoreServesMatViews() {
+		return true
+	}
+	for _, dim := range dims {
+		if _, backed := filterDataMatViewBackedDims[dim]; !backed {
+			return true
+		}
+	}
+	return false
+}
+
+// logStoreServesMatViews reports whether the configured logs store is one that
+// builds the filter matviews at all. Conservative: an unknown/absent config
+// reports false, so the cache stays on rather than silently dropping it.
+func (h *LoggingHandler) logStoreServesMatViews() bool {
+	if h == nil || h.config == nil || h.config.LogsStoreConfig == nil {
+		return false
+	}
+	return h.config.LogsStoreConfig.Type == logstore.LogStoreTypePostgres
+}
+
+// shouldUseFilterDataCache reports whether a filterdata response is cacheable
+// at all. Text-search responses are not (unbounded key space), nor are ones
+// already carrying an explicit query scope.
+//
+// Note this is NOT what makes the cache DAC-safe: row visibility is resolved
+// deeper in the store, so no QueryScope is on the request context yet at this
+// point. Sharing across callers is prevented by filterDataCacheIdentity, which
+// partitions the cache key per caller.
 func shouldUseFilterDataCache(ctx context.Context, query string) bool {
 	return strings.TrimSpace(query) == "" && queryscope.FromContext(ctx) == nil
+}
+
+// filterDataCacheIdentity returns the cache-key fragment that partitions
+// filterdata responses per caller.
+//
+// Filter dropdowns are row-visibility-scoped in enterprise builds: two users
+// hitting the same dimensions legitimately get different values. The cache key
+// therefore carries the caller's user and role, so a narrowly-scoped user's
+// response can never be served to anyone else — and a role change (which
+// changes visibility) misses the cache immediately rather than after the TTL.
+//
+// Requests with no user identity (OSS deployments, local-admin sessions) share
+// a single "anon" partition, which is exactly the pre-DAC behaviour.
+func filterDataCacheIdentity(ctx *fasthttp.RequestCtx) string {
+	userID, _ := ctx.UserValue(schemas.BifrostContextKeyUserID).(string)
+	if userID == "" {
+		return "anon"
+	}
+	roleID, _ := ctx.UserValue(schemas.BifrostContextKeyUserRoleID).(uint)
+	return fmt.Sprintf("%s/%d", userID, roleID)
 }
 
 // Filter dimension names accepted by the ?dimensions= query param on
@@ -1160,9 +1245,48 @@ func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests})
 }
 
+// ParseRankingLimit reads the row-cap query parameters shared by the ranking
+// endpoints and records them on filters:
+//
+//	all=true  -> return every ranked entity (used by the dashboard export)
+//	limit=<n> -> return at most n rows (defaults to the store's cap of 100)
+//
+// It reports whether parsing succeeded; on failure it has already written the
+// 400 response.
+func ParseRankingLimit(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) bool {
+	if all := string(ctx.QueryArgs().Peek("all")); all != "" {
+		val, err := strconv.ParseBool(all)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid all: %s. Expected a boolean", all))
+			return false
+		}
+		if val {
+			// 0 means "no cap" to the log store; an explicit limit alongside
+			// all=true is ignored on purpose - exports are never truncated.
+			unlimited := 0
+			filters.RankingLimit = &unlimited
+			return true
+		}
+	}
+
+	if limit := string(ctx.QueryArgs().Peek("limit")); limit != "" {
+		val, err := strconv.Atoi(limit)
+		if err != nil || val < 1 {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid limit: %s. Expected a positive integer, or all=true for no limit", limit))
+			return false
+		}
+		filters.RankingLimit = &val
+	}
+
+	return true
+}
+
 // getModelRankings handles GET /api/logs/rankings - Get models ranked by usage with trends
 func (h *LoggingHandler) getModelRankings(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if !ParseRankingLimit(ctx, filters) {
+		return
+	}
 
 	result, err := h.logManager.GetModelRankings(ctx, filters)
 	if err != nil {
@@ -1186,6 +1310,9 @@ func (h *LoggingHandler) getDimensionRankings(ctx *fasthttp.RequestCtx) {
 	}
 
 	filters := parseHistogramFilters(ctx)
+	if !ParseRankingLimit(ctx, filters) {
+		return
+	}
 
 	result, err := h.logManager.GetDimensionRankings(ctx, filters, dim)
 	if err != nil {
@@ -1216,13 +1343,17 @@ const dashboardMCPTopToolsLimit = 10
 // It accepts the same filter query parameters as the individual histogram and
 // rankings endpoints (period OR start_time/end_time, providers, models, status,
 // virtual_key_ids, team_ids, etc., plus metadata_<key> filters) and the MCP
-// filter params (tool_names, server_labels). Filters are parsed once and the
+// filter params (tool_names, server_labels), plus the ranking row-cap params
+// (limit, all). Filters are parsed once and the
 // histogram bucket size is derived once from the resolved time range, so every
 // section is computed against an identical window. All sub-queries run
 // concurrently; if any fails the whole request fails, so consumers always get a
 // complete payload or a clear error, never partial data.
 func (h *LoggingHandler) getDashboard(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
+	if !ParseRankingLimit(ctx, filters) {
+		return
+	}
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	mcpFilters, err := parseMCPHistogramFilters(ctx)
@@ -1410,11 +1541,11 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
-	useCache := shouldUseFilterDataCache(ctx, query)
+	useCache := shouldUseFilterDataCache(ctx, query) && h.shouldCacheFilterDimensions(dims)
 
 	var entry *filterDataCacheEntry
 	if useCache {
-		cacheKey := fmt.Sprintf("hide_deleted=%v|dims=%s", hideDeletedVirtualKeys, strings.Join(dims, ","))
+		cacheKey := fmt.Sprintf("who=%s|hide_deleted=%v|dims=%s", filterDataCacheIdentity(ctx), hideDeletedVirtualKeys, strings.Join(dims, ","))
 		var cached map[string]interface{}
 		var ok bool
 		entry, cached, ok = h.filterDataCache.load(cacheKey)
@@ -1867,16 +1998,22 @@ func (h *LoggingHandler) getRecalculateCostStatus(ctx *fasthttp.RequestCtx) {
 // recalcJobStatus is the API view of a cost-recalculation job: the durable sidekiq
 // row fields the UI needs plus the progress counters decoded from the job metadata.
 type recalcJobStatus struct {
-	ID        string     `json:"id,omitempty"`
-	Status    string     `json:"status"`
-	Total     int64      `json:"total"`
-	Processed int        `json:"processed"`
-	Updated   int        `json:"updated"`
-	Skipped   int        `json:"skipped"`
-	Message   string     `json:"message,omitempty"`
-	LastError string     `json:"last_error,omitempty"`
-	StartedAt *time.Time `json:"started_at,omitempty"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Status    string `json:"status"`
+	Total     int64  `json:"total"`
+	Processed int    `json:"processed"`
+	Updated   int    `json:"updated"`
+	Skipped   int    `json:"skipped"`
+	// Unpriceable is the subset of Skipped whose pricing inputs could not be
+	// recovered, so the job deliberately left their cost untouched rather than
+	// writing a value it knew to be wrong. Surfaced separately because it is
+	// actionable: it usually means an offloaded payload is missing from object
+	// storage, or the rows are content-hidden and can never be repriced.
+	Unpriceable int        `json:"unpriceable,omitempty"`
+	Message     string     `json:"message,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
 }
 
 // recalcJobStatusFromRow projects a sidekiq job row into the API status, decoding
@@ -1897,6 +2034,7 @@ func recalcJobStatusFromRow(job *tables.TableSidekiqJob) recalcJobStatus {
 			status.Processed = meta.Processed
 			status.Updated = meta.Updated
 			status.Skipped = meta.Skipped
+			status.Unpriceable = meta.Unpriceable
 			status.Message = meta.Message
 		}
 	}
@@ -2332,11 +2470,14 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	dims := parseFilterDimensions(string(ctx.QueryArgs().Peek("dimensions")), allMCPFilterDimensions)
 	want := dimSet(dims)
 	query := strings.TrimSpace(string(ctx.QueryArgs().Peek("q")))
+	// Not narrowed by dimension like the LLM endpoint above: no mv_filter_* view
+	// covers mcp_tool_logs, so every MCP dimension is a raw DISTINCT over the
+	// 30-day window and all of them are worth caching.
 	useCache := shouldUseFilterDataCache(ctx, query)
 
 	var entry *filterDataCacheEntry
 	if useCache {
-		cacheKey := fmt.Sprintf("hide_deleted=%v|dims=%s", hideDeletedVirtualKeys, strings.Join(dims, ","))
+		cacheKey := fmt.Sprintf("who=%s|hide_deleted=%v|dims=%s", filterDataCacheIdentity(ctx), hideDeletedVirtualKeys, strings.Join(dims, ","))
 		var cached map[string]interface{}
 		var ok bool
 		entry, cached, ok = h.mcpFilterDataCache.load(cacheKey)

@@ -20,7 +20,6 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multiSelect";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -28,10 +27,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
-import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+import { getErrorMessage, useGetCoreConfigQuery, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
@@ -101,11 +100,6 @@ export default function MCPClientSheet({
 	const { toast } = useToast();
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
-	// VK access management — search-based dropdown (limit 20), no pagination issue
-	const [vkSearch, setVKSearch] = useState("");
-	const [vkPopoverOpen, setVKPopoverOpen] = useState(false);
-	const debouncedVkSearch = useDebouncedValue(vkSearch, 300);
-	const { data: vksData } = useGetVirtualKeysQuery({ limit: 20, search: debouncedVkSearch || undefined });
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
 
 	// Initial VK configs come directly from the MCP client response — always complete, no pagination issue.
@@ -143,22 +137,16 @@ export default function MCPClientSheet({
 		setPerUserHeaderKeysRaw((mcpClient.config.per_user_header_keys || []).join(", "));
 	}, [mcpClient.config.per_user_header_keys]);
 
-	// Name lookup: server response names → search results → locally cached names (highest priority)
+	// Name lookup: server response names → names captured when a key was picked.
+	// Every row is one or the other, so the selector's results aren't needed here.
 	const vkNameByID = useMemo<Record<string, string>>(() => {
 		const m: Record<string, string> = {};
 		for (const vc of mcpClient.vk_configs ?? []) m[vc.virtual_key_id] = vc.virtual_key_name;
-		for (const vk of vksData?.virtual_keys ?? []) m[vk.id] = vk.name;
 		Object.assign(m, localVKNames);
 		return m;
-	}, [mcpClient.vk_configs, vksData, localVKNames]);
+	}, [mcpClient.vk_configs, localVKNames]);
 
-	const vkOptions = useMemo(
-		() =>
-			(vksData?.virtual_keys ?? [])
-				.filter((vk) => !vkConfigs.some((vc) => vc.virtual_key_id === vk.id))
-				.map((vk) => ({ value: vk.id, label: vk.name })),
-		[vksData, vkConfigs],
-	);
+	const configuredVKIDs = useMemo(() => vkConfigs.map((vc) => vc.virtual_key_id), [vkConfigs]);
 
 	const toolOptions = useMemo(
 		() => [
@@ -170,9 +158,8 @@ export default function MCPClientSheet({
 	const supportsOAuthCredentialUpdate = false;
 	// mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
-	const addVKConfig = (vkId: string) => {
-		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
-		if (name) setLocalVKNames((prev) => ({ ...prev, [vkId]: name }));
+	const addVKConfig = ({ value: vkId, label }: { value: string; label: string }) => {
+		setLocalVKNames((prev) => ({ ...prev, [vkId]: label }));
 		setVKConfigs((prev) => [...prev, { virtual_key_id: vkId, tools_to_execute: ["*"] }]);
 		setVKConfigsDirty(true);
 	};
@@ -1318,14 +1305,11 @@ export default function MCPClientSheet({
 															</Tooltip>
 														</TooltipProvider>
 													</div>
-													<Popover
-														open={vkPopoverOpen}
-														onOpenChange={(open) => {
-															setVKPopoverOpen(open);
-															if (!open) setVKSearch("");
-														}}
-													>
-														<PopoverTrigger asChild>
+													<VirtualKeySelector
+														mode="add"
+														onSelect={addVKConfig}
+														excludeIds={configuredVKIDs}
+														trigger={
 															<Button
 																type="button"
 																variant="outline"
@@ -1336,45 +1320,8 @@ export default function MCPClientSheet({
 																<Plus className="h-4 w-4" />
 																Add Virtual Key
 															</Button>
-														</PopoverTrigger>
-														<PopoverContent side="top" align="end" className="w-56 p-0" noPortal>
-															<div className="pb-1">
-																<Input
-																	data-testid="mcpclient-virtualkey-search-input"
-																	placeholder="Start typing to search…"
-																	value={vkSearch}
-																	onChange={(e) => setVKSearch(e.target.value)}
-																	onKeyDown={(e) => {
-																		e.stopPropagation();
-																		if (e.key === "Enter") e.preventDefault();
-																	}}
-																	className="h-7 rounded-b-none border-0 border-b text-sm focus-visible:ring-0"
-																	autoFocus
-																/>
-															</div>
-															<div className="max-h-48 overflow-y-auto p-1">
-																{vkOptions.length > 0 ? (
-																	vkOptions.map((opt) => (
-																		<button
-																			data-testid={`mcpclient-virtualkey-option-${opt.value}`}
-																			key={opt.value}
-																			type="button"
-																			className="hover:bg-accent hover:text-accent-foreground w-full cursor-pointer rounded-sm px-2 py-1.5 text-left text-sm"
-																			onClick={() => {
-																				addVKConfig(opt.value);
-																				setVKSearch("");
-																				setVKPopoverOpen(false);
-																			}}
-																		>
-																			{opt.label}
-																		</button>
-																	))
-																) : (
-																	<div className="text-muted-foreground px-2 py-1.5 text-sm">No virtual keys found</div>
-																)}
-															</div>
-														</PopoverContent>
-													</Popover>
+														}
+													/>
 												</div>
 												{form.watch("allow_on_all_virtual_keys") && (
 													<p className="text-muted-foreground flex items-center gap-1 text-xs">

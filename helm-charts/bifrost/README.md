@@ -4,9 +4,23 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.31
+**Latest Version:** 2.1.33
 
 ## Changelog
+
+### 2.1.33
+
+- Fixed Helm schema validation failure for multi-profile OTEL configs (`bifrost.plugins.otel.config.profiles`), introduced by the `export_timeout` default in 2.1.32.
+
+### 2.1.32
+
+- Extended `bifrost.accessProfiles[].provider_configs[]` with `blacklisted_models` (denylist that wins over `allowed_models`; `["*"]` blocks every model, while an empty or omitted list blocks none), `weight` (load-balancer seed weight; `null` opts out), and `model_budgets[]` (per-model budget groups; each entry requires `model_name` and may carry optional `budgets[]` and a `rate_limit`). These pass through into `access_profiles[].provider_configs[]`.
+- Added `bifrost.scim.config.additionalScopes` (Okta) — an array of extra OAuth scopes requested on top of the base `openid/profile/email/offline_access` set, for Custom Authorization Servers where claims like `groups` are gated behind a scope Bifrost does not request by default. Passes through into `scim_config.config.additionalScopes`.
+- Added `bifrost.framework.pricing.liveModelsSyncInterval` (default `3600` seconds, minimum `60`, `0` disables) to control how often each provider's list-models response is re-fetched in the background. Renders into `framework.pricing.live_models_sync_interval`.
+- Added `storage.configStore.connMaxIdleTime` and `storage.logsStore.connMaxIdleTime` (Go duration, e.g. `5m`) to cap how long an idle PostgreSQL connection is kept before closing, so bursts above `maxIdleConns` stop churning physical connections. Each renders into its store's `conn_max_idle_time`.
+- Added `storage.logsStore.matviewRefreshTimeout` (Go duration, min 30s, max 30m; unset derives 5× the refresh interval, at least 5m) to bound a single materialized-view refresh pass. Renders into `logs_store.matview_refresh_timeout`.
+- Added `bifrost.plugins.otel.config.export_timeout` (seconds, 1–60, default 5) to bound a single trace export — the only timeout on gRPC exports. Renders into the OTEL plugin config's `export_timeout` (also wired the field through `_helpers.tpl`), and is omitted from the generated config when unset (or `0`).
+- Added `postgresql.external.passwordCommand.cache_ttl` (Go duration, default 60s) to control how long a resolved password is reused across new physical connections instead of re-running the command per connection. Passes through into `password_command.cache_ttl`.
 
 ### 2.1.31
 

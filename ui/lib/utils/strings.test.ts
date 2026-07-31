@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { cleanNumericInput } from "./strings";
+import { cleanNumericInput, trimFields } from "./strings";
 
 // Simulate what onChange does: clean → Number()
 function simulateOnChange(raw: string): { display: string; value: number | undefined } {
@@ -200,5 +200,32 @@ describe("simulateOnBlur (normalize display)", () => {
 	});
 	test("1000 → 1000", () => {
 		expect(simulateOnBlur("1000")).toEqual({ display: "1000", value: 1000 });
+	});
+});
+describe("trimFields", () => {
+	test("trims string fields in place", () => {
+		const obj = { topic: " my-topic ", project: "\tproj\n" };
+		trimFields(obj, "topic", "project");
+		expect(obj).toEqual({ topic: "my-topic", project: "proj" });
+	});
+	test("trims string array fields", () => {
+		const obj = { brokers: [" a:9092", "b:9092 ", " c:9092 "] };
+		trimFields(obj, "brokers");
+		expect(obj.brokers).toEqual(["a:9092", "b:9092", "c:9092"]);
+	});
+	test("leaves undefined fields untouched", () => {
+		const obj: { name: string; ml_app?: string } = { name: " x " };
+		trimFields(obj, "name", "ml_app");
+		expect(obj).toEqual({ name: "x" });
+		expect("ml_app" in obj).toBe(false);
+	});
+	test("only touches the named fields", () => {
+		const obj = { a: " x ", b: " y " };
+		trimFields(obj, "a");
+		expect(obj).toEqual({ a: "x", b: " y " });
+	});
+	test("returns the same object", () => {
+		const obj = { a: " x " };
+		expect(trimFields(obj, "a")).toBe(obj);
 	});
 });

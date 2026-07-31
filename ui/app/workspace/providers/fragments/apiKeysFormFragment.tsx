@@ -27,7 +27,7 @@ interface Props {
 
 // Batch API form field for all providers
 function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormReturn<any> }) {
-	return (	
+	return (
 		<FormField
 			control={control}
 			name={`key.use_for_batch_api`}
@@ -60,8 +60,8 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isVLLM = effectiveProvider === "vllm";
 	const isOllama = effectiveProvider === "ollama";
 	const isSGL = effectiveProvider === "sgl";
-    const isDeepseek = effectiveProvider === "deepseek";
-    const isFireworks = effectiveProvider === "fireworks";
+	const isDeepseek = effectiveProvider === "deepseek";
+	const isFireworks = effectiveProvider === "fireworks";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(effectiveProvider);
 
@@ -777,12 +777,14 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
 								<div className="space-y-1.5">
 									<FormLabel htmlFor="use-anthropic-endpoints-alias-override-switch">Use Anthropic Endpoints</FormLabel>
-									<FormDescription>
-										Routes chat completions and responses requests through Anthropic-compatible endpoints.
-									</FormDescription>
+									<FormDescription>Routes chat completions and responses requests through Anthropic-compatible endpoints.</FormDescription>
 								</div>
 								<FormControl>
-									<Switch id="use-anthropic-endpoints-alias-override-switch" checked={field.value ?? false} onCheckedChange={field.onChange} />
+									<Switch
+										id="use-anthropic-endpoints-alias-override-switch"
+										checked={field.value ?? false}
+										onCheckedChange={field.onChange}
+									/>
 								</FormControl>
 							</FormItem>
 						)}
@@ -1011,6 +1013,28 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							</FormItem>
 						)}
 					/>
+					{supportsBatchAPI && (
+						<FormField
+							control={control}
+							name={`key.bedrock_key_config.batch_role_arn`}
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Batch Role ARN (Optional)</FormLabel>
+									<FormDescription>
+										Service role Bedrock assumes for batch S3 access. When set, it takes priority over the role_arn sent in requests.
+									</FormDescription>
+									<FormControl>
+										<SecretVarInput
+											data-testid="apikey-bedrock-batch-role-arn-input"
+											placeholder="arn:aws:iam::123456789:role/BatchRole or env.AWS_BATCH_ROLE_ARN"
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}

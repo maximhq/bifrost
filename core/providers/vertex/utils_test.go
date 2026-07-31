@@ -627,3 +627,15 @@ func TestGeminiImageURLSchemesContract(t *testing.T) {
 		t.Fatalf("geminiImageURLSchemes = %v, want %v", geminiImageURLSchemes, want)
 	}
 }
+
+func TestVertexServiceTierHeaderValue_Gemini35FlashLiteFlex(t *testing.T) {
+	t.Parallel()
+
+	flex := schemas.BifrostServiceTierFlex
+	if got := vertexServiceTierHeaderValue("global", "gemini-3.5-flash-lite", flex); got != "flex" {
+		t.Fatalf("expected flex header for gemini-3.5-flash-lite on global, got %q", got)
+	}
+	if got := vertexServiceTierHeaderValue("us-central1", "gemini-3.5-flash-lite", flex); got != "" {
+		t.Fatalf("expected no flex header outside global region, got %q", got)
+	}
+}

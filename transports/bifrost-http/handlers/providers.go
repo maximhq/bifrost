@@ -34,7 +34,21 @@ type ModelsManager interface {
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForKey re-fetches list-models for a single key on
+	// demand. Returns ErrRefreshInProgress when the provider is already being
+	// refreshed.
+	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForAllKeys re-fetches list-models across every enabled
+	// key of the provider on demand. Returns ErrRefreshInProgress when the
+	// provider is already being refreshed.
+	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
 }
+
+// ErrRefreshInProgress is returned by the on-demand model refresh entrypoints
+// when a refresh for the same provider is already running. Repeated presses of
+// the UI refresh button collapse into the in-flight pass rather than each
+// spawning their own (enabled keys x 2) burst of upstream calls.
+var ErrRefreshInProgress = errors.New("model refresh already in progress for this provider")
 
 // ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
 // (model, provider) is the natural key on governance_model_pricing.
@@ -135,6 +149,11 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.PUT("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.updateProviderKey, middlewares...))
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.DELETE("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.deleteProviderKey, middlewares...))
+	// On-demand model discovery. The catalog otherwise refreshes on the
+	// configured live_models_sync_interval, so these let an operator pick up a
+	// newly served model (or re-check a failing key) without waiting.
+	r.POST("/api/providers/{provider}/refresh-models", lib.ChainMiddlewares(h.refreshProviderModels, middlewares...))
+	r.POST("/api/providers/{provider}/keys/{key_id}/refresh-models", lib.ChainMiddlewares(h.refreshProviderKeyModels, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
@@ -984,7 +1003,20 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	params, err := h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	// Prefer catalog-aware resolution so provider-qualified IDs from
+	// /v1/models ("openai/gpt-5.5", "openrouter/openai/gpt-5.5") and bare
+	// aliases resolve to the datasheet's stored key instead of 404ing on an
+	// exact-match miss.
+	var params *tables.TableModelParameters
+	var err error
+	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
+		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(ctx, modelParam)
+	} else {
+		params, err = h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	}
+	if err == nil && params == nil {
+		err = configstore.ErrNotFound
+	}
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))

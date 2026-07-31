@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"sort"
 	"strings"
@@ -62,11 +63,33 @@ SELECT
     COALESCE(COUNT(*) FILTER (WHERE latency > 0), 0) AS throughput_request_count,
     COALESCE(SUM(total_tokens), 0) AS total_tokens,
     COALESCE(SUM(cached_read_tokens), 0) AS total_cached_read_tokens,
-    COALESCE(SUM(cost), 0) AS total_cost
+    COALESCE(SUM(cost), 0) AS total_cost,
+    -- Cache-hit measures precomputed from cache_debug so /api/logs/stats can
+    -- serve them from the hybrid instead of a full-window raw scan. Safe to
+    -- materialize: cache_debug is written with the terminal status and never
+    -- mutated afterwards. cache_debug_count exists to preserve the raw path's
+    -- nil contract (see getStatsFromMatView): it distinguishes "no rows had
+    -- valid cache_debug at all" (fields omitted) from "cache rows exist but
+    -- none were direct/semantic" (explicit zeros).
+    SUM(CASE WHEN ` + cacheDebugJSONGuard + `
+             AND ` + cacheDebugHitTypeExpr + ` = 'direct' THEN 1 ELSE 0 END) AS direct_cache_hits,
+    SUM(CASE WHEN ` + cacheDebugJSONGuard + `
+             AND ` + cacheDebugHitTypeExpr + ` = 'semantic' THEN 1 ELSE 0 END) AS semantic_cache_hits,
+    COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
 FROM logs
 WHERE status IN ('success', 'error', 'cancelled')
 GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
 `
+
+// cacheDebugJSONGuard matches rows whose cache_debug column holds a loose
+// JSON object. Shared by the matview DDL, the hybrid boundary aggregate, and
+// aggregateCacheHits' postgres branch so every classifier selects the same
+// population.
+const cacheDebugJSONGuard = `cache_debug IS NOT NULL AND cache_debug <> '' AND cache_debug ~ '^\s*\{.*\}\s*$'`
+
+// cacheDebugHitTypeExpr extracts the hit_type value from the cache_debug
+// JSON. POSIX regex only, so it is valid inside a matview definition.
+const cacheDebugHitTypeExpr = `substring(cache_debug from '"hit_type"[[:space:]]*:[[:space:]]*"([^"]+)"')`
 
 // mvLogsHourlyUniqueIdx is required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
 // CONCURRENTLY avoids the AccessExclusiveLock that the plain form would take
@@ -78,12 +101,7 @@ ON mv_logs_hourly (hour, provider, model, status, object_type, selected_key_id, 
 
 // mvLogsHourlyRequiredColumns is the canonical column set used by
 // repairMatViewShapes to detect old-shape mv_logs_hourly views from prior
-// schema versions and drop them so they get rebuilt on startup, and by
-// matViewShapesReady to gate the matview read path.
-//
-// Must mirror every output column of mvLogsHourlyDDL. A partial list would let
-// a view missing an unlisted column pass both checks, and readers selecting it
-// would fail with "column does not exist" — see TestMvLogsHourlyRequiredColumnsMatchDDL.
+// schema versions and drop them so they get rebuilt on startup.
 var mvLogsHourlyRequiredColumns = []string{
 	"hour",
 	"provider",
@@ -99,22 +117,13 @@ var mvLogsHourlyRequiredColumns = []string{
 	"business_unit_id",
 	"alias",
 	"canonical_model_name",
-	"count",
-	"success_count",
-	"error_count",
 	"cancelled_count",
-	"avg_latency",
-	"p90_latency",
-	"p95_latency",
-	"p99_latency",
-	"total_prompt_tokens",
-	"total_completion_tokens",
 	"throughput_completion_tokens",
 	"throughput_latency_ms",
 	"throughput_request_count",
-	"total_tokens",
-	"total_cached_read_tokens",
-	"total_cost",
+	"direct_cache_hits",
+	"semantic_cache_hits",
+	"cache_debug_count",
 }
 
 // legacyMatViewNames are matviews from previous schema versions that no longer
@@ -173,16 +182,16 @@ type filterMatViewDef struct {
 // histogram readers use — so a team / business unit that only ever appears in
 // the JSON array still surfaces in the filter dropdown. The fanned-out
 // dim_id/dim_name become the dropdown id/name; the visibility columns
-// (user_id, team_id, virtual_key_id) come from the original log row (exposed via
-// l.* by the fan-out subquery) so DAC scope still applies. idCol is the scalar
-// id column ("team_id" / "business_unit_id").
+// (scopeProjection) come from the original log row (exposed via l.* by the
+// fan-out subquery) so DAC scope still applies — including the scalar
+// customer_id / business_unit_id, which stay the row's own owner columns and
+// are independent of the fanned-out dim_id. idCol is the scalar id column
+// ("team_id" / "business_unit_id").
 func multiValueFilterMatViewBody(idCol string) string {
 	from, _ := teamOrBUFanoutFrom(idCol)
 	return fmt.Sprintf(
-		"SELECT DISTINCT dim_id AS id, dim_name AS name, "+
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, "+
-			"COALESCE(virtual_key_id, '') AS virtual_key_id "+
-			"FROM %s WHERE timestamp >= NOW() - INTERVAL '%s' AND dim_id != '' AND dim_name != ''",
+		"SELECT DISTINCT dim_id AS id, dim_name AS name, "+scopeProjection+
+			" FROM %s WHERE timestamp >= NOW() - INTERVAL '%s' AND dim_id != '' AND dim_name != ''",
 		from, filterDataMatViewWindow,
 	)
 }
@@ -194,20 +203,31 @@ func multiValueFilterMatViewBody(idCol string) string {
 // the unique index from rejecting NULLs on REFRESH CONCURRENTLY).
 const scopeProjection = "COALESCE(user_id, '') AS user_id, " +
 	"COALESCE(team_id, '') AS team_id, " +
-	"COALESCE(virtual_key_id, '') AS virtual_key_id"
+	"COALESCE(virtual_key_id, '') AS virtual_key_id, " +
+	"COALESCE(customer_id, '') AS customer_id, " +
+	"COALESCE(business_unit_id, '') AS business_unit_id"
 
 // scopeIdxColumns is the unique-index suffix that pairs with scopeProjection.
-const scopeIdxColumns = "user_id, team_id, virtual_key_id"
+const scopeIdxColumns = "user_id, team_id, virtual_key_id, customer_id, business_unit_id"
 
 // scopeRequiredColumns lists the resolved column aliases produced by
 // scopeProjection. Appended to each matview's requiredColumns so
 // repairMatViewShapes can verify them against pg_attribute.
-var scopeRequiredColumns = []string{"user_id", "team_id", "virtual_key_id"}
+//
+// customer_id / business_unit_id are part of the set because a team-data
+// DAC principal widens visibility by those org dimensions: the scope
+// predicate ORs them in alongside user_id / team_id / virtual_key_id, and
+// a matview missing the columns would fail the query outright rather than
+// filter it. Adding them here also drives the rebuild — repairMatViewShapes
+// sees the old three-column views as drifted and drops them on boot, so no
+// separate migration is needed.
+var scopeRequiredColumns = []string{"user_id", "team_id", "virtual_key_id", "customer_id", "business_unit_id"}
 
 // filterMatViews enumerates every per-dimension materialized view used to
 // populate filter dropdowns on the logs page. Each view carries the
 // dropdown's dimension columns plus the visibility columns
-// (user_id, team_id, virtual_key_id) so DAC scope applies in-matview.
+// (user_id, team_id, virtual_key_id, customer_id, business_unit_id) so
+// every DAC scope predicate applies in-matview.
 // Order matters only for deterministic startup logs.
 var filterMatViews = []filterMatViewDef{
 	{
@@ -249,9 +269,7 @@ var filterMatViews = []filterMatViewDef{
 		name: "mv_filter_virtual_keys",
 		// virtual_key_id is exposed as "id" for the dropdown and also as the
 		// scope column so DAC predicates use a stable name across matviews.
-		selectExpr: "virtual_key_id AS id, virtual_key_name AS name, " +
-			"COALESCE(user_id, '') AS user_id, COALESCE(team_id, '') AS team_id, " +
-			"COALESCE(virtual_key_id, '') AS virtual_key_id",
+		selectExpr:      "virtual_key_id AS id, virtual_key_name AS name, " + scopeProjection,
 		whereExpr:       "virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != ''",
 		uniqueIdx:       "id, name, " + scopeIdxColumns,
 		requiredColumns: append([]string{"id", "name"}, scopeRequiredColumns...),
@@ -396,7 +414,8 @@ var matviewUniqueIndexes = func() []matviewIndexDef {
 
 // matviewScopeIndexes enumerates the secondary BTREE indexes that make
 // DAC-scoped reads on the per-dimension filter matviews cheap. The
-// composite (user_id, team_id, virtual_key_id) is a covering index for
+// composite (user_id, team_id, virtual_key_id, customer_id,
+// business_unit_id) is a covering index for
 // the only column subset every filter-dropdown query selects, so
 // Postgres can serve scoped DISTINCT queries via an index-only scan
 // even when only the trailing columns are in the predicate. Filter
@@ -446,43 +465,39 @@ var matviewRequiredColumns = func() map[string][]string {
 // transaction. Multi-replica deployments serialize on the advisory lock so
 // only one instance does the work. It shares the same advisory lock as
 // refreshMatViews so startup create/repair cannot overlap a periodic refresh.
-//
-// Returns false (with a nil error) when another replica holds the lock: nothing
-// about the view shape is established then, so callers must verify with
-// matViewShapesReady before enabling the matview read path.
-func ensureMatViews(ctx context.Context, db *gorm.DB) (bool, error) {
+func ensureMatViews(ctx context.Context, db *gorm.DB) error {
 	if db.Dialector.Name() != "postgres" {
-		return false, nil
+		return nil
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		return false, fmt.Errorf("failed to get sql.DB for matview creation: %w", err)
+		return fmt.Errorf("failed to get sql.DB for matview creation: %w", err)
 	}
 
 	conn, err := sqlDB.Conn(ctx)
 	if err != nil {
-		return false, fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
+		return fmt.Errorf("failed to get dedicated connection for matview creation: %w", err)
 	}
 	defer conn.Close()
 
 	var acquired bool
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
-		return false, fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
+		return fmt.Errorf("failed to try advisory lock for matview creation: %w", err)
 	}
 	if !acquired {
 		// Another replica is doing the work — nothing to do here.
-		return false, nil
+		return nil
 	}
 	defer func() {
 		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
 	}()
 
 	if err := dropLegacyMatViews(ctx, conn); err != nil {
-		return false, err
+		return err
 	}
 	if err := repairMatViewShapes(ctx, conn); err != nil {
-		return false, err
+		return err
 	}
 
 	ddls := []string{mvLogsHourlyDDL}
@@ -491,80 +506,15 @@ func ensureMatViews(ctx context.Context, db *gorm.DB) (bool, error) {
 	}
 	for _, ddl := range ddls {
 		if _, err := conn.ExecContext(ctx, ddl); err != nil {
-			return false, fmt.Errorf("failed to create materialized view: %w", err)
+			return fmt.Errorf("failed to create materialized view: %w", err)
 		}
 	}
 
 	if err := ensureMatViewUniqueIndexes(ctx, conn); err != nil {
-		return false, err
+		return err
 	}
 
-	return true, nil
-}
-
-// matViewShapesReady reports whether every managed materialized view exists and
-// carries the full column set this build reads. One read-only pg_catalog query,
-// no lock, no DDL — safe to repeat on refresher ticks.
-//
-// Gates matViewsReady during a rolling deploy: without it a replica that skipped
-// the repair reads an old-shape view and gets "column does not exist".
-func matViewShapesReady(ctx context.Context, db *gorm.DB) (bool, error) {
-	if db.Dialector.Name() != "postgres" {
-		return false, nil
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		return false, fmt.Errorf("failed to get sql.DB for matview shape check: %w", err)
-	}
-
-	conn, err := sqlDB.Conn(ctx)
-	if err != nil {
-		return false, fmt.Errorf("failed to get connection for matview shape check: %w", err)
-	}
-	defer conn.Close()
-
-	// Flattened into parallel arrays so the check is one round trip. A pair is
-	// unsatisfied when the view is absent, shadowed in the search path, or
-	// missing the column — all three mean "not ready".
-	views := make([]string, 0, len(matviewRequiredColumns)*len(mvLogsHourlyRequiredColumns))
-	columns := make([]string, 0, cap(views))
-	for view, required := range matviewRequiredColumns {
-		for _, column := range required {
-			views = append(views, view)
-			columns = append(columns, column)
-		}
-	}
-
-	var missing int
-	if err := conn.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM unnest($1::text[], $2::text[]) AS required(view_name, column_name)
-		WHERE NOT EXISTS (
-			SELECT 1
-			FROM pg_class c
-			JOIN pg_attribute a ON a.attrelid = c.oid
-			WHERE c.relkind = 'm'
-			  AND c.relname = required.view_name
-			  AND pg_catalog.pg_table_is_visible(c.oid)
-			  AND a.attnum > 0
-			  AND NOT a.attisdropped
-			  AND a.attname = required.column_name
-		)
-	`, pqTextArray(views), pqTextArray(columns)).Scan(&missing); err != nil {
-		return false, fmt.Errorf("failed to inspect matview shapes: %w", err)
-	}
-	return missing == 0, nil
-}
-
-// pqTextArray renders a []string as a Postgres text[] literal, avoiding a
-// driver-specific array type for the one place that needs it.
-func pqTextArray(values []string) string {
-	quoted := make([]string, 0, len(values))
-	for _, v := range values {
-		quoted = append(quoted, `"`+strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v)+`"`)
-	}
-	return "{" + strings.Join(quoted, ",") + "}"
+	return nil
 }
 
 // dropLegacyMatViews removes matviews from prior schema versions that no
@@ -599,10 +549,9 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 	if err := conn.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
-			FROM pg_class c
-			WHERE c.relkind = 'm'
-			  AND c.relname = $1
-			  AND pg_catalog.pg_table_is_visible(c.oid)
+			FROM pg_class
+			WHERE relkind = 'm'
+			  AND relname = $1
 		)
 	`, view).Scan(&exists); err != nil {
 		return false, fmt.Errorf("failed to check matview %s existence: %w", view, err)
@@ -617,7 +566,6 @@ func matViewNeedsRebuild(ctx context.Context, conn *sql.Conn, view string, requi
 		JOIN pg_attribute a ON a.attrelid = c.oid
 		WHERE c.relkind = 'm'
 		  AND c.relname = $1
-		  AND pg_catalog.pg_table_is_visible(c.oid)
 		  AND a.attnum > 0
 		  AND NOT a.attisdropped
 	`, view)
@@ -703,6 +651,27 @@ func allMatViewNames() []string {
 	return names
 }
 
+// filterRotation advances each refresh pass so a run that is consistently cut
+// short by its deadline does not always starve the same tail views. mv_logs_hourly
+// stays pinned first (dashboards depend on it); only the filter views rotate.
+var filterRotation atomic.Uint64
+
+// matViewRefreshOrder returns the views to refresh for one pass. mv_logs_hourly is
+// always first; the filter views start at a rotating offset so that if only the
+// first N views fit inside the timeout, a different subset makes progress each tick
+// instead of the last ones never refreshing again.
+func matViewRefreshOrder() []string {
+	names := []string{"mv_logs_hourly"}
+	if len(filterMatViews) == 0 {
+		return names
+	}
+	offset := int(filterRotation.Add(1)-1) % len(filterMatViews)
+	for i := range filterMatViews {
+		names = append(names, filterMatViews[(offset+i)%len(filterMatViews)].name)
+	}
+	return names
+}
+
 // matViewRefreshSafetyInterval forces a periodic refresh even when
 // pg_stat_user_tables shows no DML on `logs`. This guards against two
 // edge cases:
@@ -714,6 +683,10 @@ func allMatViewNames() []string {
 // acceptable window, long enough that idle clusters do ~6 refreshes/hour
 // instead of 120.
 const matViewRefreshSafetyInterval = 10 * time.Minute
+
+// matViewUnlockTimeout bounds the advisory-unlock statement that runs after a
+// refresh pass, including one cut short by its own deadline.
+const matViewUnlockTimeout = 5 * time.Second
 
 // matViewRefreshGate tracks the last-seen activity counter on `logs` from
 // pg_stat_user_tables so refreshMatViews can short-circuit when nothing has
@@ -803,7 +776,18 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 	if err != nil {
 		return fmt.Errorf("failed to get dedicated connection for matview refresh: %w", err)
 	}
-	defer conn.Close()
+	// discardConn forces database/sql to drop the underlying physical connection
+	// rather than return it to the pool. Needed when the advisory unlock could not
+	// be confirmed: the lock is session-scoped, and sql.Conn.Close() only returns
+	// the connection to the pool — it does not end the Postgres session, so a
+	// leaked lock would otherwise block every future refresh on every replica.
+	discardConn := false
+	defer func() {
+		if discardConn {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+		conn.Close()
+	}()
 
 	// Activity check happens before the advisory lock so write-quiet replicas
 	// don't even contend for it. Capture the counter BEFORE refreshing — any
@@ -814,21 +798,51 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 		return nil
 	}
 
+	// Bail out before touching the lock if the budget is already spent — no
+	// statement reaches the server, so there is nothing to clean up.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("matview refresh budget exhausted before acquiring advisory lock: %w", err)
+	}
+
 	// Try to acquire advisory lock; skip refresh if another replica holds it.
+	//
+	// Run this on a context that outlives ctx. If ctx were cancelled mid-flight the
+	// server could still have taken the lock while the client gave up reading the
+	// reply — leaving the lock held on a session that then returns to the pool, with
+	// no unlock registered. Bounding it separately keeps acquisition atomic from the
+	// caller's point of view.
+	lockCtx, cancelLock := context.WithTimeout(context.WithoutCancel(ctx), matViewUnlockTimeout)
 	var acquired bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired); err != nil {
-		return fmt.Errorf("failed to try advisory lock for matview refresh: %w", err)
+	lockErr := conn.QueryRowContext(lockCtx, "SELECT pg_try_advisory_lock($1)", matviewRefreshAdvisoryLockKey).Scan(&acquired)
+	cancelLock()
+	if lockErr != nil {
+		// The statement may or may not have reached the server. Drop the session so
+		// Postgres releases anything it did acquire.
+		discardConn = true
+		return fmt.Errorf("failed to try advisory lock for matview refresh: %w", lockErr)
 	}
 	if !acquired {
 		return nil // another replica is refreshing
 	}
 	defer func() {
-		// Release lock explicitly; connection close would also release session-scoped locks.
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey)
+		// Release the lock on a context that outlives ctx. When a refresh is cut
+		// short by its deadline, ctx is already expired by the time this runs, so
+		// reusing it would fail the unlock every single time.
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), matViewUnlockTimeout)
+		defer cancel()
+		if _, err := conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1)", matviewRefreshAdvisoryLockKey); err != nil {
+			// Could not confirm the release. Drop the session so Postgres reclaims
+			// the lock rather than leaving it held on a pooled connection.
+			discardConn = true
+		}
 	}()
 
-	for _, view := range allMatViewNames() {
+	for _, view := range matViewRefreshOrder() {
 		if _, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view); err != nil {
+			// A cancelled REFRESH leaves the existing view intact (CONCURRENTLY builds
+			// into a temp table and diffs at commit), so readers keep working against
+			// slightly staler data. markRefreshed is intentionally skipped so the next
+			// tick sees a changed activity counter and retries.
 			return fmt.Errorf("failed to refresh %s: %w", view, err)
 		}
 	}
@@ -840,7 +854,7 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 // refreshes materialized views. If readyFlag is provided and not yet true,
 // it will be set to true on the first successful refresh (recovery path when
 // the initial refresh failed). Returns a stop function for graceful shutdown.
-func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) func() {
+func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval, timeout time.Duration, logger schemas.Logger, readyFlag *atomic.Bool) func() {
 	stopCh := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -848,19 +862,29 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 		for {
 			select {
 			case <-ticker.C:
-				if err := refreshMatViews(ctx, db); err != nil {
-					logger.Warn(fmt.Sprintf("logstore: matview refresh failed: %s", err))
-				} else if readyFlag != nil && !readyFlag.Load() {
-					// A successful refresh is not evidence of the right shape:
-					// REFRESH works fine on an old-shape view, and refreshMatViews
-					// also returns nil when it skipped. Check the catalog.
-					shapesOK, err := matViewShapesReady(ctx, db)
-					if err != nil {
-						logger.Warn(fmt.Sprintf("logstore: matview shape check failed: %s (dashboard queries will use raw tables)", err))
-					} else if shapesOK {
-						logger.Info("logstore: materialized views are ready (recovered)")
-						readyFlag.Store(true)
-					}
+				// Bound each tick. refreshMatViews holds a pooled connection and a
+				// session advisory lock across REFRESH MATERIALIZED VIEW CONCURRENTLY
+				// for every view; without a deadline one pathological refresh keeps the
+				// lock forever, and every other replica's pg_try_advisory_lock then
+				// fails silently, leaving matviews permanently stale.
+				started := time.Now()
+				tickCtx, cancel := context.WithTimeout(ctx, timeout)
+				err := refreshMatViews(tickCtx, db)
+				cancel()
+				elapsed := time.Since(started)
+
+				switch {
+				case err != nil:
+					logger.Warn(fmt.Sprintf("logstore: matview refresh failed after %s: %s", elapsed.Round(time.Millisecond), err))
+				case readyFlag != nil && !readyFlag.Load():
+					logger.Info("logstore: materialized views are ready (recovered)")
+					readyFlag.Store(true)
+				}
+				// A refresh slower than the interval means the refresher itself is the
+				// bottleneck — surface it rather than letting ticks silently coalesce.
+				if elapsed > interval {
+					logger.Warn(fmt.Sprintf("logstore: matview refresh took %s, longer than the %s refresh interval; consider raising matview_refresh_interval",
+						elapsed.Round(time.Millisecond), interval))
 				}
 			case <-ctx.Done():
 				return
@@ -873,10 +897,11 @@ func startMatViewRefresher(ctx context.Context, db *gorm.DB, interval time.Durat
 }
 
 // canUseMatViewFilters returns true if the given filters can be served from
-// mv_logs_hourly. Per-row filters (content search, metadata, numeric ranges)
-// require the raw logs table.
+// mv_logs_hourly. Per-row filters (content search, parent request ID, metadata,
+// numeric ranges) require the raw logs table.
 func canUseMatViewFilters(f SearchFilters) bool {
 	return f.ContentSearch == "" &&
+		f.ParentRequestID == "" &&
 		len(f.MetadataFilters) == 0 &&
 		canUseMatViewStatusFilter(f.Status) &&
 		len(f.RoutingEngineUsed) == 0 &&
@@ -976,7 +1001,12 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 		q = q.Where("provider IN ?", f.Providers)
 	}
 	if len(f.Models) > 0 {
-		q = q.Where("model IN ?", f.Models)
+		// Match either the wire model or the canonical model name, mirroring
+		// applyFilters on the raw logs table, so matview aggregates and the raw
+		// row list select the same population for a Models filter. The view
+		// stores COALESCE(canonical_model_name, '') so unaliased buckets can
+		// only match via model.
+		q = q.Where("(model IN ? OR canonical_model_name IN ?)", f.Models, f.Models)
 	}
 	if len(f.Aliases) > 0 {
 		q = q.Where("alias IN ?", f.Aliases)
@@ -1017,46 +1047,288 @@ func applyMatViewFiltersOnly(q *gorm.DB, f SearchFilters) *gorm.DB {
 
 // getCountFromMatView returns the total number of logs matching the filters
 // by summing pre-aggregated counts from mv_logs_hourly.
+//
+// For time-bounded windows the count is hybrid: mv_logs_hourly rows are hourly
+// buckets, so predicates on `hour` alone round the window out to full hours and
+// count logs the (exact-range, raw-table) row list can never page to — the
+// pagination total then disagrees with the visible rows. Instead, only buckets
+// fully contained in [StartTime, EndTime] are summed from the matview, and the
+// partial boundary buckets (at most one on each side) are counted from the raw
+// logs table, where a timestamp-indexed scan over ≤2 hours of rows is cheap.
+// The raw tail also sidesteps matview refresh lag at the newest edge of the
+// window. The boundary count is restricted to the matview's terminal statuses
+// when no status filter is present so both halves count the same population;
+// in-flight (non-terminal) rows, which the row list shows but the matview
+// cannot see, are then added back with a separate raw count over the exact
+// window so total_count matches what the list can page to.
+//
+// All bucket-grid arithmetic happens in SQL, never in Go: date_trunc('hour',
+// timestamptz) truncates in the session's TimeZone, so on servers with a
+// fractional-hour offset (e.g. Asia/Kolkata, +05:30) buckets land on :30 UTC
+// boundaries and a Go-side time.Truncate(time.Hour) would misalign with the
+// grid, double-counting rows where the interior and slivers overlap.
 func (s *RDBLogStore) getCountFromMatView(ctx context.Context, filters SearchFilters) (int64, error) {
-	var total int64
+	// The row list and the raw aggregate paths include in-flight rows, which
+	// mv_logs_hourly structurally excludes; add them back from the raw table
+	// (an equality scan on the indexed status column over the few in-flight
+	// rows) so total_count matches the rows the list can actually page to.
+	var nonTerminal int64
+	if len(filters.Status) == 0 {
+		var err error
+		if nonTerminal, err = s.countRawNonTerminal(ctx, filters); err != nil {
+			return 0, err
+		}
+	}
+
+	// Time predicates are applied explicitly below; strip them from the copies
+	// so the filter helpers only contribute the dimension predicates.
+	dimFilters := filters
+	dimFilters.StartTime, dimFilters.EndTime = nil, nil
+
+	if isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
+		// Short window (never matview-eligible via
+		// canUseMatViewForFreshAggregate, but guard anyway): the boundary
+		// slivers would overlap, so count the whole range raw.
+		terminal, err := s.countRawTerminal(ctx, dimFilters,
+			"timestamp >= ? AND timestamp <= ?", *filters.StartTime, *filters.EndTime)
+		if err != nil {
+			return 0, err
+		}
+		return terminal + nonTerminal, nil
+	}
+
+	var interior int64
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
-	q = s.applyMatViewFilters(q, filters)
-	if err := q.Select("COALESCE(SUM(count), 0)").Row().Scan(&total); err != nil {
+	q = s.applyMatViewFilters(q, dimFilters)
+	q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
+	if err := q.Select("COALESCE(SUM(count), 0)").Row().Scan(&interior); err != nil {
 		return 0, err
 	}
-	return total, nil
+
+	sliverSQL, sliverArgs := boundarySliverWhere(filters.StartTime, filters.EndTime)
+	if sliverSQL == "" {
+		return interior + nonTerminal, nil
+	}
+	boundary, err := s.countRawTerminal(ctx, dimFilters, sliverSQL, sliverArgs...)
+	if err != nil {
+		return 0, err
+	}
+	return interior + boundary + nonTerminal, nil
 }
 
-// getStatsFromMatView computes dashboard statistics (total requests, success
-// rate, average latency, total tokens, total cost) from mv_logs_hourly.
-// Latency is a weighted average across hourly buckets.
-func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
-	var result struct {
-		TotalCount       int64   `gorm:"column:total_count"`
-		SuccessCount     int64   `gorm:"column:success_count"`
-		AvgLatency       float64 `gorm:"column:avg_latency"`
-		TotalTokens      int64   `gorm:"column:total_tokens"`
-		PromptTokens     int64   `gorm:"column:prompt_tokens"`
-		CompletionTokens int64   `gorm:"column:completion_tokens"`
-		TotalCost        float64 `gorm:"column:total_cost"`
+// applyInteriorBucketWindow adds mv_logs_hourly predicates selecting only the
+// hour buckets fully contained in the filter window. `hour >= start` admits a
+// bucket only when its start lies at-or-after start (ceil semantics on the
+// server's own grid); `hour < date_trunc(end)` excludes the partial bucket
+// containing end (and, when end sits exactly on the grid, the untouched
+// bucket that begins at end). Nil bounds contribute no predicate.
+func applyInteriorBucketWindow(q *gorm.DB, start, end *time.Time) *gorm.DB {
+	if start != nil {
+		q = q.Where("hour >= ?", *start)
 	}
+	if end != nil {
+		q = q.Where("hour < date_trunc('hour', ?::timestamptz)", *end)
+	}
+	return q
+}
+
+// boundarySliverWhere returns the raw-table predicate selecting the rows in
+// the partial boundary bucket(s) that applyInteriorBucketWindow excluded.
+// Head: rows at-or-after start whose bucket began before start. Tail: rows
+// at-or-before end whose bucket is the one containing end (or starting at
+// it). Each per-row date_trunc only runs inside a ≤1h timestamp-indexed
+// range. Returns "" when the window has no bounds (no slivers exist). The two
+// ranges cannot overlap as long as callers route windows shorter than 2h
+// (isDegenerateHybridWindow) to a whole-range raw query instead.
+func boundarySliverWhere(start, end *time.Time) (string, []any) {
+	var conds []string
+	var args []any
+	if start != nil {
+		conds = append(conds, "(timestamp >= ? AND timestamp < ? AND date_trunc('hour', timestamp) < ?::timestamptz)")
+		args = append(args, *start, start.Add(time.Hour), *start)
+	}
+	if end != nil {
+		conds = append(conds, "(timestamp > ? AND timestamp <= ? AND date_trunc('hour', timestamp) >= date_trunc('hour', ?::timestamptz))")
+		args = append(args, end.Add(-time.Hour), *end, *end)
+	}
+	return strings.Join(conds, " OR "), args
+}
+
+// isDegenerateHybridWindow reports whether the window is too short for the
+// interior/sliver split (the two slivers would overlap): both bounds set and
+// less than two full hour buckets apart. Such windows are aggregated wholly
+// from the raw table.
+func isDegenerateHybridWindow(start, end *time.Time) bool {
+	return start != nil && end != nil && end.Sub(*start) < 2*time.Hour
+}
+
+// countRawTerminal counts raw logs rows matching the dimension filters plus an
+// explicit time predicate, restricted to terminal statuses when the filters do
+// not already pin status — mirroring mv_logs_hourly's WHERE clause so hybrid
+// counts sum a consistent population across the matview and raw halves.
+func (s *RDBLogStore) countRawTerminal(ctx context.Context, dimFilters SearchFilters, timePredicate string, timeArgs ...any) (int64, error) {
+	var count int64
+	q := s.ScopedDB(ctx).Model(&Log{})
+	q = s.applyFilters(q, dimFilters)
+	q = q.Where(timePredicate, timeArgs...)
+	if len(dimFilters.Status) == 0 {
+		q = q.Where("status IN ?", terminalLogStatuses)
+	}
+	if err := q.Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// countRawNonTerminal counts in-flight rows matching the full filters (time
+// predicates included, via applyFilters). Equality on the indexed status
+// column keeps the cost proportional to the number of in-flight rows (bounded
+// by request concurrency plus the logging plugin's 30-minute stale-row
+// cleanup), not to the window size. Callers only invoke this when no status
+// filter is set; an explicit status filter is terminal-only by matview
+// eligibility and excludes in-flight rows on every path.
+func (s *RDBLogStore) countRawNonTerminal(ctx context.Context, filters SearchFilters) (int64, error) {
+	var count int64
+	q := s.ScopedDB(ctx).Model(&Log{})
+	q = s.applyFilters(q, filters)
+	q = q.Where("status IN ?", nonTerminalLogStatuses)
+	if err := q.Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// matViewStatsAgg holds the additive stat fields that the hybrid stats path
+// sums across the matview interior and the raw boundary slivers. LatencySum is
+// the total latency over counted rows (SUM(avg_latency*count) on the matview,
+// SUM(latency) on raw), divided once at the end for the combined average.
+type matViewStatsAgg struct {
+	Count             int64   `gorm:"column:total_count"`
+	SuccessCount      int64   `gorm:"column:success_count"`
+	LatencySum        float64 `gorm:"column:latency_sum"`
+	TotalTokens       int64   `gorm:"column:total_tokens"`
+	PromptTokens      int64   `gorm:"column:prompt_tokens"`
+	CompletionTokens  int64   `gorm:"column:completion_tokens"`
+	TotalCost         float64 `gorm:"column:total_cost"`
+	DirectCacheHits   int64   `gorm:"column:direct_cache_hits"`
+	SemanticCacheHits int64   `gorm:"column:semantic_cache_hits"`
+	CacheDebugCount   int64   `gorm:"column:cache_debug_count"`
+}
+
+func (a *matViewStatsAgg) add(b matViewStatsAgg) {
+	a.Count += b.Count
+	a.SuccessCount += b.SuccessCount
+	a.LatencySum += b.LatencySum
+	a.TotalTokens += b.TotalTokens
+	a.PromptTokens += b.PromptTokens
+	a.CompletionTokens += b.CompletionTokens
+	a.TotalCost += b.TotalCost
+	a.DirectCacheHits += b.DirectCacheHits
+	a.SemanticCacheHits += b.SemanticCacheHits
+	a.CacheDebugCount += b.CacheDebugCount
+}
+
+// matViewInteriorStatsAgg sums the additive stat fields over the hour buckets
+// fully contained in the window.
+func (s *RDBLogStore) matViewInteriorStatsAgg(ctx context.Context, dimFilters SearchFilters, start, end *time.Time) (matViewStatsAgg, error) {
+	var agg matViewStatsAgg
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
-	q = s.applyMatViewFilters(q, filters)
-	if err := q.Select(`
+	q = s.applyMatViewFilters(q, dimFilters)
+	q = applyInteriorBucketWindow(q, start, end)
+	err := q.Select(`
 		COALESCE(SUM(count), 0) AS total_count,
 		COALESCE(SUM(success_count), 0) AS success_count,
-		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_latency,
+		COALESCE(SUM(avg_latency * count), 0) AS latency_sum,
 		COALESCE(SUM(total_tokens), 0) AS total_tokens,
 		COALESCE(SUM(total_prompt_tokens), 0) AS prompt_tokens,
 		COALESCE(SUM(total_completion_tokens), 0) AS completion_tokens,
-		COALESCE(SUM(total_cost), 0) AS total_cost
-	`).Scan(&result).Error; err != nil {
-		return nil, err
+		COALESCE(SUM(total_cost), 0) AS total_cost,
+		COALESCE(SUM(direct_cache_hits), 0) AS direct_cache_hits,
+		COALESCE(SUM(semantic_cache_hits), 0) AS semantic_cache_hits,
+		COALESCE(SUM(cache_debug_count), 0) AS cache_debug_count
+	`).Scan(&agg).Error
+	return agg, err
+}
+
+// rawTerminalStatsAgg mirrors matViewInteriorStatsAgg over raw logs rows for
+// an explicit time predicate (boundary slivers or a degenerate whole window),
+// restricted to terminal statuses when no status filter is present so both
+// halves of the hybrid aggregate the same population.
+func (s *RDBLogStore) rawTerminalStatsAgg(ctx context.Context, dimFilters SearchFilters, timePredicate string, timeArgs ...any) (matViewStatsAgg, error) {
+	var agg matViewStatsAgg
+	q := s.ScopedDB(ctx).Model(&Log{})
+	q = s.applyFilters(q, dimFilters)
+	q = q.Where(timePredicate, timeArgs...)
+	if len(dimFilters.Status) == 0 {
+		q = q.Where("status IN ?", terminalLogStatuses)
+	}
+	err := q.Select(`
+		COUNT(*) AS total_count,
+		COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
+		COALESCE(SUM(latency), 0) AS latency_sum,
+		COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+		COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+		COALESCE(SUM(cost), 0) AS total_cost,
+		COALESCE(SUM(CASE WHEN ` + cacheDebugJSONGuard + ` AND ` + cacheDebugHitTypeExpr + ` = 'direct' THEN 1 ELSE 0 END), 0) AS direct_cache_hits,
+		COALESCE(SUM(CASE WHEN ` + cacheDebugJSONGuard + ` AND ` + cacheDebugHitTypeExpr + ` = 'semantic' THEN 1 ELSE 0 END), 0) AS semantic_cache_hits,
+		COUNT(*) FILTER (WHERE ` + cacheDebugJSONGuard + `) AS cache_debug_count
+	`).Scan(&agg).Error
+	return agg, err
+}
+
+// getStatsFromMatView computes dashboard statistics (total requests, success
+// rate, average latency, total tokens, total cost) from mv_logs_hourly using
+// the same exact-range hybrid as getCountFromMatView: interior buckets from
+// the matview, partial boundary buckets from the raw table, and in-flight
+// rows added to TotalRequests. This keeps the stats total equal to the
+// pagination total for the same filters (both halves of the same UI page).
+// Latency is a weighted average across the combined population.
+func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
+	// Time predicates are applied explicitly; strip them so the filter helpers
+	// only contribute dimension predicates.
+	dimFilters := filters
+	dimFilters.StartTime, dimFilters.EndTime = nil, nil
+
+	var agg matViewStatsAgg
+	if isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
+		var err error
+		agg, err = s.rawTerminalStatsAgg(ctx, dimFilters,
+			"timestamp >= ? AND timestamp <= ?", *filters.StartTime, *filters.EndTime)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		agg, err = s.matViewInteriorStatsAgg(ctx, dimFilters, filters.StartTime, filters.EndTime)
+		if err != nil {
+			return nil, err
+		}
+		if sliverSQL, sliverArgs := boundarySliverWhere(filters.StartTime, filters.EndTime); sliverSQL != "" {
+			boundary, err := s.rawTerminalStatsAgg(ctx, dimFilters, sliverSQL, sliverArgs...)
+			if err != nil {
+				return nil, err
+			}
+			agg.add(boundary)
+		}
 	}
 
-	var successRate float64
-	if result.TotalCount > 0 {
-		successRate = float64(result.SuccessCount) / float64(result.TotalCount) * 100
+	// TotalRequests includes in-flight rows, mirroring the raw GetStats path
+	// (whose total count "includes processing status") and the pagination
+	// total; rate denominators stay terminal-only, also mirroring raw.
+	var nonTerminal int64
+	if len(filters.Status) == 0 {
+		var err error
+		if nonTerminal, err = s.countRawNonTerminal(ctx, filters); err != nil {
+			return nil, err
+		}
+	}
+
+	completed := agg.Count
+	var successRate, avgLatency float64
+	if completed > 0 {
+		successRate = float64(agg.SuccessCount) / float64(completed) * 100
+		avgLatency = agg.LatencySum / float64(completed)
 	}
 
 	// User-facing success rate requires per-request fallback chain data which is not
@@ -1064,78 +1336,151 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 	// (>100 GB) can take minutes, so the matview path uses the per-attempt success rate
 	// as a fast approximation. Accurate chain-level computation runs in the raw-table path.
 
-	cacheHitRateTotalRequests := result.TotalCount
 	stats := &SearchStats{
-		TotalRequests:             result.TotalCount,
+		TotalRequests:             completed + nonTerminal,
 		SuccessRate:               successRate,
 		UserFacingSuccessRate:     successRate,
-		UserFacingTotalRequests:   result.TotalCount, // matview approximation; no per-chain data available
-		AverageLatency:            result.AvgLatency,
-		TotalTokens:               result.TotalTokens,
-		PromptTokens:              result.PromptTokens,
-		CompletionTokens:          result.CompletionTokens,
-		TotalCost:                 result.TotalCost,
-		CacheHitRateTotalRequests: &cacheHitRateTotalRequests,
+		UserFacingTotalRequests:   completed, // matview approximation; no per-chain data available
+		AverageLatency:            avgLatency,
+		TotalTokens:               agg.TotalTokens,
+		PromptTokens:              agg.PromptTokens,
+		CompletionTokens:          agg.CompletionTokens,
+		TotalCost:                 agg.TotalCost,
+		CacheHitRateTotalRequests: &completed,
 	}
 
-	// cache_debug is not stored in the matview — query the raw logs table directly.
-	// Align the time window to hour boundaries to match the matview denominator (TotalRequests).
-	alignedFilters := filters
-	if filters.StartTime != nil {
-		aligned := filters.StartTime.Truncate(time.Hour)
-		alignedFilters.StartTime = &aligned
-	}
-	if filters.EndTime != nil {
-		alignedEnd := filters.EndTime.Truncate(time.Hour).Add(time.Hour - time.Nanosecond)
-		alignedFilters.EndTime = &alignedEnd
-	}
-	cacheBase := s.ScopedDB(ctx).Model(&Log{}).Where("status IN ?", terminalLogStatuses)
-	direct, semantic, err := s.aggregateCacheHits(ctx, cacheBase, alignedFilters)
-	if err != nil {
-		s.logger.Warn(fmt.Sprintf("logstore: failed to aggregate cache-hit stats, skipping: %s", err))
-	} else if direct != nil || semantic != nil {
-		stats.DirectCacheHits = direct
-		stats.SemanticCacheHits = semantic
+	// Cache hits come from the same hybrid aggregate (materialized in
+	// mv_logs_hourly for interior buckets, classified raw for the slivers) -
+	// no more full-window raw scan. CacheDebugCount reproduces
+	// aggregateCacheHits' nil contract: when no row in the window carried
+	// valid cache_debug JSON, the fields stay nil so they are omitted from
+	// the JSON payload, matching the raw path.
+	if agg.CacheDebugCount > 0 {
+		direct, semantic := agg.DirectCacheHits, agg.SemanticCacheHits
+		stats.DirectCacheHits = &direct
+		stats.SemanticCacheHits = &semantic
 	}
 
 	return stats, nil
 }
 
 // getHistogramFromMatView returns time-bucketed request counts (total,
-// success, error, cancelled) by re-aggregating hourly buckets from mv_logs_hourly.
+// success, error, cancelled) by re-aggregating hourly buckets from
+// mv_logs_hourly. Like getCountFromMatView, boundary display buckets are
+// exact-range: only hour buckets fully contained in the window come from the
+// matview; rows in the partial boundary hour(s) are re-bucketed from the raw
+// table, so the first and last bars only count in-window rows, matching the
+// raw histogram path (which applies exact timestamp predicates). Both halves
+// are terminal-only, mirroring the raw path's status restriction.
 func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error) {
-	var results []struct {
+	type histAgg struct {
 		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
 		Total           int64 `gorm:"column:total"`
 		Success         int64 `gorm:"column:success"`
 		ErrorCount      int64 `gorm:"column:error_count"`
 		CancelledCount  int64 `gorm:"column:cancelled_count"`
 	}
-	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
-	q = s.applyMatViewFilters(q, filters)
-	if err := q.Select(fmt.Sprintf(`
-		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
-		SUM(count) AS total,
-		SUM(success_count) AS success,
-		SUM(error_count) AS error_count,
-		SUM(cancelled_count) AS cancelled_count
-	`, bucketSizeSeconds, bucketSizeSeconds)).
-		Group("bucket_timestamp").
-		Order("bucket_timestamp ASC").
-		Find(&results).Error; err != nil {
-		return nil, err
+
+	// Time predicates are applied explicitly; strip them so the filter helpers
+	// only contribute dimension predicates.
+	dimFilters := filters
+	dimFilters.StartTime, dimFilters.EndTime = nil, nil
+
+	acc := make(map[int64]*struct{ total, success, errCount, cancelledCount int64 })
+	merge := func(rows []histAgg) {
+		for _, r := range rows {
+			b, ok := acc[r.BucketTimestamp]
+			if !ok {
+				b = &struct{ total, success, errCount, cancelledCount int64 }{}
+				acc[r.BucketTimestamp] = b
+			}
+			b.total += r.Total
+			b.success += r.Success
+			b.errCount += r.ErrorCount
+			b.cancelledCount += r.CancelledCount
+		}
 	}
 
-	resultMap := make(map[int64]*struct{ total, success, errCount, cancelledCount int64 }, len(results))
-	for _, r := range results {
-		resultMap[r.BucketTimestamp] = &struct{ total, success, errCount, cancelledCount int64 }{r.Total, r.Success, r.ErrorCount, r.CancelledCount}
+	rawBucketed := func(timePredicate string, timeArgs ...any) ([]histAgg, error) {
+		var rows []histAgg
+		q := s.ScopedDB(ctx).Model(&Log{})
+		q = s.applyFilters(q, dimFilters)
+		q = q.Where(timePredicate, timeArgs...)
+		q = q.Where("status IN ?", terminalLogStatuses)
+		err := q.Select(fmt.Sprintf(`
+			%s AS bucket_timestamp,
+			COUNT(*) AS total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
+			SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count
+		`, unixBucketExpr("postgres", bucketSizeSeconds))).
+			Group("bucket_timestamp").
+			Find(&rows).Error
+		return rows, err
+	}
+
+	if isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
+		// Window too short for the interior/sliver split (reachable here:
+		// GetHistogram gates on canUseMatView, which has no window check).
+		rows, err := rawBucketed("timestamp >= ? AND timestamp <= ?", *filters.StartTime, *filters.EndTime)
+		if err != nil {
+			return nil, err
+		}
+		merge(rows)
+	} else {
+		var results []histAgg
+		q := s.ScopedDB(ctx).Table("mv_logs_hourly")
+		q = s.applyMatViewFilters(q, dimFilters)
+		q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
+		if err := q.Select(fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+			SUM(count) AS total,
+			SUM(success_count) AS success,
+			SUM(error_count) AS error_count,
+			SUM(cancelled_count) AS cancelled_count
+		`, bucketSizeSeconds, bucketSizeSeconds)).
+			Group("bucket_timestamp").
+			Find(&results).Error; err != nil {
+			return nil, err
+		}
+		merge(results)
+
+		if sliverSQL, sliverArgs := boundarySliverWhere(filters.StartTime, filters.EndTime); sliverSQL != "" {
+			rows, err := rawBucketed(sliverSQL, sliverArgs...)
+			if err != nil {
+				return nil, err
+			}
+			merge(rows)
+		}
 	}
 
 	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+	if len(allTimestamps) == 0 {
+		// No fully-bounded range to enumerate: return the populated buckets in
+		// order, mirroring the raw path's unbounded-range behavior.
+		keys := make([]int64, 0, len(acc))
+		for ts := range acc {
+			keys = append(keys, ts)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+		buckets := make([]HistogramBucket, 0, len(keys))
+		for _, ts := range keys {
+			a := acc[ts]
+			buckets = append(buckets, HistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+				Count:     a.total,
+				Success:   a.success,
+				Error:     a.errCount,
+				Cancelled: a.cancelledCount,
+			})
+		}
+		return &HistogramResult{Buckets: buckets, BucketSizeSeconds: bucketSizeSeconds}, nil
+	}
+
 	buckets := make([]HistogramBucket, 0, len(allTimestamps))
 	for _, ts := range allTimestamps {
 		b := HistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
-		if a, ok := resultMap[ts]; ok {
+		if a, ok := acc[ts]; ok {
 			b.Count = a.total
 			b.Success = a.success
 			b.Error = a.errCount
@@ -1876,7 +2221,7 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("model IS NOT NULL AND model != ''")
-	if err := q.Select(`
+	q = q.Select(`
 		model, provider,
 		MAX(NULLIF(canonical_model_name, '')) AS canonical_name,
 		SUM(count) AS total,
@@ -1887,8 +2232,8 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
 		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 	`).Group("model, provider").
-		Order("total DESC").
-		Find(&results).Error; err != nil {
+		Order("total DESC, model ASC, provider ASC")
+	if err := applyRankingLimit(q, filters).Find(&results).Error; err != nil {
 		return nil, err
 	}
 
@@ -1993,14 +2338,14 @@ func (s *RDBLogStore) getUserRankingsFromMatView(ctx context.Context, filters Se
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where("user_id != ''")
-	if err := q.Select(`
+	q = q.Select(`
 		user_id,
 		SUM(count) AS total,
 		SUM(total_tokens) AS total_tkns,
 		SUM(total_cost) AS total_cost
 	`).Group("user_id").
-		Order("total DESC").
-		Find(&results).Error; err != nil {
+		Order("total DESC, user_id ASC")
+	if err := applyRankingLimit(q, filters).Find(&results).Error; err != nil {
 		return nil, err
 	}
 
@@ -2089,14 +2434,14 @@ func (s *RDBLogStore) getDimensionRankingsFromMatView(ctx context.Context, filte
 	q := s.ScopedDB(ctx).Table("mv_logs_hourly")
 	q = s.applyMatViewFilters(q, filters)
 	q = q.Where(fmt.Sprintf("%s != ''", idCol))
-	if err := q.Select(fmt.Sprintf(`
+	q = q.Select(fmt.Sprintf(`
 		%s AS id,
 		SUM(count) AS total,
 		SUM(total_tokens) AS total_tkns,
 		SUM(total_cost) AS total_cost
 	`, idCol)).Group(idCol).
-		Order("total DESC").
-		Find(&results).Error; err != nil {
+		Order(fmt.Sprintf("total DESC, %s ASC", idCol))
+	if err := applyRankingLimit(q, filters).Find(&results).Error; err != nil {
 		return nil, err
 	}
 

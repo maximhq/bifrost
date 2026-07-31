@@ -162,6 +162,7 @@ export const bedrockKeyConfigSchema = z
 		role_arn: secretVarSchema.optional(),
 		external_id: secretVarSchema.optional(),
 		session_name: secretVarSchema.optional(),
+		batch_role_arn: secretVarSchema.optional(),
 		arn: secretVarSchema.optional(),
 		project_id: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
@@ -873,6 +874,10 @@ export const otelConfigSchema = z
 		// TLS configuration
 		tls_ca_cert: z.string().optional(),
 		insecure: z.boolean().default(true),
+		// Bounds a single trace export. gRPC exports have no other timeout, so an
+		// endpoint that accepts the connection but never replies would otherwise block
+		// an export goroutine indefinitely.
+		export_timeout: z.number().int().min(1).max(60).default(5),
 		// Metrics push configuration
 		metrics_enabled: z.boolean().default(false),
 		metrics_endpoint: secretVarSchema.optional(),
@@ -1261,6 +1266,18 @@ export const routingRuleSchema = z
 		path: ["scope_id"],
 	});
 
+// Budget override form schema (BudgetOverrideDialog)
+export const budgetOverrideFormSchema = z
+	.object({
+		amount: z.number("Additional budget must be greater than 0.").positive("Additional budget must be greater than 0."),
+		mode: z.enum(["cycles", "forever"]),
+		cycles: z.number().optional(),
+	})
+	.refine((data) => data.mode !== "cycles" || (data.cycles !== undefined && Number.isSafeInteger(data.cycles) && data.cycles > 0), {
+		message: "Reset cycles must be a positive whole number.",
+		path: ["cycles"],
+	});
+
 // Export type inference helpers
 export type SecretVar = z.infer<typeof secretVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
@@ -1284,3 +1301,4 @@ export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
 export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
 export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
 export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;
+export type BudgetOverrideFormSchema = z.infer<typeof budgetOverrideFormSchema>;

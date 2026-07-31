@@ -2811,3 +2811,129 @@ func TestMigrationAddDualCredentialConflictBehaviorColumn(t *testing.T) {
 	require.NoError(t, migrationAddDualCredentialConflictBehaviorColumn(ctx, db, testMigrationLogger),
 		"re-running the migration should be idempotent")
 }
+
+// TestMigrationAddBudgetOverrideColumns verifies legacy budgets receive inactive override defaults.
+func TestMigrationAddBudgetOverrideColumns(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}))
+	seed := &tables.TableBudget{
+		ID:            "legacy-budget",
+		MaxLimit:      100,
+		ResetDuration: "1h",
+	}
+	require.NoError(t, db.Create(seed).Error)
+
+	for _, column := range []string{"override_cycles_remaining", "override_mode", "override_amount"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, column))
+		require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"precondition: %s must be absent to reproduce the upgrade path", column)
+	}
+
+	require.NoError(t, migrationAddBudgetOverrideColumns(ctx, db, testMigrationLogger))
+
+	for _, column := range []string{"override_amount", "override_mode", "override_cycles_remaining"} {
+		require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"migration should have added %s", column)
+	}
+
+	var got struct {
+		OverrideAmount          float64
+		OverrideMode            tables.BudgetOverrideMode
+		OverrideCyclesRemaining int
+	}
+	require.NoError(t, db.Table("governance_budgets").
+		Select("override_amount, override_mode, override_cycles_remaining").
+		Where("id = ?", seed.ID).
+		Scan(&got).Error)
+	assert.Zero(t, got.OverrideAmount)
+	assert.Empty(t, got.OverrideMode)
+	assert.Zero(t, got.OverrideCyclesRemaining)
+
+	require.NoError(t, migrationAddBudgetOverrideColumns(ctx, db, testMigrationLogger),
+		"re-running the migration should be idempotent")
+}
+
+// TestMigrationAddBudgetOverrideAnchorColumns verifies the grant columns are added
+// and that every already-active finite override is adopted into the derived model.
+// Adoption is required rather than cosmetic: validateOverride rejects a cycles
+// override with no anchor, so an unadopted row would be treated as having no
+// lifecycle at all.
+func TestMigrationAddBudgetOverrideAnchorColumns(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}))
+	lastReset := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+
+	// An active finite override, a forever override, and a plain budget with no
+	// override. Only the first should be adopted.
+	seeds := []*tables.TableBudget{
+		{ID: "cycles-budget", MaxLimit: 100, ResetDuration: "1h", LastReset: lastReset},
+		{ID: "forever-budget", MaxLimit: 100, ResetDuration: "1h", LastReset: lastReset},
+		{ID: "plain-budget", MaxLimit: 100, ResetDuration: "1h", LastReset: lastReset},
+	}
+	for _, seed := range seeds {
+		require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Create(seed).Error)
+	}
+	// Set override state directly so the pre-migration shape is reproduced without
+	// going through validation, which now requires a grant.
+	require.NoError(t, db.Exec(`UPDATE governance_budgets
+		SET override_amount = 25, override_mode = 'cycles', override_cycles_remaining = 2
+		WHERE id = 'cycles-budget'`).Error)
+	require.NoError(t, db.Exec(`UPDATE governance_budgets
+		SET override_amount = 50, override_mode = 'forever'
+		WHERE id = 'forever-budget'`).Error)
+
+	for _, column := range []string{"override_anchor_reset", "override_cycles_total"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, column))
+		require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"precondition: %s must be absent to reproduce the upgrade path", column)
+	}
+
+	require.NoError(t, migrationAddBudgetOverrideAnchorColumns(ctx, db, testMigrationLogger))
+
+	for _, column := range []string{"override_cycles_total", "override_anchor_reset"} {
+		require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, column),
+			"migration should have added %s", column)
+	}
+
+	readGrant := func(id string) (int, *time.Time) {
+		var got struct {
+			OverrideCyclesTotal int
+			OverrideAnchorReset *time.Time
+		}
+		require.NoError(t, db.Table("governance_budgets").
+			Select("override_cycles_total, override_anchor_reset").
+			Where("id = ?", id).
+			Scan(&got).Error)
+		return got.OverrideCyclesTotal, got.OverrideAnchorReset
+	}
+
+	// The active finite override is adopted: granted its remaining count from its
+	// current boundary, which can only be generous by less than one window.
+	total, anchor := readGrant("cycles-budget")
+	assert.Equal(t, 2, total, "adopted grant total should match the remaining count")
+	require.NotNil(t, anchor, "an active finite override must end up anchored")
+	assert.True(t, anchor.UTC().Equal(lastReset), "adopted grant should anchor at the budget's current boundary")
+
+	// A forever override has no cycle lifecycle, so it must stay unanchored.
+	total, anchor = readGrant("forever-budget")
+	assert.Zero(t, total)
+	assert.Nil(t, anchor)
+
+	total, anchor = readGrant("plain-budget")
+	assert.Zero(t, total)
+	assert.Nil(t, anchor)
+
+	require.NoError(t, migrationAddBudgetOverrideAnchorColumns(ctx, db, testMigrationLogger),
+		"re-running the migration should be idempotent")
+
+	// Idempotence must not re-adopt: the backfill is scoped to rows with no anchor,
+	// so a row that already had one keeps its original grant.
+	total, anchor = readGrant("cycles-budget")
+	assert.Equal(t, 2, total, "re-running must not change an already adopted grant")
+	require.NotNil(t, anchor)
+	assert.True(t, anchor.UTC().Equal(lastReset))
+}

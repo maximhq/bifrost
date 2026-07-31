@@ -10,7 +10,7 @@ import { dateUtils } from "@/lib/types/logs";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { useLocation } from "@tanstack/react-router";
 import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useMemo, useRef, useState } from "react";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
 import { ExportPopover } from "./components/exportPopover";
@@ -19,9 +19,17 @@ import { type MCPTabViewHandle, MCPTabView } from "./components/tabViews/mcpTabV
 import { type ModelRankingsTabViewHandle, ModelRankingsTabView } from "./components/tabViews/modelRankingsTabView";
 import { type OverviewTabViewHandle, OverviewTabView } from "./components/tabViews/overviewTabView";
 import { type ProviderUsageTabViewHandle, ProviderUsageTabView } from "./components/tabViews/providerUsageTabView";
-import type { DashboardData } from "./utils/exportUtils";
+import { type DashboardData, type DashboardTab, type ExportTab, DASHBOARD_EXPORT_TABS } from "./utils/exportUtils";
 
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
+
+/** Wait two frames: one for React to commit, one for the browser to lay the result out. */
+const nextFrames = () =>
+	new Promise<void>((resolve) => {
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => resolve());
+		});
+	});
 
 export default function DashboardPage() {
 	// MCP filter data
@@ -49,6 +57,7 @@ export default function DashboardPage() {
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			stop_reasons: parseAsSafeArrayOf.withDefault([]),
+			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			missing_cost_only: parseAsBoolean.withDefault(false),
 			metadata_filters: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
@@ -123,6 +132,7 @@ export default function DashboardPage() {
 				routing_engine_used: urlState.routing_engine_used,
 			}),
 			...(urlState.stop_reasons.length > 0 && { stop_reasons: urlState.stop_reasons }),
+			...(urlState.cache_hit_types.length > 0 && { cache_hit_types: urlState.cache_hit_types }),
 			...(urlState.missing_cost_only && { missing_cost_only: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
@@ -149,6 +159,7 @@ export default function DashboardPage() {
 			urlState.routing_rule_ids,
 			urlState.routing_engine_used,
 			urlState.stop_reasons,
+			urlState.cache_hit_types,
 			urlState.missing_cost_only,
 			metadataFilters,
 			urlState.user_ids,
@@ -239,8 +250,40 @@ export default function DashboardPage() {
 		};
 	}, []);
 
-	const handlePreloadData = useCallback(async () => {
-		await Promise.all(allRefs.map((r) => r.current?.loadData()));
+	// Which scope the in-flight export covers; null when not exporting.
+	// "all" force-mounts every tab, a single tab exports only what is open.
+	const [exportScope, setExportScope] = useState<ExportTab | null>(null);
+	const exportingAll = exportScope === "all";
+	/** True while this tab is part of the running export, so rankings render their uncapped snapshot. */
+	const isExportingTab = (tab: DashboardTab) => exportingAll || exportScope === tab;
+
+	const handlePreloadData = useCallback(async (scope: ExportTab) => {
+		// For an all-tabs export, force-mount every tab before loading: Radix
+		// unmounts inactive TabsContent, so an inactive tab view has no ref yet
+		// and would never load its export snapshot - the report would only cover
+		// the tab that happened to be open. A single-tab export deliberately
+		// skips this, so only the open tab's data reaches the export.
+		setExportScope(scope);
+		await nextFrames();
+
+		const refsByTab: Record<DashboardTab, RefObject<{ loadData: () => Promise<void> } | null>> = {
+			overview: overviewRef,
+			"provider-usage": providerRef,
+			mcp: mcpRef,
+			rankings: modelRankingsRef,
+			"team-rankings": teamRankingsRef,
+			"customer-rankings": customerRankingsRef,
+			"bu-rankings": buRankingsRef,
+			"user-rankings": userRankingsRef,
+			"virtual-key-rankings": virtualKeyRankingsRef,
+		};
+
+		const refs = scope === "all" ? allRefs : [refsByTab[scope]];
+		await Promise.all(refs.map((r) => r.current?.loadData()));
+
+		// Let the loaded snapshots commit before the caller reads getData() or
+		// captures the DOM.
+		await nextFrames();
 	}, []);
 
 	// Tab change handler
@@ -306,6 +349,7 @@ export default function DashboardPage() {
 				routing_rule_ids: newFilters.routing_rule_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
 				stop_reasons: newFilters.stop_reasons || [],
+				cache_hit_types: newFilters.cache_hit_types || [],
 				missing_cost_only: newFilters.missing_cost_only ?? false,
 				metadata_filters:
 					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0
@@ -357,55 +401,44 @@ export default function DashboardPage() {
 	);
 
 	// PDF export mode
-	const [pdfMode, setPdfMode] = useState(false);
 	const dashboardMinHeightRef = useRef<string>("");
 	const hiddenTabsRef = useRef<HTMLElement[]>([]);
 
-	const handlePdfExport = useCallback(async (): Promise<HTMLElement[]> => {
-		await handlePreloadData();
-		setPdfMode(true);
+	const handlePdfExport = useCallback(
+		async (scope: ExportTab): Promise<{ element: HTMLElement; label: string }[]> => {
+			// Enters export mode, force-mounts the scoped tabs and waits for the
+			// loaded snapshots to render.
+			await handlePreloadData(scope);
 
-		await new Promise<void>((resolve) => {
-			requestAnimationFrame(() => {
-				requestAnimationFrame(() => resolve());
-			});
-		});
+			// Only an all-tabs export has hidden sections to reveal; a single-tab
+			// export captures the section already on screen.
+			if (scope === "all") {
+				const hiddenTabs = document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"][hidden]');
+				hiddenTabsRef.current = Array.from(hiddenTabs);
+				for (const tab of hiddenTabs) {
+					tab.removeAttribute("hidden");
+					tab.style.display = "block";
+				}
+			}
 
-		const hiddenTabs = document.querySelectorAll<HTMLElement>('[data-slot="tabs-content"][hidden]');
-		hiddenTabsRef.current = Array.from(hiddenTabs);
-		for (const tab of hiddenTabs) {
-			tab.removeAttribute("hidden");
-			tab.style.display = "block";
-		}
+			const dashboardEl = document.getElementById("dashboard-root");
+			if (dashboardEl) {
+				dashboardMinHeightRef.current = dashboardEl.style.minHeight;
+				dashboardEl.style.minHeight = "0";
+			}
 
-		const dashboardEl = document.getElementById("dashboard-root");
-		if (dashboardEl) {
-			dashboardMinHeightRef.current = dashboardEl.style.minHeight;
-			dashboardEl.style.minHeight = "0";
-		}
+			window.dispatchEvent(new Event("resize"));
+			await nextFrames();
 
-		window.dispatchEvent(new Event("resize"));
-		await new Promise<void>((resolve) => {
-			requestAnimationFrame(() => {
-				requestAnimationFrame(() => resolve());
-			});
-		});
+			const tabs = scope === "all" ? DASHBOARD_EXPORT_TABS : DASHBOARD_EXPORT_TABS.filter((t) => t.value === scope);
+			return tabs
+				.map(({ sectionId, label }) => ({ element: document.getElementById(sectionId), label }))
+				.filter((s): s is { element: HTMLElement; label: string } => s.element !== null);
+		},
+		[handlePreloadData],
+	);
 
-		const ids = [
-			"dashboard-section-overview",
-			"dashboard-section-provider-usage",
-			"dashboard-section-rankings",
-			"dashboard-section-mcp",
-			"dashboard-section-team-rankings",
-			"dashboard-section-customer-rankings",
-			"dashboard-section-bu-rankings",
-			"dashboard-section-user-rankings",
-			"dashboard-section-virtual-key-rankings",
-		];
-		return ids.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
-	}, [handlePreloadData]);
-
-	const handlePdfExportDone = useCallback(() => {
+	const handleExportDone = useCallback(() => {
 		const dashboardEl = document.getElementById("dashboard-root");
 		if (dashboardEl) {
 			dashboardEl.style.minHeight = dashboardMinHeightRef.current;
@@ -417,10 +450,10 @@ export default function DashboardPage() {
 		}
 		hiddenTabsRef.current = [];
 
-		setPdfMode(false);
+		setExportScope(null);
 	}, []);
 
-	const activeTab = urlState.tab || "overview";
+	const activeTab = (urlState.tab || "overview") as DashboardTab;
 
 	return (
 		<div id="dashboard-root" className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
@@ -437,9 +470,10 @@ export default function DashboardPage() {
 					<div className="flex items-center gap-2">
 						<ExportPopover
 							getData={getDashboardData}
+							activeTab={activeTab}
 							onPreloadData={handlePreloadData}
 							onPdfExport={handlePdfExport}
-							onPdfExportDone={handlePdfExportDone}
+							onExportDone={handleExportDone}
 						/>
 						{activeTab === "mcp" && mcpFilterData && (
 							<div className="flex items-center gap-1">
@@ -526,12 +560,12 @@ export default function DashboardPage() {
 						</div>
 
 						{/* Overview Tab */}
-						<TabsContent value="overview" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="overview" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-overview">
 								<OverviewTabView
 									ref={overviewRef}
 									filters={filters}
-									active={activeTab === "overview" || pdfMode}
+									active={activeTab === "overview" || exportingAll}
 									startTime={urlState.start_time}
 									endTime={urlState.end_time}
 									volumeChartType={toChartType(urlState.volume_chart)}
@@ -555,12 +589,12 @@ export default function DashboardPage() {
 						</TabsContent>
 
 						{/* Provider Usage Tab */}
-						<TabsContent value="provider-usage" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="provider-usage" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-provider-usage">
 								<ProviderUsageTabView
 									ref={providerRef}
 									filters={filters}
-									active={activeTab === "provider-usage" || pdfMode}
+									active={activeTab === "provider-usage" || exportingAll}
 									startTime={urlState.start_time}
 									endTime={urlState.end_time}
 									providerCostChartType={toChartType(urlState.provider_cost_chart)}
@@ -584,25 +618,26 @@ export default function DashboardPage() {
 						</TabsContent>
 
 						{/* Model Rankings Tab */}
-						<TabsContent value="rankings" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="rankings" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-rankings">
 								<ModelRankingsTabView
 									ref={modelRankingsRef}
 									filters={filters}
-									active={activeTab === "rankings" || pdfMode}
+									active={activeTab === "rankings" || exportingAll}
 									startTime={urlState.start_time}
 									endTime={urlState.end_time}
+									pdfMode={isExportingTab("rankings")}
 								/>
 							</div>
 						</TabsContent>
 
 						{/* MCP Tab */}
-						<TabsContent value="mcp" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="mcp" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-mcp">
 								<MCPTabView
 									ref={mcpRef}
 									filters={mcpFilters}
-									active={activeTab === "mcp" || pdfMode}
+									active={activeTab === "mcp" || exportingAll}
 									startTime={urlState.start_time}
 									endTime={urlState.end_time}
 									mcpVolumeChartType={toChartType(urlState.mcp_volume_chart)}
@@ -614,76 +649,81 @@ export default function DashboardPage() {
 						</TabsContent>
 
 						{/* Team Rankings Tab */}
-						<TabsContent value="team-rankings" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="team-rankings" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-team-rankings">
 								<DimensionRankingsTabView
 									ref={teamRankingsRef}
 									filters={filters}
-									active={activeTab === "team-rankings" || pdfMode}
+									active={activeTab === "team-rankings" || exportingAll}
 									dimension="team"
 									dimensionLabel="Team"
 									testIdPrefix="dashboard-team-rankings"
 									dataKey="teamRankingsData"
+									pdfMode={isExportingTab("team-rankings")}
 								/>
 							</div>
 						</TabsContent>
 
 						{/* Customer Rankings Tab */}
-						<TabsContent value="customer-rankings" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="customer-rankings" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-customer-rankings">
 								<DimensionRankingsTabView
 									ref={customerRankingsRef}
 									filters={filters}
-									active={activeTab === "customer-rankings" || pdfMode}
+									active={activeTab === "customer-rankings" || exportingAll}
 									dimension="customer"
 									dimensionLabel="Customer"
 									testIdPrefix="dashboard-customer-rankings"
 									dataKey="customerRankingsData"
+									pdfMode={isExportingTab("customer-rankings")}
 								/>
 							</div>
 						</TabsContent>
 
 						{/* Business Unit Rankings Tab */}
-						<TabsContent value="bu-rankings" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="bu-rankings" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-bu-rankings">
 								<DimensionRankingsTabView
 									ref={buRankingsRef}
 									filters={filters}
-									active={activeTab === "bu-rankings" || pdfMode}
+									active={activeTab === "bu-rankings" || exportingAll}
 									dimension="business_unit"
 									dimensionLabel="Business Unit"
 									testIdPrefix="dashboard-bu-rankings"
 									dataKey="buRankingsData"
+									pdfMode={isExportingTab("bu-rankings")}
 								/>
 							</div>
 						</TabsContent>
 
 						{/* User Rankings Tab */}
-						<TabsContent value="user-rankings" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="user-rankings" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-user-rankings">
 								<DimensionRankingsTabView
 									ref={userRankingsRef}
 									filters={filters}
-									active={activeTab === "user-rankings" || pdfMode}
+									active={activeTab === "user-rankings" || exportingAll}
 									dimension="user"
 									dimensionLabel="User"
 									testIdPrefix="dashboard-user-rankings"
 									dataKey="userRankingsData"
+									pdfMode={isExportingTab("user-rankings")}
 								/>
 							</div>
 						</TabsContent>
 
 						{/* Virtual Key Rankings Tab */}
-						<TabsContent value="virtual-key-rankings" {...(pdfMode && { forceMount: true })}>
+						<TabsContent value="virtual-key-rankings" {...(exportingAll && { forceMount: true })}>
 							<div id="dashboard-section-virtual-key-rankings">
 								<DimensionRankingsTabView
 									ref={virtualKeyRankingsRef}
 									filters={filters}
-									active={activeTab === "virtual-key-rankings" || pdfMode}
+									active={activeTab === "virtual-key-rankings" || exportingAll}
 									dimension="virtual_key"
 									dimensionLabel="Virtual Key"
 									testIdPrefix="dashboard-virtual-key-rankings"
 									dataKey="virtualKeyRankingsData"
+									pdfMode={isExportingTab("virtual-key-rankings")}
 								/>
 							</div>
 						</TabsContent>

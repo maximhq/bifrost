@@ -1,8 +1,8 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Label } from "@/components/ui/label";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -204,8 +204,8 @@ export default function SecurityView() {
 				client_config: localConfig,
 				...(showPasswordSection
 					? {
-							auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
-						}
+						auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+					}
 					: {}),
 			}).unwrap();
 			toast.success("Security settings updated successfully.");
@@ -215,7 +215,7 @@ export default function SecurityView() {
 	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto h-[calc(100vh-50px)] w-full max-w-4xl space-y-4 overflow-y-auto">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
@@ -457,7 +457,7 @@ export default function SecurityView() {
 					</div>
 				</div>
 			</div>
-			<div className="bg-card sticky bottom-0 flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

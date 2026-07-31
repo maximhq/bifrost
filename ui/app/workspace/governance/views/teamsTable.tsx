@@ -18,7 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { getErrorMessage, useDeleteTeamMutation } from "@/lib/store";
-import { Customer, Team, VirtualKey } from "@/lib/types/governance";
+import { Team } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -126,8 +126,6 @@ function TeamActionsMenu({
 interface TeamsTableProps {
 	teams: Team[];
 	totalCount: number;
-	customers: Customer[];
-	virtualKeys: VirtualKey[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
@@ -144,8 +142,6 @@ interface TeamsTableProps {
 export default function TeamsTable({
 	teams,
 	totalCount,
-	customers,
-	virtualKeys,
 	search,
 	debouncedSearch,
 	onSearchChange,
@@ -196,14 +192,12 @@ export default function TeamsTable({
 		onDialogClose();
 	};
 
-	const getVirtualKeysForTeam = (teamId: string) => {
-		return virtualKeys.filter((vk) => vk.team_id === teamId);
-	};
-
-	const getCustomerName = (customerId?: string) => {
-		if (!customerId) return "-";
-		const customer = customers.find((c) => c.id === customerId);
-		return customer ? customer.name : "Unknown Customer";
+	// Both the customer name and the virtual-key count come straight off the team
+	// row — the list endpoint preloads `customer` and computes `virtual_key_count`
+	// via a correlated subquery, so neither needs a client-side join.
+	const getCustomerName = (team: Team) => {
+		if (!team.customer_id) return "-";
+		return team.customer?.name ?? "Unknown Customer";
 	};
 
 	const hasActiveFilters = debouncedSearch;
@@ -213,7 +207,7 @@ export default function TeamsTable({
 		return (
 			<>
 				<TooltipProvider>
-					{showTeamSheet && <TeamSheet team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
+					{showTeamSheet && <TeamSheet team={editingTeam} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
 				</TooltipProvider>
 			</>
@@ -223,7 +217,7 @@ export default function TeamsTable({
 	return (
 		<>
 			<TooltipProvider>
-				{showTeamSheet && <TeamSheet team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={onDialogClose} />}
+				{showTeamSheet && <TeamSheet team={editingTeam} onSave={handleTeamSaved} onCancel={onDialogClose} />}
 
 				<div className="flex grow flex-col overflow-y-auto">
 					<div className="mb-4 flex items-center justify-between">
@@ -272,8 +266,8 @@ export default function TeamsTable({
 									</TableRow>
 								) : (
 									teams.map((team) => {
-										const vks = getVirtualKeysForTeam(team.id);
-										const customerName = getCustomerName(team.customer_id);
+										const vkCount = team.virtual_key_count ?? 0;
+										const customerName = getCustomerName(team);
 
 										// Budget calculations — any of the team's budgets exhausted
 										const teamBudgets = team.budgets ?? [];
@@ -439,16 +433,11 @@ export default function TeamsTable({
 													)}
 												</TableCell>
 												<TableCell>
-													{vks.length > 0 ? (
+													{vkCount > 0 ? (
 														<div className="flex items-center gap-2">
-															<Tooltip>
-																<TooltipTrigger>
-																	<Badge variant="outline" className="text-xs">
-																		{vks.length} {vks.length === 1 ? "key" : "keys"}
-																	</Badge>
-																</TooltipTrigger>
-																<TooltipContent>{vks.map((vk) => vk.name).join(", ")}</TooltipContent>
-															</Tooltip>
+															<Badge variant="outline" className="text-xs">
+																{vkCount} {vkCount === 1 ? "key" : "keys"}
+															</Badge>
 														</div>
 													) : (
 														<span className="text-muted-foreground text-sm">-</span>
