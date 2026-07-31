@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -236,6 +237,137 @@ func TestPreRequestHook_SemanticComplexityUsesLastMessageAndFallsBack(t *testing
 	require.Equal(t, routeModel, modelOut)
 	require.Equal(t, complexity.TierSimple, lexicalCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
 	require.Equal(t, complexity.MechanismLexical, lexicalCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+}
+
+// TestPreRequestHook_SemanticComplexityTimeoutIsNamedInRoutingLog keeps an
+// exhausted embedding budget legible in the request log. Reported as a generic
+// "unavailable" it is indistinguishable from a misconfigured provider or an
+// unfinished warmup, which sends an operator debugging the wrong thing: the
+// remedy for this one is raising semantic.timeout.
+func TestPreRequestHook_SemanticComplexityTimeoutIsNamedInRoutingLog(t *testing.T) {
+	logger := NewMockLogger()
+	provider := "openai"
+	routeModel := "gpt-4o-mini"
+	semanticTimeout := 45 * time.Millisecond
+	semanticConfig := complexity.AnalyzerConfig{
+		TierBoundaries: complexity.DefaultTierBoundaries(),
+		Keywords: complexity.EditableKeywordConfig{
+			SimpleKeywords:  []string{"papaya amber"},
+			MediumKeywords:  []string{"cedar cobalt"},
+			ComplexKeywords: []string{"obsidian comet"},
+		},
+		Semantic: &complexity.SemanticConfig{
+			Provider:       schemas.OpenAI,
+			EmbeddingModel: "test-embedding-model",
+			Timeout:        semanticTimeout,
+			VectorStore:    configstore.ComplexitySemanticVectorStoreEmbedded,
+		},
+	}
+
+	plugin, err := Init(
+		context.Background(),
+		&Config{IsVkMandatory: boolPtr(false)},
+		logger,
+		nil,
+		&configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: &semanticConfig,
+			RoutingRules: []configstoreTables.TableRoutingRule{
+				{
+					ID:            "semantic-timeout-rule",
+					Name:          "Semantic simple route",
+					CelExpression: `complexity_tier == "SIMPLE"`,
+					Targets: []configstoreTables.TableRoutingTarget{
+						{Provider: &provider, Model: &routeModel, Weight: 1.0},
+					},
+					Enabled:  schemas.Ptr(true),
+					Scope:    "global",
+					Priority: 0,
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, plugin.Cleanup())
+	}()
+
+	// Warmup has to succeed before the hot path can time out, and swapping the
+	// executor afterwards would re-enter warmup. One executor that changes
+	// behavior on a flag keeps the serving generation untouched.
+	var warmed atomic.Bool
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		if warmed.Load() {
+			// The shape core returns for an expired context, per
+			// newBifrostCtxDoneError.
+			return nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Type:           schemas.Ptr(schemas.RequestTimedOut),
+				StatusCode:     schemas.Ptr(504),
+				Error:          &schemas.ErrorField{Message: "request timed out after sending to provider"},
+			}
+		}
+		var texts []string
+		if req.Input.Text != nil {
+			texts = []string{*req.Input.Text}
+		} else {
+			texts = req.Input.Texts
+		}
+		data := make([]schemas.EmbeddingData, len(texts))
+		for index, text := range texts {
+			vector := []float64{0.5, 0.5}
+			switch text {
+			case "papaya amber":
+				vector = []float64{1, 0}
+			case "cedar cobalt":
+				vector = []float64{0, 1}
+			case "obsidian comet":
+				vector = []float64{-1, 0}
+			}
+			data[index] = schemas.EmbeddingData{
+				Index:     index,
+				Embedding: schemas.EmbeddingStruct{EmbeddingArray: vector},
+			}
+		}
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  data,
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: len(texts)},
+		}, nil
+	})
+
+	require.Eventually(t, func() bool {
+		return plugin.ComplexitySemanticStatus().State == complexity.SemanticStatusReady
+	}, time.Second, 10*time.Millisecond, "semantic classifier did not finish warmup")
+	warmed.Store(true)
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: complexityChatString("papaya amber")},
+			},
+		},
+	}
+	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
+
+	var messages []string
+	for _, entry := range bfCtx.GetRoutingEngineLogs() {
+		messages = append(messages, entry.Message)
+	}
+	joined := strings.Join(messages, "\n")
+	require.Contains(t, joined, "timed out after "+semanticTimeout.String())
+	require.NotContains(t, joined, "classification unavailable", "a timeout must not be reported as a generic failure")
+
+	// The fallback still has to route: naming the timeout changes the log, not
+	// the routing behavior.
+	require.Equal(t, complexity.MechanismLexical, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	_, modelOut, _ := req.GetRequestFields()
+	require.Equal(t, routeModel, modelOut)
 }
 
 func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {
