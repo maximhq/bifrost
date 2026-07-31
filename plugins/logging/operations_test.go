@@ -2,7 +2,6 @@ package logging
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -1033,9 +1032,9 @@ func TestBuildLogEntriesOmitEmptyUserAgent(t *testing.T) {
 	}
 }
 
-// TestMCPHooksPersistPluginLogs verifies PostMCPHook stores the plugin-log
-// snapshot accumulated before logging's post-hook runs.
-func TestMCPHooksPersistPluginLogs(t *testing.T) {
+// TestMCPHooksDeferDBWriteUntilPostHookBatch verifies MCP logs are kept in
+// memory after PreMCPHook and persisted by the batch writer after PostMCPHook.
+func TestMCPHooksDeferDBWriteUntilPostHookBatch(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
 	if err != nil {
@@ -1086,11 +1085,6 @@ func TestMCPHooksPersistPluginLogs(t *testing.T) {
 	}
 
 	result := `{"answer":"done"}`
-	guardrailsName := "guardrails"
-	guardrailsCtx := ctx.WithPluginScope(&guardrailsName)
-	guardrailsCtx.Log(schemas.LogLevelInfo, "MCP tool arguments redacted")
-	guardrailsCtx.ReleasePluginScope()
-
 	_, _, err = plugin.PostMCPHook(ctx, &schemas.BifrostMCPResponse{
 		ChatMessage: &schemas.ChatMessage{
 			Role:    schemas.ChatMessageRoleTool,
@@ -1112,6 +1106,7 @@ func TestMCPHooksPersistPluginLogs(t *testing.T) {
 	if got := pendingEntry.RedactionData.ReversibleMappings.Output["EMAIL-2"]; got != "result@example.com" {
 		t.Fatalf("output redaction mapping = %q, want %q", got, "result@example.com")
 	}
+
 	if err := plugin.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() error = %v", err)
 	}
@@ -1132,13 +1127,6 @@ func TestMCPHooksPersistPluginLogs(t *testing.T) {
 	}
 	if logEntry.Latency == nil || *logEntry.Latency != 42 {
 		t.Fatalf("expected latency 42, got %#v", logEntry.Latency)
-	}
-	var pluginLogs map[string][]schemas.PluginLogEntry
-	if err := json.Unmarshal([]byte(logEntry.PluginLogs), &pluginLogs); err != nil {
-		t.Fatalf("expected valid plugin logs JSON, got %q: %v", logEntry.PluginLogs, err)
-	}
-	if got := pluginLogs[guardrailsName]; len(got) != 1 || got[0].Message != "MCP tool arguments redacted" {
-		t.Fatalf("expected guardrails plugin log to be persisted, got %#v", pluginLogs)
 	}
 	assertMCPLogGovernanceFields(t, logEntry, "user-1", "team-1", "customer-1", "bu-1")
 }
@@ -1176,6 +1164,7 @@ func TestPostMCPHookFallbackStampsGovernanceFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PostMCPHook() error = %v", err)
 	}
+
 	if err := plugin.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() error = %v", err)
 	}

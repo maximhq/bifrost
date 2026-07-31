@@ -1629,7 +1629,13 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		return nil
 	}
 	// Serialize plugin logs once for all entries
-	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
+	var pluginLogsJSON string
+	if len(trace.PluginLogs) > 0 {
+		grouped := schemas.GroupPluginLogsByName(trace.PluginLogs)
+		if data, err := sonic.Marshal(grouped); err == nil {
+			pluginLogsJSON = string(data)
+		}
+	}
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
 	// Enqueue each log entry (supports multiple attempts per trace)
 	for _, entry := range pending.entries {
@@ -1638,18 +1644,6 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
 	}
 	return nil
-}
-
-// serializePluginLogs groups plugin logs by plugin name for persistence and UI rendering.
-func serializePluginLogs(logs []schemas.PluginLogEntry) string {
-	if len(logs) == 0 {
-		return ""
-	}
-	data, err := sonic.Marshal(schemas.GroupPluginLogsByName(logs))
-	if err != nil {
-		return ""
-	}
-	return string(data)
 }
 
 // MCP Plugin Interface Implementation
@@ -1916,7 +1910,6 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	callback := p.mcpToolLogCallback
 	p.mu.Unlock()
 	attachMCPLogRedactionData(ctx, entry, p.contentLoggingEnabled(ctx))
-	entry.PluginLogs = serializePluginLogs(ctx.GetPluginLogs())
 	p.enqueueMCPToolLogEntry(entry, callback)
 
 	return resp, bifrostErr, nil
