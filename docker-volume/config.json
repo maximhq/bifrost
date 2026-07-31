@@ -1,0 +1,27 @@
+{
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/home/vedran/tmp/bifrost/docker-volume/config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/home/vedran/tmp/bifrost/docker-volume/logs.db"
+    }
+  },
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "bifrost-userinfo-plugin",
+      "path": "/home/vedran/work/r_and_d/jarvis/bifrost-userinfo-plugin/build/bifrost-userinfo-plugin-local.so",
+      "version": 1,
+      "config": {
+        "vk_name_header": "x-user-info"
+      }
+    }
+  ]
+}
