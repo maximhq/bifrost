@@ -14,6 +14,14 @@ interface PluginLogsViewProps {
 	pluginLogs: string;
 }
 
+function formatPluginName(name: string): string {
+	return name
+		.split(/[-_\s]+/)
+		.filter(Boolean)
+		.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+		.join(" ");
+}
+
 export default function PluginLogsView({ pluginLogs }: PluginLogsViewProps) {
 	let parsed: Record<string, PluginLogEntry[]>;
 	try {
@@ -58,7 +66,7 @@ function PluginSection({ name, entries }: { name: string; entries: PluginLogEntr
 				className="hover:bg-muted/50 flex w-full items-center gap-2 px-4 py-2 text-left text-sm"
 			>
 				{isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-				<span className="font-medium">{name}</span>
+				<span className="font-medium">{formatPluginName(name)}</span>
 				<span className="text-muted-foreground text-xs">({entries.length})</span>
 			</button>
 			{isOpen && (
