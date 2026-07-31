@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -20,6 +21,43 @@ import (
 	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// toolSyncFlight coalesces in-flight async per-user OAuth tool-list refreshes
+// so only one upstream tools/list call runs per client at a time.
+type toolSyncFlight struct {
+	mu          sync.Mutex
+	running     bool
+	lastAttempt time.Time
+}
+
+func (f *toolSyncFlight) tryStart(now, lastSuccessfulSync time.Time, interval time.Duration) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.running {
+		return false
+	}
+	lastAttempt := f.lastAttempt
+	if lastSuccessfulSync.After(lastAttempt) {
+		lastAttempt = lastSuccessfulSync
+	}
+	if !lastAttempt.IsZero() && now.Sub(lastAttempt) < interval {
+		return false
+	}
+	f.running = true
+	f.lastAttempt = now
+	return true
+}
+
+func (f *toolSyncFlight) finish(completedAt time.Time, retryOnNextRequest bool) {
+	f.mu.Lock()
+	f.running = false
+	if retryOnNextRequest {
+		f.lastAttempt = time.Time{}
+	} else if completedAt.After(f.lastAttempt) {
+		f.lastAttempt = completedAt
+	}
+	f.mu.Unlock()
+}
 
 // AcquireClientConn returns a live upstream MCP client connection for the
 // given client state, along with a release function the caller must invoke
@@ -75,6 +113,9 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 	// covers both per-user-OAuth (Kind=oauth) and per-user-headers
 	// (Kind=headers) surfaces.
 	var authRequiredErr *schemas.MCPAuthRequiredError
+	// Capture the bearer token from the resolved OAuth headers so an async
+	// tool-list refresh can reuse it without re-resolving credentials.
+	var accessToken string
 	start := time.Now()
 
 	_, gateErr := m.runConnectWithPluginPipeline(ctx, connectReq, func(preReq *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectResponse, error) {
@@ -84,6 +125,9 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		if credErr != nil {
 			errors.As(credErr, &authRequiredErr)
 			return nil, credErr
+		}
+		if ah := authHeaders.Get("Authorization"); ah != "" {
+			accessToken = strings.TrimPrefix(ah, "Bearer ")
 		}
 
 		// Compose final transport headers: plugin-mutated static base + auth on top.
@@ -199,7 +243,108 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 			m.logger.Warn("%s Failed to close ephemeral client for %s: %v", MCPLogPrefix, config.Name, err)
 		}
 	}
+
+	// Kick off an async tool-list refresh for per-user OAuth clients when the
+	// cached tool list is stale. The current request uses the existing tools;
+	// the refreshed list is available for subsequent requests.
+	m.maybeRefreshDiscoveredToolsAsync(state, accessToken)
+
 	return tempClient, release, nil
+}
+
+// maybeRefreshDiscoveredToolsAsync triggers a coalesced async tools/list for
+// per-user OAuth clients when the cached tool list is older than the sync
+// interval. Only one refresh runs per client at a time; failures leave the
+// existing cached tools in place.
+func (m *MCPManager) maybeRefreshDiscoveredToolsAsync(state *schemas.MCPClientState, accessToken string) {
+	if state == nil || state.ExecutionConfig == nil || accessToken == "" {
+		return
+	}
+	config := state.ExecutionConfig
+	if config.AuthType != schemas.MCPAuthTypePerUserOauth {
+		return
+	}
+	interval := ResolveToolSyncInterval(config, m.toolSyncManager.GetGlobalInterval())
+	if interval <= 0 {
+		return
+	}
+	flightRaw, _ := m.toolSyncInFlight.LoadOrStore(config.ID, &toolSyncFlight{})
+	flight := flightRaw.(*toolSyncFlight)
+	if !flight.tryStart(time.Now(), config.DiscoveredToolsLastSync, interval) {
+		return
+	}
+
+	go func() {
+		retryOnNextRequest := false
+		completedAt := time.Time{}
+		defer func() {
+			flight.finish(completedAt, retryOnNextRequest)
+		}()
+
+		ctx, cancel := context.WithTimeout(m.ctx, ToolSyncTimeout)
+		defer cancel()
+
+		tools, mapping, err := m.VerifyPerUserOAuthConnection(ctx, config, accessToken)
+		if err != nil {
+			m.logger.Warn("%s async tool-list refresh failed for %s: %v", MCPLogPrefix, config.Name, err)
+			return
+		}
+		if tools == nil {
+			tools = make(map[string]schemas.ChatTool)
+		}
+		if mapping == nil {
+			mapping = make(map[string]string)
+		}
+
+		completedAt = time.Now()
+		if !m.applyDiscoveredToolsRefresh(config, tools, mapping, completedAt) {
+			// The client was removed or its immutable config snapshot changed
+			// while tools/list was running. Do not apply a result produced from
+			// stale headers/name/configuration, and allow the next request to retry.
+			retryOnNextRequest = true
+			return
+		}
+
+		if m.persistMCPClientDiscoveredTools != nil {
+			persistCtx, persistCancel := context.WithTimeout(m.ctx, ToolSyncTimeout)
+			defer persistCancel()
+			if err := m.persistMCPClientDiscoveredTools(persistCtx, config.ID, config.Name, tools, mapping, completedAt); err != nil {
+				m.logger.Warn("%s failed to persist refreshed tools for %s: %v", MCPLogPrefix, config.Name, err)
+				return
+			}
+		}
+
+		m.logger.Info("%s async tool-list refresh completed for %s: %d tools", MCPLogPrefix, config.Name, len(tools))
+	}()
+}
+
+// applyDiscoveredToolsRefresh atomically replaces the global tool catalog and
+// immutable execution-config snapshot when the client still has the exact
+// configuration used for discovery. It rejects stale async results produced
+// across an update, removal, or remove/re-add lifecycle.
+func (m *MCPManager) applyDiscoveredToolsRefresh(
+	expectedConfig *schemas.MCPClientConfig,
+	tools map[string]schemas.ChatTool,
+	mapping map[string]string,
+	lastSync time.Time,
+) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	client, ok := m.clientMap[expectedConfig.ID]
+	if !ok || client.ExecutionConfig != expectedConfig {
+		return false
+	}
+
+	newConfig := *expectedConfig
+	newConfig.DiscoveredTools = maps.Clone(tools)
+	newConfig.DiscoveredToolNameMapping = maps.Clone(mapping)
+	newConfig.DiscoveredToolsLastSync = lastSync
+
+	client.ToolMap = maps.Clone(tools)
+	client.ToolNameMapping = maps.Clone(mapping)
+	client.ExecutionConfig = &newConfig
+	return true
 }
 
 // GetClients returns all MCP clients managed by the manager.
@@ -753,6 +898,7 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 	client.ToolMap = make(map[string]schemas.ChatTool)
 
 	delete(m.clientMap, id)
+	m.toolSyncInFlight.Delete(id)
 	return nil
 }
 
@@ -812,7 +958,9 @@ func (m *MCPManager) DisableClient(id string) error {
 		clientState.ToolNameMapping = make(map[string]string)
 	}
 	clientState.State = schemas.MCPConnectionStateDisabled
-	clientState.ExecutionConfig.Disabled = true
+	disabledConfig := *clientState.ExecutionConfig
+	disabledConfig.Disabled = true
+	clientState.ExecutionConfig = &disabledConfig
 	m.logger.Debug("%s MCP client '%s' disabled successfully", MCPLogPrefix, clientState.ExecutionConfig.Name)
 	return nil
 }
@@ -837,7 +985,9 @@ func (m *MCPManager) EnableClient(id string) error {
 		return fmt.Errorf("client %s is not disabled (current state: %s)", clientState.ExecutionConfig.Name, clientState.State)
 	}
 
-	clientState.ExecutionConfig.Disabled = false
+	enabledConfig := *clientState.ExecutionConfig
+	enabledConfig.Disabled = false
+	clientState.ExecutionConfig = &enabledConfig
 	configCopy := clientState.ExecutionConfig
 	m.mu.Unlock()
 
@@ -963,16 +1113,19 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	// will continue to see consistent data.
 	newConfig := &schemas.MCPClientConfig{
 		// Immutable fields - copy from existing config
-		ID:               client.ExecutionConfig.ID,
-		ConnectionType:   client.ExecutionConfig.ConnectionType,
-		ConnectionString: client.ExecutionConfig.ConnectionString,
-		StdioConfig:      client.ExecutionConfig.StdioConfig,
-		AuthType:         client.ExecutionConfig.AuthType,
-		OauthConfigID:    oauthConfigID,
-		State:            client.ExecutionConfig.State,
-		InProcessServer:  client.ExecutionConfig.InProcessServer,
-		ConfigHash:       client.ExecutionConfig.ConfigHash,
-		ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
+		ID:                        client.ExecutionConfig.ID,
+		ConnectionType:            client.ExecutionConfig.ConnectionType,
+		ConnectionString:          client.ExecutionConfig.ConnectionString,
+		StdioConfig:               client.ExecutionConfig.StdioConfig,
+		AuthType:                  client.ExecutionConfig.AuthType,
+		OauthConfigID:             oauthConfigID,
+		State:                     client.ExecutionConfig.State,
+		InProcessServer:           client.ExecutionConfig.InProcessServer,
+		ConfigHash:                client.ExecutionConfig.ConfigHash,
+		ToolPricing:               maps.Clone(client.ExecutionConfig.ToolPricing),
+		DiscoveredTools:           maps.Clone(client.ExecutionConfig.DiscoveredTools),
+		DiscoveredToolNameMapping: maps.Clone(client.ExecutionConfig.DiscoveredToolNameMapping),
+		DiscoveredToolsLastSync:   client.ExecutionConfig.DiscoveredToolsLastSync,
 		// Updatable fields - copy from updated config with proper cloning
 		Name:                  updatedConfig.Name,
 		IsCodeModeClient:      updatedConfig.IsCodeModeClient,
@@ -988,9 +1141,6 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		TLSConfig:             updatedConfig.TLSConfig,
 		PerUserHeaderKeys:     slices.Clone(updatedConfig.PerUserHeaderKeys),
 	}
-
-	// Atomically replace the config pointer
-	client.ExecutionConfig = newConfig
 
 	// Rebind ToolMap keys (and inner Function.Name) to the current client name.
 	newPrefix := updatedConfig.Name + "-"
@@ -1010,6 +1160,13 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 
 	// Replace the old ToolMap with the new one
 	client.ToolMap = newToolMap
+	if newConfig.DiscoveredTools != nil {
+		newConfig.DiscoveredTools = maps.Clone(newToolMap)
+	}
+
+	// Atomically replace the config pointer only after all fields in the new
+	// immutable snapshot have been finalized.
+	client.ExecutionConfig = newConfig
 
 	// Also update the client Name field
 	client.Name = updatedConfig.Name

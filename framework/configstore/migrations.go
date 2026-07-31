@@ -371,6 +371,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_multi_budget_tables"}, run: migrationAddMultiBudgetTables},
 	{IDs: []string{"add_per_user_oauth_tables"}, run: migrationAddPerUserOAuthTables},
 	{IDs: []string{"add_mcp_client_discovered_tools_columns"}, run: migrationAddMCPClientDiscoveredToolsColumns},
+	{IDs: []string{"add_mcp_client_discovered_tools_last_sync_column"}, run: migrationAddMCPClientDiscoveredToolsLastSyncColumn},
 	{IDs: []string{"add_whitelisted_routes_json_column"}, run: migrationAddWhitelistedRoutesJSONColumn},
 	{IDs: []string{"replace_enable_litellm_with_compat_columns"}, run: migrationReplaceEnableLiteLLMWithCompatColumns},
 	{IDs: []string{"add_model_pricing_unique_index"}, run: migrationAddModelPricingUniqueIndex},
@@ -7920,6 +7921,28 @@ func migrationAddMCPClientDiscoveredToolsColumns(ctx context.Context, db *gorm.D
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_mcp_client_discovered_tools_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientDiscoveredToolsLastSyncColumn adds discovered_tools_last_sync column to the mcp_client table
+func migrationAddMCPClientDiscoveredToolsLastSyncColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_discovered_tools_last_sync_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "discovered_tools_last_sync")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "discovered_tools_last_sync")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
 	}
 	return nil
 }

@@ -43,6 +43,7 @@ type MCPManager struct {
 	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
 	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
 	reconnectingClients  sync.Map                           // Tracks in-flight reconnect attempts per client ID (map[string]bool)
+	toolSyncInFlight     sync.Map                           // Tracks async per-user OAuth tool sync attempts per client ID (map[string]*toolSyncFlight)
 	bootClientConfigs    []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
 	connectOnce          sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
 
@@ -51,6 +52,10 @@ type MCPManager struct {
 	// existing execute-tool hooks.
 	pluginPipelineProvider func() PluginPipeline
 	releasePluginPipeline  func(pipeline PluginPipeline)
+
+	// persistMCPClientDiscoveredTools is an optional narrow callback that
+	// persists only the refreshed global tool catalog and its last-sync time.
+	persistMCPClientDiscoveredTools func(context.Context, string, string, map[string]schemas.ChatTool, map[string]string, time.Time) error
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -78,6 +83,9 @@ type MCPToolFunction[T any] func(args T) (string, error)
 // Returns:
 //   - *MCPManager: Initialized manager instance
 func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore schemas.MCPCredentialStore, logger schemas.Logger, codeMode CodeMode) *MCPManager {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if logger == nil {
 		logger = defaultLogger
 	}
@@ -97,12 +105,13 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	}
 	// Creating new instance
 	manager := &MCPManager{
-		ctx:                  ctx,
-		logger:               logger,
-		clientMap:            make(map[string]*schemas.MCPClientState),
-		healthMonitorManager: NewHealthMonitorManager(),
-		toolSyncManager:      NewToolSyncManager(config.ToolSyncInterval),
-		credStore:            credStore,
+		ctx:                             ctx,
+		logger:                          logger,
+		clientMap:                       make(map[string]*schemas.MCPClientState),
+		healthMonitorManager:            NewHealthMonitorManager(),
+		toolSyncManager:                 NewToolSyncManager(config.ToolSyncInterval),
+		credStore:                       credStore,
+		persistMCPClientDiscoveredTools: config.PersistMCPClientDiscoveredTools,
 	}
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline

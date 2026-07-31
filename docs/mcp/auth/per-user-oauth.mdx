@@ -59,6 +59,19 @@ Per-user OAuth is configured through the **Web UI** only. During setup Bifrost r
 If the upstream server supports OAuth Discovery (RFC 8414), you can leave the authorize and token URLs blank and provide only the **Connection URL** plus client ID. Bifrost discovers the endpoints automatically.
 </Info>
 
+### Global tool catalog refresh
+
+The MCP client's tool catalog is global even though its OAuth credentials are
+per user. Bifrost periodically rewarms that shared catalog after resolving any
+authorized user's token for a tool call. The current call uses the existing
+catalog; a successful asynchronous refresh is visible to every user on later
+requests and is persisted across restarts.
+
+Only the tool definitions are shared. Every tool execution still uses the
+calling user's own OAuth token, so upstream data access remains scoped to that
+user. Refresh attempts are coalesced per MCP client and bounded by the configured
+tool sync interval; a failed refresh leaves the previous catalog intact.
+
 ---
 
 ## How it works

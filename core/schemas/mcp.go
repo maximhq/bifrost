@@ -181,6 +181,19 @@ type MCPConfig struct {
 	// ReleasePluginPipeline releases a plugin pipeline back to the pool.
 	// This should be called after the plugin pipeline is no longer needed.
 	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
+
+	// PersistMCPClientDiscoveredTools persists a refreshed global tool catalog
+	// for a per-user OAuth MCP client. The expected client name lets the backing
+	// store reject a refresh that raced with a client rename. When nil, async
+	// refreshes are in-memory only.
+	PersistMCPClientDiscoveredTools func(
+		ctx context.Context,
+		clientID string,
+		expectedClientName string,
+		tools map[string]ChatTool,
+		toolNameMapping map[string]string,
+		lastSync time.Time,
+	) error `json:"-"`
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
@@ -298,19 +311,19 @@ const (
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID                  string            `json:"client_id"`                       // Client ID
-	Name                string            `json:"name"`                            // Client name
-	IsCodeModeClient    bool              `json:"is_code_mode_client"`             // Whether the client is a code mode client
-	ConnectionType      MCPConnectionType `json:"connection_type"`                 // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString    *SecretVar           `json:"connection_string,omitempty"`     // HTTP or SSE URL (required for HTTP or SSE connections)
-	StdioConfig         *MCPStdioConfig   `json:"stdio_config,omitempty"`          // STDIO configuration (required for STDIO connections)
-	TLSConfig           *MCPTLSConfig     `json:"tls_config,omitempty"`            // TLS configuration for HTTP/SSE connections
-	AuthType            MCPAuthType       `json:"auth_type"`                       // Authentication type (none, headers, or oauth)
-	OauthConfigID       *string           `json:"oauth_config_id,omitempty"`       // OAuth config ID (references oauth_configs table)
-	OauthClientID       *SecretVar           `json:"oauth_client_id,omitempty"`       // Redacted OAuth client ID (populated on GET, not stored here)
-	OauthClientSecret   *SecretVar           `json:"oauth_client_secret,omitempty"`   // Redacted OAuth client secret (populated on GET, not stored here)
-	State               string            `json:"state,omitempty"`                 // Connection state (connected, disconnected, error)
-	Headers             map[string]SecretVar `json:"headers,omitempty"`               // Headers to send with the request (for headers auth type)
+	ID                string               `json:"client_id"`                     // Client ID
+	Name              string               `json:"name"`                          // Client name
+	IsCodeModeClient  bool                 `json:"is_code_mode_client"`           // Whether the client is a code mode client
+	ConnectionType    MCPConnectionType    `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)
+	ConnectionString  *SecretVar           `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)
+	StdioConfig       *MCPStdioConfig      `json:"stdio_config,omitempty"`        // STDIO configuration (required for STDIO connections)
+	TLSConfig         *MCPTLSConfig        `json:"tls_config,omitempty"`          // TLS configuration for HTTP/SSE connections
+	AuthType          MCPAuthType          `json:"auth_type"`                     // Authentication type (none, headers, or oauth)
+	OauthConfigID     *string              `json:"oauth_config_id,omitempty"`     // OAuth config ID (references oauth_configs table)
+	OauthClientID     *SecretVar           `json:"oauth_client_id,omitempty"`     // Redacted OAuth client ID (populated on GET, not stored here)
+	OauthClientSecret *SecretVar           `json:"oauth_client_secret,omitempty"` // Redacted OAuth client secret (populated on GET, not stored here)
+	State             string               `json:"state,omitempty"`               // Connection state (connected, disconnected, error)
+	Headers           map[string]SecretVar `json:"headers,omitempty"`             // Headers to send with the request (for headers auth type)
 	// PerUserHeaderKeys lists the header *names* each caller must supply for
 	// MCPAuthTypePerUserHeaders clients. Admin-declared schema only — the
 	// values live per-user in the mcp_per_user_header_credentials table and
@@ -334,17 +347,18 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`       // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
-	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolExecutionTimeout  time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
-	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
-	Disabled              bool               `json:"disabled"`                     // Whether the client is intentionally disabled (stops connection and workers)
-	ConfigHash            string             `json:"-"`                            // Config hash for reconciliation (not serialized)
-	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`    // Whether to allow the MCP client to run on all virtual keys
+	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`      // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`     // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolExecutionTimeout  time.Duration      `json:"tool_execution_timeout,omitempty"` // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
+	Disabled              bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
+	ConfigHash            string             `json:"-"`                                // Config hash for reconciliation (not serialized)
+	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`        // Whether to allow the MCP client to run on all virtual keys
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+	DiscoveredToolsLastSync   time.Time           `json:"-"` // Last time the global tool catalog was refreshed from a live per-user token
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and
@@ -554,7 +568,7 @@ type MCPStdioConfig struct {
 // MCPTLSConfig holds TLS options for HTTP and SSE MCP connections.
 // InsecureSkipVerify takes priority over CACertPEM when both are set.
 type MCPTLSConfig struct {
-	InsecureSkipVerify bool    `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
+	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
 	CACertPEM          *SecretVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
 }
 

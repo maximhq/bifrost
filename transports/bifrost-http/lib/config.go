@@ -1894,6 +1894,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 	if authType == "" {
 		authType = string(schemas.MCPAuthTypeHeaders)
 	}
+
 	return configstoreTables.TableMCPClient{
 		ClientID:                  clientConfig.ID,
 		Name:                      clientConfig.Name,

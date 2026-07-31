@@ -1561,7 +1561,13 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Disabled:                  dbClient.Disabled,
 					DiscoveredTools:           dbClient.DiscoveredTools,
 					DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
-					PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+					DiscoveredToolsLastSync: func() time.Time {
+						if dbClient.DiscoveredToolsLastSync != nil {
+							return *dbClient.DiscoveredToolsLastSync
+						}
+						return time.Time{}
+					}(),
+					PerUserHeaderKeys: dbClient.PerUserHeaderKeys,
 				}
 			}
 			return &schemas.MCPConfig{
@@ -1604,7 +1610,13 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			ToolPricing:               dbClient.ToolPricing,
 			DiscoveredTools:           dbClient.DiscoveredTools,
 			DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
-			PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+			DiscoveredToolsLastSync: func() time.Time {
+				if dbClient.DiscoveredToolsLastSync != nil {
+					return *dbClient.DiscoveredToolsLastSync
+				}
+				return time.Time{}
+			}(),
+			PerUserHeaderKeys: dbClient.PerUserHeaderKeys,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -2028,7 +2040,13 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		ToolPricing:               dbClient.ToolPricing,
 		DiscoveredTools:           dbClient.DiscoveredTools,
 		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
-		PerUserHeaderKeys:         dbClient.PerUserHeaderKeys,
+		DiscoveredToolsLastSync: func() time.Time {
+			if dbClient.DiscoveredToolsLastSync != nil {
+				return *dbClient.DiscoveredToolsLastSync
+			}
+			return time.Time{}
+		}(),
+		PerUserHeaderKeys: dbClient.PerUserHeaderKeys,
 	}, nil
 }
 
@@ -2083,6 +2101,13 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
+			DiscoveredToolsLastSync: func() *time.Time {
+				if !clientConfig.DiscoveredToolsLastSync.IsZero() {
+					ts := clientConfig.DiscoveredToolsLastSync
+					return &ts
+				}
+				return nil
+			}(),
 			// PerUserHeaderKeys is the admin-declared schema for
 			// MCPAuthTypePerUserHeaders. Without this copy the BeforeSave
 			// hook persists an empty column, and on restart AddClient's
@@ -2291,6 +2316,53 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 
 		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {
 			return s.parseGormError(err)
+		}
+		return nil
+	})
+}
+
+// UpdateMCPClientDiscoveredTools atomically persists only the global tool
+// catalog fields refreshed with a per-user OAuth token. expectedName prevents
+// an async refresh produced with a stale client-name prefix from overwriting a
+// row that was renamed while tools/list was in flight.
+func (s *RDBConfigStore) UpdateMCPClientDiscoveredTools(
+	ctx context.Context,
+	id string,
+	expectedName string,
+	tools map[string]schemas.ChatTool,
+	toolNameMapping map[string]string,
+	lastSync time.Time,
+) error {
+	if tools == nil {
+		tools = make(map[string]schemas.ChatTool)
+	}
+	if toolNameMapping == nil {
+		toolNameMapping = make(map[string]string)
+	}
+	discoveredToolsJSON, err := json.Marshal(tools)
+	if err != nil {
+		return fmt.Errorf("failed to marshal discovered tools: %w", err)
+	}
+	toolNameMappingJSON, err := json.Marshal(toolNameMapping)
+	if err != nil {
+		return fmt.Errorf("failed to marshal discovered tool name mapping: %w", err)
+	}
+
+	return s.DB().Transaction(func(tx *gorm.DB) error {
+		result := tx.WithContext(ctx).
+			Model(&tables.TableMCPClient{}).
+			Where("client_id = ? AND name = ?", id, expectedName).
+			Updates(map[string]interface{}{
+				"discovered_tools_json":      string(discoveredToolsJSON),
+				"tool_name_mapping_json":     string(toolNameMappingJSON),
+				"discovered_tools_last_sync": lastSync,
+				"updated_at":                 time.Now(),
+			})
+		if result.Error != nil {
+			return s.parseGormError(result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("MCP client %q was removed or renamed during tool refresh", id)
 		}
 		return nil
 	})
