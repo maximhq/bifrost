@@ -68379,6 +68379,7 @@
           "vertex",
           "vllm",
           "mistral",
+          "nadir",
           "ollama",
           "groq",
           "sgl",
