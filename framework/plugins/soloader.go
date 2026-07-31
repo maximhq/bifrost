@@ -15,16 +15,39 @@ type SharedObjectPluginLoader struct{}
 func openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
 	// Checking if path is URL or file path
 	if strings.HasPrefix(dp.Path, "http") {
-		// Download the file
-		tempPath, err := DownloadPlugin(dp.Path, ".so")
+		// Download the file; stablePath is content-hash-based and contentHash is
+		// the SHA-256 of the plugin bytes. If the same content was already
+		// downloaded (same hash), DownloadPlugin returns the existing stable path.
+		stablePath, contentHash, err := DownloadPlugin(dp.Path, ".so")
 		if err != nil {
 			return nil, err
 		}
-		dp.Path = tempPath
+		dp.Path = stablePath
+		dp.contentHash = contentHash
+
+		// Check the in-memory plugin cache. If the same binary content was
+		// already loaded, return the cached *plugin.Plugin to avoid a
+		// "plugin already loaded" error from Go's plugin system.
+		if cached, ok := getPluginCacheEntry(contentHash); ok {
+			if p, ok := cached.loadedPlugin.(*plugin.Plugin); ok {
+				dp.plugin = p
+				return p, nil
+			}
+			// Cache entry exists but loadedPlugin is nil (e.g. cache was reset
+			// but Go's plugin table still holds the module). Use the cached
+			// stablePath; plugin.Open(reused-path) returns the already-loaded
+			// module from Go's internal table.
+			dp.Path = cached.stablePath
+		}
 	}
 	pluginObj, err := plugin.Open(dp.Path)
 	if err != nil {
 		return nil, err
+	}
+	// Register the loaded plugin so future reloads of the same binary skip
+	// the Open call entirely (the common config-only update path).
+	if dp.contentHash != "" {
+		setPluginCacheLoaded(dp.contentHash, dp.Path, pluginObj)
 	}
 	dp.plugin = pluginObj
 	return pluginObj, nil

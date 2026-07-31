@@ -14,8 +14,9 @@ type DynamicPlugin struct {
 	Path    string
 	Config  any
 
-	filename string
-	plugin   *plugin.Plugin
+	filename    string
+	plugin      *plugin.Plugin
+	contentHash string
 
 	// BasePlugin (required)
 	getName func() string

@@ -807,3 +807,5 @@ func TestLoadPluginWithOptionalHooks(t *testing.T) {
 		assert.NoError(t, err, "Inject should not error for unimplemented hook")
 	})
 }
+
+
