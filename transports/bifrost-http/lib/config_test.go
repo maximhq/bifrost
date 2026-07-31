@@ -21182,8 +21182,6 @@ func complexityConfigWithVectorStore(mode string) *configstore.ComplexityAnalyze
 		Semantic: &configstore.ComplexitySemanticConfig{
 			Provider:       schemas.OpenAI,
 			EmbeddingModel: "text-embedding-3-small",
-			Dimension:      1536,
-			Fallback:       configstore.ComplexitySemanticFallbackLexical,
 			VectorStore:    mode,
 		},
 	}

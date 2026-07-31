@@ -108,13 +108,6 @@ func hasAnyComplexityField(fields map[string]json.RawMessage, names ...string) b
 	return false
 }
 
-// Fallback behaviors when semantic classification is unavailable (executor not
-// wired, warmup incomplete) or exceeds its timeout.
-const (
-	ComplexitySemanticFallbackLexical = "lexical"
-	ComplexitySemanticFallbackNone    = "none"
-)
-
 // Vector store selection modes for exemplar embeddings. "embedded" (the
 // default) uses the built-in chromem store; "auto" opts into the configured
 // external store when present, falling back to embedded otherwise;
@@ -138,7 +131,7 @@ const (
 )
 
 // DefaultComplexitySemanticTimeout bounds per-request embedding generation.
-const DefaultComplexitySemanticTimeout = 100 * time.Millisecond
+const DefaultComplexitySemanticTimeout = 1500 * time.Millisecond
 
 // ComplexitySemanticConfig configures the embedding-based complexity
 // classifier. A non-nil value enables semantic classification. The classifier
@@ -147,16 +140,14 @@ const DefaultComplexitySemanticTimeout = 100 * time.Millisecond
 type ComplexitySemanticConfig struct {
 	Provider       schemas.ModelProvider `json:"provider"`
 	EmbeddingModel string                `json:"embedding_model"`
-	Dimension      int                   `json:"dimension"`
 	Timeout        time.Duration         `json:"timeout,omitempty"`
-	Fallback       string                `json:"fallback,omitempty"`
 	// MinSimilarity is the floor a nearest-exemplar match must clear before its
 	// tier is used. Without it the nearest exemplar always wins, however
 	// unrelated the request is — semantic classification would never abstain,
 	// unlike the lexical analyzer, which returns no tier when it sees no signal.
 	// A match below the floor is treated exactly like an unavailable classifier
-	// and resolves through Fallback. Zero (the default) disables the floor and
-	// restores "nearest exemplar always wins".
+	// and falls back to lexical scoring. Zero (the default) disables the floor
+	// and restores "nearest exemplar always wins".
 	//
 	// The value is compared against the VectorStore backend's own similarity
 	// score, and those scales are not identical: chromem, Qdrant, Pinecone, and
@@ -176,7 +167,7 @@ type ComplexitySemanticConfig struct {
 	VectorStore         string `json:"vector_store,omitempty"`
 }
 
-// UnmarshalJSON accepts Timeout as a duration string ("100ms") or a JSON number
+// UnmarshalJSON accepts Timeout as a duration string ("500ms") or a JSON number
 // (milliseconds). It rejects unknown fields so unshipped semantic-only settings
 // cannot be silently accepted through config.json or the management API.
 func (c *ComplexitySemanticConfig) UnmarshalJSON(data []byte) error {
@@ -187,9 +178,7 @@ func (c *ComplexitySemanticConfig) UnmarshalJSON(data []byte) error {
 	allowed := map[string]struct{}{
 		"provider":              {},
 		"embedding_model":       {},
-		"dimension":             {},
 		"timeout":               {},
-		"fallback":              {},
 		"min_similarity":        {},
 		"message_history_count": {},
 		"count_toward_budgets":  {},
@@ -271,9 +260,6 @@ func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
 	}
 	if out.Timeout == 0 {
 		out.Timeout = DefaultComplexitySemanticTimeout
-	}
-	if out.Fallback == "" {
-		out.Fallback = ComplexitySemanticFallbackLexical
 	}
 	if out.VectorStore == "" {
 		out.VectorStore = ComplexitySemanticVectorStoreEmbedded
