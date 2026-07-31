@@ -293,3 +293,135 @@ func TestApplyModelInfoNilSafe(t *testing.T) {
 		t.Errorf("CalculateRequestCost on nil catalog = %v, want 0", got)
 	}
 }
+
+// seedLive caches one provider reply under keyID.
+func seedLive(mc *ModelCatalog, provider schemas.ModelProvider, keyID string, models ...schemas.Model) {
+	mc.UpsertLiveFromResponse(provider, keyID, false, &schemas.BifrostListModelsResponse{Data: models})
+}
+
+// The gap this closes: a provider serving a model the datasheet has no row for
+// used to be reported by /v1/models and unknown to plugins in the same request.
+func TestGetModelInfoAnswersFromLiveWhenDatasheetHasNoRow(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	seedLive(mc, schemas.Anthropic, "key-1", schemas.Model{
+		ID:            "brand-new-model",
+		ContextLength: new(512000),
+		OwnedBy:       new("anthropic"),
+	})
+
+	info := mc.GetModelInfo(schemas.Anthropic, "brand-new-model")
+	if info == nil {
+		t.Fatal("GetModelInfo = nil, want the live entry")
+	}
+	if info.ContextLength == nil || *info.ContextLength != 512000 {
+		t.Errorf("ContextLength = %v, want 512000", info.ContextLength)
+	}
+}
+
+// Live is the more current account of what a provider serves, so its values
+// stand and the datasheet only fills the gaps.
+func TestGetModelInfoLiveWinsDatasheetBackfills(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	seedLive(mc, schemas.Anthropic, "key-1", schemas.Model{
+		ID:            "claude-opus-5",
+		ContextLength: new(999000),
+	})
+
+	info := mc.GetModelInfo(schemas.Anthropic, "claude-opus-5")
+	if info == nil {
+		t.Fatal("GetModelInfo = nil, want populated model")
+	}
+	if info.ContextLength == nil || *info.ContextLength != 999000 {
+		t.Errorf("ContextLength = %v, want the live 999000 to win", info.ContextLength)
+	}
+	if info.Pricing == nil || info.Pricing.Prompt == nil {
+		t.Fatal("Pricing.Prompt = nil, want the datasheet to backfill what live omitted")
+	}
+	if info.MaxOutputTokens == nil || *info.MaxOutputTokens != 64000 {
+		t.Errorf("MaxOutputTokens = %v, want the datasheet's 64000", info.MaxOutputTokens)
+	}
+}
+
+// A live entry carrying only an identifier is not knowledge. Same rule
+// /v1/models applies before listing a model.
+func TestGetModelInfoBareLiveEntryStaysUnknown(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	seedLive(mc, schemas.Anthropic, "key-1", schemas.Model{ID: "nameless"})
+
+	if got := mc.GetModelInfo(schemas.Anthropic, "nameless"); got != nil {
+		t.Errorf("GetModelInfo = %+v, want nil for an ID-only entry", got)
+	}
+	if got := mc.GetModelInfo(schemas.Anthropic, "never-heard-of-it"); got != nil {
+		t.Errorf("GetModelInfo = %+v, want nil when both halves miss", got)
+	}
+}
+
+// The question is "what is this model", not "may this key reach it", so a model
+// cached under any key answers.
+func TestGetModelInfoIgnoresKeyScope(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	seedLive(mc, schemas.Anthropic, "some-other-key", schemas.Model{
+		ID:      "scoped-model",
+		OwnedBy: new("anthropic"),
+	})
+
+	if got := mc.GetModelInfo(schemas.Anthropic, "scoped-model"); got == nil {
+		t.Error("GetModelInfo = nil, want the entry regardless of which key cached it")
+	}
+}
+
+// The cached identifier may be provider-prefixed; callers ask in either form.
+func TestGetModelInfoMatchesProviderPrefixedIDs(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	seedLive(mc, schemas.Anthropic, "key-1", schemas.Model{
+		ID:      "anthropic/prefixed-model",
+		OwnedBy: new("anthropic"),
+	})
+
+	for _, ask := range []string{"prefixed-model", "anthropic/prefixed-model"} {
+		info := mc.GetModelInfo(schemas.Anthropic, ask)
+		if info == nil {
+			t.Fatalf("GetModelInfo(%q) = nil, want the cached entry", ask)
+		}
+		if info.ID != ask {
+			t.Errorf("ID = %q, want the caller's spelling %q", info.ID, ask)
+		}
+	}
+}
+
+// Plugins are third-party code. A result that still aliased the live cache
+// would let one rewrite the catalog for every later request, and reading it
+// while the refresher swaps the entry is a fatal concurrent map access.
+func TestGetModelInfoResultIsCallerOwned(t *testing.T) {
+	mc := modelInfoCatalog(t)
+	seedLive(mc, schemas.Anthropic, "key-1", schemas.Model{
+		ID:                   "owned-model",
+		ContextLength:        new(1000),
+		SupportedMethods:     []string{"chat"},
+		AdditionalAttributes: map[string]string{"tier": "original"},
+		Architecture:         &schemas.Architecture{InputModalities: []string{"text"}},
+	})
+
+	first := mc.GetModelInfo(schemas.Anthropic, "owned-model")
+	if first == nil {
+		t.Fatal("GetModelInfo = nil, want populated model")
+	}
+	first.AdditionalAttributes["tier"] = "mutated"
+	first.SupportedMethods[0] = "mutated"
+	first.Architecture.InputModalities[0] = "mutated"
+	*first.ContextLength = 1
+
+	second := mc.GetModelInfo(schemas.Anthropic, "owned-model")
+	if second.AdditionalAttributes["tier"] != "original" {
+		t.Errorf("AdditionalAttributes[tier] = %q, want untouched original", second.AdditionalAttributes["tier"])
+	}
+	if second.SupportedMethods[0] != "chat" {
+		t.Errorf("SupportedMethods[0] = %q, want untouched chat", second.SupportedMethods[0])
+	}
+	if second.Architecture.InputModalities[0] != "text" {
+		t.Errorf("InputModalities[0] = %q, want untouched text", second.Architecture.InputModalities[0])
+	}
+	if second.ContextLength == nil || *second.ContextLength != 1000 {
+		t.Errorf("ContextLength = %v, want untouched 1000", second.ContextLength)
+	}
+}

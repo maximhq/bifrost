@@ -15,7 +15,7 @@
 // own copy rather than electing one refresher.
 //
 // Entries carry each provider's models in full, not just their identifiers,
-// because the store also backs schemas.ListModelsCatalog: when a refresher is
+// because the store also backs schemas.ModelDirectory: when a refresher is
 // keeping it current, GET /v1/models is answered from here rather than by
 // querying every provider per request, and that answer has to match what a
 // live call would have returned.
@@ -285,6 +285,44 @@ func (s *Store) FullModelsFor(provider schemas.ModelProvider, keyIDs []string, u
 	}
 	slices.SortFunc(out, func(a, b schemas.Model) int { return strings.Compare(a.ID, b.ID) })
 	return out, true
+}
+
+// FindModel returns the provider's record for one model, across every key and
+// both filtered and unfiltered entries.
+//
+// Deliberately unscoped by key: this answers "what is this model", not "may
+// this key reach it". A model's context length and pricing do not depend on
+// which credential fetched the listing, so narrowing to a key here would only
+// turn a describable model into an unknown one.
+//
+// Matched against Models rather than IDs. The two are different projections
+// and need not even be the same length (see Entry.IDs), so index parity cannot
+// be assumed; only Models carries the metadata a caller wants back. Comparison
+// drops the owning provider's own prefix on both sides, leaving foreign
+// prefixes intact, which is how routing reads these identifiers.
+//
+// Deep-copied on the way out, like Snapshot: entries are replaced wholesale by
+// the refresher, so a caller holding the stored value would be reading a map
+// the next Upsert may be rewriting.
+func (s *Store) FindModel(provider schemas.ModelProvider, model string) (schemas.Model, bool) {
+	if model == "" {
+		return schemas.Model{}, false
+	}
+	want := strings.TrimPrefix(model, string(provider)+"/")
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for k, e := range s.entries {
+		if k.Provider != provider {
+			continue
+		}
+		for _, m := range e.Models {
+			if strings.TrimPrefix(m.ID, string(provider)+"/") == want {
+				return m.DeepCopy(), true
+			}
+		}
+	}
+	return schemas.Model{}, false
 }
 
 // Snapshot returns a defensive copy of every entry for diagnostics. Slices

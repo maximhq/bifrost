@@ -88,7 +88,6 @@ type Bifrost struct {
 	bifrostRequestPool  sync.Pool                           // Pool for BifrostRequest objects
 	logger              schemas.Logger                      // logger instance, default logger is used if not provided
 	tracer              atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
-	modelCatalog        schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
 	MCPManager          mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
 	mcpCredStore        schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
 	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
@@ -96,18 +95,20 @@ type Bifrost struct {
 	keySelector         schemas.KeySelector                 // Custom key selector function
 	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
 	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
-	// listModelsCatalog is the gateway's own view of each provider's models,
-	// used to answer and to reconcile list-models. Atomic rather than plain
-	// because whether it may answer outright depends on config that changes at
-	// runtime, so callers install and adjust it long after Init; see
-	// SetListModelsCatalog. Stored as one value so the catalog and its
-	// serve-from-catalog flag can never be read out of step.
-	listModelsCatalog atomic.Pointer[listModelsCatalogState]
+	// modelCatalog is the gateway's own view of the models it can serve: what
+	// each provider lists, and what is known about any one of them. Answers and
+	// reconciles list-models, and backs ctx.GetModelInfo / ctx.CalculateCost.
+	// Atomic rather than plain because whether it may answer outright depends on
+	// config that changes at runtime, so callers install and adjust it long
+	// after Init; see SetModelDirectory. Stored as one value so the catalog and
+	// its serve-from-catalog flag can never be read out of step.
+	modelDirectory atomic.Pointer[modelDirectoryState]
 }
 
-// listModelsCatalogState pairs the catalog with permission to answer from it.
-type listModelsCatalogState struct {
-	catalog        schemas.ListModelsCatalog
+// modelDirectoryState pairs the catalog with permission to answer list-models
+// from it.
+type modelDirectoryState struct {
+	catalog        schemas.ModelDirectory
 	serveFromCache bool
 }
 
@@ -259,9 +260,8 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
 		logger:        config.Logger,
 		kvStore:       config.KVStore,
-		modelCatalog:  config.ModelCatalog,
 	}
-	bifrost.SetListModelsCatalog(config.ListModelsCatalog, config.ServeListModelsFromCatalog)
+	bifrost.SetModelDirectory(config.ModelDirectory, config.ServeListModelsFromCatalog)
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
 		config.LLMPlugins = make([]schemas.LLMPlugin, 0)
@@ -406,31 +406,35 @@ func (bifrost *Bifrost) getTracer() schemas.Tracer {
 	return bifrost.tracer.Load().(*tracerWrapper).tracer
 }
 
-// getModelCatalog returns the catalog supplied at Init, or nil if none was.
-func (bifrost *Bifrost) getModelCatalog() schemas.ModelInfoProvider {
-	return bifrost.modelCatalog
+// getModelDirectory returns the configured catalog, or nil if none was set.
+func (bifrost *Bifrost) getModelDirectory() schemas.ModelDirectory {
+	state := bifrost.modelDirectory.Load()
+	if state == nil {
+		return nil
+	}
+	return state.catalog
 }
 
-// setModelCatalogOnContext stamps the catalog handle onto a request context so
+// setModelDirectoryOnContext stamps the catalog handle onto a request context so
 // plugin hooks can reach it. Scoped plugin contexts delegate Value lookups to
 // the root (see BifrostContext.WithPluginScope), so stamping the root once is
 // enough for every plugin in the pipeline.
 //
 // The no-catalog case clears rather than skips: reused long-lived contexts
 // (realtime WS connections re-enter this per message) would otherwise keep
-// serving a catalog that a later SetModelCatalog(nil) already retired.
+// serving a catalog that a later SetModelDirectory(nil) already retired.
 // ClearValue is itself a no-op on a context with no values map, so SDK users
 // who never wire a catalog still pay nothing.
-func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
+func (bifrost *Bifrost) setModelDirectoryOnContext(ctx *schemas.BifrostContext) {
 	if ctx == nil {
 		return
 	}
-	catalog := bifrost.getModelCatalog()
+	catalog := bifrost.getModelDirectory()
 	if catalog == nil {
-		ctx.ClearValue(schemas.BifrostContextKeyModelCatalog)
+		ctx.ClearValue(schemas.BifrostContextKeyModelDirectory)
 		return
 	}
-	ctx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
+	ctx.SetValue(schemas.BifrostContextKeyModelDirectory, catalog)
 }
 
 // ReloadConfig reloads the config from DB
@@ -443,36 +447,40 @@ func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 
 // PUBLIC API METHODS
 
-// SetListModelsCatalog installs or removes the list-models catalog. Passing a
-// nil catalog removes it, after which list-models is a plain provider
-// passthrough.
+// SetModelDirectory installs or removes the model catalog. Passing a nil catalog
+// removes it, after which list-models is a plain provider passthrough and
+// ctx.GetModelInfo / ctx.CalculateCost go inert.
 //
-// serveFromCache allows the catalog to answer a request outright instead of
-// calling the provider. Enable it only while something is keeping the catalog
-// fresh; with it off the catalog is still used to reconcile responses and to
-// stand in when a provider call fails, neither of which can pin the result to a
-// stale snapshot the way serving outright would.
+// serveFromCache allows the catalog to answer a list-models request outright
+// instead of calling the provider. Enable it only while something is keeping
+// the catalog fresh; with it off the catalog is still used to reconcile
+// responses, to stand in when a provider call fails, and to answer the context
+// accessors, none of which can pin a result to a stale snapshot the way serving
+// outright would.
+//
+// Callers holding a concrete pointer must nil-check it themselves: a nil
+// *modelcatalog.ModelCatalog boxed into the interface is not == nil.
 //
 // Safe to call at any time, including while requests are in flight: an
 // in-progress call sees either the old pairing or the new one, never a torn
 // mix of the two.
-func (bifrost *Bifrost) SetListModelsCatalog(catalog schemas.ListModelsCatalog, serveFromCache bool) {
+func (bifrost *Bifrost) SetModelDirectory(catalog schemas.ModelDirectory, serveFromCache bool) {
 	if catalog == nil {
-		bifrost.listModelsCatalog.Store(nil)
+		bifrost.modelDirectory.Store(nil)
 		return
 	}
-	bifrost.listModelsCatalog.Store(&listModelsCatalogState{catalog: catalog, serveFromCache: serveFromCache})
+	bifrost.modelDirectory.Store(&modelDirectoryState{catalog: catalog, serveFromCache: serveFromCache})
 }
 
-// HasListModelsCatalog reports whether a catalog is installed.
-func (bifrost *Bifrost) HasListModelsCatalog() bool {
-	return bifrost.listModelsCatalog.Load() != nil
+// HasModelDirectory reports whether a catalog is installed.
+func (bifrost *Bifrost) HasModelDirectory() bool {
+	return bifrost.modelDirectory.Load() != nil
 }
 
 // ServesListModelsFromCatalog reports whether list-models may be answered from
 // the catalog without calling the provider.
 func (bifrost *Bifrost) ServesListModelsFromCatalog() bool {
-	s := bifrost.listModelsCatalog.Load()
+	s := bifrost.modelDirectory.Load()
 	return s != nil && s.serveFromCache
 }
 
@@ -493,7 +501,7 @@ func (bifrost *Bifrost) lookupCachedListModels(
 	keys []schemas.Key,
 	req *schemas.BifrostListModelsRequest,
 ) (*schemas.BifrostListModelsResponse, bool) {
-	state := bifrost.listModelsCatalog.Load()
+	state := bifrost.modelDirectory.Load()
 	if state == nil || !state.serveFromCache || req == nil {
 		return nil, false
 	}
@@ -575,7 +583,7 @@ func skipListModelsCache(ctx *schemas.BifrostContext) bool {
 // for a failed key-scoped call with another key's models would be a wrong
 // answer, not a degraded one. Empty means the request named no key.
 func (bifrost *Bifrost) routableListModelsFallback(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) *schemas.BifrostListModelsResponse {
-	state := bifrost.listModelsCatalog.Load()
+	state := bifrost.modelDirectory.Load()
 	if state == nil {
 		return nil
 	}
@@ -606,7 +614,7 @@ func (bifrost *Bifrost) routableListModelsFallback(provider schemas.ModelProvide
 // that follow, so models near each boundary would be dropped or repeated.
 //
 // keyIDs scopes the routable set to the keys the response itself was produced
-// from; see schemas.ListModelsCatalog.RoutableModels.
+// from; see schemas.ModelDirectory.RoutableModels.
 func (bifrost *Bifrost) reconcileListModelsWithRoutable(
 	response *schemas.BifrostListModelsResponse,
 	provider schemas.ModelProvider,
@@ -616,7 +624,7 @@ func (bifrost *Bifrost) reconcileListModelsWithRoutable(
 	if response == nil || req == nil {
 		return response
 	}
-	state := bifrost.listModelsCatalog.Load()
+	state := bifrost.modelDirectory.Load()
 	if state == nil {
 		return response
 	}
@@ -3157,7 +3165,7 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 	} else {
 		ensureMCPRawStorageContext(ctx)
 		ensureMCPTracerContext(ctx, bifrost.getTracer())
-		bifrost.setModelCatalogOnContext(ctx)
+		bifrost.setModelDirectoryOnContext(ctx)
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -3177,7 +3185,7 @@ func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, too
 	} else {
 		ensureMCPRawStorageContext(ctx)
 		ensureMCPTracerContext(ctx, bifrost.getTracer())
-		bifrost.setModelCatalogOnContext(ctx)
+		bifrost.setModelDirectoryOnContext(ctx)
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -4833,7 +4841,7 @@ func (bifrost *Bifrost) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sch
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
 	}
-	bifrost.setModelCatalogOnContext(ctx)
+	bifrost.setModelDirectoryOnContext(ctx)
 
 	pipeline := bifrost.getPluginPipeline()
 	defer bifrost.releasePluginPipeline(pipeline)
@@ -4858,7 +4866,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 
 	tracer := bifrost.getTracer()
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	bifrost.setModelCatalogOnContext(ctx)
+	bifrost.setModelDirectoryOnContext(ctx)
 
 	// Create a trace so the logging plugin can accumulate streaming chunks.
 	// The traceID is used as the accumulator key in ProcessStreamingChunk.
@@ -4994,7 +5002,7 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 
 	tracer := bifrost.getTracer()
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
-	bifrost.setModelCatalogOnContext(ctx)
+	bifrost.setModelDirectoryOnContext(ctx)
 
 	if _, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); !ok {
 		traceID := tracer.CreateTrace("")
@@ -5308,7 +5316,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
 	// before any hook runs.
-	bifrost.setModelCatalogOnContext(ctx)
+	bifrost.setModelDirectoryOnContext(ctx)
 
 	// PreRequestHook: once-per-request phase where plugins decide provider/model/fallbacks
 	// (and may mutate other request fields). Mutations commit to req and are observed by
@@ -5443,7 +5451,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
 	// before any hook runs.
-	bifrost.setModelCatalogOnContext(ctx)
+	bifrost.setModelDirectoryOnContext(ctx)
 
 	// PreRequestHook: once-per-request phase. See handleRequest for semantics.
 	preReqPipeline := bifrost.getPluginPipeline()

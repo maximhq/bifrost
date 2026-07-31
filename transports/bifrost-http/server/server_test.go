@@ -1054,7 +1054,7 @@ func TestSyncListModelsCache_GatedOnRefresherEnabled(t *testing.T) {
 	}
 	// The catalog itself must remain, or a failing provider would drop out of
 	// /v1/models entirely and responses would stop being reconciled.
-	if !server.Client.HasListModelsCatalog() {
+	if !server.Client.HasModelDirectory() {
 		t.Fatal("expected the catalog to stay installed for reconciliation and fallback")
 	}
 
@@ -1075,7 +1075,7 @@ func TestSyncListModelsCache_NoCatalogMeansNoCache(t *testing.T) {
 
 	server := &BifrostHTTPServer{Client: &bifrost.Bifrost{}, Config: &lib.Config{}}
 	server.syncListModelsCache(time.Hour)
-	if server.Client.HasListModelsCatalog() {
+	if server.Client.HasModelDirectory() {
 		t.Fatal("expected no catalog to be installed without a model catalog")
 	}
 }
@@ -1185,14 +1185,14 @@ func TestResyncLiveModelsForKey_UnknownProviderErrors(t *testing.T) {
 	}
 }
 
-// TestLiveModelsCacheAdapter_MatchesInterfaceContract exercises the real
+// TestModelDirectoryInterface_MatchesInterfaceContract exercises the real
 // adapter against a real catalog. The core-side tests use a fake, so without
 // this nothing checks that the actual implementation honours the part of the
 // contract that matters most: a miss and an empty hit are different answers,
 // and only a miss may send the caller upstream.
-func TestLiveModelsCacheAdapter_MatchesInterfaceContract(t *testing.T) {
+func TestModelDirectoryInterface_MatchesInterfaceContract(t *testing.T) {
 	catalog := modelcatalog.NewTestCatalog(nil)
-	var cache schemas.ListModelsCatalog = liveModelsCache{catalog: catalog}
+	var cache schemas.ModelDirectory = catalog
 
 	if _, ok := cache.CachedModels("openai", []string{"k1"}, false); ok {
 		t.Error("expected a miss before anything is cached")
@@ -1224,9 +1224,9 @@ func TestLiveModelsCacheAdapter_MatchesInterfaceContract(t *testing.T) {
 // RoutableModels is what makes /v1/models agree with routing, so it must return
 // the same composition GetModelsForProvider does rather than the live entries
 // alone.
-func TestLiveModelsCacheAdapter_RoutableModelsMatchesRouting(t *testing.T) {
+func TestModelDirectoryInterface_RoutableModelsMatchesRouting(t *testing.T) {
 	catalog := modelcatalog.NewTestCatalog(nil)
-	var cache schemas.ListModelsCatalog = liveModelsCache{catalog: catalog}
+	var cache schemas.ModelDirectory = catalog
 
 	catalog.UpsertLive("openai", "k1", false, []string{"gpt-4o", "o1"})
 
@@ -1241,13 +1241,13 @@ func TestLiveModelsCacheAdapter_RoutableModelsMatchesRouting(t *testing.T) {
 	}
 }
 
-// TestLiveModelsCacheAdapter_RoutableModelsScopesToKeys is the adapter-level
+// TestModelDirectoryInterface_RoutableModelsScopesToKeys is the interface-level
 // half of the per-key reconciliation fix: naming a key must narrow the answer to
 // that key's entries, not return the provider-wide union under a key-scoped
 // call.
-func TestLiveModelsCacheAdapter_RoutableModelsScopesToKeys(t *testing.T) {
+func TestModelDirectoryInterface_RoutableModelsScopesToKeys(t *testing.T) {
 	catalog := modelcatalog.NewTestCatalog(nil)
-	var cache schemas.ListModelsCatalog = liveModelsCache{catalog: catalog}
+	var cache schemas.ModelDirectory = catalog
 
 	catalog.UpsertLive("openai", "k1", false, []string{"gpt-4o"})
 	catalog.UpsertLive("openai", "k2", false, []string{"o1"})

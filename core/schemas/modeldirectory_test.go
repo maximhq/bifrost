@@ -4,8 +4,8 @@ import (
 	"testing"
 )
 
-// stubModelInfoProvider records what the context delegated to it.
-type stubModelInfoProvider struct {
+// stubModelDirectory records what the context delegated to it.
+type stubModelDirectory struct {
 	model    *Model
 	cost     float64
 	gotProv  ModelProvider
@@ -14,18 +14,27 @@ type stubModelInfoProvider struct {
 	calls    int
 }
 
-func (s *stubModelInfoProvider) GetModelInfo(provider ModelProvider, model string) *Model {
+func (s *stubModelDirectory) GetModelInfo(provider ModelProvider, model string) *Model {
 	s.calls++
 	s.gotProv = provider
 	s.gotModel = model
 	return s.model
 }
 
-func (s *stubModelInfoProvider) CalculateRequestCost(ctx *BifrostContext, resp *BifrostResponse) float64 {
+func (s *stubModelDirectory) CalculateRequestCost(ctx *BifrostContext, resp *BifrostResponse) float64 {
 	s.calls++
 	s.gotCtx = ctx
 	return s.cost
 }
+
+// The list-models half of ModelDirectory. Inert here: these tests cover the
+// context accessors, which never reach it. Present because the context reads
+// the handle back as the whole interface, so a partial stub would not assert.
+func (s *stubModelDirectory) CachedModels(ModelProvider, []string, bool) ([]Model, bool) {
+	return nil, false
+}
+
+func (s *stubModelDirectory) RoutableModels(ModelProvider, []string, bool) []string { return nil }
 
 // A context with no catalog wired must stay silently inert rather than panic;
 // core is usable as a standalone SDK without the framework, and plugins run
@@ -43,10 +52,10 @@ func TestModelInfoAccessorsNoCatalogWired(t *testing.T) {
 
 func TestModelInfoAccessorsDelegate(t *testing.T) {
 	want := &Model{ID: "claude-opus-5"}
-	stub := &stubModelInfoProvider{model: want, cost: 1.25}
+	stub := &stubModelDirectory{model: want, cost: 1.25}
 
 	ctx := NewBifrostContext(nil, NoDeadline)
-	ctx.SetValue(BifrostContextKeyModelCatalog, stub)
+	ctx.SetValue(BifrostContextKeyModelDirectory, stub)
 
 	got := ctx.GetModelInfo(Anthropic, "claude-opus-5")
 	if got != want {
@@ -64,9 +73,9 @@ func TestModelInfoAccessorsDelegate(t *testing.T) {
 // Guard the arguments that make the delegate call pointless, so a catalog
 // never sees an empty model or a nil response.
 func TestModelInfoAccessorsSkipEmptyArgs(t *testing.T) {
-	stub := &stubModelInfoProvider{model: &Model{ID: "x"}, cost: 9}
+	stub := &stubModelDirectory{model: &Model{ID: "x"}, cost: 9}
 	ctx := NewBifrostContext(nil, NoDeadline)
-	ctx.SetValue(BifrostContextKeyModelCatalog, stub)
+	ctx.SetValue(BifrostContextKeyModelDirectory, stub)
 
 	if got := ctx.GetModelInfo(Anthropic, ""); got != nil {
 		t.Fatalf("GetModelInfo with empty model = %v, want nil", got)
@@ -84,10 +93,10 @@ func TestModelInfoAccessorsSkipEmptyArgs(t *testing.T) {
 // minted from it must see the handle without any extra wiring.
 func TestModelInfoVisibleFromPluginScope(t *testing.T) {
 	want := &Model{ID: "gpt-5"}
-	stub := &stubModelInfoProvider{model: want, cost: 2}
+	stub := &stubModelDirectory{model: want, cost: 2}
 
 	root := NewBifrostContext(nil, NoDeadline)
-	root.SetValue(BifrostContextKeyModelCatalog, stub)
+	root.SetValue(BifrostContextKeyModelDirectory, stub)
 
 	name := "my-plugin"
 	scoped := root.WithPluginScope(&name)
@@ -119,10 +128,10 @@ func TestModelInfoVisibleFromPluginScope(t *testing.T) {
 // map instead of a struct field.
 func TestModelInfoVisibleFromDerivedContext(t *testing.T) {
 	want := &Model{ID: "gemini-3-pro"}
-	stub := &stubModelInfoProvider{model: want}
+	stub := &stubModelDirectory{model: want}
 
 	root := NewBifrostContext(nil, NoDeadline)
-	root.SetValue(BifrostContextKeyModelCatalog, stub)
+	root.SetValue(BifrostContextKeyModelDirectory, stub)
 
 	derived := NewBifrostContext(root, NoDeadline)
 	if got := derived.GetModelInfo(Gemini, "gemini-3-pro"); got != want {

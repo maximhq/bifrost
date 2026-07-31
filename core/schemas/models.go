@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 )
 
 // DefaultPageSize is the default page size for listing models
@@ -180,12 +182,131 @@ type Model struct {
 	ProviderExtra json.RawMessage `json:"-"`
 }
 
+// DeepCopy returns a copy that shares nothing with m.
+//
+// A plain assignment is not enough: Model is almost entirely pointers, slices
+// and a map, so a copy still writes through to whatever the original aliased.
+// Callers handing a Model out of a cache need this — a holder that mutates a
+// shared map rewrites the cache for everyone, and one that reads it while the
+// cache is replaced takes down the process on a concurrent map access.
+//
+// Named DeepCopy rather than Clone to match ImageUsage.DeepCopy, and because
+// Clone means shallow both elsewhere in this package and in the standard
+// library's slices.Clone / maps.Clone.
+//
+// Lives next to the struct so a new field is added to both at once.
+func (m Model) DeepCopy() Model {
+	out := m
+
+	if m.CanonicalSlug != nil {
+		out.CanonicalSlug = new(*m.CanonicalSlug)
+	}
+	if m.Name != nil {
+		out.Name = new(*m.Name)
+	}
+	if m.NormalizedName != nil {
+		out.NormalizedName = new(*m.NormalizedName)
+	}
+	if m.Alias != nil {
+		out.Alias = new(*m.Alias)
+	}
+	if m.Created != nil {
+		out.Created = new(*m.Created)
+	}
+	if m.ContextLength != nil {
+		out.ContextLength = new(*m.ContextLength)
+	}
+	if m.MaxInputTokens != nil {
+		out.MaxInputTokens = new(*m.MaxInputTokens)
+	}
+	if m.MaxOutputTokens != nil {
+		out.MaxOutputTokens = new(*m.MaxOutputTokens)
+	}
+	if m.HuggingFaceID != nil {
+		out.HuggingFaceID = new(*m.HuggingFaceID)
+	}
+	if m.Description != nil {
+		out.Description = new(*m.Description)
+	}
+	if m.OwnedBy != nil {
+		out.OwnedBy = new(*m.OwnedBy)
+	}
+
+	// Every nested struct is itself all pointers, so copying the pointee alone
+	// would still share each field. Each one copies itself.
+	out.Pricing = m.Pricing.DeepCopy()
+	out.TopProvider = m.TopProvider.DeepCopy()
+	out.PerRequestLimits = m.PerRequestLimits.DeepCopy()
+	out.DefaultParameters = m.DefaultParameters.DeepCopy()
+	out.Architecture = m.Architecture.DeepCopy()
+	out.Reasoning = m.Reasoning.DeepCopy()
+
+	out.SupportedParameters = slices.Clone(m.SupportedParameters)
+	out.SupportedMethods = slices.Clone(m.SupportedMethods)
+	out.AdditionalAttributes = maps.Clone(m.AdditionalAttributes)
+	out.ProviderExtra = slices.Clone(m.ProviderExtra)
+
+	return out
+}
+
+// HasMetadata reports whether anything beyond the identifier is known.
+//
+// Any single populated field is enough: providers and the datasheet describe
+// models unevenly, so requiring a particular one would discard models that are
+// perfectly usable. A model failing this carries nothing to act on — no context
+// length to size a request against, no pricing to budget with, no capabilities
+// to branch on — which is why both /v1/models and the plugin-facing lookup
+// treat it as unknown rather than reporting a bare identifier.
+func (m Model) HasMetadata() bool {
+	return m.Name != nil ||
+		m.NormalizedName != nil ||
+		m.CanonicalSlug != nil ||
+		m.Description != nil ||
+		m.Alias != nil ||
+		m.OwnedBy != nil ||
+		m.Created != nil ||
+		m.ContextLength != nil ||
+		m.MaxInputTokens != nil ||
+		m.MaxOutputTokens != nil ||
+		m.Architecture != nil ||
+		m.Pricing != nil ||
+		m.TopProvider != nil ||
+		m.PerRequestLimits != nil ||
+		m.DefaultParameters != nil ||
+		m.Reasoning != nil ||
+		m.HuggingFaceID != nil ||
+		len(m.SupportedParameters) > 0 ||
+		len(m.SupportedMethods) > 0 ||
+		len(m.AdditionalAttributes) > 0 ||
+		m.IsDeprecated
+}
+
 type Architecture struct {
 	Modality         *string  `json:"modality,omitempty"`
 	Tokenizer        *string  `json:"tokenizer,omitempty"`
 	InstructType     *string  `json:"instruct_type,omitempty"`
 	InputModalities  []string `json:"input_modalities,omitempty"`
 	OutputModalities []string `json:"output_modalities,omitempty"`
+}
+
+// DeepCopy returns a copy sharing nothing with a, or nil for a nil receiver.
+func (a *Architecture) DeepCopy() *Architecture {
+	if a == nil {
+		return nil
+	}
+	out := *a
+	if a.Modality != nil {
+		out.Modality = new(*a.Modality)
+	}
+	if a.Tokenizer != nil {
+		out.Tokenizer = new(*a.Tokenizer)
+	}
+	if a.InstructType != nil {
+		out.InstructType = new(*a.InstructType)
+	}
+	out.InputModalities = slices.Clone(a.InputModalities)
+	out.OutputModalities = slices.Clone(a.OutputModalities)
+	return &out
 }
 
 type Pricing struct {
@@ -199,10 +320,61 @@ type Pricing struct {
 	InputCacheWrite   *string `json:"input_cache_write,omitempty"`
 }
 
+// DeepCopy returns a copy sharing nothing with p, or nil for a nil receiver.
+func (p *Pricing) DeepCopy() *Pricing {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	if p.Prompt != nil {
+		out.Prompt = new(*p.Prompt)
+	}
+	if p.Completion != nil {
+		out.Completion = new(*p.Completion)
+	}
+	if p.Request != nil {
+		out.Request = new(*p.Request)
+	}
+	if p.Image != nil {
+		out.Image = new(*p.Image)
+	}
+	if p.WebSearch != nil {
+		out.WebSearch = new(*p.WebSearch)
+	}
+	if p.InternalReasoning != nil {
+		out.InternalReasoning = new(*p.InternalReasoning)
+	}
+	if p.InputCacheRead != nil {
+		out.InputCacheRead = new(*p.InputCacheRead)
+	}
+	if p.InputCacheWrite != nil {
+		out.InputCacheWrite = new(*p.InputCacheWrite)
+	}
+	return &out
+}
+
 type TopProvider struct {
 	IsModerated         *bool `json:"is_moderated,omitempty"`
 	ContextLength       *int  `json:"context_length,omitempty"`
 	MaxCompletionTokens *int  `json:"max_completion_tokens,omitempty"`
+}
+
+// DeepCopy returns a copy sharing nothing with t, or nil for a nil receiver.
+func (t *TopProvider) DeepCopy() *TopProvider {
+	if t == nil {
+		return nil
+	}
+	out := *t
+	if t.IsModerated != nil {
+		out.IsModerated = new(*t.IsModerated)
+	}
+	if t.ContextLength != nil {
+		out.ContextLength = new(*t.ContextLength)
+	}
+	if t.MaxCompletionTokens != nil {
+		out.MaxCompletionTokens = new(*t.MaxCompletionTokens)
+	}
+	return &out
 }
 
 type PerRequestLimits struct {
@@ -210,10 +382,43 @@ type PerRequestLimits struct {
 	CompletionTokens *int `json:"completion_tokens,omitempty"`
 }
 
+// DeepCopy returns a copy sharing nothing with l, or nil for a nil receiver.
+func (l *PerRequestLimits) DeepCopy() *PerRequestLimits {
+	if l == nil {
+		return nil
+	}
+	out := *l
+	if l.PromptTokens != nil {
+		out.PromptTokens = new(*l.PromptTokens)
+	}
+	if l.CompletionTokens != nil {
+		out.CompletionTokens = new(*l.CompletionTokens)
+	}
+	return &out
+}
+
 type DefaultParameters struct {
 	Temperature      *float64 `json:"temperature,omitempty"`
 	TopP             *float64 `json:"top_p,omitempty"`
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+}
+
+// DeepCopy returns a copy sharing nothing with d, or nil for a nil receiver.
+func (d *DefaultParameters) DeepCopy() *DefaultParameters {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	if d.Temperature != nil {
+		out.Temperature = new(*d.Temperature)
+	}
+	if d.TopP != nil {
+		out.TopP = new(*d.TopP)
+	}
+	if d.FrequencyPenalty != nil {
+		out.FrequencyPenalty = new(*d.FrequencyPenalty)
+	}
+	return &out
 }
 
 // ModelReasoning describes a model's reasoning capabilities as advertised by
@@ -225,6 +430,25 @@ type ModelReasoning struct {
 	DefaultEnabled   *bool    `json:"default_enabled,omitempty"`
 	SupportedEfforts []string `json:"supported_efforts,omitempty"`
 	DefaultEffort    *string  `json:"default_effort,omitempty"`
+}
+
+// DeepCopy returns a copy sharing nothing with r, or nil for a nil receiver.
+func (r *ModelReasoning) DeepCopy() *ModelReasoning {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	if r.Mandatory != nil {
+		out.Mandatory = new(*r.Mandatory)
+	}
+	if r.DefaultEnabled != nil {
+		out.DefaultEnabled = new(*r.DefaultEnabled)
+	}
+	if r.DefaultEffort != nil {
+		out.DefaultEffort = new(*r.DefaultEffort)
+	}
+	out.SupportedEfforts = slices.Clone(r.SupportedEfforts)
+	return &out
 }
 
 // paginationCursor represents the internal cursor structure for pagination.

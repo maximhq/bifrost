@@ -36,11 +36,29 @@ func (mc *ModelCatalog) UpsertLiveFromResponse(provider schemas.ModelProvider, k
 }
 
 // LookupLiveModels returns the cached list-models result for the provider
-// across the given keys, and whether the lookup hit. It is the read side of
-// schemas.ListModelsCatalog, letting the core pipeline answer a list-models
-// call from cache instead of the network.
+// across the given keys, and whether the lookup hit, letting the core pipeline
+// answer a list-models call from cache instead of the network.
 func (mc *ModelCatalog) LookupLiveModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]schemas.Model, bool) {
 	return mc.live.FullModelsFor(provider, keyIDs, unfiltered)
+}
+
+// CachedModels implements schemas.ModelDirectory. It is LookupLiveModels under
+// the name core knows it by; both are kept because the framework-side callers
+// read better with the longer one.
+func (mc *ModelCatalog) CachedModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]schemas.Model, bool) {
+	if mc == nil {
+		return nil, false
+	}
+	return mc.LookupLiveModels(provider, keyIDs, unfiltered)
+}
+
+// RoutableModels implements schemas.ModelDirectory, aliasing
+// RoutableModelsForProvider for the same reason as CachedModels
+func (mc *ModelCatalog) RoutableModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) []string {
+	if mc == nil {
+		return nil
+	}
+	return mc.RoutableModelsForProvider(provider, keyIDs, unfiltered)
 }
 
 // RoutableModelsForProvider returns every model the gateway would route to the

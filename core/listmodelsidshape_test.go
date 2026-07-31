@@ -109,7 +109,7 @@ func TestSynthesizedIDsDoNotDuplicateProviderEntries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b := &Bifrost{}
-			b.SetListModelsCatalog(&fakeListModelsCatalog{routable: []string{tt.routable}}, true)
+			b.SetModelDirectory(&fakeModelDirectory{routable: []string{tt.routable}}, true)
 
 			resp := &schemas.BifrostListModelsResponse{Data: modelsFixture(tt.providerID)}
 			got := modelIDs(b.reconcileListModelsWithRoutable(resp, tt.provider, nil, &schemas.BifrostListModelsRequest{}).Data)

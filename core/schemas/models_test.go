@@ -93,7 +93,7 @@ func TestKeyStatusMarshalJSON_PreservesErrorFields(t *testing.T) {
 		StatusCode:     &statusCode,
 		Error:          &ErrorField{Message: "unauthorized"},
 		ExtraFields: BifrostErrorExtraFields{
-			Provider:       "openai",
+			Provider:               "openai",
 			OriginalModelRequested: "gpt-4",
 		},
 	}
@@ -159,4 +159,73 @@ func TestModelReasoningRoundTrip(t *testing.T) {
 	encoded, err = json.Marshal(absent)
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "reasoning")
+}
+
+// A shallow copy of the nested structs would leave every field aliased: they
+// are themselves all pointers, so copying the pointee alone still shares each
+// one. Writing through a copy would then rewrite the cache it came from.
+func TestModelDeepCopyDoesNotAliasNestedStructs(t *testing.T) {
+	orig := Model{
+		ID:                   "m",
+		Name:                 Ptr("original"),
+		ContextLength:        Ptr(100),
+		Pricing:              &Pricing{Prompt: Ptr("0.001"), InputCacheRead: Ptr("0.0001")},
+		TopProvider:          &TopProvider{ContextLength: Ptr(200), IsModerated: Ptr(true)},
+		PerRequestLimits:     &PerRequestLimits{PromptTokens: Ptr(300)},
+		DefaultParameters:    &DefaultParameters{Temperature: Ptr(0.5)},
+		Architecture:         &Architecture{Modality: Ptr("text"), InputModalities: []string{"text"}},
+		Reasoning:            &ModelReasoning{Mandatory: Ptr(true), SupportedEfforts: []string{"low"}},
+		SupportedParameters:  []string{"tools"},
+		AdditionalAttributes: map[string]string{"tier": "original"},
+	}
+
+	c := orig.DeepCopy()
+
+	// Every pointer must be a fresh allocation, one level down included.
+	assert.NotSame(t, orig.Name, c.Name)
+	assert.NotSame(t, orig.Pricing.Prompt, c.Pricing.Prompt)
+	assert.NotSame(t, orig.TopProvider.ContextLength, c.TopProvider.ContextLength)
+	assert.NotSame(t, orig.PerRequestLimits.PromptTokens, c.PerRequestLimits.PromptTokens)
+	assert.NotSame(t, orig.DefaultParameters.Temperature, c.DefaultParameters.Temperature)
+	assert.NotSame(t, orig.Architecture.Modality, c.Architecture.Modality)
+	assert.NotSame(t, orig.Reasoning.Mandatory, c.Reasoning.Mandatory)
+
+	// Writing through the copy must not reach the original.
+	*c.Name = "mutated"
+	*c.Pricing.Prompt = "mutated"
+	*c.TopProvider.ContextLength = 1
+	*c.PerRequestLimits.PromptTokens = 1
+	*c.DefaultParameters.Temperature = 1
+	*c.Architecture.Modality = "mutated"
+	*c.Reasoning.Mandatory = false
+	c.Architecture.InputModalities[0] = "mutated"
+	c.Reasoning.SupportedEfforts[0] = "mutated"
+	c.SupportedParameters[0] = "mutated"
+	c.AdditionalAttributes["tier"] = "mutated"
+
+	assert.Equal(t, "original", *orig.Name)
+	assert.Equal(t, "0.001", *orig.Pricing.Prompt)
+	assert.Equal(t, 200, *orig.TopProvider.ContextLength)
+	assert.Equal(t, 300, *orig.PerRequestLimits.PromptTokens)
+	assert.Equal(t, 0.5, *orig.DefaultParameters.Temperature)
+	assert.Equal(t, "text", *orig.Architecture.Modality)
+	assert.True(t, *orig.Reasoning.Mandatory)
+	assert.Equal(t, "text", orig.Architecture.InputModalities[0])
+	assert.Equal(t, "low", orig.Reasoning.SupportedEfforts[0])
+	assert.Equal(t, "tools", orig.SupportedParameters[0])
+	assert.Equal(t, "original", orig.AdditionalAttributes["tier"])
+}
+
+// Nil nested structs stay nil rather than becoming empty ones.
+func TestModelDeepCopyPreservesNils(t *testing.T) {
+	c := Model{ID: "bare"}.DeepCopy()
+
+	assert.Equal(t, "bare", c.ID)
+	assert.Nil(t, c.Name)
+	assert.Nil(t, c.Pricing)
+	assert.Nil(t, c.TopProvider)
+	assert.Nil(t, c.PerRequestLimits)
+	assert.Nil(t, c.DefaultParameters)
+	assert.Nil(t, c.Architecture)
+	assert.Nil(t, c.Reasoning)
 }

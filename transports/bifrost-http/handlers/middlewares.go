@@ -404,7 +404,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// catalog, so stamp it here too — otherwise ctx.GetModelInfo would
 			// be nil in HTTPTransportPreHook but populated in every other hook.
 			if config.ModelCatalog != nil {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyModelCatalog, config.ModelCatalog)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyModelDirectory, config.ModelCatalog)
 			}
 			// Acquire pooled request
 			req := schemas.AcquireHTTPRequest()

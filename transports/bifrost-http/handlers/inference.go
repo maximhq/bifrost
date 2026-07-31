@@ -914,39 +914,11 @@ func dropModelsWithoutMetadata(resp *schemas.BifrostListModelsResponse) {
 	}
 	kept := resp.Data[:0]
 	for _, m := range resp.Data {
-		if hasModelMetadata(m) {
+		if m.HasMetadata() {
 			kept = append(kept, m)
 		}
 	}
 	resp.Data = kept
-}
-
-// hasModelMetadata reports whether anything beyond the identifier is known.
-// Any single populated field is enough: providers and the datasheet describe
-// models unevenly, so requiring a particular one would discard models that are
-// perfectly usable.
-func hasModelMetadata(m schemas.Model) bool {
-	return m.Name != nil ||
-		m.NormalizedName != nil ||
-		m.CanonicalSlug != nil ||
-		m.Description != nil ||
-		m.Alias != nil ||
-		m.OwnedBy != nil ||
-		m.Created != nil ||
-		m.ContextLength != nil ||
-		m.MaxInputTokens != nil ||
-		m.MaxOutputTokens != nil ||
-		m.Architecture != nil ||
-		m.Pricing != nil ||
-		m.TopProvider != nil ||
-		m.PerRequestLimits != nil ||
-		m.DefaultParameters != nil ||
-		m.Reasoning != nil ||
-		m.HuggingFaceID != nil ||
-		len(m.SupportedParameters) > 0 ||
-		len(m.SupportedMethods) > 0 ||
-		len(m.AdditionalAttributes) > 0 ||
-		m.IsDeprecated
 }
 
 func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {

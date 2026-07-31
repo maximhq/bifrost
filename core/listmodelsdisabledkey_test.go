@@ -22,6 +22,14 @@ func (c *catalogWithEverything) RoutableModels(schemas.ModelProvider, []string, 
 	return c.models
 }
 
+func (c *catalogWithEverything) GetModelInfo(schemas.ModelProvider, string) *schemas.Model {
+	return nil
+}
+
+func (c *catalogWithEverything) CalculateRequestCost(*schemas.BifrostContext, *schemas.BifrostResponse) float64 {
+	return 0
+}
+
 // TestListAllModels_DisabledKeysProviderIsAbsent reproduces the reported bug end
 // to end: every key on a provider is disabled, the catalog still holds its
 // models, and GET /v1/models must not report them.
@@ -42,7 +50,7 @@ func TestListAllModels_DisabledKeysProviderIsAbsent(t *testing.T) {
 	client, initErr := Init(context.Background(), schemas.BifrostConfig{
 		Account: account,
 		Logger:  NewNoOpLogger(),
-		ListModelsCatalog: &catalogWithEverything{
+		ModelDirectory: &catalogWithEverything{
 			models: []string{"claude-sonnet-4-5", "claude-opus-4-6"},
 		},
 		ServeListModelsFromCatalog: true,
@@ -80,7 +88,7 @@ func TestListAllModels_EnabledKeyProviderIsServedFromCatalog(t *testing.T) {
 	client, initErr := Init(context.Background(), schemas.BifrostConfig{
 		Account: account,
 		Logger:  NewNoOpLogger(),
-		ListModelsCatalog: &catalogWithEverything{
+		ModelDirectory: &catalogWithEverything{
 			models: []string{"claude-sonnet-4-5"},
 		},
 		ServeListModelsFromCatalog: true,

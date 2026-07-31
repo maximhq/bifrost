@@ -7,8 +7,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// fakeListModelsCatalog records what it was asked for and returns canned data.
-type fakeListModelsCatalog struct {
+// fakeModelDirectory records what it was asked for and returns canned data.
+type fakeModelDirectory struct {
 	cached      []schemas.Model
 	hit         bool
 	routable    []string
@@ -23,7 +23,7 @@ type fakeListModelsCatalog struct {
 	routableKeyIDsSeen bool
 }
 
-func (f *fakeListModelsCatalog) CachedModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]schemas.Model, bool) {
+func (f *fakeModelDirectory) CachedModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]schemas.Model, bool) {
 	f.cachedCalls++
 	f.gotKeyIDs = append([]string(nil), keyIDs...)
 	f.gotUnfilt = unfiltered
@@ -33,10 +33,18 @@ func (f *fakeListModelsCatalog) CachedModels(provider schemas.ModelProvider, key
 	return f.cached, true
 }
 
-func (f *fakeListModelsCatalog) RoutableModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) []string {
+func (f *fakeModelDirectory) RoutableModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) []string {
 	f.gotRoutableKeyIDs = append([]string(nil), keyIDs...)
 	f.routableKeyIDsSeen = true
 	return f.routable
+}
+
+// The lookup half of schemas.ModelDirectory. Inert here: these tests exercise
+// list-models, and the two halves share no state.
+func (f *fakeModelDirectory) GetModelInfo(schemas.ModelProvider, string) *schemas.Model { return nil }
+
+func (f *fakeModelDirectory) CalculateRequestCost(*schemas.BifrostContext, *schemas.BifrostResponse) float64 {
+	return 0
 }
 
 func modelsFixture(ids ...string) []schemas.Model {
@@ -55,30 +63,30 @@ func modelIDs(models []schemas.Model) []string {
 	return out
 }
 
-func TestSetListModelsCatalog_InstallAndWithdraw(t *testing.T) {
+func TestSetModelDirectory_InstallAndWithdraw(t *testing.T) {
 	b := &Bifrost{}
 
-	if b.HasListModelsCatalog() {
+	if b.HasModelDirectory() {
 		t.Fatal("expected no catalog before install")
 	}
 
-	b.SetListModelsCatalog(&fakeListModelsCatalog{}, true)
-	if !b.HasListModelsCatalog() || !b.ServesListModelsFromCatalog() {
+	b.SetModelDirectory(&fakeModelDirectory{}, true)
+	if !b.HasModelDirectory() || !b.ServesListModelsFromCatalog() {
 		t.Fatal("expected the catalog to be installed and servable")
 	}
 
 	// Installed but not servable is the disabled-refresher state: still used to
 	// reconcile and to stand in for a failing provider, never to answer alone.
-	b.SetListModelsCatalog(&fakeListModelsCatalog{}, false)
-	if !b.HasListModelsCatalog() {
+	b.SetModelDirectory(&fakeModelDirectory{}, false)
+	if !b.HasModelDirectory() {
 		t.Fatal("expected the catalog to stay installed when serving is off")
 	}
 	if b.ServesListModelsFromCatalog() {
 		t.Fatal("expected serving to be off")
 	}
 
-	b.SetListModelsCatalog(nil, true)
-	if b.HasListModelsCatalog() {
+	b.SetModelDirectory(nil, true)
+	if b.HasModelDirectory() {
 		t.Fatal("expected a nil catalog to be withdrawn entirely")
 	}
 }
@@ -95,9 +103,9 @@ func TestLookupCachedListModels_MissWhenNoCatalog(t *testing.T) {
 // With serving disabled the catalog must never answer a request outright, even
 // though it stays installed for reconciliation.
 func TestLookupCachedListModels_NotServedWhenServingDisabled(t *testing.T) {
-	catalog := &fakeListModelsCatalog{cached: modelsFixture("gpt-4o"), hit: true}
+	catalog := &fakeModelDirectory{cached: modelsFixture("gpt-4o"), hit: true}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, false)
+	b.SetModelDirectory(catalog, false)
 
 	req := &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI}
 	if _, ok := b.lookupCachedListModels(nil, schemas.OpenAI, nil, req); ok {
@@ -109,9 +117,9 @@ func TestLookupCachedListModels_NotServedWhenServingDisabled(t *testing.T) {
 }
 
 func TestLookupCachedListModels_HitReturnsCachedModels(t *testing.T) {
-	catalog := &fakeListModelsCatalog{cached: modelsFixture("gpt-4o", "o1"), hit: true}
+	catalog := &fakeModelDirectory{cached: modelsFixture("gpt-4o", "o1"), hit: true}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	keys := []schemas.Key{{ID: "k1"}, {ID: "k2"}}
 	req := &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI}
@@ -139,9 +147,9 @@ func TestLookupCachedListModels_HitReturnsCachedModels(t *testing.T) {
 // read it back, the refresher would be handed its own previous result, store it
 // unchanged, and the catalog would never move again.
 func TestLookupCachedListModels_SkipFlagBypassesCache(t *testing.T) {
-	catalog := &fakeListModelsCatalog{cached: modelsFixture("gpt-4o"), hit: true}
+	catalog := &fakeModelDirectory{cached: modelsFixture("gpt-4o"), hit: true}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeySkipListModelsCache, true)
@@ -156,9 +164,9 @@ func TestLookupCachedListModels_SkipFlagBypassesCache(t *testing.T) {
 }
 
 func TestLookupCachedListModels_PassesUnfilteredThrough(t *testing.T) {
-	catalog := &fakeListModelsCatalog{cached: modelsFixture("gpt-4o"), hit: true}
+	catalog := &fakeModelDirectory{cached: modelsFixture("gpt-4o"), hit: true}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	req := &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI, Unfiltered: true}
 	if _, ok := b.lookupCachedListModels(nil, schemas.OpenAI, nil, req); !ok {
@@ -175,9 +183,9 @@ func TestLookupCachedListModels_PassesUnfilteredThrough(t *testing.T) {
 // whole reconciliation: what list-models advertises must match what routing
 // accepts, so models the provider under-reported have to be added back.
 func TestReconcileListModelsWithRoutable_AddsMissingModels(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"gpt-4o", "gpt-4o-deprecated", "o1"}}
+	catalog := &fakeModelDirectory{routable: []string{"gpt-4o", "gpt-4o-deprecated", "o1"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	// The provider listed only one of the three it will actually serve.
 	resp := &schemas.BifrostListModelsResponse{Data: modelsFixture("openai/gpt-4o")}
@@ -193,9 +201,9 @@ func TestReconcileListModelsWithRoutable_AddsMissingModels(t *testing.T) {
 // Matching is on the bare name, because the provider may or may not prefix its
 // own IDs. Comparing raw strings would re-add every model under a second ID.
 func TestReconcileListModelsWithRoutable_NoDuplicatesAcrossIDForms(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"gpt-4o", "o1"}}
+	catalog := &fakeModelDirectory{routable: []string{"gpt-4o", "o1"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	// Provider prefixed one and left the other bare; the routable view has both
 	// bare. Neither should be duplicated.
@@ -219,9 +227,9 @@ func TestReconcileListModelsWithRoutable_NoDuplicatesAcrossIDForms(t *testing.T)
 // came from the upstream provider, and it would still appear in the listing
 // after that provider had been turned off.
 func TestReconcileListModelsWithRoutable_NamespacesResoldModels(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"anthropic/claude-sonnet-4-5"}}
+	catalog := &fakeModelDirectory{routable: []string{"anthropic/claude-sonnet-4-5"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	resp := &schemas.BifrostListModelsResponse{Data: modelsFixture("openrouter/ai21/jamba-large-1.7")}
 	req := &schemas.BifrostListModelsRequest{Provider: schemas.OpenRouter}
@@ -236,9 +244,9 @@ func TestReconcileListModelsWithRoutable_NamespacesResoldModels(t *testing.T) {
 // A model the provider already listed under the serving-provider prefix must
 // not be added again when the routable set names it without that prefix.
 func TestReconcileListModelsWithRoutable_NoDuplicateForAlreadyNamespacedModel(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"anthropic/claude-sonnet-4-5"}}
+	catalog := &fakeModelDirectory{routable: []string{"anthropic/claude-sonnet-4-5"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	// The provider already returned it in the namespaced form.
 	resp := &schemas.BifrostListModelsResponse{Data: modelsFixture("openrouter/anthropic/claude-sonnet-4-5")}
@@ -256,9 +264,9 @@ func TestReconcileListModelsWithRoutable_NoDuplicateForAlreadyNamespacedModel(t 
 // shorter un-reconciled one, so the offsets would disagree and models near each
 // boundary would be dropped or repeated.
 func TestReconcileListModelsWithRoutable_IgnoresPageToken(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"extra-model"}}
+	catalog := &fakeModelDirectory{routable: []string{"extra-model"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	for _, pageToken := range []string{"", "page-2"} {
 		resp := &schemas.BifrostListModelsResponse{Data: modelsFixture("gpt-4o")}
@@ -278,9 +286,9 @@ func TestReconcileListModelsWithRoutable_IgnoresPageToken(t *testing.T) {
 // key's allow-list permits and this one's does not, and the refresher would then
 // store that widened set under this key's cache entry.
 func TestReconcileListModelsWithRoutable_ForwardsKeyScope(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"gpt-4o"}}
+	catalog := &fakeModelDirectory{routable: []string{"gpt-4o"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	resp := &schemas.BifrostListModelsResponse{Data: modelsFixture("openai/gpt-4o")}
 	b.reconcileListModelsWithRoutable(resp, schemas.OpenAI, []string{"key-a"}, &schemas.BifrostListModelsRequest{})
@@ -294,9 +302,9 @@ func TestReconcileListModelsWithRoutable_ForwardsKeyScope(t *testing.T) {
 // no key to narrow to, and the provider-wide union is the correct answer rather
 // than an over-broad one.
 func TestReconcileListModelsWithRoutable_UnscopedReadsProviderWide(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"gpt-4o"}}
+	catalog := &fakeModelDirectory{routable: []string{"gpt-4o"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	resp := &schemas.BifrostListModelsResponse{Data: modelsFixture("openai/gpt-4o")}
 	b.reconcileListModelsWithRoutable(resp, schemas.OpenAI, nil, &schemas.BifrostListModelsRequest{})
@@ -324,9 +332,9 @@ func TestReconcileListModelsWithRoutable_NoCatalogIsPassthrough(t *testing.T) {
 // remain routable, or callers are told a model does not exist and then served
 // it on the next request.
 func TestRoutableListModelsFallback(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"gpt-4o", "o1"}}
+	catalog := &fakeModelDirectory{routable: []string{"gpt-4o", "o1"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	resp := b.routableListModelsFallback(schemas.OpenAI, nil, false)
 	if resp == nil {
@@ -341,9 +349,9 @@ func TestRoutableListModelsFallback(t *testing.T) {
 // stale snapshot answering in place of a live call, but here the live call
 // already failed and the alternative is returning nothing.
 func TestRoutableListModelsFallback_WorksWhenServingDisabled(t *testing.T) {
-	catalog := &fakeListModelsCatalog{routable: []string{"gpt-4o"}}
+	catalog := &fakeModelDirectory{routable: []string{"gpt-4o"}}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, false)
+	b.SetModelDirectory(catalog, false)
 
 	if resp := b.routableListModelsFallback(schemas.OpenAI, nil, false); resp == nil {
 		t.Fatal("expected the fallback to work with serving from the catalog disabled")
@@ -354,7 +362,7 @@ func TestRoutableListModelsFallback_WorksWhenServingDisabled(t *testing.T) {
 // surface the provider's original error rather than an empty success.
 func TestRoutableListModelsFallback_NilWhenNothingRoutable(t *testing.T) {
 	b := &Bifrost{}
-	b.SetListModelsCatalog(&fakeListModelsCatalog{routable: nil}, true)
+	b.SetModelDirectory(&fakeModelDirectory{routable: nil}, true)
 
 	if resp := b.routableListModelsFallback(schemas.OpenAI, nil, false); resp != nil {
 		t.Fatalf("expected nil so the original error is surfaced, got %v", modelIDs(resp.Data))
@@ -416,13 +424,13 @@ func TestCatalogMaySpeakFor(t *testing.T) {
 // the failure fallback published them, so a provider the operator had switched
 // off kept appearing in the listing.
 func TestCatalogMaySpeakFor_DisabledProviderStaysSilentDespiteCatalogEntries(t *testing.T) {
-	catalog := &fakeListModelsCatalog{
+	catalog := &fakeModelDirectory{
 		cached:   modelsFixture("claude-sonnet-4-5"),
 		hit:      true,
 		routable: []string{"claude-sonnet-4-5", "claude-opus-4-6"},
 	}
 	b := &Bifrost{}
-	b.SetListModelsCatalog(catalog, true)
+	b.SetModelDirectory(catalog, true)
 
 	// The catalog would happily answer; the gate is the only thing stopping it.
 	if resp := b.routableListModelsFallback(schemas.Anthropic, nil, false); resp == nil {

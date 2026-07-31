@@ -8,7 +8,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// probeCatalog is a schemas.ModelInfoProvider returning known values, so a hook
+// probeCatalog is a schemas.ModelDirectory returning known values, so a hook
 // reading a real one proves the handle reached it rather than that some other
 // lookup happened to succeed.
 type probeCatalog struct {
@@ -32,6 +32,15 @@ func (p *probeCatalog) CalculateRequestCost(ctx *schemas.BifrostContext, resp *s
 	p.costCalls++
 	return p.cost
 }
+
+// The list-models half of ModelDirectory. Inert here: these tests short-circuit
+// before dispatch, so nothing reaches it. Present because the context reads the
+// handle back as the whole interface, so a partial stub would not assert.
+func (p *probeCatalog) CachedModels(schemas.ModelProvider, []string, bool) ([]schemas.Model, bool) {
+	return nil, false
+}
+
+func (p *probeCatalog) RoutableModels(schemas.ModelProvider, []string, bool) []string { return nil }
 
 // catalogProbePlugin reads ctx.GetModelInfo / ctx.CalculateCost from each hook
 // and records what it saw, then short-circuits so no provider is called.
@@ -83,7 +92,7 @@ func (d *catalogProbePlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *sche
 	return resp, bifrostErr, nil
 }
 
-func newCatalogProbeClient(t *testing.T, catalog schemas.ModelInfoProvider, plugin schemas.LLMPlugin) *Bifrost {
+func newCatalogProbeClient(t *testing.T, catalog schemas.ModelDirectory, plugin schemas.LLMPlugin) *Bifrost {
 	t.Helper()
 	account := NewMockAccount()
 	account.AddProvider(schemas.OpenAI, 1, 1)
@@ -94,10 +103,10 @@ func newCatalogProbeClient(t *testing.T, catalog schemas.ModelInfoProvider, plug
 	}})
 
 	client, initErr := Init(context.Background(), schemas.BifrostConfig{
-		Account:      account,
-		Logger:       NewNoOpLogger(),
-		ModelCatalog: catalog,
-		LLMPlugins:   []schemas.LLMPlugin{plugin},
+		Account:        account,
+		Logger:         NewNoOpLogger(),
+		ModelDirectory: catalog,
+		LLMPlugins:     []schemas.LLMPlugin{plugin},
 	})
 	if initErr != nil {
 		t.Fatalf("Init failed: %v", initErr)
