@@ -831,6 +831,8 @@ paths:
     $ref: './paths/management/governance.yaml#/virtual-keys-quota'
   /api/governance/virtual-keys/{vk_id}:
     $ref: './paths/management/governance.yaml#/virtual-keys-by-id'
+  /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override:
+    $ref: './paths/management/governance.yaml#/virtual-keys-budget-override'
 
   # Governance - Teams
   /api/governance/teams:
@@ -927,6 +929,8 @@ paths:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profiles'
   /api/users/{target_user_id}/access-profiles/{profile_id}:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-by-id'
+  /api/users/{target_user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-budget-override'
   /api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys'
   /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
@@ -1570,6 +1574,10 @@ components:
       $ref: './schemas/management/governance.yaml#/CreateBudgetRequest'
     UpdateBudgetRequest:
       $ref: './schemas/management/governance.yaml#/UpdateBudgetRequest'
+    BudgetOverrideRequest:
+      $ref: './schemas/management/governance.yaml#/BudgetOverrideRequest'
+    BudgetOverrideResponse:
+      $ref: './schemas/management/governance.yaml#/BudgetOverrideResponse'
     CreateRateLimitRequest:
       $ref: './schemas/management/governance.yaml#/CreateRateLimitRequest'
     UpdateRateLimitRequest:
