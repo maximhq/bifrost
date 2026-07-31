@@ -256,6 +256,7 @@ type ConfigStore interface {
 	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
+	UpdateMCPClientDiscoveredTools(ctx context.Context, id, expectedName string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, lastSync time.Time) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// MCP library catalog (synced + org-custom)

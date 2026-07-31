@@ -694,6 +694,17 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	return nil
 }
 
+func (m *MockConfigStore) UpdateMCPClientDiscoveredTools(
+	ctx context.Context,
+	id string,
+	expectedName string,
+	tools map[string]schemas.ChatTool,
+	toolNameMapping map[string]string,
+	lastSync time.Time,
+) error {
+	return nil
+}
+
 func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params configstore.MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
 	return nil, 0, nil
 }

@@ -31,8 +31,9 @@ type TableMCPClient struct {
 	ToolExecutionTimeout    int                `gorm:"default:0" json:"tool_execution_timeout"`         // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
-	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
-	ToolNameMappingJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	DiscoveredToolsJSON     string     `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool
+	ToolNameMappingJSON     string     `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	DiscoveredToolsLastSync *time.Time `json:"-"`                  // Last time the global tool catalog was refreshed from a live per-user token
 
 	// OAuth authentication fields
 	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth", "per_user_oauth", "per_user_headers"

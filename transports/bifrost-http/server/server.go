@@ -2168,6 +2168,25 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
 				return uuid.New().String()
 			}
+			if s.Config.ConfigStore != nil {
+				mcpConfig.PersistMCPClientDiscoveredTools = func(
+					ctx context.Context,
+					clientID string,
+					expectedClientName string,
+					tools map[string]schemas.ChatTool,
+					toolNameMapping map[string]string,
+					lastSync time.Time,
+				) error {
+					return s.Config.ConfigStore.UpdateMCPClientDiscoveredTools(
+						ctx,
+						clientID,
+						expectedClientName,
+						tools,
+						toolNameMapping,
+						lastSync,
+					)
+				}
+			}
 		}
 	}
 	// Initialize bifrost client

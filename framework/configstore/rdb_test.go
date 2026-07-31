@@ -93,6 +93,71 @@ func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 	}
 }
 
+func TestRDBConfigStore_UpdateMCPClientDiscoveredTools(t *testing.T) {
+	t.Parallel()
+
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	connectionString := schemas.NewSecretVar("https://mcp.example.com")
+	originalHeaders := map[string]schemas.SecretVar{
+		"X-Tenant": *schemas.NewSecretVar("tenant-1"),
+	}
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:                    "mcp-client-1",
+		Name:                  "global-client",
+		ConnectionType:        schemas.MCPConnectionTypeHTTP,
+		ConnectionString:      connectionString,
+		AuthType:              schemas.MCPAuthTypePerUserOauth,
+		Headers:               originalHeaders,
+		ToolsToExecute:        schemas.WhiteList{"*"},
+		ToolSyncInterval:      10 * time.Minute,
+		AllowOnAllVirtualKeys: true,
+	}))
+
+	tools := map[string]schemas.ChatTool{
+		"global-client-search": {
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "global-client-search"},
+		},
+	}
+	mapping := map[string]string{"search": "search"}
+	lastSync := time.Date(2026, time.July, 31, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, store.UpdateMCPClientDiscoveredTools(
+		ctx,
+		"mcp-client-1",
+		"global-client",
+		tools,
+		mapping,
+		lastSync,
+	))
+
+	got, err := store.GetMCPClientConfigByID(ctx, "mcp-client-1")
+	require.NoError(t, err)
+	require.Equal(t, tools, got.DiscoveredTools)
+	require.Equal(t, mapping, got.DiscoveredToolNameMapping)
+	require.Equal(t, lastSync, got.DiscoveredToolsLastSync)
+	require.Equal(t, originalHeaders, got.Headers, "narrow refresh persistence must preserve unrelated client fields")
+	require.Equal(t, 10*time.Minute, got.ToolSyncInterval)
+	require.True(t, got.AllowOnAllVirtualKeys)
+
+	err = store.UpdateMCPClientDiscoveredTools(
+		ctx,
+		"mcp-client-1",
+		"renamed-client",
+		map[string]schemas.ChatTool{},
+		map[string]string{},
+		lastSync.Add(time.Minute),
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "removed or renamed")
+
+	got, err = store.GetMCPClientConfigByID(ctx, "mcp-client-1")
+	require.NoError(t, err)
+	require.Equal(t, tools, got.DiscoveredTools)
+	require.Equal(t, lastSync, got.DiscoveredToolsLastSync)
+}
+
 func TestRDBConfigStore_UpsertModelPricesSyncsIsDeprecated(t *testing.T) {
 	store := setupRDBTestStore(t)
 	require.NoError(t, store.DB().AutoMigrate(&tables.TableModelPricing{}))
