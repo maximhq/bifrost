@@ -109,6 +109,7 @@ const analyzerConfigSchema = z.object({
 			embedding_model: z.string().min(1),
 			timeout: z.string().optional(),
 			min_similarity: z.number().min(0).lt(1).optional(),
+			message_history_count: z.number().int().min(1).optional(),
 			count_toward_budgets: z.boolean().optional(),
 			vector_store: z.enum(["auto", "embedded", "external"]).optional(),
 		})

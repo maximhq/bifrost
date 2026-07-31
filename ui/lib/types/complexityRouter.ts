@@ -23,6 +23,8 @@ export interface SemanticConfig {
 	// Similarity floor a nearest-exemplar match must clear; below it the request
 	// falls back to keyword scoring. Not yet exposed in this screen.
 	min_similarity?: number;
+	// How many recent user messages are embedded together. Not yet exposed here.
+	message_history_count?: number;
 	// Preserved while editing but intentionally not exposed until embedding
 	// budget attribution has a defined accounting owner and behavior.
 	count_toward_budgets?: boolean;
