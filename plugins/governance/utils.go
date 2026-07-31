@@ -216,6 +216,18 @@ func truncateExemplarForLog(phrase string) string {
 	return string(runes[:maxLoggedExemplarChars]) + "..."
 }
 
+// withMatchedExemplar appends the exemplar a semantic classification landed on
+// to a routing log line. A generation that cannot name its match omits the
+// suffix rather than printing an empty one, which would read as a real match
+// against the empty string.
+func withMatchedExemplar(message, exemplar string) string {
+	matched := truncateExemplarForLog(exemplar)
+	if matched == "" {
+		return message
+	}
+	return fmt.Sprintf("%s matched=%q", message, matched)
+}
+
 func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) *schemas.BifrostError {
 	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
 		return nil
