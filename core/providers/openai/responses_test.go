@@ -2377,6 +2377,63 @@ func TestToOpenAIResponsesRequest_FallbackBlockDropped(t *testing.T) {
 	})
 }
 
+// TestToOpenAIResponsesRequest_ContextManagement_ProviderGating covers a real
+// regression: bedrock/openai.gpt-5.4 through /v1/responses forwarded a
+// context_management array straight through to Bedrock Mantle's OpenAI-compatible
+// endpoint, which 400s with "Unknown parameter: 'context_management'" since it
+// doesn't accept the field at all. OpenAI and Azure OpenAI must keep receiving it
+// (default-open, like every other unlisted-provider field here); Bedrock and
+// Bedrock Mantle are the explicit exceptions.
+func TestToOpenAIResponsesRequest_ContextManagement_ProviderGating(t *testing.T) {
+	cm := []byte(`[{"type":"compaction","compact_threshold":2000}]`)
+
+	cases := []struct {
+		name          string
+		provider      schemas.ModelProvider
+		wantForwarded bool
+	}{
+		{"openai forwards it", schemas.OpenAI, true},
+		{"azure forwards it", schemas.Azure, true},
+		{"bedrock drops it", schemas.Bedrock, false},
+		{"bedrock mantle drops it", schemas.BedrockMantle, false},
+		{"unlisted provider forwards it", schemas.ModelProvider("test-unlisted-provider"), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "gpt-5.4",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					ContextManagement: cm,
+					ExtraParams: map[string]interface{}{
+						"context_management": cm,
+					},
+				},
+			}
+
+			result := ToOpenAIResponsesRequest(nil, req)
+			if result == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+
+			gotNeutral := len(result.ContextManagement) > 0
+			_, gotExtra := result.ExtraParams["context_management"]
+
+			if gotNeutral != tc.wantForwarded {
+				t.Errorf("neutral ContextManagement field: got present=%v, want present=%v", gotNeutral, tc.wantForwarded)
+			}
+			if gotExtra != tc.wantForwarded {
+				t.Errorf("ExtraParams[\"context_management\"]: got present=%v, want present=%v", gotExtra, tc.wantForwarded)
+			}
+		})
+	}
+}
+
 func TestBuildResponsesRetrieveQuery_Stream(t *testing.T) {
 	t.Run("emits stream=true and other params when set", func(t *testing.T) {
 		req := &schemas.BifrostResponsesRetrieveRequest{

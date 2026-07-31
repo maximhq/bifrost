@@ -1255,6 +1255,8 @@ components:
       $ref: './schemas/inference/text.yaml#/TextCompletionResponse'
 
     # ==================== Responses API ====================
+    ContextManagement:
+      $ref: './schemas/inference/responses.yaml#/ContextManagement'
     ResponsesRequest:
       $ref: './schemas/inference/responses.yaml#/ResponsesRequest'
     ResponsesResponse:
