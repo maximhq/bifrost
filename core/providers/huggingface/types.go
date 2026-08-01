@@ -12,7 +12,7 @@ import (
 
 // # MODELS TYPES
 
-// refered from https://huggingface.co/api/models
+// referred from https://huggingface.co/api/models
 type HuggingFaceModel struct {
 	ID            string   `json:"_id"`
 	ModelID       string   `json:"modelId"`
