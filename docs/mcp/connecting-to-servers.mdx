@@ -817,16 +817,18 @@ Different job from reconnect: this re-discovers the client's **tool list** from 
 </Note>
 
 **Edit client configuration:**
+
+<Note>
+  `connection_type`, `stdio_config`, `auth_type`, and `connection_string` are immutable after
+  creation and are ignored by this endpoint. To change a client's connection type or command,
+  delete it and add it again.
+</Note>
+
 ```bash
 curl -X PUT http://localhost:8080/api/mcp/client/{id} \
   -H "Content-Type: application/json" \
   -d '{
     "name": "filesystem",
-    "connection_type": "stdio",
-    "stdio_config": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/mcp-filesystem"]
-    },
     "tools_to_execute": ["read_file", "list_directory"]
   }'
 ```

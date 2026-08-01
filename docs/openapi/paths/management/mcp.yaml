@@ -20,7 +20,7 @@ execute-tool:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/mcp.yaml#/ExecuteToolRequest'
+            $ref: "../../schemas/management/mcp.yaml#/ExecuteToolRequest"
           examples:
             chat:
               summary: Chat format example
@@ -37,12 +37,12 @@ execute-tool:
                 name: "get_weather"
                 arguments: '{"location": "San Francisco"}'
     responses:
-      '200':
+      "200":
         description: Tool executed successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/mcp.yaml#/ExecuteToolResponse'
+              $ref: "../../schemas/management/mcp.yaml#/ExecuteToolResponse"
             examples:
               chat:
                 summary: Chat format response
@@ -62,10 +62,10 @@ execute-tool:
                   name: "get_weather"
                   arguments: '{"location": "San Francisco"}'
                   content: "The weather in San Francisco is 72°F and sunny."
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
     security:
       - BearerAuth: []
       - VirtualKeyAuth: []
@@ -158,16 +158,16 @@ clients:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Successful response
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/mcp.yaml#/MCPClientsListResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/mcp.yaml#/MCPClientsListResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client:
   post:
@@ -194,12 +194,12 @@ client:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/mcp.yaml#/MCPClientCreateRequest'
+            $ref: "../../schemas/management/mcp.yaml#/MCPClientCreateRequest"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: |
           MCP client added successfully. For auth_type "oauth" and
           "per_user_oauth" the client is not created yet — the response is the
@@ -210,18 +210,18 @@ client:
           application/json:
             schema:
               oneOf:
-                - $ref: '../../schemas/management/common.yaml#/SuccessResponse'
-                - $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '403':
+                - $ref: "../../schemas/management/common.yaml#/SuccessResponse"
+                - $ref: "../../schemas/management/oauth.yaml#/OAuthFlowInitiation"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "403":
         description: >-
           The request was not genuinely authenticated (dashboard authentication
           is disabled or unconfigured) and connection_type is "stdio", or is
           "http"/"sse" with a connection_string resolving to a loopback,
           private-network, link-local, or CGNAT address.
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-by-id:
   put:
@@ -251,21 +251,21 @@ client-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/mcp.yaml#/MCPClientUpdateRequest'
+            $ref: "../../schemas/management/mcp.yaml#/MCPClientUpdateRequest"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP client updated successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/SuccessResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
   delete:
     operationId: removeMCPClient
@@ -284,16 +284,16 @@ client-by-id:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP client removed successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/SuccessResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-reconnect:
   post:
@@ -319,16 +319,16 @@ client-reconnect:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP client reconnected successfully
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/SuccessResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-refresh-tools:
   post:
@@ -370,7 +370,7 @@ client-refresh-tools:
     security:
       - ManagementBearerAuth: []
     responses:
-      '200':
+      "200":
         description: MCP client tools refreshed successfully
         content:
           application/json:
@@ -387,12 +387,12 @@ client-refresh-tools:
                   type: integer
                   description: Number of tools the client is serving after the refresh
                   example: 12
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-complete-oauth:
   post:
@@ -442,28 +442,28 @@ client-complete-oauth:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: MCP client connected (or re-authorized) successfully with OAuth
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
-      '400':
+              $ref: "../../schemas/management/common.yaml#/SuccessResponse"
+      "400":
         description: OAuth flow not authorized yet, or the OAuth config does not belong to an OAuth-based MCP client
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: OAuth config not found, or no MCP client is linked to this OAuth flow
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '409':
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "409":
         description: |
           Either "OAuth flow has already been completed for this MCP client"
           (replay), or "Authorization has not completed yet: the browser
           flow may still be open, or the upstream provider rejected it
           before redirecting back" (a shared "oauth" reauthorize whose flow
           never actually resolved via a callback).
-        $ref: '../../openapi.yaml#/components/responses/Conflict'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+        $ref: "../../openapi.yaml#/components/responses/Conflict"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-initiate-verification:
   post:
@@ -495,19 +495,19 @@ client-initiate-verification:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: OAuth flow initiated
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
-      '400':
+              $ref: "../../schemas/management/oauth.yaml#/OAuthFlowInitiation"
+      "400":
         description: Client is not in pending_verification state, is not an OAuth-based auth type, has no pending bootstrap configuration, or has no connection_string
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-reauthorize:
   post:
@@ -545,29 +545,29 @@ client-reauthorize:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Reauthorization flow initiated
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
-      '400':
+              $ref: "../../schemas/management/oauth.yaml#/OAuthFlowInitiation"
+      "400":
         description: Client is not an OAuth-based auth type (oauth, per_user_oauth), or has never completed initial OAuth authorization (use initiate-verification instead)
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: MCP client not found
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '409':
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "409":
         description: The admin discovery credential for this per_user_oauth client does not need repair or does not exist
-        $ref: '../../openapi.yaml#/components/responses/Conflict'
-      '503':
+        $ref: "../../openapi.yaml#/components/responses/Conflict"
+      "503":
         description: OAuth provider not configured
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-reregister:
   post:
@@ -614,7 +614,7 @@ client-reregister:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: |
           Reauthorization flow initiated against the newly registered client.
           Carries the same fields as reauthorize, plus registered_client_id
@@ -623,20 +623,20 @@ client-reregister:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
-      '400':
+              $ref: "../../schemas/management/oauth.yaml#/OAuthFlowInitiation"
+      "400":
         description: Client is not an OAuth-based auth type (oauth, per_user_oauth), has never completed initial OAuth authorization (use initiate-verification instead), the OAuth config has no registration_url, or the provider refused the registration request (answered it with a 4xx). Nothing is changed in any of these cases. A provider that could not be reached, or that answered with a 5xx, is a 500 instead
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
         description: MCP client not found
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '503':
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "503":
         description: OAuth provider not configured
         content:
           application/json:
             schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
+      "500":
         description: |
           Internal failure. The message tells two cases apart, and they call
           for opposite responses.
@@ -663,7 +663,7 @@ client-reregister:
           another client: call POST /api/mcp/client/{id}/reauthorize, which
           runs consent against whatever client is stored, now the
           replacement.
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-verify-headers:
   post:
@@ -717,7 +717,7 @@ client-verify-headers:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Client verified; tools discovered and client connected
         content:
           application/json:
@@ -732,19 +732,19 @@ client-verify-headers:
                 tools_count:
                   type: integer
                   description: Number of tools discovered during verification
-      '400':
+      "400":
         description: Client is not auth_type "per_user_headers", has no per_user_header_keys declared, or user_headers is missing required keys
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '422':
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "422":
         description: Upstream verification failed with the supplied header values
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 client-verify-exchange:
   post:
@@ -783,7 +783,7 @@ client-verify-exchange:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Client verified; tools discovered and client connected
         content:
           application/json:
@@ -798,23 +798,23 @@ client-verify-exchange:
                 tools_count:
                   type: integer
                   description: Number of tools discovered during verification
-      '400':
+      "400":
         description: |
           Client is not auth_type "token_exchange", token exchange is
           unavailable (no identity-provider integration configured), or the
           request carries no identity-provider token to exchange (sign in
           with your identity provider and retry)
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '422':
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "422":
         description: The identity provider rejected the exchange, or the upstream verification connection failed
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/common.yaml#/ErrorResponse"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # ─── MCP Sessions (per-user credentials + pending flows) ─────────────────────
 
@@ -841,16 +841,16 @@ sessions:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Sessions visible to the caller
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/mcp.yaml#/MCPSessionsListResponse'
-      '401':
-        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/mcp.yaml#/MCPSessionsListResponse"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 session-by-id:
   delete:
@@ -883,14 +883,14 @@ session-by-id:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '204':
+      "204":
         description: Revoked
-      '401':
-        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 session-reauth:
   post:
@@ -924,20 +924,20 @@ session-reauth:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Fresh flow opened
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/mcp.yaml#/MCPSessionReauthResponse'
-      '401':
-        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
-      '403':
+              $ref: "../../schemas/management/mcp.yaml#/MCPSessionReauthResponse"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "403":
         description: Row is orphaned — re-auth would not restore access
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 # ─── Per-User Headers submission flow ────────────────────────────────────────
 
@@ -964,18 +964,18 @@ per-user-headers-flow:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Flow detail
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/mcp.yaml#/MCPHeadersFlowDetail'
-      '401':
-        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+              $ref: "../../schemas/management/mcp.yaml#/MCPHeadersFlowDetail"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
   put:
     summary: Submit per-user-headers values
     description: |
@@ -1000,29 +1000,29 @@ per-user-headers-flow:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/mcp.yaml#/MCPHeadersSubmitRequest'
+            $ref: "../../schemas/management/mcp.yaml#/MCPHeadersSubmitRequest"
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '200':
+      "200":
         description: Credential persisted
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/mcp.yaml#/MCPHeadersSubmitResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '401':
-        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '410':
+              $ref: "../../schemas/management/mcp.yaml#/MCPHeadersSubmitResponse"
+      "400":
+        $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "410":
         description: Flow expired
-      '422':
+      "422":
         description: Upstream verification failed with the supplied values
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
 
 per-user-headers-credential:
   delete:
@@ -1048,11 +1048,11 @@ per-user-headers-credential:
       - ManagementBearerAuth: []
       - BasicAuth: []
     responses:
-      '204':
+      "204":
         description: Revoked
-      '401':
-        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
-      '404':
-        $ref: '../../openapi.yaml#/components/responses/NotFound'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      "401":
+        $ref: "../../openapi.yaml#/components/responses/Unauthorized"
+      "404":
+        $ref: "../../openapi.yaml#/components/responses/NotFound"
+      "500":
+        $ref: "../../openapi.yaml#/components/responses/InternalError"
