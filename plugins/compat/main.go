@@ -156,7 +156,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	if (shouldConvertParamsOverride && shouldConvertParamsOverrideEnabled) || p.config.ShouldConvertParams {
-		applyParameterConversion(ctx, modifiedReq)
+		p.applyParameterConversion(ctx, modifiedReq)
 	}
 
 	return modifiedReq, nil, nil
@@ -187,11 +187,11 @@ func (p *CompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 		}
 
-		// Re-attach the namespace stripped by flattenNamespaceTools so clients that
-		// rely on namespace tools (e.g. Codex) can match the provider's function_call
-		// items back to their namespace instead of failing with "unsupported tool".
-		if namespaceByTool, ok := ctx.Value(schemas.BifrostContextKeyCompatNamespaceToolMap).(map[string]string); ok && len(namespaceByTool) > 0 {
-			restoreNamespaceOnResponse(result, namespaceByTool)
+		// Undo the flattening rename so clients that rely on namespace tools (e.g.
+		// Codex) can match the provider's function_call items back to their
+		// namespace instead of failing with "unsupported tool".
+		if nsMap, ok := ctx.Value(schemas.BifrostContextKeyCompatNamespaceToolMap).(*namespaceToolMap); ok && nsMap.len() > 0 {
+			restoreNamespaceOnResponse(result, nsMap)
 		}
 	}
 
