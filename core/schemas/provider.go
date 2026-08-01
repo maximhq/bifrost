@@ -23,10 +23,12 @@ const (
 	DefaultMaxConnsPerHost            = 5000
 	MaxConnsPerHostUpperBound         = 10000
 	DefaultMaxIdleConnsPerHost        = 40
-	// HTTP2PingIntervalUpperBoundSeconds is the largest value that survives
-	// conversion to time.Duration (int64 nanoseconds) without overflow:
-	// math.MaxInt64 / time.Second, floored.
-	HTTP2PingIntervalUpperBoundSeconds = 9223372036
+	// HTTP2PingIntervalUpperBoundSeconds matches the sibling *_in_seconds fields
+	// on NetworkConfig (StreamIdleTimeoutInSeconds, KeepAliveTimeoutInSeconds),
+	// which cap at 3600 in config.schema.json — a sensible range for this field
+	// and, incidentally, nowhere near where the * time.Second conversion in the
+	// Bedrock transport could overflow int64 (math.MaxInt64 / time.Second).
+	HTTP2PingIntervalUpperBoundSeconds = 3600
 )
 
 // Pre-defined errors for provider operations
