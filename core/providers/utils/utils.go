@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/cespare/xxhash/v2"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -34,6 +35,73 @@ import (
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
+
+// ThoughtSignatureSeparator delimits a tool call's base ID from a provider reasoning
+// signature embedded in the call_id (e.g. Gemini thoughtSignatures), formatted as
+// "<baseID>_ts_<signature>".
+const ThoughtSignatureSeparator = "_ts_"
+
+// anthropicUnsafeToolUseIDCharRegex matches any character outside Anthropic's
+// required tool_use/tool_result id charset (^[a-zA-Z0-9_-]+$).
+var anthropicUnsafeToolUseIDCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+
+// maxSanitizedAnthropicToolUseIDLen bounds the sanitized id length, matching the
+// 64-char cap this codebase already applies to tool identifiers elsewhere (e.g.
+// OpenAI's call_id, Bedrock's tool-name aliasing) so a long, non-conforming
+// upstream id can't sanitize into something Anthropic still rejects for length.
+const maxSanitizedAnthropicToolUseIDLen = 64
+
+// SanitizeAnthropicToolUseID rewrites a tool_use/tool_result id to satisfy Anthropic's
+// ^[a-zA-Z0-9_-]+$ requirement. Some upstream providers (e.g. Kimi/Gemini-compatible
+// backends) emit ids containing ':' or '.', which Anthropic's API rejects with a 400
+// when such a conversation is replayed through the Anthropic provider. The mapping is
+// deterministic (hash of the original id) so a tool_use id and its matching tool_result
+// id always sanitize to the same value within a request, matching the alias pattern
+// used for Bedrock tool names (see bedrockAliasToolName).
+func SanitizeAnthropicToolUseID(id string) string {
+	// The empty string doesn't match Anthropic's pattern either (it requires at
+	// least one character), so it needs the same hash-based rewrite as ids with
+	// disallowed characters rather than being passed through unchanged.
+	if id != "" && !anthropicUnsafeToolUseIDCharRegex.MatchString(id) {
+		return id
+	}
+	// Use the full 64-bit hash (not a 32-bit truncation) to keep collisions
+	// between distinct ids astronomically unlikely, since two tool_use blocks
+	// sharing an id would make Anthropic's replies ambiguous or rejected.
+	hash := fmt.Sprintf("%016x", xxhash.Sum64String(id))
+	semantic := strings.Trim(anthropicUnsafeToolUseIDCharRegex.ReplaceAllString(id, "_"), "_")
+	if semantic == "" {
+		return hash
+	}
+	if maxSemanticLen := maxSanitizedAnthropicToolUseIDLen - len(hash) - 1; len(semantic) > maxSemanticLen {
+		semantic = strings.Trim(semantic[:maxSemanticLen], "_")
+	}
+	if semantic == "" {
+		return hash
+	}
+	return hash + "_" + semantic
+}
+
+// SanitizeAnthropicToolUseIDPtr is SanitizeAnthropicToolUseID for an optional id.
+// Returns nil unchanged.
+func SanitizeAnthropicToolUseIDPtr(id *string) *string {
+	if id == nil {
+		return nil
+	}
+	sanitized := SanitizeAnthropicToolUseID(*id)
+	return &sanitized
+}
+
+// StripThoughtSignature returns the base tool-call ID without any embedded provider
+// reasoning signature. It is deterministic, so a tool call and its matching output strip
+// to the same ID. Providers that cannot use the signature (e.g. OpenAI, which caps call_id
+// at 64 chars) call this before sending the ID upstream.
+func StripThoughtSignature(callID string) string {
+	if base, _, found := strings.Cut(callID, ThoughtSignatureSeparator); found {
+		return base
+	}
+	return callID
+}
 
 // sortedAPI is a sonic encoder/decoder that sorts map keys during marshaling.
 // This ensures deterministic JSON output for map[string]interface{} values,
@@ -56,6 +124,12 @@ func SetJSONField(data []byte, path string, value interface{}) ([]byte, error) {
 	return sjson.SetBytes(data, path, value)
 }
 
+// SetRawJSONField sets a field in JSON bytes to an already-encoded JSON document,
+// inserting it verbatim instead of re-marshaling it.
+func SetRawJSONField(data []byte, path string, value []byte) ([]byte, error) {
+	return sjson.SetRawBytes(data, path, value)
+}
+
 // DeleteJSONField deletes a field from JSON bytes without disturbing other fields' ordering.
 // Uses in-place byte manipulation for minimal allocations and preserves nested structure.
 func DeleteJSONField(data []byte, path string) ([]byte, error) {
@@ -70,6 +144,39 @@ func JSONFieldExists(data []byte, path string) bool {
 // GetJSONField retrieves a field value from JSON bytes without parsing the entire document.
 func GetJSONField(data []byte, path string) gjson.Result {
 	return gjson.GetBytes(data, path)
+}
+
+// GetJSONSubtree extracts a JSON sub-tree as raw bytes by gjson path, without parsing the
+// entire document. Returns nil if the path does not exist. The returned slice is a copy
+// of the matched sub-tree bytes — safe to retain after the input is mutated or released.
+func GetJSONSubtree(data []byte, path string) []byte {
+	res := gjson.GetBytes(data, path)
+	if !res.Exists() {
+		return nil
+	}
+	raw := res.Raw
+	if raw == "" {
+		return nil
+	}
+	out := make([]byte, len(raw))
+	copy(out, raw)
+	return out
+}
+
+// UnmarshalOrdered decodes JSON bytes into a *schemas.OrderedMap, preserving the key order
+// of the source document. Use this in preference to sonic.Unmarshal into a map[string]any
+// whenever the caller cares about field order (e.g., LLM prompt-cache keying or property
+// ordering surfaced to users).
+//
+// Note: the decoder under the hood is encoding/json (not sonic), because token-by-token
+// decoding is required to preserve key order. Outer dispatch goes through sonic, which
+// invokes OrderedMap's custom UnmarshalJSON.
+func UnmarshalOrdered(data []byte) (*schemas.OrderedMap, error) {
+	om := schemas.NewOrderedMap()
+	if err := sonic.Unmarshal(data, om); err != nil {
+		return nil, err
+	}
+	return om, nil
 }
 
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
@@ -110,6 +217,15 @@ var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
+// SetErrorLatency stamps provider/request latency onto an error so downstream
+// logging and client-facing error details can show timing even without a response.
+func SetErrorLatency(bifrostErr *schemas.BifrostError, latency time.Duration) *schemas.BifrostError {
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.Latency = latency.Milliseconds()
+	}
+	return bifrostErr
+}
+
 // makeRequestWithDoFunc is the shared core behind MakeRequestWithContext and
 // MakeRequestWithContextFollowRedirects. It runs do() in a goroutine and handles
 // context cancellation, latency tracking, and error classification uniformly.
@@ -138,6 +254,8 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
 		// Calculate latency even for cancelled requests.
 		latency := time.Since(startTime)
+		// Socket wait is upstream even when it ends in cancellation.
+		schemas.AddUpstreamLatency(ctx, latency)
 		// Return a wait function that blocks until the background goroutine finishes.
 		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
 		// a data race with the still-running goroutine.
@@ -152,6 +270,7 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 					Message: fmt.Sprintf("Request timed out by context: %v", ctx.Err()),
 					Error:   ctx.Err(),
 				},
+				ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 			}, func() { <-errChan }
 		}
 		statusCode := 499
@@ -164,11 +283,14 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 				Message: fmt.Sprintf("Request cancelled by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 		}, func() { <-errChan }
 	case err := <-errChan:
 		// The do() call completed.
 		// Calculate latency for both successful and failed requests.
 		latency := time.Since(startTime)
+		// Single accumulation point for every unary provider call.
+		schemas.AddUpstreamLatency(ctx, latency)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return latency, &schemas.BifrostError{
@@ -178,25 +300,26 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 						Message: schemas.ErrRequestCancelled,
 						Error:   err,
 					},
+					ExtraFields: schemas.BifrostErrorExtraFields{Latency: latency.Milliseconds()},
 				}, noop
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification.
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
+				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
 			}
 			// Check if error implements net.Error and has Timeout() == true.
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), noop
+				return latency, SetErrorLatency(NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency), noop
 			}
 			// Check for DNS lookup and network errors after timeout checks.
 			var opErr *net.OpError
 			var dnsErr *net.DNSError
 			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-				return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), noop
+				return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), latency), noop
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
-			return latency, NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), noop
+			return latency, SetErrorLatency(NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency), noop
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
@@ -210,13 +333,73 @@ func makeRequestWithDoFunc(ctx context.Context, do func() error) (time.Duration,
 // path it blocks until the background client.Do goroutine finishes, preventing a data race
 // between the still-running goroutine and the caller's release of req/resp.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
-	return makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.Do(req, resp) })
+	return latency, bifrostErr, wait
 }
 
 // MakeRequestWithContextFollowRedirects is like MakeRequestWithContext but follows up to
 // maxRedirects HTTP redirects automatically (equivalent to curl's -L flag).
 func MakeRequestWithContextFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) (time.Duration, *schemas.BifrostError, func()) {
-	return makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	latency, bifrostErr, wait := makeRequestWithDoFunc(ctx, func() error { return client.DoRedirects(req, resp, maxRedirects) })
+	return latency, bifrostErr, wait
+}
+
+// DoStreamingRequest performs the initial client.Do for a streaming request and
+// records the wait as upstream latency.
+//
+// Streaming cannot use MakeRequestWithContext: for a streamed response fasthttp
+// returns as soon as the headers arrive, and the body is consumed lazily
+// afterwards. So this measures time-to-first-byte only — the generation window
+// is measured separately, inside idleTimeoutReader.Read. Both are needed;
+// counting only one attributes the other to Bifrost.
+//
+// Returns client.Do's error untouched so callers keep their own error
+// classification and latency bookkeeping.
+func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
+	startTime := time.Now()
+	err := client.Do(req, resp)
+	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
+	return err
+}
+
+// upstreamTimingBody wraps a response body so time blocked reading it counts as
+// upstream latency. net/http's client.Do returns at response headers; the body
+// still streams from the provider's socket, and an untimed io.ReadAll would
+// misattribute that wait to Bifrost overhead.
+type upstreamTimingBody struct {
+	inner io.ReadCloser
+	ctx   context.Context
+}
+
+func (b *upstreamTimingBody) Read(p []byte) (int, error) {
+	start := time.Now()
+	n, err := b.inner.Read(p)
+	schemas.AddUpstreamLatency(b.ctx, time.Since(start))
+	return n, err
+}
+
+func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
+
+// DoHTTPRequest performs a net/http request and records the wait as upstream
+// latency. Used by the paths that don't go through fasthttp — Bedrock, which
+// builds and signs its own requests, and the media fetcher.
+//
+// The duration is attributed via req.Context() rather than an explicit ctx
+// parameter, so callers that no longer hold the context (Bedrock's
+// executeBedrockRequest) need no signature change. Every such request is built
+// with http.NewRequestWithContext, so the accumulator is always reachable.
+//
+// client.Do covers headers only, so the returned body is wrapped to time the
+// reads that drain it. Streamed responses consumed through NewIdleTimeoutReader
+// are unwrapped there — the idle reader does its own per-chunk timing.
+func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	startTime := time.Now()
+	resp, err := client.Do(req)
+	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
+	if err == nil && resp != nil && resp.Body != nil {
+		resp.Body = &upstreamTimingBody{inner: resp.Body, ctx: req.Context()}
+	}
+	return resp, err
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
@@ -1428,9 +1611,14 @@ func EnrichError(
 	responseBody []byte,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	latency ...time.Duration,
 ) *schemas.BifrostError {
 	if bifrostErr == nil {
 		return bifrostErr
+	}
+
+	if len(latency) > 0 {
+		SetErrorLatency(bifrostErr, latency[0])
 	}
 
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
@@ -2129,9 +2317,8 @@ func ProcessAndSendResponse(
 
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
-	if !GateSendChunk(ctx, streamResponse, responseChan) {
-		return
-	}
+	// Complete the final-chunk span even if the client send fails, so a dropped connection can't strand it.
+	GateSendChunk(ctx, streamResponse, responseChan)
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
@@ -2192,6 +2379,13 @@ func ProcessAndSendBifrostError(
 // path — e.g. a panic mid-stream — which would otherwise leak the plugin
 // pipeline back-reference held by the finalizer closure.
 //
+// It also completes any deferred LLM span still parked for this trace so a
+// goroutine that died before completing it cannot leak the span — and the
+// accumulated response it pins. The stream-end indicator sets the status: an
+// unended stream is marked failed, an ended one keeps its success status.
+// completeDeferredSpan is idempotent (nil-handle guard), so this is a noop when
+// the terminal path already cleared it.
+//
 // Panics inside the finalizer are recovered and logged so they never mask an
 // in-flight panic that triggered the defer.
 func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Context)) {
@@ -2200,6 +2394,19 @@ func EnsureStreamFinalizerCalled(ctx context.Context, finalizer func(context.Con
 			getLogger().Debug("recovered panic in deferred stream finalizer: %v", r)
 		}
 	}()
+
+	// Complete any span the terminal path left parked. Unended = died mid-flight
+	// (mark failed); ended = delivery failed after success (keep the OK status).
+	if bfCtx, ok := ctx.(*schemas.BifrostContext); ok {
+		var streamErr *schemas.BifrostError
+		if ended, _ := bfCtx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			streamErr = &schemas.BifrostError{
+				Error: &schemas.ErrorField{Message: "stream ended before completion"},
+			}
+		}
+		completeDeferredSpan(bfCtx, nil, streamErr, finalizer)
+	}
+
 	if finalizer == nil {
 		return
 	}
@@ -2353,6 +2560,14 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 	if timeout <= 0 {
 		timeout = DefaultStreamIdleTimeout
 	}
+	// A body wrapped by DoHTTPRequest times its own reads; unwrap so the
+	// per-chunk timing in Read below isn't counted twice.
+	if tb, ok := reader.(*upstreamTimingBody); ok {
+		reader = tb.inner
+	}
+	if tb, ok := bodyStream.(*upstreamTimingBody); ok {
+		bodyStream = tb.inner
+	}
 	r := &idleTimeoutReader{
 		ctx:        ctx,
 		reader:     reader,
@@ -2437,7 +2652,11 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 	if r.connectionClosed() {
 		return 0, r.closedReadError()
 	}
+	readStart := time.Now()
 	n, err = r.reader.Read(p)
+	if r.ctx != nil {
+		schemas.AddUpstreamLatency(r.ctx, time.Since(readStart))
+	}
 	if n > 0 {
 		r.timer.Reset(r.timeout)
 	}
@@ -2626,6 +2845,44 @@ func ProcessAndSendError(
 	GateSendChunk(ctx, streamResponse, responseChan)
 }
 
+// SendStreamTruncatedError surfaces an upstream stream that ended without a
+// terminal marker (no "data: [DONE]", no finish_reason / completion event) as a
+// client-visible error instead of letting the caller synthesize a clean final
+// chunk. A dying upstream typically closes the connection on a chunk boundary,
+// which fasthttp reports as a plain io.EOF — indistinguishable at the transport
+// layer from a properly terminated body — so truncation can only be detected
+// semantically, by the absence of a terminal marker.
+//
+// The error is deliberately built as a retryable upstream connection failure
+// (502, IsBifrostError=false): when nothing has been forwarded yet this becomes
+// the stream's first chunk, so CheckFirstStreamChunkForError converts it into a
+// synchronous error and executeRequestWithRetries can retry or fall back. An
+// IsBifrostError=true error would break that retry loop instead (see #4496).
+func SendStreamTruncatedError(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStreamChunk,
+	logger schemas.Logger,
+	postHookSpanFinalizer func(context.Context),
+	jsonBody []byte,
+) {
+	if logger != nil {
+		logger.Warn("Stream ended without a terminal marker; treating as truncated upstream stream")
+	}
+
+	truncatedErr := NewBifrostUpstreamConnectionError(schemas.ErrProviderStreamTruncated, io.ErrUnexpectedEOF)
+
+	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
+		truncatedErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
+	}
+
+	// Bill for tokens the provider already produced before the stream died.
+	attachBilledUsageFromContext(ctx, truncatedErr)
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	ProcessAndSendBifrostError(ctx, postHookRunner, truncatedErr, responseChan, logger, postHookSpanFinalizer)
+}
+
 // CreateBifrostTextCompletionChunkResponse creates a bifrost text completion chunk response.
 func CreateBifrostTextCompletionChunkResponse(
 	id string,
@@ -2634,12 +2891,14 @@ func CreateBifrostTextCompletionChunkResponse(
 	currentChunkIndex int,
 	requestType schemas.RequestType,
 	model string,
+	created int,
 ) *schemas.BifrostTextCompletionResponse {
 	response := &schemas.BifrostTextCompletionResponse{
-		ID:     id,
-		Model:  model,
-		Object: "text_completion",
-		Usage:  usage,
+		ID:      id,
+		Model:   model,
+		Created: created,
+		Object:  "text_completion",
+		Usage:   usage,
 		Choices: []schemas.BifrostResponseChoice{
 			{
 				FinishReason:                 finishReason,
@@ -3145,6 +3404,10 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		return
 	}
 
+	// Stamp now the stream has drained; the handler returned long ago. Before the
+	// guard below so it still runs when there is no deferred span.
+	ctx.StampUpstreamLatency()
+
 	// Get the deferred span handle from TraceStore using trace ID
 	handle := tracer.GetDeferredSpanHandle(traceID)
 	if handle == nil {
@@ -3179,6 +3442,9 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	} else if result != nil {
 		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
 		tracer.PopulateLLMResponseAttributes(ctx, handle, result, err)
+	} else if err != nil {
+		// Stream failed before the first chunk — still stamp error attributes.
+		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, err)
 	}
 
 	// Finalize aggregated post-hook spans before ending the LLM span

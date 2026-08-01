@@ -982,6 +982,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		AllowedExtraHeaders:   slices.Clone(updatedConfig.AllowedExtraHeaders),
 		IsPingAvailable:       updatedConfig.IsPingAvailable,
 		ToolSyncInterval:      updatedConfig.ToolSyncInterval,
+		ToolExecutionTimeout:  updatedConfig.ToolExecutionTimeout,
 		AllowOnAllVirtualKeys: updatedConfig.AllowOnAllVirtualKeys,
 		Disabled:              updatedConfig.Disabled,
 		TLSConfig:             updatedConfig.TLSConfig,
@@ -1463,6 +1464,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 
 	tools := make(map[string]schemas.ChatTool)
 	toolNameMapping := make(map[string]string)
+	var listToolsErr error
 	if externalClient == nil {
 		// Plugin short-circuited the connect with a success response; no live transport
 		// to query. Register the client as "connected" with an empty tool set — this is
@@ -1481,13 +1483,31 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		defer toolRetrievalCancel()
 		t, mapping, err := m.runListToolsWithHooks(toolRetrievalCtx, externalClient, config.Name)
 		if err != nil {
+			listToolsErr = err
 			m.logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
-			// Continue with connection even if tool retrieval fails
 		} else {
 			tools = t
 			toolNameMapping = mapping
 		}
 		m.logger.Debug("%s [%s] Retrieved %d tools", MCPLogPrefix, config.Name, len(tools))
+	}
+
+	// A live transport that cannot enumerate its tools is not healthy. Marking it
+	// Connected with an empty ToolMap makes /api/mcp/clients disagree with tools/list
+	// and is sticky — ping-based health keeps succeeding (transport is alive), so a
+	// reconnect that would re-run discovery never fires. Treat a failed initial
+	// list_tools as a connection failure: tear down the transport and return an error
+	// so the standard Disconnected + health-monitor reconnect path retries a full
+	// connect+list. A server that legitimately exposes zero tools returns success with
+	// an empty list (listToolsErr == nil) and is still marked Connected.
+	if listToolsErr != nil {
+		if (config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO) && cancel != nil {
+			cancel()
+		}
+		if closeErr := externalClient.Close(); closeErr != nil {
+			m.logger.Warn("%s Failed to close external client after tool retrieval failure: %v", MCPLogPrefix, closeErr)
+		}
+		return fmt.Errorf("failed to retrieve tools from MCP client %s: %w", config.Name, listToolsErr)
 	}
 
 	// Second lock: Update client with final connection details and tools

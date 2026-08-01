@@ -217,6 +217,224 @@ func TestGate_FinalChunkWhilePaused(t *testing.T) {
 	}
 }
 
+// TestGate_ResumeWithReplayIntervalIncludesNextChunk verifies paced resume stays
+// paused until the in-flight final chunk joins the canonical gate buffer.
+func TestGate_ResumeWithReplayIntervalIncludesNextChunk(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-paced-resume"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(8)
+	defer r.close()
+	chunks := makeChunks(3)
+
+	a.PauseStream(traceID)
+	for i := 0; i < 2; i++ {
+		if !a.GateSend(traceID, chunks[i], false, false, r.ch, ctx) {
+			t.Fatalf("buffer chunk %d: GateSend returned false", i)
+		}
+	}
+	if !a.ResumeStreamWithReplayInterval(traceID, 50*time.Millisecond) {
+		t.Fatal("ResumeStreamWithReplayInterval returned false, want paced resume armed")
+	}
+
+	sa := mustGet(t, a, traceID)
+	sa.mu.Lock()
+	stateBeforeFinal := sa.gateState
+	bufferedBeforeFinal := len(sa.gateReplayBuf)
+	pendingIntervalBeforeFinal := sa.gateReplayEventInterval
+	sa.mu.Unlock()
+	if stateBeforeFinal != StreamStatePaused || bufferedBeforeFinal != 2 || pendingIntervalBeforeFinal != 50*time.Millisecond {
+		t.Fatalf("before final: state=%v buffered=%d interval=%v, want Paused/2/50ms", stateBeforeFinal, bufferedBeforeFinal, pendingIntervalBeforeFinal)
+	}
+	if delivered, _ := r.snapshot(); len(delivered) != 0 {
+		t.Fatalf("delivered %d chunks before the in-flight final event reached GateSend", len(delivered))
+	}
+
+	start := time.Now()
+	if !a.GateSend(traceID, chunks[2], true, false, r.ch, ctx) {
+		t.Fatal("final chunk: GateSend returned false")
+	}
+	sa.WaitForFlusher()
+	if !r.waitFor(3, time.Second) {
+		t.Fatal("expected all paced chunks to be delivered")
+	}
+
+	delivered, stamps := r.snapshot()
+	if len(delivered) != len(chunks) {
+		t.Fatalf("delivered %d chunks, want %d", len(delivered), len(chunks))
+	}
+	for i := range chunks {
+		if delivered[i] != chunks[i] {
+			t.Fatalf("position %d: pointer mismatch", i)
+		}
+	}
+	if firstDelay := stamps[0].Sub(start); firstDelay > 100*time.Millisecond {
+		t.Fatalf("first paced chunk delay = %v, want immediate release", firstDelay)
+	}
+	for i := 1; i < len(stamps); i++ {
+		if gap := stamps[i].Sub(stamps[i-1]); gap < 40*time.Millisecond || gap > 500*time.Millisecond {
+			t.Fatalf("event gap %d = %v, want approximately 50ms", i, gap)
+		}
+	}
+	sa.mu.Lock()
+	stateAfterReplay := sa.gateState
+	replayIntervalAfterReplay := sa.gateReplayEventInterval
+	sa.mu.Unlock()
+	if stateAfterReplay != StreamStateEnded || replayIntervalAfterReplay != 0 {
+		t.Fatalf("after replay: state=%v interval=%v, want Ended/0", stateAfterReplay, replayIntervalAfterReplay)
+	}
+}
+
+// TestGate_ResumeWithReplayIntervalCancellationStopsWaiting verifies a disconnected
+// consumer promptly interrupts a pending replay interval and releases buffered memory.
+func TestGate_ResumeWithReplayIntervalCancellationStopsWaiting(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-paced-cancel"
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := schemas.NewBifrostContext(parent, time.Time{})
+	r := newRecorder(128)
+	defer r.close()
+	chunks := makeChunks(100)
+
+	a.PauseStream(traceID)
+	for i := 0; i < len(chunks)-1; i++ {
+		if !a.GateSend(traceID, chunks[i], false, false, r.ch, ctx) {
+			t.Fatalf("buffer chunk %d: GateSend returned false", i)
+		}
+	}
+	if !a.ResumeStreamWithReplayInterval(traceID, time.Second) {
+		t.Fatal("ResumeStreamWithReplayInterval returned false, want paced resume armed")
+	}
+	if !a.GateSend(traceID, chunks[len(chunks)-1], true, false, r.ch, ctx) {
+		t.Fatal("final chunk: GateSend returned false")
+	}
+	if !r.waitFor(1, time.Second) {
+		t.Fatal("first replay event was not delivered")
+	}
+
+	start := time.Now()
+	cancel()
+	sa := mustGet(t, a, traceID)
+	sa.WaitForFlusher()
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("canceled replay stopped after %v, want prompt termination", elapsed)
+	}
+	sa.mu.Lock()
+	buffered := len(sa.gateReplayBuf)
+	bufferedBytes := sa.gateReplayBufBytes
+	state := sa.gateState
+	sa.mu.Unlock()
+	if buffered != 0 || bufferedBytes != 0 || state != StreamStateEnded {
+		t.Fatalf("after cancellation: state=%v buffered=%d bytes=%d, want Ended/0/0", state, buffered, bufferedBytes)
+	}
+}
+
+// TestGate_ClearPausedStreamBufferDropsBufferedOriginals verifies cleared replay chunks are not delivered.
+func TestGate_ClearPausedStreamBufferDropsBufferedOriginals(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-clear-paused"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(32)
+	defer r.close()
+	chunks := makeChunks(4)
+
+	if !a.GateSend(traceID, chunks[0], false, false, r.ch, ctx) {
+		t.Fatalf("setup chunk 0: GateSend returned false")
+	}
+	a.PauseStream(traceID)
+	for i := 1; i < 3; i++ {
+		if !a.GateSend(traceID, chunks[i], false, false, r.ch, ctx) {
+			t.Fatalf("setup chunk %d (paused): GateSend returned false", i)
+		}
+	}
+
+	if err := a.ClearPausedStreamBuffer(traceID); err != nil {
+		t.Fatalf("ClearPausedStreamBuffer err = %v, want nil", err)
+	}
+	a.ResumeStream(traceID)
+	if !a.GateSend(traceID, chunks[3], true, false, r.ch, ctx) {
+		t.Fatalf("final chunk: GateSend returned false")
+	}
+
+	sa := mustGet(t, a, traceID)
+	sa.WaitForFlusher()
+	if !r.waitFor(2, time.Second) {
+		t.Fatalf("expected live setup chunk and final chunk")
+	}
+	cs, _ := r.snapshot()
+	if len(cs) != 2 {
+		t.Fatalf("delivered chunks = %d, want 2", len(cs))
+	}
+	if cs[0] != chunks[0] || cs[1] != chunks[3] {
+		t.Fatalf("delivered chunks = %#v, want setup then final", cs)
+	}
+	if sa.gateReplayBufBytes != 0 {
+		t.Fatalf("gateReplayBufBytes = %d, want 0", sa.gateReplayBufBytes)
+	}
+}
+
+// TestGate_ClearPausedStreamBufferDropsBufferedTerminal verifies that clearing
+// a buffer holding a terminal chunk also resets the pending-terminal marker:
+// the gate must not end on resume, and a replacement terminal sent afterward
+// must still be delivered.
+func TestGate_ClearPausedStreamBufferDropsBufferedTerminal(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-clear-paused-terminal"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(32)
+	defer r.close()
+	chunks := makeChunks(4)
+
+	if !a.GateSend(traceID, chunks[0], false, false, r.ch, ctx) {
+		t.Fatalf("setup chunk 0: GateSend returned false")
+	}
+	a.PauseStream(traceID)
+	if !a.GateSend(traceID, chunks[1], false, false, r.ch, ctx) {
+		t.Fatalf("setup chunk 1 (paused): GateSend returned false")
+	}
+	if !a.GateSend(traceID, chunks[2], true, false, r.ch, ctx) {
+		t.Fatalf("setup terminal chunk (paused): GateSend returned false")
+	}
+
+	sa := mustGet(t, a, traceID)
+	sa.mu.Lock()
+	pending := sa.gatePendingTerminal
+	sa.mu.Unlock()
+	if !pending {
+		t.Fatalf("expected gatePendingTerminal to be set after a final chunk arrived while paused")
+	}
+
+	if err := a.ClearPausedStreamBuffer(traceID); err != nil {
+		t.Fatalf("ClearPausedStreamBuffer err = %v, want nil", err)
+	}
+	sa.mu.Lock()
+	pending = sa.gatePendingTerminal
+	sa.mu.Unlock()
+	if pending {
+		t.Fatalf("expected gatePendingTerminal to be reset by ClearPausedStreamBuffer")
+	}
+
+	a.ResumeStream(traceID)
+	if !a.GateSend(traceID, chunks[3], true, false, r.ch, ctx) {
+		t.Fatalf("replacement terminal chunk: GateSend returned false")
+	}
+
+	sa.WaitForFlusher()
+	if !r.waitFor(2, time.Second) {
+		t.Fatalf("expected live setup chunk and replacement terminal chunk")
+	}
+	cs, _ := r.snapshot()
+	if len(cs) != 2 {
+		t.Fatalf("delivered chunks = %d, want 2", len(cs))
+	}
+	if cs[0] != chunks[0] || cs[1] != chunks[3] {
+		t.Fatalf("delivered chunks = %#v, want setup then replacement terminal", cs)
+	}
+	if sa.gateState != StreamStateEnded {
+		t.Fatalf("expected Ended after replacement terminal, got %v", sa.gateState)
+	}
+}
+
 // TestGate_HardErrorWhilePaused: a hard provider error arriving while paused
 // is buffered like any other terminal. Resume drains in order and transitions
 // the gate to Ended; the error chunk is delivered last.

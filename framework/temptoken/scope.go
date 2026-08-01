@@ -23,6 +23,14 @@ const (
 	// flow endpoints. Bound resource_id is the headers flow ID. Parallel
 	// of MCPAuthScopeName for the per-user-headers surface.
 	MCPHeadersAuthScopeName = "mcp_headers_auth"
+
+	// OAuth2ConsentScopeName names the scope that authorizes the OAuth2
+	// downstream consent page to call the consent flow endpoints. Bound
+	// resource_id is the authorize-request flow ID. The consent page is
+	// public (outside /workspace) so it cannot rely on dashboard auth;
+	// this token is the sole credential binding the browser session to the
+	// pending authorization request.
+	OAuth2ConsentScopeName = "oauth2_consent"
 )
 
 // RoutePattern is one (method, path) pair a Scope grants access to. The path

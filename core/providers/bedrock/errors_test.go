@@ -2,11 +2,44 @@ package bedrock
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestExecuteBedrockRequest_SurfacesExceptionType is an end-to-end guard for the
+// non-streaming executor path (Converse / chat_completion). It must route upstream
+// HTTP errors through parseBedrockHTTPError so the AWS exception type — delivered
+// here only via the X-Amzn-Errortype header with a ":<url>" qualifier, as real EOL
+// models return — is surfaced on both the top-level type and the nested error.type.
+// Regression for a bespoke inline error path that dropped the type entirely.
+func TestExecuteBedrockRequest_SurfacesExceptionType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Amzn-Errortype", "ResourceNotFoundException:http://internal.amazon.com/coral/com.amazon.bedrock/")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"This model version has reached the end of its life. Please refer to the AWS documentation for more details."}`))
+	}))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL, nil)
+	require.NoError(t, err)
+
+	provider := &BedrockProvider{client: server.Client()}
+	_, _, _, bifrostErr := provider.executeBedrockRequest(req)
+
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, http.StatusNotFound, *bifrostErr.StatusCode)
+	assert.False(t, bifrostErr.IsBifrostError, "non-streaming path delegates retryability to the retry gate via status code")
+	require.NotNil(t, bifrostErr.Type, "top-level type must be recovered from the header")
+	assert.Equal(t, "ResourceNotFoundException", *bifrostErr.Type)
+	require.NotNil(t, bifrostErr.Error)
+	require.NotNil(t, bifrostErr.Error.Type, "nested error.type must be populated for OpenAI-shaped consumers")
+	assert.Equal(t, "ResourceNotFoundException", *bifrostErr.Error.Type)
+	assert.Contains(t, bifrostErr.Error.Message, "reached the end of its life")
+}
 
 // TestParseBedrockHTTPError_PreservesExceptionType verifies that the upstream
 // AWS exception type (the JSON "__type" field) is preserved on the resulting
@@ -44,6 +77,40 @@ func TestParseBedrockHTTPError_TypeFromHeader(t *testing.T) {
 	assert.Equal(t, "ValidationException", *bifrostErr.Type)
 	require.NotNil(t, bifrostErr.Error)
 	assert.Contains(t, bifrostErr.Error.Message, "reached the end of its life")
+}
+
+// TestParseBedrockHTTPError_PopulatesNestedErrorType verifies the AWS exception
+// type is surfaced on the nested error object (error.type), not only at the
+// top level. OpenAI-shaped consumers read error.type/error.code, so a
+// Bedrock passthrough error must carry the type there — matching every other
+// provider. This is the customer-reported gap: "only error.message, no type".
+func TestParseBedrockHTTPError_PopulatesNestedErrorType(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("X-Amzn-Errortype", "ValidationException")
+	body := []byte(`{"message":"Invocation of model ID anthropic.claude-v2 with on-demand throughput isn't supported."}`)
+
+	bifrostErr := parseBedrockHTTPError(http.StatusBadRequest, headers, body)
+
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Type)
+	assert.Equal(t, "ValidationException", *bifrostErr.Type, "top-level type must still be set")
+	require.NotNil(t, bifrostErr.Error)
+	require.NotNil(t, bifrostErr.Error.Type, "nested error.type must be populated for OpenAI-shaped consumers")
+	assert.Equal(t, "ValidationException", *bifrostErr.Error.Type)
+}
+
+// TestParseBedrockHTTPError_NestedTypeFromBodyType verifies the nested
+// error.type is also populated when the type comes from the body "__type"
+// rather than the header.
+func TestParseBedrockHTTPError_NestedTypeFromBodyType(t *testing.T) {
+	body := []byte(`{"__type":"ThrottlingException","message":"rate exceeded"}`)
+
+	bifrostErr := parseBedrockHTTPError(http.StatusTooManyRequests, http.Header{}, body)
+
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
+	require.NotNil(t, bifrostErr.Error.Type)
+	assert.Equal(t, "ThrottlingException", *bifrostErr.Error.Type)
 }
 
 // TestParseBedrockHTTPError_HeaderTypeQualifierStripped ensures the trailing

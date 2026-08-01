@@ -31,18 +31,24 @@ func parseBedrockHTTPError(statusCode int, headers http.Header, body []byte) *sc
 		bifrostErr.Error.Code = errorResp.Code
 	}
 
-	if bifrostErr.Type == nil {
-		exceptionType := errorResp.Type
-		if exceptionType == "" {
-			if hv := headers.Get("X-Amzn-Errortype"); hv != "" {
-				if i := strings.IndexAny(hv, ":#"); i >= 0 {
-					hv = hv[:i]
-				}
-				exceptionType = strings.TrimSpace(hv)
+	exceptionType := errorResp.Type
+	if exceptionType == "" {
+		if hv := headers.Get("X-Amzn-Errortype"); hv != "" {
+			if i := strings.IndexAny(hv, ":#"); i >= 0 {
+				hv = hv[:i]
 			}
+			exceptionType = strings.TrimSpace(hv)
 		}
-		if exceptionType != "" {
-			bifrostErr.Type = &exceptionType
+	}
+	if exceptionType != "" {
+		if bifrostErr.Type == nil {
+			bifrostErr.Type = schemas.Ptr(exceptionType)
+		}
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = &schemas.ErrorField{}
+		}
+		if bifrostErr.Error.Type == nil {
+			bifrostErr.Error.Type = schemas.Ptr(exceptionType)
 		}
 	}
 

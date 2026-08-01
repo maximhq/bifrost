@@ -2227,3 +2227,131 @@ func TestCollectDimensionHeaders(t *testing.T) {
 		t.Errorf("collectDimensionHeaders(nil) = %v, want nil", got)
 	}
 }
+
+// TestTracingMiddleware_SetsCorrelationHeaders asserts that every traced response
+// carries x-request-id and x-bifrost-trace-id so callers can pivot a request into
+// its logs and trace in Grafana/Tempo/Loki (BF-1041).
+func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	mw := NewTracingMiddleware(tracer).Middleware()
+
+	newCtx := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+		ctx.Request.Header.SetMethod("POST")
+		return ctx
+	}
+
+	t.Run("generates request id when absent", func(t *testing.T) {
+		ctx := newCtx()
+		mw(func(*fasthttp.RequestCtx) {})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
+			t.Error("expected x-request-id response header to be set")
+		}
+	})
+
+	t.Run("echoes caller-supplied request id", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Request.Header.Set("x-request-id", "req-abc-123")
+		mw(func(*fasthttp.RequestCtx) {})(ctx)
+
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-abc-123" {
+			t.Errorf("x-request-id = %q, want req-abc-123", got)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id response header to be set")
+		}
+	})
+
+	t.Run("headers survive the error path", func(t *testing.T) {
+		ctx := newCtx()
+		mw(func(c *fasthttp.RequestCtx) {
+			SendError(c, fasthttp.StatusBadGateway, "boom")
+		})(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusBadGateway)
+		}
+		if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+			t.Error("expected x-bifrost-trace-id to survive the error path")
+		}
+		if got := string(ctx.Response.Header.Peek("x-request-id")); got == "" {
+			t.Error("expected x-request-id to survive the error path")
+		}
+	})
+}
+
+// captureLogEvent records the structured string fields emitted on the access log so
+// a test can assert which correlation keys were written.
+type captureLogEvent struct {
+	strFields map[string]string
+}
+
+func (c *captureLogEvent) Str(key, val string) schemas.LogEventBuilder {
+	c.strFields[key] = val
+	return c
+}
+func (c *captureLogEvent) Int(string, int) schemas.LogEventBuilder     { return c }
+func (c *captureLogEvent) Int64(string, int64) schemas.LogEventBuilder { return c }
+func (c *captureLogEvent) Send()                                       {}
+
+type captureLogger struct {
+	mockLogger
+	events []*captureLogEvent
+}
+
+func (l *captureLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	e := &captureLogEvent{strFields: map[string]string{}}
+	l.events = append(l.events, e)
+	return e
+}
+
+// TestTracingMiddleware_AccessLogIncludesRequestID asserts the stdout access log
+// carries both trace_id and request_id, so Loki can index on either (BF-1041).
+func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
+	logger := &captureLogger{}
+	SetLogger(logger)
+	defer SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{},
+		},
+	}
+	cors := NewCorsMiddleware(config).Middleware()
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	tm := NewTracingMiddleware(tracer).Middleware()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-request-id", "req-xyz")
+
+	// CORS owns the access-log defer and wraps TracingMiddleware, so the trace_id
+	// UserValue and x-request-id header set by tracing are visible when it runs.
+	cors(tm(func(*fasthttp.RequestCtx) {}))(ctx)
+
+	if len(logger.events) != 1 {
+		t.Fatalf("access log events = %d, want 1", len(logger.events))
+	}
+	fields := logger.events[0].strFields
+	if got := fields["request_id"]; got != "req-xyz" {
+		t.Errorf("access log request_id = %q, want req-xyz", got)
+	}
+	if got := fields["trace_id"]; got == "" {
+		t.Error("expected access log to include a non-empty trace_id")
+	}
+}

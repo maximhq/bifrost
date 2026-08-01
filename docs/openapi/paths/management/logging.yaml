@@ -852,13 +852,34 @@ _histogram-parameters:
     schema:
       type: string
 
+_ranking-parameters:
+  limit:
+    name: limit
+    in: query
+    description: |
+      Maximum number of ranked rows to return. Defaults to 100. Ignored when
+      `all=true`.
+    schema:
+      type: integer
+      minimum: 1
+      default: 100
+  all:
+    name: all
+    in: query
+    description: |
+      When true, returns every ranked entity with no row cap. Intended for
+      exports (CSV / PDF), which must not be truncated.
+    schema:
+      type: boolean
+      default: false
+
 logs-recalculate-cost:
   post:
     operationId: recalculateLogCosts
     summary: Recalculate log costs
     description: |
-      Recomputes missing costs in batches. Processes logs with missing cost values
-      and updates them based on current pricing data.
+      Starts an asynchronous background job that recalculates log costs in batches.
+      The returned payload is a job status object that can be polled via the status endpoint.
     tags:
       - Logging
     requestBody:
@@ -870,14 +891,65 @@ logs-recalculate-cost:
     security:
       - ManagementBearerAuth: []
     responses:
-      '200':
-        description: Costs recalculated successfully
+      '202':
+        description: Cost recalculation job accepted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '409':
+        description: A recalculation job is already running
         content:
           application/json:
             schema:
               $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '503':
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-recalculate-cost-status:
+  get:
+    operationId: getRecalculateCostStatus
+    summary: Get log cost recalculation status
+    description: |
+      Returns the current status of a log cost recalculation job.
+      When `id` is omitted, the current in-flight job is returned, or `idle` when no job is running.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: query
+        description: Optional recalculation job ID to fetch
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Recalculation job status
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '404':
+        description: Recalculation job not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '503':
+        description: Background job runner is not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -1251,6 +1323,8 @@ logs-rankings:
       - $ref: '#/_histogram-parameters/parent_request_id'
       - $ref: '#/_histogram-parameters/metadata_key'
       - $ref: '#/_histogram-parameters/content_search'
+      - $ref: '#/_ranking-parameters/limit'
+      - $ref: '#/_ranking-parameters/all'
     security:
       - ManagementBearerAuth: []
     responses:
@@ -1323,6 +1397,8 @@ logs-dashboard:
         description: Comma-separated list of MCP server labels to filter the MCP section by
         schema:
           type: string
+      - $ref: '#/_ranking-parameters/limit'
+      - $ref: '#/_ranking-parameters/all'
     security:
       - ManagementBearerAuth: []
     responses:

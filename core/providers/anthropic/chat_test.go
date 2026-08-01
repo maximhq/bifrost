@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -76,6 +78,375 @@ func TestToAnthropicChatRequest_PreservesPropertyOrder(t *testing.T) {
 		if keys[i] != k {
 			t.Errorf("property %d: expected %q, got %q (full order: %v)", i, k, keys[i], keys)
 		}
+	}
+}
+
+func TestToAnthropicChatRequest_OpenAICompatibleFileIDUsesFileSource(t *testing.T) {
+	body := `{
+		"model": "anthropic/claude-sonnet-4-5-20250929",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "Read the attached PDF."},
+				{
+					"type": "file",
+					"file": {
+						"file_id": "file_abc123",
+						"filename": "tiny.pdf",
+						"format": "application/pdf"
+					}
+				}
+			]
+		}]
+	}`
+
+	var openAIReq openai.OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("unmarshal OpenAI-compatible request: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := openAIReq.ToBifrostChatRequest(ctx)
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected one message, got %d", len(result.Messages))
+	}
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected two content blocks, got %d", len(blocks))
+	}
+
+	documentBlock := blocks[1]
+	if documentBlock.Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", documentBlock.Type)
+	}
+	if documentBlock.Title == nil || *documentBlock.Title != "tiny.pdf" {
+		t.Fatalf("expected document title tiny.pdf, got %v", documentBlock.Title)
+	}
+	if documentBlock.Source == nil || documentBlock.Source.SourceObj == nil {
+		t.Fatalf("expected document source object, got %#v", documentBlock.Source)
+	}
+	source := documentBlock.Source.SourceObj
+	if source.Type != "file" {
+		t.Fatalf("expected source type file, got %q", source.Type)
+	}
+	if source.FileID == nil || *source.FileID != "file_abc123" {
+		t.Fatalf("expected source file_id file_abc123, got %v", source.FileID)
+	}
+}
+
+func TestToAnthropicChatRequest_DocumentOnlyMessageGetsPlaceholderTextBlock(t *testing.T) {
+	body := `{
+		"model": "anthropic/claude-sonnet-4-5-20250929",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{
+					"type": "file",
+					"file": {
+						"file_id": "file_abc123",
+						"filename": "tiny.pdf",
+						"format": "application/pdf"
+					}
+				}
+			]
+		}]
+	}`
+
+	var openAIReq openai.OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("unmarshal OpenAI-compatible request: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := openAIReq.ToBifrostChatRequest(ctx)
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected placeholder text block plus document block, got %d blocks", len(blocks))
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeText {
+		t.Fatalf("expected leading placeholder text block, got %q", blocks[0].Type)
+	}
+	if blocks[0].Text == nil || strings.TrimSpace(*blocks[0].Text) == "" {
+		t.Fatalf("expected non-empty placeholder text, got %v", blocks[0].Text)
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block after placeholder, got %q", blocks[1].Type)
+	}
+}
+
+func TestToAnthropicChatRequest_DocumentWithTextDoesNotGetPlaceholder(t *testing.T) {
+	body := `{
+		"model": "anthropic/claude-sonnet-4-5-20250929",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "Read the attached PDF."},
+				{
+					"type": "file",
+					"file": {
+						"file_id": "file_abc123",
+						"filename": "tiny.pdf",
+						"format": "application/pdf"
+					}
+				}
+			]
+		}]
+	}`
+
+	var openAIReq openai.OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("unmarshal OpenAI-compatible request: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := openAIReq.ToBifrostChatRequest(ctx)
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected exactly two content blocks (no placeholder inserted), got %d", len(blocks))
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeText || blocks[0].Text == nil || *blocks[0].Text != "Read the attached PDF." {
+		t.Fatalf("expected original text block preserved unchanged, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", blocks[1].Type)
+	}
+}
+
+func TestToAnthropicChatRequest_UserDocumentWithWhitespaceTextGetsPlaceholder(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5-20250929",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{
+						Type: schemas.ChatContentBlockTypeText,
+						Text: new("   "),
+					},
+					{
+						Type: schemas.ChatContentBlockTypeFile,
+						File: &schemas.ChatInputFile{
+							FileID:   new("file_abc123"),
+							Filename: new("tiny.pdf"),
+							FileType: new("application/pdf"),
+						},
+					},
+				}},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: new("Understood.")},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected placeholder text and document blocks, got %+v", blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeText || blocks[0].Text == nil || *blocks[0].Text != documentPlaceholderText {
+		t.Fatalf("expected leading document placeholder, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", blocks[1].Type)
+	}
+}
+
+// documentPrefillRequest builds a request whose final message is an assistant
+// prefill carrying a document block, optionally preceded by the given text.
+func documentPrefillRequest(prefillText *string) *schemas.BifrostChatRequest {
+	assistantBlocks := []schemas.ChatContentBlock{}
+	if prefillText != nil {
+		assistantBlocks = append(assistantBlocks, schemas.ChatContentBlock{
+			Type: schemas.ChatContentBlockTypeText,
+			Text: prefillText,
+		})
+	}
+	assistantBlocks = append(assistantBlocks, schemas.ChatContentBlock{
+		Type: schemas.ChatContentBlockTypeFile,
+		File: &schemas.ChatInputFile{
+			FileID:   new("file_abc123"),
+			Filename: new("tiny.pdf"),
+			FileType: new("application/pdf"),
+		},
+	})
+
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5-20250929",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: new("Summarize this.")},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentBlocks: assistantBlocks},
+			},
+		},
+	}
+}
+
+// lastMessageTextBlock returns the text of the last text block in the final
+// message of the converted request.
+func lastMessageTextBlock(t *testing.T, result *AnthropicMessageRequest) string {
+	t.Helper()
+	if len(result.Messages) == 0 {
+		t.Fatalf("expected at least one message")
+	}
+	blocks := result.Messages[len(result.Messages)-1].Content.ContentBlocks
+	for j := len(blocks) - 1; j >= 0; j-- {
+		if blocks[j].Type == AnthropicContentBlockTypeText {
+			if blocks[j].Text == nil {
+				t.Fatalf("expected non-nil text on text block %d", j)
+			}
+			return *blocks[j].Text
+		}
+	}
+	t.Fatalf("expected a text block in the final message, got %+v", blocks)
+	return ""
+}
+
+// A document-only assistant prefill must keep a usable text block: the
+// trailing-whitespace trim applied to the final assistant message previously
+// erased the injected placeholder, leaving an empty text block that Anthropic
+// rejects ("text content blocks must contain non-whitespace text").
+func TestToAnthropicChatRequest_AssistantPrefillDocumentOnlyKeepsPlaceholder(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, documentPrefillRequest(nil))
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	text := lastMessageTextBlock(t, result)
+	if strings.TrimSpace(text) == "" {
+		t.Fatalf("expected non-whitespace placeholder text to survive trimming, got %q", text)
+	}
+	if text != strings.TrimRight(text, " \n\r\t") {
+		t.Fatalf("final assistant text must not end with trailing whitespace, got %q", text)
+	}
+}
+
+// A caller-supplied whitespace-only prefill text block alongside a document is
+// removed during normalization, so the document placeholder must replace it.
+func TestToAnthropicChatRequest_AssistantPrefillWhitespaceTextWithDocumentRestoresPlaceholder(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, documentPrefillRequest(new("   ")))
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	text := lastMessageTextBlock(t, result)
+	if strings.TrimSpace(text) == "" {
+		t.Fatalf("expected placeholder to replace the whitespace-only text block, got %q", text)
+	}
+}
+
+// Anthropic requires a thinking-enabled assistant turn to begin with its
+// thinking/redacted_thinking blocks, so the document placeholder must be
+// inserted after them rather than prepended at index 0.
+func TestToAnthropicChatRequest_AssistantPrefillDocumentKeepsReasoningBlocksFirst(t *testing.T) {
+	req := documentPrefillRequest(nil)
+	req.Input[len(req.Input)-1].ChatAssistantMessage = &schemas.ChatAssistantMessage{
+		ReasoningDetails: []schemas.ChatReasoningDetails{
+			{
+				Index:     0,
+				Type:      schemas.BifrostReasoningDetailsTypeText,
+				Text:      new("Let me read the document."),
+				Signature: new("sig_abc123"),
+			},
+			{
+				Index: 1,
+				Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+				Data:  new("redacted_payload"),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[len(result.Messages)-1].Content.ContentBlocks
+	want := []AnthropicContentBlockType{
+		AnthropicContentBlockTypeThinking,
+		AnthropicContentBlockTypeRedactedThinking,
+		AnthropicContentBlockTypeText,
+		AnthropicContentBlockTypeDocument,
+	}
+	if len(blocks) != len(want) {
+		t.Fatalf("expected %d blocks, got %+v", len(want), blocks)
+	}
+	for i, wantType := range want {
+		if blocks[i].Type != wantType {
+			t.Fatalf("block %d: expected %q, got %q (blocks: %+v)", i, wantType, blocks[i].Type, blocks)
+		}
+	}
+	if blocks[2].Text == nil || *blocks[2].Text != documentPlaceholderText {
+		t.Fatalf("expected the document placeholder after the reasoning blocks, got %+v", blocks[2])
+	}
+}
+
+func TestToAnthropicChatRequest_AssistantPrefillDropsTrailingWhitespaceWhenUsableTextExists(t *testing.T) {
+	req := documentPrefillRequest(nil)
+	req.Input[len(req.Input)-1].Content.ContentBlocks = []schemas.ChatContentBlock{
+		{
+			Type: schemas.ChatContentBlockTypeText,
+			Text: new("Read this"),
+		},
+		{
+			Type: schemas.ChatContentBlockTypeFile,
+			File: &schemas.ChatInputFile{
+				FileID:   new("file_abc123"),
+				Filename: new("tiny.pdf"),
+				FileType: new("application/pdf"),
+			},
+		},
+		{
+			Type: schemas.ChatContentBlockTypeText,
+			Text: new("   "),
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[len(result.Messages)-1].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected usable text and document blocks, got %+v", blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeText || blocks[0].Text == nil || *blocks[0].Text != "Read this" {
+		t.Fatalf("expected usable text preserved unchanged, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", blocks[1].Type)
 	}
 }
 
@@ -869,13 +1240,159 @@ func makeSOResponseFormat(schemaName string) interface{} {
 	}
 }
 
-// TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking verifies that when
-// response_format=json_schema is passed to a Vertex-targeted request without thinking,
-// Bifrost adds a synthetic bf_so_* tool AND forces tool_choice to that tool.
-func TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking(t *testing.T) {
+// toolConversionProviders are the providers whose Anthropic-Messages-compatible
+// endpoints reject native `output_config.format` and must instead receive
+// structured output as a synthetic bf_so_* tool call. Any provider added here
+// in the future must also be added to the branch under test in chat.go/responses.go.
+var toolConversionProviders = []schemas.ModelProvider{schemas.Vertex, schemas.BedrockMantle, schemas.Azure}
+
+// TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking verifies that when
+// response_format=json_schema is sent to a provider whose native Anthropic endpoint rejects
+// output_config.format, Bifrost adds a synthetic bf_so_* tool AND forces tool_choice to it.
+func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			rf := makeSOResponseFormat("my_schema")
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "claude-opus-4-6",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{
+					ResponseFormat: &rf,
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.OutputConfig != nil {
+				t.Errorf("expected OutputConfig to stay unset for %s (native field unsupported), got %+v", provider, result.OutputConfig)
+			}
+
+			// A synthetic tool with the bf_so_ prefix must be present.
+			var soTool *AnthropicTool
+			for i := range result.Tools {
+				if len(result.Tools[i].Name) > 6 && result.Tools[i].Name[:6] == "bf_so_" {
+					soTool = &result.Tools[i]
+					break
+				}
+			}
+			if soTool == nil {
+				t.Fatalf("expected a synthetic bf_so_* tool to be added for %s structured output", provider)
+			}
+
+			// ToolChoice must be set and must point at the SO tool.
+			if result.ToolChoice == nil {
+				t.Fatal("expected ToolChoice to be set when thinking is disabled")
+			}
+			if result.ToolChoice.Type != "tool" {
+				t.Errorf("expected ToolChoice.Type=tool, got %q", result.ToolChoice.Type)
+			}
+			if result.ToolChoice.Name != soTool.Name {
+				t.Errorf("expected ToolChoice.Name=%q, got %q", soTool.Name, result.ToolChoice.Name)
+			}
+		})
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingEffort verifies that when
+// response_format=json_schema + reasoning_effort='medium' is sent to a tool-conversion provider,
+// Bifrost still adds the synthetic tool but does NOT set tool_choice (to avoid Anthropic's
+// "Thinking may not be enabled when tool_choice forces tool use" 400 error).
+func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingEffort(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			rf := makeSOResponseFormat("my_schema")
+			effort := "medium"
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "claude-opus-4-6",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(16000),
+					ResponseFormat:      &rf,
+					Reasoning:           &schemas.ChatReasoning{Effort: &effort},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Synthetic tool must still be present so the model knows the schema.
+			found := false
+			for _, tool := range result.Tools {
+				if len(tool.Name) > 6 && tool.Name[:6] == "bf_so_" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected synthetic bf_so_* tool to be present for %s even with thinking enabled", provider)
+			}
+
+			// ToolChoice must NOT be set — forcing it would trigger a 400 from Anthropic.
+			if result.ToolChoice != nil {
+				t.Errorf("expected ToolChoice to be nil when thinking is enabled (effort=%q) for %s, got %+v", effort, provider, result.ToolChoice)
+			}
+		})
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingMaxTokens is the same as
+// the effort variant but uses explicit budget_tokens reasoning instead.
+func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingMaxTokens(t *testing.T) {
+	for _, provider := range toolConversionProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			rf := makeSOResponseFormat("my_schema")
+			maxTok := 4000
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "claude-opus-4-6",
+				Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+				},
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: new(16000),
+					ResponseFormat:      &rf,
+					Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.ToolChoice != nil {
+				t.Errorf("expected ToolChoice to be nil when thinking (MaxTokens) is enabled for %s, got %+v", provider, result.ToolChoice)
+			}
+		})
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_NativeOutputConfig_Anthropic verifies the
+// negative case: a provider whose native Anthropic endpoint DOES support output_config.format
+// (i.e. Anthropic itself) gets the native field set and no synthetic tool is added. This is
+// the control that the regression (Azure missing from toolConversionProviders) would have
+// broken in reverse — Azure incorrectly took this branch instead of the tool-conversion one.
+func TestToAnthropicChatRequest_StructuredOutput_NativeOutputConfig_Anthropic(t *testing.T) {
 	rf := makeSOResponseFormat("my_schema")
 	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Vertex,
+		Provider: schemas.Anthropic,
 		Model:    "claude-opus-4-6",
 		Input: []schemas.ChatMessage{
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
@@ -892,102 +1409,14 @@ func TestToAnthropicChatRequest_StructuredOutput_Vertex_NoThinking(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// A synthetic tool with the bf_so_ prefix must be present.
-	var soTool *AnthropicTool
-	for i := range result.Tools {
-		if len(result.Tools[i].Name) > 6 && result.Tools[i].Name[:6] == "bf_so_" {
-			soTool = &result.Tools[i]
-			break
-		}
-	}
-	if soTool == nil {
-		t.Fatal("expected a synthetic bf_so_* tool to be added for Vertex structured output")
+	if result.OutputConfig == nil || result.OutputConfig.Format == nil {
+		t.Fatal("expected OutputConfig.Format to be set natively for Anthropic")
 	}
 
-	// ToolChoice must be set and must point at the SO tool.
-	if result.ToolChoice == nil {
-		t.Fatal("expected ToolChoice to be set when thinking is disabled")
-	}
-	if result.ToolChoice.Type != "tool" {
-		t.Errorf("expected ToolChoice.Type=tool, got %q", result.ToolChoice.Type)
-	}
-	if result.ToolChoice.Name != soTool.Name {
-		t.Errorf("expected ToolChoice.Name=%q, got %q", soTool.Name, result.ToolChoice.Name)
-	}
-}
-
-// TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingEffort verifies that when
-// response_format=json_schema + reasoning_effort='medium' is sent to Vertex, Bifrost
-// still adds the synthetic tool but does NOT set tool_choice (to avoid Anthropic's
-// "Thinking may not be enabled when tool_choice forces tool use" 400 error).
-func TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingEffort(t *testing.T) {
-	rf := makeSOResponseFormat("my_schema")
-	effort := "medium"
-	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Vertex,
-		Model:    "claude-opus-4-6",
-		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
-		},
-		Params: &schemas.ChatParameters{
-			MaxCompletionTokens: new(16000),
-			ResponseFormat:      &rf,
-			Reasoning:           &schemas.ChatReasoning{Effort: &effort},
-		},
-	}
-
-	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	defer cancel()
-	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Synthetic tool must still be present so the model knows the schema.
-	found := false
 	for _, tool := range result.Tools {
 		if len(tool.Name) > 6 && tool.Name[:6] == "bf_so_" {
-			found = true
-			break
+			t.Errorf("did not expect a synthetic bf_so_* tool for Anthropic, got %q", tool.Name)
 		}
-	}
-	if !found {
-		t.Fatal("expected synthetic bf_so_* tool to be present even with thinking enabled")
-	}
-
-	// ToolChoice must NOT be set — forcing it would trigger a 400 from Anthropic.
-	if result.ToolChoice != nil {
-		t.Errorf("expected ToolChoice to be nil when thinking is enabled (effort=%q), got %+v", effort, result.ToolChoice)
-	}
-}
-
-// TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingMaxTokens is the same as
-// the effort variant but uses explicit budget_tokens reasoning instead.
-func TestToAnthropicChatRequest_StructuredOutput_Vertex_ThinkingMaxTokens(t *testing.T) {
-	rf := makeSOResponseFormat("my_schema")
-	maxTok := 4000
-	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: schemas.Vertex,
-		Model:    "claude-opus-4-6",
-		Input: []schemas.ChatMessage{
-			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
-		},
-		Params: &schemas.ChatParameters{
-			MaxCompletionTokens: new(16000),
-			ResponseFormat:      &rf,
-			Reasoning:           &schemas.ChatReasoning{MaxTokens: &maxTok},
-		},
-	}
-
-	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-	defer cancel()
-	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if result.ToolChoice != nil {
-		t.Errorf("expected ToolChoice to be nil when thinking (MaxTokens) is enabled, got %+v", result.ToolChoice)
 	}
 }
 

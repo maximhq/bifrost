@@ -79,6 +79,24 @@ func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.
 			},
 			description: "When Reasoning is nil, reasoning field should not appear in output",
 		},
+		{
+			name: "reasoning context and mode are preserved while max_tokens is dropped",
+			request: &OpenAIResponsesRequest{
+				Model: "gpt-5.6",
+				Input: OpenAIResponsesRequestInput{
+					OpenAIResponsesRequestInputStr: schemas.Ptr("test"),
+				},
+				ResponsesParameters: schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{
+						Effort:    schemas.Ptr("max"),
+						Context:   schemas.Ptr("current_turn"),
+						Mode:      schemas.Ptr("pro"),
+						MaxTokens: schemas.Ptr(1000),
+					},
+				},
+			},
+			description: "reasoning.context and reasoning.mode should pass through to output",
+		},
 	}
 
 	for _, tt := range tests {
@@ -117,12 +135,53 @@ func TestOpenAIResponsesRequest_MarshalJSON_ReasoningMaxTokensAbsent(t *testing.
 							t.Error("reasoning.generate_summary should be present in output")
 						}
 					}
+					if tt.request.Reasoning.Context != nil {
+						if got, exists := reasoning["context"]; !exists || got != *tt.request.Reasoning.Context {
+							t.Errorf("reasoning.context = %v, want %q", got, *tt.request.Reasoning.Context)
+						}
+					}
+					if tt.request.Reasoning.Mode != nil {
+						if got, exists := reasoning["mode"]; !exists || got != *tt.request.Reasoning.Mode {
+							t.Errorf("reasoning.mode = %v, want %q", got, *tt.request.Reasoning.Mode)
+						}
+					}
 				}
 			} else if tt.request.Reasoning != nil {
 				// If reasoning is set, it should appear in JSON (unless all fields are nil/omitted)
 				if tt.request.Reasoning.Effort != nil || tt.request.Reasoning.Summary != nil || tt.request.Reasoning.GenerateSummary != nil {
 					t.Error("reasoning field should be present in JSON when Reasoning is set with non-nil fields")
 				}
+			}
+		})
+	}
+}
+
+func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		expected string
+	}{
+		{"minimal maps to low", "gpt-5", "minimal", "low"},
+		{"gpt-5.6 keeps max", "gpt-5.6", "max", "max"},
+		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
+		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
+		{"provider-prefixed gpt-5.6 keeps max", "openai/gpt-5.6", "max", "max"},
+		{"deepseek-v4 keeps max", "deepseek-v4", "max", "max"},
+		{"glm-5.2 keeps max", "glm-5.2", "max", "max"},
+		{"gpt-5.5 downgrades max to xhigh", "gpt-5.5", "max", "xhigh"},
+		{"gpt-5.2 downgrades max to xhigh", "gpt-5.2", "max", "xhigh"},
+		{"gpt-5.5 keeps xhigh", "gpt-5.5", "xhigh", "xhigh"},
+		{"gpt-5.1 downgrades max to high", "gpt-5.1", "max", "high"},
+		{"gpt-5.1 downgrades xhigh to high", "gpt-5.1", "xhigh", "high"},
+		{"standard effort passes through", "gpt-5.1", "medium", "medium"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeOpenAIReasoningEffort(tt.model, tt.effort); got != tt.expected {
+				t.Errorf("normalizeOpenAIReasoningEffort(%q, %q) = %q, want %q", tt.model, tt.effort, got, tt.expected)
 			}
 		})
 	}
@@ -965,5 +1024,74 @@ func TestOpenAIResponsesRequest_MarshalJSON_CompactionSummaryStripped(t *testing
 		t.Errorf("reasoning item should retain its summary field, got: %s", string(data))
 	} else if string(rawSummary) != "[]" {
 		t.Errorf("reasoning item summary should be [], got: %s", string(rawSummary))
+	}
+}
+
+// TestOpenAICompactionRequest_MarshalJSON_Input guards against the `input` union
+// serializing as a JSON object (which /v1/responses/compact rejects with
+// "Invalid type for 'input': expected a string, but got an object instead").
+func TestOpenAICompactionRequest_MarshalJSON_Input(t *testing.T) {
+	tests := []struct {
+		name    string
+		request *OpenAICompactionRequest
+		assert  func(t *testing.T, m map[string]interface{})
+	}{
+		{
+			name: "empty input is omitted (previous_response_id-only compaction)",
+			request: &OpenAICompactionRequest{
+				Model:              "gpt-5",
+				PreviousResponseID: schemas.Ptr("resp_123"),
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if v, ok := m["input"]; ok {
+					t.Errorf("input should be omitted when empty, got: %#v", v)
+				}
+			},
+		},
+		{
+			name: "string input serializes as a bare string",
+			request: &OpenAICompactionRequest{
+				Model: "gpt-5",
+				Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputStr: schemas.Ptr("hello")},
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if s, ok := m["input"].(string); !ok || s != "hello" {
+					t.Errorf("input should be the string %q, got: %#v", "hello", m["input"])
+				}
+			},
+		},
+		{
+			name: "array input serializes as an array",
+			request: &OpenAICompactionRequest{
+				Model: "gpt-5",
+				Input: OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}}},
+			},
+			assert: func(t *testing.T, m map[string]interface{}) {
+				if _, ok := m["input"].([]interface{}); !ok {
+					t.Errorf("input should be an array, got: %#v", m["input"])
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonBytes, err := tt.request.MarshalJSON()
+			if err != nil {
+				t.Fatalf("MarshalJSON failed: %v", err)
+			}
+			var m map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &m); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			// The regression: input must never be a JSON object.
+			if obj, ok := m["input"].(map[string]interface{}); ok {
+				t.Fatalf("input serialized as an object (the bug): %v", obj)
+			}
+			tt.assert(t, m)
+		})
 	}
 }

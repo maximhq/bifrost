@@ -30,6 +30,10 @@ interface SearchSelectBaseProps<T extends SearchSelectOption = SearchSelectOptio
 	triggerClassName?: string;
 	contentClassName?: string;
 	noPortal?: boolean;
+	/** Called when the list is scrolled near the bottom — load the next page. */
+	onLoadMore?: () => void;
+	/** Shows a spinner row under the options while the next page is in flight. */
+	isLoadingMore?: boolean;
 }
 
 interface SearchSelectSyncProps<T extends SearchSelectOption = SearchSelectOption> extends SearchSelectBaseProps<T> {
@@ -81,6 +85,8 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 		triggerClassName,
 		contentClassName,
 		noPortal,
+		onLoadMore,
+		isLoadingMore = false,
 	} = props;
 
 	const isAsync = props.async === true;
@@ -97,6 +103,10 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 
 	const setOpen = React.useCallback(
 		(v: boolean) => {
+			// The trigger is a span, so `disabled` on it is inert, and a disabled
+			// button trigger has `pointer-events-none` — which lets the click fall
+			// through to the span behind it. Refuse to open here instead.
+			if (v && disabled) return;
 			setInternalOpen(v);
 			onOpenChange?.(v);
 			if (!v) {
@@ -104,7 +114,7 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 				onSearchChange?.("");
 			}
 		},
-		[onOpenChange, onSearchChange],
+		[onOpenChange, onSearchChange, disabled],
 	);
 
 	const handleSearchChange = React.useCallback(
@@ -116,6 +126,17 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 	);
 
 	const inputRef = React.useRef<HTMLInputElement>(null);
+
+	const handleListScroll = React.useCallback(
+		(e: React.UIEvent<HTMLDivElement>) => {
+			if (!onLoadMore || isLoadingMore) return;
+			const el = e.currentTarget;
+			// Fire a little before the true bottom so the next page is already
+			// arriving by the time the user reaches it.
+			if (el.scrollHeight - el.scrollTop - el.clientHeight < 48) onLoadMore();
+		},
+		[onLoadMore, isLoadingMore],
+	);
 
 	React.useEffect(() => {
 		if (open) {
@@ -129,7 +150,11 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild disabled={disabled}>
-				<span data-slot="search-select" className={cn("inline-flex", className)}>
+				<span
+					data-slot="search-select"
+					aria-disabled={disabled || undefined}
+					className={cn("inline-flex", disabled && "pointer-events-none", className)}
+				>
 					{typeof label === "string" ? (
 						<button
 							type="button"
@@ -169,7 +194,11 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 							onValueChange={handleSearchChange}
 						/>
 					</div>
-					<CommandPrimitive.List data-slot="search-select-list" className="max-h-[300px] overflow-x-hidden overflow-y-auto p-1">
+					<CommandPrimitive.List
+						data-slot="search-select-list"
+						className="max-h-[300px] overflow-x-hidden overflow-y-auto p-1"
+						onScroll={onLoadMore ? handleListScroll : undefined}
+					>
 						{isLoading ? (
 							<div className="space-y-1 p-1">
 								{Array.from({ length: 3 }).map((_, i) => (
@@ -198,6 +227,11 @@ function SearchSelect<T extends SearchSelectOption = SearchSelectOption>(props: 
 										{entryView ? entryView(option) : <DefaultEntryView option={option} />}
 									</CommandPrimitive.Item>
 								))}
+								{isLoadingMore && (
+									<div className="flex justify-center py-2">
+										<Loader2 className="size-4 animate-spin opacity-50" />
+									</div>
+								)}
 							</>
 						)}
 					</CommandPrimitive.List>

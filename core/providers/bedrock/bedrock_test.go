@@ -2640,7 +2640,7 @@ func TestGuardrailTraceResponseRoundTrip(t *testing.T) {
 }
 
 func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2648,7 +2648,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
@@ -2658,7 +2658,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2686,7 +2686,7 @@ func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testin
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2694,7 +2694,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "bedrock/amazon.nova-pro-v1:0",
@@ -2704,7 +2704,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -2729,7 +2729,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatStillUsesToolConversion
 }
 
 func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("topic", schemas.NewOrderedMapFromPairs(
@@ -2737,7 +2737,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 			)),
 		)),
 		schemas.KV("required", []string{"topic"}),
-	))
+	)
 
 	toolParams := schemas.ToolFunctionParameters{
 		Type: "object",
@@ -2756,7 +2756,7 @@ func TestToBedrockResponsesRequest_NonAnthropicTextFormatPreservedWithUserTools(
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -3849,7 +3849,7 @@ func TestBedrockAnthropicChatStructuredOutputUsesSyntheticTool(t *testing.T) {
 // (`client.messages.create`), routed via /v1/messages -> ToBifrostResponsesRequest
 // -> ToBedrockResponsesRequest with Params.Text.Format set.
 func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("isNewTopic", schemas.NewOrderedMapFromPairs(schemas.KV("type", "boolean"))),
@@ -3857,7 +3857,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 			schemas.KV("result", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
 		)),
 		schemas.KV("required", []string{"isNewTopic", "title", "result"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "anthropic.claude-opus-4-7-v1:0",
@@ -3867,7 +3867,7 @@ func TestToBedrockResponsesRequest_AnthropicStructuredOutputUsesSyntheticTool(t 
 					Type: "json_schema",
 					Name: schemas.Ptr("classification"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -4594,17 +4594,19 @@ func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		bedrockReason   string
-		expectedBifrost string
+		name                      string
+		bedrockReason             string
+		expectedBifrost           string
+		expectedStatus            string // "" means Status should be nil
+		expectedIncompleteDetails string // "" means IncompleteDetails should be nil
 	}{
-		{"EndTurn", "end_turn", "stop"},
-		{"MaxTokens", "max_tokens", "length"},
-		{"StopSequence", "stop_sequence", "stop"},
-		{"ToolUse", "tool_use", "tool_calls"},
-		{"ContentFiltered", "content_filtered", "content_filter"},
-		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened"}, // no clean mapping — passes through
-		{"UnknownReason", "some_unknown_reason", "some_unknown_reason"},         // no clean mapping — passes through
+		{"EndTurn", "end_turn", "stop", "completed", ""},
+		{"MaxTokens", "max_tokens", "length", "incomplete", "max_output_tokens"},
+		{"StopSequence", "stop_sequence", "stop", "completed", ""},
+		{"ToolUse", "tool_use", "tool_calls", "completed", ""},
+		{"ContentFiltered", "content_filtered", "content_filter", "", ""},               // no clean mapping — passes through, no Status
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened", "", ""}, // no clean mapping — passes through, no Status
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason", "", ""},         // no clean mapping — passes through, no Status
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4629,8 +4631,86 @@ func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
 			require.NotNil(t, bifrostResp.StopReason, "StopReason should be set")
 			assert.Equal(t, tt.expectedBifrost, *bifrostResp.StopReason,
 				"Bedrock stop reason %q should map to %q in responses path", tt.bedrockReason, tt.expectedBifrost)
+
+			// Status + IncompleteDetails mirror the OpenAI Responses-API spec.
+			// Truncation must surface as Status="incomplete" with the canonical
+			// IncompleteDetails.Reason; clean completions get Status="completed";
+			// unmapped reasons leave both unset (preserves prior behavior).
+			if tt.expectedStatus == "" {
+				assert.Nil(t, bifrostResp.Status, "Status must be nil for unmapped stop reasons")
+				assert.Nil(t, bifrostResp.IncompleteDetails, "IncompleteDetails must be nil for unmapped stop reasons")
+			} else {
+				require.NotNil(t, bifrostResp.Status, "Status must be set for mapped stop reason %q", tt.bedrockReason)
+				assert.Equal(t, tt.expectedStatus, *bifrostResp.Status)
+			}
+			if tt.expectedIncompleteDetails == "" {
+				assert.Nil(t, bifrostResp.IncompleteDetails)
+			} else {
+				require.NotNil(t, bifrostResp.IncompleteDetails)
+				assert.Equal(t, tt.expectedIncompleteDetails, bifrostResp.IncompleteDetails.Reason)
+			}
 		})
 	}
+}
+
+// TestFinalizeBedrockStream_MaxTokensTruncation guards the streaming counterpart:
+// when Bedrock's stopReason is "max_tokens", the terminal SSE event must be
+// response.incomplete (not response.completed) and the embedded response must
+// carry Status="incomplete" + IncompleteDetails.Reason="max_output_tokens" so
+// streaming consumers can detect truncation.
+func TestFinalizeBedrockStream_MaxTokensTruncation(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.StopReason = schemas.Ptr("length") // mapped from bedrock's "max_tokens"
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 30, OutputTokens: 15, TotalTokens: 45}
+
+	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+	require.NotEmpty(t, finalResponses)
+
+	terminal := finalResponses[len(finalResponses)-1]
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeIncomplete, terminal.Type,
+		"terminal event must be response.incomplete on max_output_tokens truncation")
+	require.NotNil(t, terminal.Response)
+	require.NotNil(t, terminal.Response.Status)
+	assert.Equal(t, "incomplete", *terminal.Response.Status)
+	require.NotNil(t, terminal.Response.IncompleteDetails)
+	assert.Equal(t, "max_output_tokens", terminal.Response.IncompleteDetails.Reason)
+}
+
+// TestFinalizeBedrockStream_CleanCompletionUnaffected verifies non-truncation
+// stop reasons still produce response.completed with Status="completed".
+func TestFinalizeBedrockStream_CleanCompletionUnaffected(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.StopReason = schemas.Ptr("stop")
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
+
+	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+	require.NotEmpty(t, finalResponses)
+
+	terminal := finalResponses[len(finalResponses)-1]
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, terminal.Type)
+	require.NotNil(t, terminal.Response)
+	require.NotNil(t, terminal.Response.Status)
+	assert.Equal(t, "completed", *terminal.Response.Status)
+	assert.Nil(t, terminal.Response.IncompleteDetails)
+}
+
+// TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset keeps the streaming
+// path aligned with the non-streaming mapping: an unmapped stop reason (e.g.
+// content_filter) ends the stream as response.completed but must leave Status
+// unset rather than asserting "completed".
+func TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.StopReason = schemas.Ptr("content_filter")
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
+
+	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+	require.NotEmpty(t, finalResponses)
+
+	terminal := finalResponses[len(finalResponses)-1]
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeCompleted, terminal.Type)
+	require.NotNil(t, terminal.Response)
+	assert.Nil(t, terminal.Response.Status, "unmapped stop reasons must leave Status unset, matching the non-streaming path")
+	assert.Nil(t, terminal.Response.IncompleteDetails)
 }
 
 // TestBifrostToBedrockStopReasonReverseMapping tests the reverse conversion
@@ -5366,13 +5446,13 @@ func TestBedrockNonLlamaChatStructuredOutputForcesToolChoice(t *testing.T) {
 // rather than Params.ResponseFormat, but lands at the same Bedrock Converse
 // constraint: toolChoice.tool is rejected on Llama.
 func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t *testing.T) {
-	schemaObj := any(schemas.NewOrderedMapFromPairs(
+	schemaObj := schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "object"),
 		schemas.KV("properties", schemas.NewOrderedMapFromPairs(
 			schemas.KV("intent", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
 		)),
 		schemas.KV("required", []string{"intent"}),
-	))
+	)
 
 	req := &schemas.BifrostResponsesRequest{
 		Model: "us.meta.llama4-maverick-17b-instruct-v1:0",
@@ -5382,7 +5462,7 @@ func TestToBedrockResponsesRequest_LlamaStructuredOutputOmitsForcedToolChoice(t 
 					Type: "json_schema",
 					Name: schemas.Ptr("PlannerOutput"),
 					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-						Schema: &schemaObj,
+						Schema: &schemas.JSONSchemaOrBool{SchemaMap: schemaObj},
 					},
 				},
 			},
@@ -6739,4 +6819,116 @@ func TestNoLeadingSystemBlockReminderInlined(t *testing.T) {
 		}
 	}
 	assert.True(t, inlined, "the mid-conversation reminder must be inlined as a wrapped user message")
+}
+
+// TestReasoningConfigSurvivesHTTPUnmarshal guards against reasoning_config /
+// thinking being silently dropped when a Bedrock Converse body is unmarshaled
+// from JSON (nested objects decode to *OrderedMap, not map[string]interface{})
+// and then translated to a non-Bedrock target.
+func TestReasoningConfigSurvivesHTTPUnmarshal(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("reasoning_config", func(t *testing.T) {
+		body := []byte(`{
+			"messages": [{"role": "user", "content": [{"text": "Think step-by-step."}]}],
+			"inferenceConfig": {"maxTokens": 2012, "temperature": 1.0},
+			"additionalModelRequestFields": {
+				"reasoning_config": {"type": "enabled", "budget_tokens": 1500}
+			}
+		}`)
+
+		var req bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal(body, &req))
+		req.ModelID = "anthropic/claude-sonnet-4-5-20250929"
+
+		out, err := req.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, out.Params, "Params is nil")
+		require.NotNil(t, out.Params.Reasoning, "reasoning_config was silently dropped")
+		require.NotNil(t, out.Params.Reasoning.MaxTokens)
+		assert.Equal(t, 1500, *out.Params.Reasoning.MaxTokens)
+	})
+
+	t.Run("nova_reasoningConfig", func(t *testing.T) {
+		body := []byte(`{
+			"messages": [{"role": "user", "content": [{"text": "Think step-by-step."}]}],
+			"inferenceConfig": {"maxTokens": 2012},
+			"additionalModelRequestFields": {
+				"reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high"}
+			}
+		}`)
+
+		var req bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal(body, &req))
+		req.ModelID = "amazon.nova-premier-v1:0"
+
+		out, err := req.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, out.Params, "Params is nil")
+		require.NotNil(t, out.Params.Reasoning, "nova reasoningConfig was silently dropped")
+		require.NotNil(t, out.Params.Reasoning.Effort)
+		assert.Equal(t, "high", *out.Params.Reasoning.Effort)
+	})
+}
+
+// TestReasoningConfigNoDoubleEmissionOnEgress guards against issue #5108's
+// follow-on regression: a reasoning key consumed into Params.Reasoning on ingress
+// must not also be forwarded verbatim via additionalModelRequestFieldPaths, or the
+// Bedrock egress carries two copies and Converse rejects the collision
+// ("The additional field thinking/type conflicts with an existing field").
+func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name        string
+		model       string
+		inputField  string
+		inputConfig string
+		wantKey     string // the single reasoning key expected on egress
+	}{
+		{"anthropic_reasoning_config", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "reasoning_config", `{"type": "enabled", "budget_tokens": 1500}`, "thinking"},
+		{"anthropic_thinking", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "thinking", `{"type": "enabled", "budget_tokens": 1500}`, "thinking"},
+		{"nova_reasoningConfig", "amazon.nova-premier-v1:0", "reasoningConfig", `{"type": "enabled", "maxReasoningEffort": "high"}`, "reasoningConfig"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{
+				"messages": [{"role": "user", "content": [{"text": "What's my best offer?"}]}],
+				"inferenceConfig": {"maxTokens": 4096},
+				"additionalModelRequestFields": {"` + tc.inputField + `": ` + tc.inputConfig + `}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = tc.model
+
+			// Ingress: Bedrock Converse -> Bifrost
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			require.NotNil(t, mid.Params.Reasoning, "reasoning was not consumed on ingress")
+
+			// Egress: Bifrost -> Bedrock Converse
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			require.NotNil(t, out.AdditionalModelRequestFields)
+
+			// Exactly one reasoning key on the wire, and never both spellings.
+			_, hasThinking := out.AdditionalModelRequestFields.Get("thinking")
+			_, hasReasoningConfig := out.AdditionalModelRequestFields.Get("reasoning_config")
+			_, hasNova := out.AdditionalModelRequestFields.Get("reasoningConfig")
+
+			assert.False(t, hasThinking && hasReasoningConfig,
+				"both thinking and reasoning_config emitted — Bedrock would reject the collision")
+
+			switch tc.wantKey {
+			case "thinking":
+				assert.True(t, hasThinking, "expected thinking on egress")
+				assert.False(t, hasReasoningConfig, "reasoning_config must not be forwarded verbatim once consumed")
+			case "reasoningConfig":
+				assert.True(t, hasNova, "expected Nova reasoningConfig on egress")
+			}
+		})
+	}
 }

@@ -2920,3 +2920,161 @@ func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 		})
 	}
 }
+
+// Test that releaseChannelMessage clears all request-scoped references so an
+// idle pooled ChannelMessage cannot pin the parsed request body, the request
+// context, or an undelivered response/error.
+func TestReleaseChannelMessage_ClearsPooledReferences(t *testing.T) {
+	b := &Bifrost{
+		channelMessagePool: sync.Pool{New: func() interface{} { return &ChannelMessage{} }},
+		responseChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan *schemas.BifrostResponse, 1)
+		}},
+		errorChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan schemas.BifrostError, 1)
+		}},
+		responseStreamPool: sync.Pool{New: func() interface{} {
+			return make(chan chan *schemas.BifrostStreamChunk, 1)
+		}},
+	}
+
+	req := schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Model: "test-model",
+			Input: []schemas.ChatMessage{{}},
+		},
+	}
+	msg := b.getChannelMessage(req)
+	msg.Context = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Simulate an undelivered response and error sitting in the channels.
+	respCh := msg.Response
+	errCh := msg.Err
+	respCh <- &schemas.BifrostResponse{}
+	errCh <- schemas.BifrostError{}
+
+	b.releaseChannelMessage(msg)
+
+	if msg.ChatRequest != nil || msg.RequestType != "" {
+		t.Error("releaseChannelMessage should zero the embedded BifrostRequest")
+	}
+	if msg.Context != nil {
+		t.Error("releaseChannelMessage should clear the Context reference")
+	}
+	select {
+	case <-respCh:
+		t.Error("pooled response channel should be drained before Put")
+	default:
+	}
+	select {
+	case <-errCh:
+		t.Error("pooled error channel should be drained before Put")
+	default:
+	}
+}
+
+// Streaming variant: releaseChannelMessage must also drain and clear
+// ResponseStream, which is only allocated for stream request types.
+func TestReleaseChannelMessage_ClearsPooledReferences_Streaming(t *testing.T) {
+	b := &Bifrost{
+		channelMessagePool: sync.Pool{New: func() interface{} { return &ChannelMessage{} }},
+		responseChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan *schemas.BifrostResponse, 1)
+		}},
+		errorChannelPool: sync.Pool{New: func() interface{} {
+			return make(chan schemas.BifrostError, 1)
+		}},
+		responseStreamPool: sync.Pool{New: func() interface{} {
+			return make(chan chan *schemas.BifrostStreamChunk, 1)
+		}},
+	}
+
+	req := schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Model: "test-model",
+			Input: []schemas.ChatMessage{{}},
+		},
+	}
+	msg := b.getChannelMessage(req)
+	msg.Context = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if msg.ResponseStream == nil {
+		t.Fatal("getChannelMessage should allocate ResponseStream for stream request types")
+	}
+
+	// Simulate an undelivered stream handoff sitting in the channel.
+	streamCh := msg.ResponseStream
+	streamCh <- make(chan *schemas.BifrostStreamChunk)
+
+	b.releaseChannelMessage(msg)
+
+	if msg.ChatRequest != nil || msg.RequestType != "" {
+		t.Error("releaseChannelMessage should zero the embedded BifrostRequest")
+	}
+	if msg.Context != nil {
+		t.Error("releaseChannelMessage should clear the Context reference")
+	}
+	if msg.ResponseStream != nil {
+		t.Error("releaseChannelMessage should clear the ResponseStream reference")
+	}
+	select {
+	case <-streamCh:
+		t.Error("pooled response stream channel should be drained before Put")
+	default:
+	}
+}
+
+// TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel pins the public
+// streaming contract for zero-chunk streams: when the provider's channel closes
+// before the first chunk, the caller must receive a NON-nil, closed channel with
+// a nil error — not (nil, nil). A nil channel with a nil error makes integrators
+// that range/receive on the result block forever, since a receive from a nil
+// channel never returns.
+func TestExecuteRequestWithRetries_EmptyStreamReturnsClosedChannel(t *testing.T) {
+	config := createTestConfig(1, 10*time.Millisecond, 100*time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+	handler := func(_ schemas.Key) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		ch := make(chan *schemas.BifrostStreamChunk)
+		close(ch) // provider stream ends before emitting any chunk
+		return ch, nil
+	}
+
+	stream, err := executeRequestWithRetries(
+		ctx,
+		config,
+		handler,
+		nil,
+		schemas.ChatCompletionStreamRequest,
+		schemas.OpenAI,
+		"gpt-4",
+		nil,
+		logger,
+	)
+
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if stream == nil {
+		t.Fatal("Expected non-nil closed channel for an empty stream; a nil channel with a nil error hangs consumers on a nil-channel receive")
+	}
+	select {
+	case _, ok := <-stream:
+		if ok {
+			t.Error("Expected zero chunks from an empty stream")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Receive on the returned channel blocked; expected a closed channel")
+	}
+	count := 0
+	for range stream {
+		count++
+	}
+	if count != 0 {
+		t.Errorf("Expected range over empty stream to yield 0 chunks, got %d", count)
+	}
+}

@@ -82,7 +82,7 @@ Refer to the API documentation for [Provider Keys Management](https://docs.getbi
 case schemas.Groq:
     return []schemas.Key{{
         Name:   "groq-key-1",
-        Value:  *schemas.NewEnvVar("env.GROQ_API_KEY"),
+        Value:  *schemas.NewSecretVar("env.GROQ_API_KEY"),
         Models: []string{"*"},
         Weight: 1.0,
     }}, nil

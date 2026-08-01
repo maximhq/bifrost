@@ -166,9 +166,10 @@ export function isRedacted(value: string): boolean {
 	}
 
 	// Check if it's an environment variable reference
-	if (value.startsWith("env.")) {
+	if (value.startsWith("env.") || value.startsWith("vault.")) {
 		return true;
 	}
+	
 
 	// Check for exact redaction pattern: 4 chars + 24 asterisks + 4 chars (total 32)
 	if (value.length === 32) {
@@ -216,7 +217,7 @@ export function isValidVertexAuthCredentials(value: string): boolean {
 	}
 
 	// If environment variable, validate format
-	if (value.startsWith("env.")) {
+	if (value.startsWith("env.") || value.startsWith("vault.")) {
 		return value.length > 4;
 	}
 

@@ -26,6 +26,14 @@ export const mcpApi = baseApi.injectEndpoints({
 					...(params?.limit !== undefined && { limit: params.limit }),
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
+					...(params?.server && { server: params.server }),
+					...(params?.connection_type && { connection_type: params.connection_type }),
+					...(params?.auth_type && { auth_type: params.auth_type }),
+					...(params?.state && { state: params.state }),
+					...(params?.virtual_keys && { virtual_keys: params.virtual_keys }),
+					...(params?.code_mode !== undefined && { code_mode: params.code_mode }),
+					...(params?.disabled !== undefined && { disabled: params.disabled }),
+					...(params?.all_virtual_keys !== undefined && { all_virtual_keys: params.all_virtual_keys }),
 				},
 			}),
 			providesTags: ["MCPClients"],
@@ -165,7 +173,11 @@ export const mcpApi = baseApi.injectEndpoints({
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
 									if (data.tool_pricing !== undefined) draft.clients[index].config.tool_pricing = data.tool_pricing;
-									if (data.tool_sync_interval !== undefined) draft.clients[index].config.tool_sync_interval = data.tool_sync_interval;
+									// The request carries minutes, but the cached config mirrors the GET
+									// response, which carries nanoseconds. Convert so the cache stays in
+									// the server's unit instead of drifting until the next refetch.
+									if (data.tool_sync_interval !== undefined)
+										draft.clients[index].config.tool_sync_interval = data.tool_sync_interval * 6e10;
 									if (data.disabled !== undefined) {
 										draft.clients[index].config.disabled = data.disabled;
 										if (data.disabled) {

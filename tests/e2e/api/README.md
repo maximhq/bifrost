@@ -228,6 +228,46 @@ Run locally (from this directory):
 # options: --port <port> (default 8090), --html, --json, --verbose, --bail
 ```
 
+### MCP Auth Tests
+
+| Path | Description |
+|------|-------------|
+| `collections/bifrost-v1-mcp-auth.postman_collection.json` | Asserts inbound `/mcp` authentication across the three server auth modes (`headers` / `both` / `oauth`): discovery gating, the credential connect matrix, the full issuance flow, refresh rotation + family revocation, the revocation window, and the runtime `headers`→`both` upgrade. |
+| `runners/individual/run-newman-mcp-auth-tests.sh` | Builds + starts the upstream MCP server, then boots a fresh server per `client.mcp_server_auth_mode` and runs the collection against each. |
+
+Like the auth-matrix runner, this one **boots its own servers** — each mode needs a
+different boot config. It also builds and starts the upstream MCP server
+(`examples/mcps/http-no-ping-server`) so `/mcp` exposes real tools, and pre-seeds it
+as an MCP client plus two virtual keys (one active, one inactive). It requires a
+built `bifrost-http` binary.
+
+The collection's test scripts branch on the `auth_mode` env-var, so a single
+collection encodes the full matrix. Per mode it asserts:
+
+- **`headers` (default):** discovery endpoints 404; every virtual-key credential
+  (`x-bf-vk`, `Authorization: Bearer <vk>`, `x-api-key`) connects exactly as before;
+  anonymous connects when auth is not enforced; an inactive key never connects. The
+  OAuth surface is invisible.
+- **`both`:** every header-credential outcome is identical to `headers`, and only
+  *adds* JWT acceptance + live discovery; an invalid JWT is rejected with
+  `WWW-Authenticate`.
+- **`oauth`:** header credentials and anonymous are rejected (401 +
+  `WWW-Authenticate`); only issued JWTs connect.
+
+In `both`/`oauth` it also runs the end-to-end issuance flow (dynamic client
+registration, PKCE-S256 authorize, consent bound to a virtual key or to a
+server-minted session, token exchange, JWT connect), then refresh rotation with
+stolen-token family revocation, the revocation window (a revoked grant stops refresh
+while its already-issued access token keeps working until expiry), and — from the
+`headers` boot — the runtime `headers`→`both` upgrade.
+
+Run locally (from this directory):
+
+```bash
+./runners/individual/run-newman-mcp-auth-tests.sh --binary /path/to/bifrost-http
+# options: --port <port> (default 8090), --mcp-port <port> (default 3001), --html, --json, --verbose, --bail
+```
+
 ### Test Success Criteria
 
 A request **passes** if either:

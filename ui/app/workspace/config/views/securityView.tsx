@@ -1,8 +1,9 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Label } from "@/components/ui/label";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
@@ -106,6 +107,8 @@ export default function SecurityView() {
 
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
+		const dualCredentialConflictBehaviorChanged =
+			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 
 		return (
 			originsChanged ||
@@ -114,7 +117,8 @@ export default function SecurityView() {
 			whitelistedRoutesChanged ||
 			authChanged ||
 			enforceAuthOnInferenceChanged ||
-			allowDirectKeysChanged
+			allowDirectKeysChanged ||
+			dualCredentialConflictBehaviorChanged
 		);
 	}, [config, localConfig, authConfig, bifrostConfig, showPasswordSection]);
 
@@ -200,8 +204,8 @@ export default function SecurityView() {
 				client_config: localConfig,
 				...(showPasswordSection
 					? {
-							auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
-						}
+						auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
+					}
 					: {}),
 			}).unwrap();
 			toast.success("Security settings updated successfully.");
@@ -211,7 +215,7 @@ export default function SecurityView() {
 	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto h-[calc(100vh-50px)] w-full max-w-4xl space-y-4 overflow-y-auto">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
@@ -317,6 +321,36 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
 					/>
 				</div>
+				{/* Dual Credential Conflict Behavior */}
+				{IS_ENTERPRISE && (
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="dual-credential-conflict-behavior" className="text-sm font-medium">
+								Dual Credential Conflict Behavior
+							</label>
+							<p className="text-muted-foreground text-sm">
+								How to handle inference requests that present both an identity provider access token (<b>Authorization: Bearer</b>) and a
+								virtual key (<b>x-bf-vk</b>). <b>Prefer IDP token</b> uses the user token for identity, <b>Prefer virtual key</b> drops the
+								IDP token and authenticates via the virtual key, and <b>Reject request</b> returns a 400 error.
+							</p>
+						</div>
+						<Select
+							value={localConfig.dual_credential_conflict_behavior || "prefer_idp"}
+							onValueChange={(value) =>
+								setLocalConfig((prev) => ({ ...prev, dual_credential_conflict_behavior: value as CoreConfig["dual_credential_conflict_behavior"] }))
+							}
+						>
+							<SelectTrigger id="dual-credential-conflict-behavior" data-testid="dual-credential-conflict-behavior-select" className="w-[180px]">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="prefer_idp">Prefer IDP token</SelectItem>
+								<SelectItem value="prefer_vk">Prefer virtual key</SelectItem>
+								<SelectItem value="error">Reject request</SelectItem>
+							</SelectContent>
+						</Select>
+					</div>
+				)}
 				{/* Allow Direct API Keys */}
 				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 					<div className="space-y-0.5">
@@ -423,7 +457,7 @@ export default function SecurityView() {
 					</div>
 				</div>
 			</div>
-			<div className="bg-card sticky bottom-0 flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

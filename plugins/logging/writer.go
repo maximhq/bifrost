@@ -162,8 +162,15 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 			// Individual fallback — isolate the bad entry instead of losing the whole batch
 			for _, log := range logs {
 				if err := p.store.BatchCreateIfNotExists(p.ctx, []*logstore.Log{log}); err != nil {
-					p.logger.Warn("individual insert failed for log %s: %v", log.ID, err)
-					p.droppedRequests.Add(1)
+					p.logger.Warn("individual insert failed for log %s, retrying without payload fields: %v", log.ID, err)
+					// Last resort: strip the parsed payload fields (one of them
+					// failed serialization) and keep the scalar row — a log
+					// without content beats a silently dropped request.
+					stripUnserializablePayloads(log)
+					if err := p.store.BatchCreateIfNotExists(p.ctx, []*logstore.Log{log}); err != nil {
+						p.logger.Warn("payload-stripped insert failed for log %s: %v", log.ID, err)
+						p.droppedRequests.Add(1)
+					}
 				}
 			}
 		}
@@ -280,6 +287,7 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	}
 	defer func() {
 		if r := recover(); r != nil {
+			p.logger.Error("recovered from a panic %v. dropping log request", r)
 			// Channel was closed between the check and send; entry is dropped
 			p.droppedRequests.Add(1)
 		}

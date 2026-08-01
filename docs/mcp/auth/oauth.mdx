@@ -165,6 +165,7 @@ If your OAuth provider supports DCR, omit `client_id` and `client_secret` and pr
   "oauth_config": {
     "registration_url": "https://auth.example.com/oauth/register",
     "server_url":       "https://api.example.com",
+    "resource":         "https://api.example.com",
     "scopes": ["mcp:read", "mcp:write"]
   }
 }
@@ -173,8 +174,9 @@ If your OAuth provider supports DCR, omit `client_id` and `client_secret` and pr
 Bifrost will:
 
 1. Discover OAuth endpoints from `server_url` (if needed)
-2. Register a new client via `registration_url`
-3. Continue with the standard authorize / token exchange flow
+2. Send the OAuth `resource` indicator during authorization and token exchange only when `resource` is provided.
+3. Register a new client via `registration_url`
+4. Continue with the standard authorize / token exchange flow
 
 <Warning>
 The `redirect_uri` Bifrost registers with the upstream provider is locked to Bifrost's current public URL (`mcp_external_client_url`, or the request `Host` header if unset). If you change Bifrost's public URL later, the upstream provider will reject the next authorize call with **"Invalid redirect URI"**. To recover, clear the stored client credentials for the affected MCP server so Bifrost re-runs DCR with the new URL.
@@ -226,10 +228,16 @@ Status values:
 - `pending` — admin hasn't authorized yet
 - `authorized` — token is valid and active
 - `failed` — authorization failed or token is invalid
+- `revoked` — the token was revoked (via DELETE); the config row is retained with no live token
 
 ### Automatic refresh
 
-Bifrost refreshes the access token automatically before expiration using the stored refresh token. No action required.
+Bifrost refreshes access tokens automatically using the stored refresh token, in two layers:
+
+- **In the background** — a worker periodically refreshes tokens that are about to expire, so active clients always have a valid token ready.
+- **On use** — if a token is already expired when a request needs it, Bifrost refreshes it inline before forwarding the request.
+
+Background refresh only runs while the MCP client is enabled. Disabling a client pauses it; on re-enable, the token is refreshed on first use. If a client stays disabled long enough for the provider to expire the idle refresh token, re-authorization is required.
 
 ### Rotation
 
@@ -241,7 +249,7 @@ The MCP client edit flow lets you rotate `client_id` / `client_secret` while pre
 curl -X DELETE http://localhost:8080/api/oauth/config/oauth_cfg_abc123
 ```
 
-This revokes the token with the OAuth provider (if a revocation endpoint is configured), deletes the token from Bifrost, and removes the OAuth configuration.
+This deletes the stored token from Bifrost and marks the OAuth configuration `revoked` (the config row is kept, not deleted). Bifrost does **not** call the upstream provider's revocation endpoint — revoke at the provider's dashboard if you need the upstream token invalidated there.
 
 ---
 
@@ -334,6 +342,7 @@ See [Reverse Proxy configuration →](../../deployment-guides/config-json/client
 <Accordion title="Token refresh fails / tools say `oauth token expired`">
 
 - Check that the refresh token is still valid (some providers expire refresh tokens after long idle)
+- If the client was disabled for a long stretch, background refresh was paused for it — the refresh token may have expired at the provider in the meantime
 - Verify scopes are still sufficient
 - Re-authorize: `DELETE /api/oauth/config/{id}` then create a new client
 </Accordion>

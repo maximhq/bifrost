@@ -54,6 +54,7 @@ func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
+	chunk.ServiceTier = nil
 	chunk.RawResponse = nil
 	a.chatStreamChunkPool.Put(chunk)
 }
@@ -108,6 +109,7 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
+	chunk.ServiceTier = nil
 	chunk.RawResponse = nil
 	a.responsesStreamChunkPool.Put(chunk)
 }
@@ -153,6 +155,7 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 		MaxTranscriptionChunkIndex: -1,
 		MaxAudioChunkIndex:         -1,
 		TerminalErrorChunkIndex:    -1,
+		TerminalResponseChunkIndex: -1,
 		IsComplete:                 false,
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
@@ -192,6 +195,7 @@ func (a *Accumulator) getOrCreateStreamAccumulator(requestID string) *StreamAccu
 		MaxTranscriptionChunkIndex: -1,
 		MaxAudioChunkIndex:         -1,
 		TerminalErrorChunkIndex:    -1,
+		TerminalResponseChunkIndex: -1,
 		IsComplete:                 false,
 		mu:                         sync.Mutex{},
 		Timestamp:                  now,
@@ -309,6 +313,25 @@ func (a *Accumulator) addAudioStreamChunk(requestID string, chunk *AudioStreamCh
 	return nil
 }
 
+// reserveTerminalChunkIndex returns the stable chunk index reserved for a terminal
+// chunk, seeding the reservation on first call: an index that is already unique
+// (greater than the current max) is reserved as-is, while a reused/lower one gets a
+// fresh trailing index. Duplicate plugin deliveries of the same terminal chunk then
+// remap to the reservation and are dropped by the seen-index dedup. Keep separate
+// reservation fields per terminal kind (error vs response) — merging them would
+// change dedup behavior if a stream ever produced both. Caller must hold mu.
+func (sa *StreamAccumulator) reserveTerminalChunkIndex(field *int, chunkIndex int) int {
+	if *field >= 0 {
+		return *field
+	}
+	if chunkIndex <= sa.MaxResponsesChunkIndex {
+		sa.MaxResponsesChunkIndex++
+		chunkIndex = sa.MaxResponsesChunkIndex
+	}
+	*field = chunkIndex
+	return chunkIndex
+}
+
 // addResponsesStreamChunk adds a responses stream chunk to the stream accumulator
 func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *ResponsesStreamChunk, isFinalChunk bool) error {
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
@@ -321,6 +344,9 @@ func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *Responses
 	// Track first chunk timestamp for TTFT calculation
 	if accumulator.FirstChunkTimestamp.IsZero() {
 		accumulator.FirstChunkTimestamp = chunk.Timestamp
+	}
+	if isFinalChunk && chunk.StreamResponse != nil {
+		chunk.ChunkIndex = accumulator.reserveTerminalChunkIndex(&accumulator.TerminalResponseChunkIndex, chunk.ChunkIndex)
 	}
 	if _, seen := accumulator.ResponsesChunksSeen[chunk.ChunkIndex]; !seen {
 		accumulator.ResponsesChunksSeen[chunk.ChunkIndex] = struct{}{}
@@ -406,6 +432,8 @@ func (a *Accumulator) cleanupStreamAccumulator(requestID string, forceEndGate bo
 		// sendOrCancel(errChunk) path on an abandoned consumer channel.
 		acc.gatePendingTerminal = false
 		acc.gateEndError = nil
+		// Orphan cleanup drops the replay buffer, so discard its interval too.
+		acc.gateReplayEventInterval = 0
 		if acc.gateCond != nil {
 			acc.gateCond.Broadcast()
 		}
@@ -449,7 +477,7 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
-	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest || requestType == schemas.WebSocketResponsesRequest
+	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest || requestType == schemas.ResponsesRetrieveStreamRequest || requestType == schemas.WebSocketResponsesRequest
 	// Edit images/ Image variation requests will be added here
 	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest || requestType == schemas.ImageEditStreamRequest
 	isPassthroughStreaming := requestType == schemas.PassthroughStreamRequest

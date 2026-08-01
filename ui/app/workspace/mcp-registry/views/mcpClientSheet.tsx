@@ -20,7 +20,6 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { MultiSelect } from "@/components/ui/multiSelect";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -28,10 +27,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
-import { useDebouncedValue } from "@/hooks/useDebounce";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+import { getErrorMessage, useGetCoreConfigQuery, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
@@ -60,6 +59,28 @@ function toolSyncIntervalToMinutes(v: number | undefined | null): number {
 	return n;
 }
 
+/** API sends tool_execution_timeout as a Go duration string e.g. "30s". Normalize to whole seconds for form. */
+function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): number {
+	if (v === undefined || v === null || v === "") return 0;
+	if (typeof v === "number") return v;
+	// Parse Go duration string: "30s", "1m30s", "2h", etc.
+	let total = 0;
+	const re = /(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g;
+	let match;
+	while ((match = re.exec(v)) !== null) {
+		const n = parseFloat(match[1]);
+		switch (match[2]) {
+			case "ns": total += n / 1e9; break;
+			case "us": case "µs": total += n / 1e6; break;
+			case "ms": total += n / 1e3; break;
+			case "s": total += n; break;
+			case "m": total += n * 60; break;
+			case "h": total += n * 3600; break;
+		}
+	}
+	return Math.ceil(total);
+}
+
 export default function MCPClientSheet({
 	mcpClient,
 	onClose,
@@ -75,14 +96,10 @@ export default function MCPClientSheet({
 
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
+	const globalToolExecutionTimeout = bifrostConfig?.client_config?.mcp_tool_execution_timeout ?? 30;
 	const { toast } = useToast();
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
-	// VK access management — search-based dropdown (limit 20), no pagination issue
-	const [vkSearch, setVKSearch] = useState("");
-	const [vkPopoverOpen, setVKPopoverOpen] = useState(false);
-	const debouncedVkSearch = useDebouncedValue(vkSearch, 300);
-	const { data: vksData } = useGetVirtualKeysQuery({ limit: 20, search: debouncedVkSearch || undefined });
 	const allToolNames = useMemo(() => mcpClient.tools?.map((t) => t.name) ?? [], [mcpClient.tools]);
 
 	// Initial VK configs come directly from the MCP client response — always complete, no pagination issue.
@@ -120,22 +137,16 @@ export default function MCPClientSheet({
 		setPerUserHeaderKeysRaw((mcpClient.config.per_user_header_keys || []).join(", "));
 	}, [mcpClient.config.per_user_header_keys]);
 
-	// Name lookup: server response names → search results → locally cached names (highest priority)
+	// Name lookup: server response names → names captured when a key was picked.
+	// Every row is one or the other, so the selector's results aren't needed here.
 	const vkNameByID = useMemo<Record<string, string>>(() => {
 		const m: Record<string, string> = {};
 		for (const vc of mcpClient.vk_configs ?? []) m[vc.virtual_key_id] = vc.virtual_key_name;
-		for (const vk of vksData?.virtual_keys ?? []) m[vk.id] = vk.name;
 		Object.assign(m, localVKNames);
 		return m;
-	}, [mcpClient.vk_configs, vksData, localVKNames]);
+	}, [mcpClient.vk_configs, localVKNames]);
 
-	const vkOptions = useMemo(
-		() =>
-			(vksData?.virtual_keys ?? [])
-				.filter((vk) => !vkConfigs.some((vc) => vc.virtual_key_id === vk.id))
-				.map((vk) => ({ value: vk.id, label: vk.name })),
-		[vksData, vkConfigs],
-	);
+	const configuredVKIDs = useMemo(() => vkConfigs.map((vc) => vc.virtual_key_id), [vkConfigs]);
 
 	const toolOptions = useMemo(
 		() => [
@@ -147,9 +158,8 @@ export default function MCPClientSheet({
 	const supportsOAuthCredentialUpdate = false;
 	// mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 
-	const addVKConfig = (vkId: string) => {
-		const name = vksData?.virtual_keys?.find((vk) => vk.id === vkId)?.name;
-		if (name) setLocalVKNames((prev) => ({ ...prev, [vkId]: name }));
+	const addVKConfig = ({ value: vkId, label }: { value: string; label: string }) => {
+		setLocalVKNames((prev) => ({ ...prev, [vkId]: label }));
 		setVKConfigs((prev) => [...prev, { virtual_key_id: vkId, tools_to_execute: ["*"] }]);
 		setVKConfigsDirty(true);
 	};
@@ -191,6 +201,7 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
@@ -219,6 +230,7 @@ export default function MCPClientSheet({
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+				tool_execution_timeout: toolExecutionTimeoutToSeconds(mcpClient.config.tool_execution_timeout),
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? { client_id: mcpClient.config.oauth_client_id, client_secret: mcpClient.config.oauth_client_secret }
@@ -282,6 +294,7 @@ export default function MCPClientSheet({
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
 					tool_sync_interval: data.tool_sync_interval ?? 0,
+					tool_execution_timeout: data.tool_execution_timeout ?? 0,
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
@@ -769,6 +782,58 @@ export default function MCPClientSheet({
 									/>
 									<FormField
 										control={form.control}
+										name="tool_execution_timeout"
+										render={({ field }) => {
+											const isUsingGlobal = field.value === undefined || field.value === null || field.value === 0;
+											return (
+												<FormItem className="flex items-center justify-between rounded-lg border px-4 py-2">
+													<div className="flex flex-col items-start gap-0.5">
+														<div className="flex items-start gap-2">
+															<div>
+																<FormLabel>Tool Execution Timeout (seconds)</FormLabel>
+															</div>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-xs">
+																		<p>
+																			Override the global tool execution timeout for this server. Leave empty or set to 0 to use
+																			the global setting.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+														<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+													</div>
+													<FormControl>
+														<Input
+															type="number"
+															className={`w-24 ${isUsingGlobal ? "text-muted-foreground" : ""}`}
+															placeholder={String(globalToolExecutionTimeout)}
+															value={field.value === 0 || field.value === undefined ? "" : String(field.value)}
+															onChange={(e) => {
+																if (e.target.value === "") {
+																	field.onChange(undefined);
+																	return;
+																}
+																const n = Number(e.target.value);
+																if (!Number.isInteger(n)) return;
+																field.onChange(n);
+															}}
+															min="0"
+															step="1"
+															data-testid="mcp-tool-execution-timeout"
+														/>
+													</FormControl>
+												</FormItem>
+											);
+										}}
+									/>
+									<FormField
+										control={form.control}
 										name="headers"
 										render={({ field }) => (
 											<FormItem className="flex flex-col gap-3">
@@ -1240,14 +1305,11 @@ export default function MCPClientSheet({
 															</Tooltip>
 														</TooltipProvider>
 													</div>
-													<Popover
-														open={vkPopoverOpen}
-														onOpenChange={(open) => {
-															setVKPopoverOpen(open);
-															if (!open) setVKSearch("");
-														}}
-													>
-														<PopoverTrigger asChild>
+													<VirtualKeySelector
+														mode="add"
+														onSelect={addVKConfig}
+														excludeIds={configuredVKIDs}
+														trigger={
 															<Button
 																type="button"
 																variant="outline"
@@ -1258,45 +1320,8 @@ export default function MCPClientSheet({
 																<Plus className="h-4 w-4" />
 																Add Virtual Key
 															</Button>
-														</PopoverTrigger>
-														<PopoverContent side="top" align="end" className="w-56 p-0" noPortal>
-															<div className="pb-1">
-																<Input
-																	data-testid="mcpclient-virtualkey-search-input"
-																	placeholder="Start typing to search…"
-																	value={vkSearch}
-																	onChange={(e) => setVKSearch(e.target.value)}
-																	onKeyDown={(e) => {
-																		e.stopPropagation();
-																		if (e.key === "Enter") e.preventDefault();
-																	}}
-																	className="h-7 rounded-b-none border-0 border-b text-sm focus-visible:ring-0"
-																	autoFocus
-																/>
-															</div>
-															<div className="max-h-48 overflow-y-auto p-1">
-																{vkOptions.length > 0 ? (
-																	vkOptions.map((opt) => (
-																		<button
-																			data-testid={`mcpclient-virtualkey-option-${opt.value}`}
-																			key={opt.value}
-																			type="button"
-																			className="hover:bg-accent hover:text-accent-foreground w-full cursor-pointer rounded-sm px-2 py-1.5 text-left text-sm"
-																			onClick={() => {
-																				addVKConfig(opt.value);
-																				setVKSearch("");
-																				setVKPopoverOpen(false);
-																			}}
-																		>
-																			{opt.label}
-																		</button>
-																	))
-																) : (
-																	<div className="text-muted-foreground px-2 py-1.5 text-sm">No virtual keys found</div>
-																)}
-															</div>
-														</PopoverContent>
-													</Popover>
+														}
+													/>
 												</div>
 												{form.watch("allow_on_all_virtual_keys") && (
 													<p className="text-muted-foreground flex items-center gap-1 text-xs">

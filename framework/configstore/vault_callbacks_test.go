@@ -136,6 +136,45 @@ func TestVaultCallbacks_SelfManagedStoresPlaintext(t *testing.T) {
 	}
 }
 
+// TestVaultCallbacks_SelfManagedRemovesVaultSecrets verifies that deleting a TableKey
+// (a self-managed model) removes all its owned vault secrets via the global remove callback.
+func TestVaultCallbacks_SelfManagedRemovesVaultSecrets(t *testing.T) {
+	stored, removed := stubVaultHooks(t)
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	RegisterVaultCallbacks(db)
+	require.NoError(t, db.AutoMigrate(&tables.TableKey{}))
+
+	keyID := "key-delete-test"
+	key := &tables.TableKey{
+		Name:     "k-delete",
+		KeyID:    keyID,
+		Provider: "openai",
+		Value:    schemas.SecretVar{Val: "sk-secret-value"},
+		Models:   schemas.WhiteList{"*"},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	valuePath := fmt.Sprintf("bifrost/config_keys/%s/value", keyID)
+	require.Equal(t, "sk-secret-value", stored[valuePath], "value not stored to vault on create")
+
+	// Load fresh to get the vault ref populated in SecretVar fields.
+	var toDelete tables.TableKey
+	require.NoError(t, db.First(&toDelete, "key_id = ?", keyID).Error)
+	require.Equal(t, "vault."+valuePath, toDelete.Value.GetRawRef(), "loaded key should carry vault ref")
+
+	require.NoError(t, db.Delete(&toDelete).Error)
+
+	found := false
+	for _, p := range *removed {
+		if p == valuePath {
+			found = true
+		}
+	}
+	require.True(t, found, "expected vault remove for %q, got %v", valuePath, *removed)
+}
+
 func TestVaultCallbacks_NoOpWhenDisabled(t *testing.T) {
 	// No hooks installed -> VaultStoreEnabled() is false -> callbacks no-op.
 	prevStore := schemas.VaultStoreHook

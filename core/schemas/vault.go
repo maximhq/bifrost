@@ -80,25 +80,30 @@ var (
 // RemoveOwnedVaultSecretVars best-effort deletes the vault secret for every
 // SecretVar / *SecretVar field in model whose VaultRef starts with
 // ownedPrefix+"/". Refs outside that prefix are user-provided and are left alone.
-func RemoveOwnedVaultSecretVars(ctx context.Context, ownedPrefix string, model interface{}) {
+// Returns one error per field whose deletion failed; callers should log these but
+// must not treat them as fatal (the DB row is already deleted).
+func RemoveOwnedVaultSecretVars(ctx context.Context, ownedPrefix string, model interface{}) []error {
 	if VaultRemoveHook == nil {
-		return
+		return nil
 	}
 	rv := reflect.ValueOf(model)
 	if rv.Kind() == reflect.Ptr {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Struct {
-		return
+		return nil
 	}
 	rt := rv.Type()
+	var errs []error
 	for i := 0; i < rt.NumField(); i++ {
 		fv := rv.Field(i)
 		if fv.Type() == secretVarMapType {
 			iter := fv.MapRange()
 			for iter.Next() {
 				e := iter.Value().Interface().(SecretVar)
-				removeOwnedVaultSecretVar(ctx, ownedPrefix, &e)
+				if err := removeOwnedVaultSecretVar(ctx, ownedPrefix, &e); err != nil {
+					errs = append(errs, err)
+				}
 			}
 			continue
 		}
@@ -111,25 +116,28 @@ func RemoveOwnedVaultSecretVars(ctx context.Context, ownedPrefix string, model i
 				field = fv.Interface().(*SecretVar)
 			}
 		}
-		removeOwnedVaultSecretVar(ctx, ownedPrefix, field)
+		if err := removeOwnedVaultSecretVar(ctx, ownedPrefix, field); err != nil {
+			errs = append(errs, err)
+		}
 	}
+	return errs
 }
 
 // removeOwnedVaultSecretVar removes a single SecretVar's vault secret if it is a
 // vault-backed, non-fragment reference under ownedPrefix. Fragment refs (#key)
 // point at shared, externally-managed secrets and are never auto-deleted.
-func removeOwnedVaultSecretVar(ctx context.Context, ownedPrefix string, field *SecretVar) {
+func removeOwnedVaultSecretVar(ctx context.Context, ownedPrefix string, field *SecretVar) error {
 	path := field.GetRef()
 	if path == "" {
-		return
+		return nil
 	}
 	if strings.IndexByte(path, '#') >= 0 {
-		return
+		return nil
 	}
 	if !strings.HasPrefix(path, ownedPrefix+"/") {
-		return
+		return nil
 	}
-	_ = VaultRemoveHook(ctx, path)
+	return VaultRemoveHook(ctx, path)
 }
 
 // StoreVaultSecretVar pushes a single plaintext SecretVar value into the vault at path

@@ -178,7 +178,7 @@ function readNewBytes() {
 
 // ----- Parsing ----------------------------------------------------------------
 
-const RE_PREFIX = /^\[([a-z]+)\]\s?(.*)$/;
+const RE_PREFIX = /^\[([a-z_]+)\]\s?(.*)$/;
 const RE_FOLDER = /^❏\s+(.+?)\s*$/;
 const RE_REQUEST = /^↳\s+(.+?)\s*$/;
 const RE_REQUEST_DONE = /\[\s*\d+(?:\s+[A-Za-z]+)?,\s*[\d.]+\s*[kMG]?B,\s*[\d.]+\s*m?s\s*\]/;

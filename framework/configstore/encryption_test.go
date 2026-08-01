@@ -428,7 +428,7 @@ func TestEncryptPlaintextVirtualKeys_EncryptsAndDecryptsCorrectly(t *testing.T) 
 	// GORM hooks should decrypt on read
 	var found tables.TableVirtualKey
 	require.NoError(t, db.Where("id = ?", "vk-batch-1").First(&found).Error)
-	assert.Equal(t, "vk-batch-secret", found.Value)
+	assert.Equal(t, "vk-batch-secret", found.Value.GetValue())
 }
 
 func TestEncryptPlaintextOAuthConfigs_EncryptsAndDecryptsCorrectly(t *testing.T) {
@@ -858,10 +858,11 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	azureCfg.ClientSecret = schemas.NewSecretVar("azure-client-secret")
 
 	vertexCfg := &schemas.VertexKeyConfig{
-		ProjectID:       *schemas.NewSecretVar("my-project"),
-		ProjectNumber:   *schemas.NewSecretVar("123456789"),
-		Region:          *schemas.NewSecretVar("us-central1"),
-		AuthCredentials: *schemas.NewSecretVar("vertex-creds"),
+		ProjectID:         *schemas.NewSecretVar("my-project"),
+		ProjectNumber:     *schemas.NewSecretVar("123456789"),
+		Region:            *schemas.NewSecretVar("us-central1"),
+		AuthCredentials:   *schemas.NewSecretVar("vertex-creds"),
+		ForceSingleRegion: true,
 	}
 
 	bedrockCfg := &schemas.BedrockKeyConfig{
@@ -908,6 +909,8 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 		"BeforeSave must not mutate shared VertexKeyConfig.ProjectNumber")
 	assert.Equal(t, "us-central1", vertexCfg.Region.GetValue(),
 		"BeforeSave must not mutate shared VertexKeyConfig.Region")
+	assert.True(t, vertexCfg.ForceSingleRegion,
+		"BeforeSave must not mutate shared VertexKeyConfig.ForceSingleRegion")
 
 	// Bedrock: encrypted fields
 	assert.Equal(t, "AKIAEXAMPLE", bedrockCfg.AccessKey.GetValue(),
@@ -935,6 +938,8 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	assert.Equal(t, "my-project", found.VertexKeyConfig.ProjectID.GetValue())
 	assert.Equal(t, "123456789", found.VertexKeyConfig.ProjectNumber.GetValue())
 	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue())
+	assert.True(t, found.VertexKeyConfig.ForceSingleRegion,
+		"ForceSingleRegion must survive the save/reload round-trip")
 	require.NotNil(t, found.BedrockKeyConfig)
 	assert.Equal(t, "AKIAEXAMPLE", found.BedrockKeyConfig.AccessKey.GetValue())
 	assert.Equal(t, "secret-key", found.BedrockKeyConfig.SecretKey.GetValue())
@@ -1342,7 +1347,7 @@ func TestEncryptPlaintextRows_SkipsAlreadyEncryptedVirtualKeys(t *testing.T) {
 	vk := &tables.TableVirtualKey{
 		ID:       "vk-already-enc",
 		Name:     "already-encrypted-vk",
-		Value:    "vk-secret-already",
+		Value:    *schemas.NewSecretVar("vk-secret-already"),
 		IsActive: bifrost.Ptr(true),
 	}
 	require.NoError(t, db.Create(vk).Error)

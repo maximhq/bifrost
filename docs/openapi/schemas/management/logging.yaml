@@ -55,6 +55,18 @@ LogEntry:
       type: string
     raw_response:
       type: string
+    redaction_mapping:
+      type: object
+      properties:
+        input:
+          type: object
+          additionalProperties:
+            type: string
+        output:
+          type: object
+          additionalProperties:
+            type: string
+      description: Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`.
     created_at:
       type: string
       format: date-time
@@ -560,16 +572,44 @@ RecalculateCostRequest:
 
 RecalculateCostResponse:
   type: object
-  description: Recalculate cost response
+  description: Recalculate cost job status
   properties:
-    total_matched:
+    id:
+      type: string
+      description: Background job ID
+    status:
+      type: string
+      description: Current job status
+    total:
       type: integer
+      format: int64
+      description: Total matching logs queued for recalculation
+    processed:
+      type: integer
+      format: int64
+      description: Logs processed so far
     updated:
       type: integer
+      format: int64
+      description: Logs updated with new costs
     skipped:
       type: integer
-    remaining:
-      type: integer
+      format: int64
+      description: Logs skipped during processing
+    message:
+      type: string
+      description: Optional progress message
+    last_error:
+      type: string
+      description: Last error encountered by the job
+    started_at:
+      type: string
+      format: date-time
+      description: Job start time
+    updated_at:
+      type: string
+      format: date-time
+      description: Last status update time
 
 # Histogram schemas
 

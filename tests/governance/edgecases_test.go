@@ -21,10 +21,10 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      customerBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -65,20 +65,20 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 		Body: CreateVirtualKeyRequest{
 			Name:   "test-vk-criss-cross-" + generateRandomID(),
 			TeamID: &teamID,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      vkBudget,
 				ResetDuration: "1h",
-			},
+			}},
 			ProviderConfigs: []ProviderConfigRequest{
 				{
 					Provider:      "openai",
 					Weight:        float64Ptr(1.0),
 					AllowedModels: []string{"*"},
 					KeyIDs:        []string{"*"},
-					Budget: &BudgetRequest{
+					Budgets: []BudgetRequest{{
 						MaxLimit:      0.08, // Even tighter provider budget
 						ResetDuration: "1h",
-					},
+					}},
 				},
 			},
 		},

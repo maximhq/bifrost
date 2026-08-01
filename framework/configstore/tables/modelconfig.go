@@ -107,9 +107,7 @@ func (TableModelConfig) TableName() string {
 // the stamped value off each budget. Mirrors TableTeam/TableVirtualKey. The governance
 // store's Update*InMemory paths re-stamp on every model-config update.
 func (mc *TableModelConfig) AfterFind(tx *gorm.DB) error {
-	for i := range mc.Budgets {
-		mc.Budgets[i].IsCalendarAligned = mc.CalendarAligned
-	}
+	StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, nil)
 	return nil
 }
 

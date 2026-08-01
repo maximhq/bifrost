@@ -1,0 +1,221 @@
+---
+title: "Security best practices"
+description: "Best practices for hosting Bifrost on the public internet: strong dashboard credentials, enforced inference auth, locked-down CORS, and reverse-proxy security headers."
+icon: "shield-halved"
+---
+
+<Warning>
+**Read this before you expose Bifrost to the internet.** Bifrost includes secure defaults, but a public deployment is only as safe as the controls you actually turn on. By default the dashboard and inference endpoints are reachable by anyone who can route to the host. The items below are the minimum hardening for any gateway that is reachable from outside your private network.
+</Warning>
+
+Most of these controls live on the **Security Settings** page in the dashboard at `/workspace/config/security`, or in your `config.json` (inference and CORS controls under the `client` block; dashboard credentials under `governance.auth_config`). The rest live in the reverse proxy in front of Bifrost.
+
+---
+
+## 1. Use a strong dashboard password
+
+The dashboard can be protected with **Password protect the dashboard** on the Security Settings page (an admin username + password). Anyone who reaches the dashboard URL without credentials can read configuration, virtual keys, and logs, so this is the first thing to turn on for a public host.
+
+<Note>
+**Password policy is enforced starting OSS v1.6.0 and Enterprise v1.5.0.** On these versions Bifrost validates the password both in the UI and on the server before saving, and rejects weak values with HTTP 400. On **earlier versions there was no strength check at all**. If you are running an older build, choose a strong password manually (and upgrade as soon as you can).
+</Note>
+
+The enforced policy requires every dashboard password to have:
+
+- At least **12 characters**
+- At least one **uppercase** letter
+- At least one **lowercase** letter
+- At least one **number**
+- At least one **special character**
+
+```json
+{
+    "auth_config": {
+      "is_enabled": true,
+      "admin_username": "admin",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD"
+    }
+}
+```
+
+<Tip>
+Reference the password from an environment variable or secret (`env.VAR_NAME`) instead of hardcoding a literal value in `config.json`. Env/secret references are stored as-is; literal passwords are hashed before storage.
+</Tip>
+
+For Enterprise deployments, prefer **SSO / OIDC** over a shared dashboard password so every operator who can change configuration is a known, traceable identity. See the [security hardening guide](/enterprise/moving-from-oss/security-hardening) and the SSO setup guides ([Okta](/enterprise/setting-up-okta), [Entra](/enterprise/setting-up-entra), [Keycloak](/enterprise/setting-up-keycloak), [Zitadel](/enterprise/setting-up-zitadel), [Google Workspace](/enterprise/setting-up-google-workspace)).
+
+---
+
+## 2. Enforce authentication on inference
+
+By default, inference endpoints (`/v1/chat/completions`, `/v1/embeddings`, `/v1/images/generations`, and related endpoints) accept anonymous requests. On a public host that means anyone who finds the URL can spend against your provider keys.
+
+Turn on the **Enable Auth on Inference** toggle on the Security Settings page (labeled **Enforce Virtual Keys on Inference** in OSS). This requires every inference call to present a valid credential, such as a [Virtual Key](/features/governance/virtual-keys), API key, or user token, which Bifrost resolves to scoped upstream provider keys. Your raw provider keys never leave the gateway.
+
+```json
+{
+  "client": {
+    "enforce_auth_on_inference": true
+  }
+}
+```
+
+<Note>
+This is the main setting. The older fields `enforce_governance_header` and `enforce_scim_auth` are deprecated. Don't use them in new deployments. Changing this setting requires a Bifrost restart in Enterprise.
+</Note>
+
+Once enforced, pair it with [budgets and rate limits](/features/governance/budget-and-limits) per virtual key so a runaway client can't burn through your provider spend even with valid credentials.
+
+---
+
+## 3. Review the rest of the Security Settings page
+
+The Security Settings page (`/workspace/config/security`) exposes several more controls worth checking before going public:
+
+| Setting | Config key | Recommendation for public hosts |
+|---|---|---|
+| **Allow Direct API Keys** | `allow_direct_keys` | Keep **off** (default). When on, callers can pass their own provider key in a header (`x-bf-direct-key: true`), bypassing your registered key pool. |
+| **Allowed Origins** | `allowed_origins` | Set an explicit list. Never `*` in production. A wildcard lets JavaScript from any page on the internet call your gateway. |
+| **Allowed Headers** | `allowed_headers` | Narrow to the minimum your callers need (e.g. `Authorization`, `Content-Type`, your virtual-key and tracing headers). |
+| **Required Headers** | `required_headers` | Optionally require headers on every request; missing ones are rejected with 400. |
+| **Whitelisted Routes** | `whitelisted_routes` | Only add routes that must bypass auth. System routes (`/health`, login, etc.) are always whitelisted. |
+
+```json
+{
+  "client": {
+    "allow_direct_keys": false,
+    "allowed_origins": [
+      "https://app.example.com",
+      "https://internal-dashboard.example.com"
+    ],
+    "allowed_headers": ["Authorization", "Content-Type", "X-Request-Id"]
+  }
+}
+```
+
+<Tip>
+Changing `allowed_origins` or `allowed_headers` requires a Bifrost restart to take effect.
+</Tip>
+
+Enterprise deployments should also tighten the provider-forwarded `x-bf-eh-*` header allowlist (`header_filter_config`). See [Tighten both header allowlists](/enterprise/moving-from-oss/security-hardening) for details.
+
+---
+
+## 4. Terminate TLS and serve from a reverse proxy
+
+Never expose Bifrost's HTTP port directly to the internet. Put a reverse proxy (NGINX, an Ingress controller, or a cloud load balancer) in front of it to terminate TLS, so all traffic, including dashboard logins, virtual keys, and prompts, is encrypted in transit.
+
+See the [Nginx reverse proxy guide](/deployment-guides/how-to/nginx-reverse-proxy) for streaming-safe proxy settings, and bind Bifrost itself to an internal interface so it is only reachable through the proxy.
+
+---
+
+## 5. Send security headers from the reverse proxy
+
+Add hardening response headers at the proxy layer to defend the dashboard against clickjacking, MIME sniffing, and protocol downgrade. Bifrost is served behind the proxy, so this is the right place to set them once for every response.
+
+<Tabs>
+  <Tab title="NGINX">
+    ```nginx
+    server {
+        listen 443 ssl;
+        server_name bifrost.example.com;
+
+        # Force HTTPS for one year, including subdomains
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+        # Clickjacking / iframe embedding protection
+        add_header X-Frame-Options "DENY" always;
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+
+        # Block MIME-type sniffing
+        add_header X-Content-Type-Options "nosniff" always;
+
+        # Limit referrer leakage
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+        location / {
+            proxy_pass http://bifrost_backend;
+            # ... streaming-safe proxy settings (see nginx guide)
+        }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Kubernetes (NGINX Ingress)">
+    ```yaml
+    ingress:
+      enabled: true
+      className: nginx
+      annotations:
+        nginx.ingress.kubernetes.io/configuration-snippet: |
+          more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+          more_set_headers "X-Frame-Options: DENY";
+          more_set_headers "Content-Security-Policy: frame-ancestors 'none'";
+          more_set_headers "X-Content-Type-Options: nosniff";
+          more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+    ```
+  </Tab>
+</Tabs>
+
+| Header | Protects against |
+|---|---|
+| `Strict-Transport-Security` | Protocol downgrade / SSL-stripping attacks |
+| `X-Frame-Options` / `Content-Security-Policy: frame-ancestors` | Clickjacking and embedding the dashboard in a hostile iframe |
+| `X-Content-Type-Options: nosniff` | MIME-type sniffing |
+| `Referrer-Policy` | Leaking dashboard URLs to third-party sites |
+
+<Note>
+Use the `always` flag (NGINX) so headers are sent even on error responses. Only enable HSTS once you are confident HTTPS will stay on. Browsers cache it for the full `max-age`.
+</Note>
+
+---
+
+## 6. Restrict network exposure
+
+Network-level controls limit the impact of a misconfiguration:
+
+- **Don't publish the raw container port.** Expose only the reverse proxy; keep Bifrost on an internal network or `localhost` upstream.
+- **Firewall / security groups.** Allow inbound traffic only on `443` (and `80` for the ACME/HTTP-to-HTTPS redirect). Block everything else.
+- **Restrict the admin surface.** If only your team needs the dashboard, put it behind a VPN, an IP allowlist, or an identity-aware proxy rather than the open internet.
+- **Run as non-root.** The official `maximhq/bifrost` image already runs as an unprivileged user. Keep it that way and avoid mounting host paths writable.
+
+---
+
+## Hardening checklist
+
+<Steps>
+<Step title="Strong dashboard password (or SSO)">
+  12+ chars with mixed case, number, and symbol. Upgrade to OSS v1.6.0 / Enterprise v1.5.0+ so the policy is enforced.
+</Step>
+<Step title="Auth enforced on inference">
+  `enforce_auth_on_inference: true`: no anonymous path to a model.
+</Step>
+<Step title="Direct API keys disabled">
+  `allow_direct_keys: false` unless you have a specific reason.
+</Step>
+<Step title="CORS locked to your origins">
+  Explicit `allowed_origins`, never `*` in production.
+</Step>
+<Step title="TLS terminated at a reverse proxy">
+  No raw HTTP port exposed to the internet.
+</Step>
+<Step title="Security headers set at the proxy">
+  HSTS, frame-ancestors / X-Frame-Options, nosniff, Referrer-Policy.
+</Step>
+<Step title="Budgets and rate limits configured">
+  Per-virtual-key limits before the first real request.
+</Step>
+<Step title="Network exposure minimized">
+  Firewall to 443, admin surface behind VPN/allowlist where possible.
+</Step>
+</Steps>
+
+---
+
+## Related guides
+
+- [Nginx reverse proxy](/deployment-guides/how-to/nginx-reverse-proxy)
+- [Enterprise security hardening](/enterprise/moving-from-oss/security-hardening)
+- [Virtual keys](/features/governance/virtual-keys)
+- [Budgets and limits](/features/governance/budget-and-limits)
+- [Security at Bifrost](/security): how Bifrost itself is built and scanned

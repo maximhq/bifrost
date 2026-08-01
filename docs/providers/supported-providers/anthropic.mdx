@@ -80,7 +80,7 @@ Refer to the API documentation for [Provider Keys Management](https://docs.getbi
 case schemas.Anthropic:
     return []schemas.Key{{
         Name:   "anthropic-key-1",
-        Value:  *schemas.NewEnvVar("env.ANTHROPIC_API_KEY"),
+        Value:  *schemas.NewSecretVar("env.ANTHROPIC_API_KEY"),
         Models: []string{"*"},
         Weight: 1.0,
     }}, nil

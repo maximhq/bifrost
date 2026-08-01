@@ -408,6 +408,77 @@ func TestSchemaSCIMConfigValidation(t *testing.T) {
 				}
 			}`,
 		},
+		{
+			name:      "enabled generic with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"generic","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled zitadel with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"zitadel","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled zitadel with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"zitadel","config":{"domain":"acme.zitadel.cloud","clientId":"bifrost"}}}`,
+		},
+		{
+			name:      "enabled google with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"google","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled google with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"google","config":{"domain":"company.com","clientId":"bifrost"}}}`,
+		},
+		{
+			name:      "enabled google with credentialMode env but no serviceAccountEnvVar is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"google","config":{"domain":"company.com","clientId":"bifrost","credentialMode":"env"}}}`,
+			wantError: true,
+		},
+		{
+			name:      "enabled sailpoint with empty config is invalid",
+			config:    `{"scim_config":{"enabled":true,"provider":"sailpoint","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name:   "enabled sailpoint with required config is valid",
+			config: `{"scim_config":{"enabled":true,"provider":"sailpoint","config":{"product":"isc","tenant":"acme"}}}`,
+		},
+		{
+			name:      "unknown provider is rejected",
+			config:    `{"scim_config":{"enabled":true,"provider":"pingfederate","config":{}}}`,
+			wantError: true,
+		},
+		{
+			name: "enabled generic with required config is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "generic",
+					"config": {
+						"issuerUrl": "https://idp.company.com",
+						"clientId": "bifrost"
+					}
+				}
+			}`,
+		},
+		{
+			name: "enabled generic with claim SCIM attributes is valid",
+			config: `{
+				"scim_config": {
+					"enabled": true,
+					"provider": "generic",
+					"config": {
+						"issuerUrl": "https://idp.company.com",
+						"clientId": "bifrost",
+						"claimScimAttributes": {
+							"department": {"attributeType": "user", "attributeValue": "department"}
+						}
+					}
+				}
+			}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -959,4 +1030,39 @@ func TestSchemaBedrockKeyConfigSTSFields(t *testing.T) {
 			t.Error("bedrock config with unknown fields should fail schema validation (additionalProperties: false)")
 		}
 	})
+}
+
+// TestSchemaLiveModelsSyncInterval pins the 0-or->=60 contract on
+// framework.pricing.live_models_sync_interval. This schema is the source of
+// truth users author against, so it has to reject the same values the config
+// API rejects (ConfigHandler.updateConfig) and the file resolver silently
+// clamps (ResolveFrameworkPricingConfig). A bare "minimum": 0 accepted 1-59
+// and left the user with a config that validated and then behaved as 60.
+func TestSchemaLiveModelsSyncInterval(t *testing.T) {
+	compiled := compileSchema(t)
+
+	tests := []struct {
+		name      string
+		value     string
+		wantError bool
+	}{
+		{name: "zero disables the background refresh", value: "0"},
+		{name: "the minimum enabled interval is accepted", value: "60"},
+		{name: "the default is accepted", value: "3600"},
+		{name: "below the minimum but above zero is rejected", value: "59", wantError: true},
+		{name: "one second is rejected", value: "1", wantError: true},
+		{name: "negative is rejected", value: "-1", wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"framework":{"pricing":{"live_models_sync_interval":` + tt.value + `}}}`
+			err := validateConfig(t, compiled, config)
+			if tt.wantError && err == nil {
+				t.Errorf("live_models_sync_interval=%s should be rejected, got no error", tt.value)
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("live_models_sync_interval=%s should be valid, got: %v", tt.value, err)
+			}
+		})
+	}
 }

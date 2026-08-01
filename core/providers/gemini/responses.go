@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -54,8 +55,26 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		params.Tools = convertGeminiToolsToResponsesTools(request.Tools)
 	}
 
-	if request.ToolConfig != nil && request.ToolConfig.FunctionCallingConfig != nil {
-		params.ToolChoice = convertGeminiToolConfigToToolChoice(request.ToolConfig)
+	if request.ToolConfig != nil {
+		if request.ToolConfig.FunctionCallingConfig != nil {
+			params.ToolChoice = convertGeminiToolConfigToToolChoice(request.ToolConfig)
+		}
+		params.IncludeServerSideToolInvocations = request.ToolConfig.IncludeServerSideToolInvocations
+
+		// Search localization rides on the web_search tool, the only tool it applies to.
+		if retrieval := request.ToolConfig.RetrievalConfig; retrieval != nil && retrieval.LatLng != nil {
+			for i := range params.Tools {
+				webSearch := params.Tools[i].ResponsesToolWebSearch
+				if params.Tools[i].Type != schemas.ResponsesToolTypeWebSearch || webSearch == nil {
+					continue
+				}
+				if webSearch.UserLocation == nil {
+					webSearch.UserLocation = &schemas.ResponsesToolWebSearchUserLocation{}
+				}
+				webSearch.UserLocation.Latitude = retrieval.LatLng.Latitude
+				webSearch.UserLocation.Longitude = retrieval.LatLng.Longitude
+			}
+		}
 	}
 
 	if request.SafetySettings != nil {
@@ -77,6 +96,12 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 }
 
 func ToGeminiResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*GeminiGenerationRequest, error) {
+	return ToGeminiResponsesRequestWithImageURLSchemes(ctx, bifrostReq, defaultGeminiImageURLSchemes...)
+}
+
+// ToGeminiResponsesRequestWithImageURLSchemes converts a Bifrost Responses request
+// to Gemini format using the provider-specific allowlist for non-data image URLs.
+func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest, allowedImageURLSchemes ...string) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -99,17 +124,54 @@ func ToGeminiResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			return nil, err
 		}
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
+		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools)
+			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools, includeServerSideToolInvocations)
 			if err != nil {
 				return nil, err
 			}
 
-			// Convert tool choice if present
+			// Convert tool choice if present, but only when function declarations exist.
+			// Gemini rejects functionCallingConfig without function_declarations
+			// (e.g. a web-search-only request has GoogleSearch but no declarations).
 			if bifrostReq.Params.ToolChoice != nil {
-				geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				hasFunctionDeclarations := false
+				for _, tool := range geminiReq.Tools {
+					if len(tool.FunctionDeclarations) > 0 {
+						hasFunctionDeclarations = true
+						break
+					}
+				}
+				if hasFunctionDeclarations {
+					geminiReq.ToolConfig = convertResponsesToolChoiceToGemini(bifrostReq.Params.ToolChoice)
+				}
 			}
+
+			// Rebuild search localization from the web_search tool that carried it.
+			for _, tool := range bifrostReq.Params.Tools {
+				webSearch := tool.ResponsesToolWebSearch
+				if tool.Type != schemas.ResponsesToolTypeWebSearch || webSearch == nil || webSearch.UserLocation == nil {
+					continue
+				}
+				if webSearch.UserLocation.Latitude == nil && webSearch.UserLocation.Longitude == nil {
+					continue
+				}
+				if geminiReq.ToolConfig == nil {
+					geminiReq.ToolConfig = &ToolConfig{}
+				}
+				geminiReq.ToolConfig.RetrievalConfig = &RetrievalConfig{
+					LatLng: &LatLng{
+						Latitude:  webSearch.UserLocation.Latitude,
+						Longitude: webSearch.UserLocation.Longitude,
+					},
+				}
+				break
+			}
+		}
+
+		if includeServerSideToolInvocations {
+			applyServerSideToolInvocations(geminiReq)
 		}
 
 		if bifrostReq.Params.ServiceTier != nil {
@@ -119,7 +181,7 @@ func ToGeminiResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider)
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
 		if err != nil {
 			return nil, err
 		}
@@ -174,6 +236,9 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Convert usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
+	if len(response.Candidates) > 0 && response.Candidates[0] != nil {
+		applyGeminiSearchQueryResponsesUsage(bifrostResp.Usage, response.Candidates[0].GroundingMetadata, response.ModelVersion)
+	}
 
 	if response.UsageMetadata != nil {
 		if t := mapGeminiTrafficTypeToBifrost(response.UsageMetadata.TrafficType); t != nil {
@@ -918,6 +983,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.TextItemClosed = false
 	state.HasStartedText = false
 	state.HasStartedToolCall = false
+	state.HasEmittedWebSearch = false
 	state.TextBuffer.Reset()
 }
 
@@ -1857,6 +1923,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 
 	// Emit response.completed with usage
 	bifrostUsage := ConvertGeminiUsageMetadataToResponsesUsage(usage)
+	if state.Model != nil {
+		applyGeminiSearchQueryResponsesUsage(bifrostUsage, groundingMetadata, *state.Model)
+	}
 
 	completedResp := &schemas.BifrostResponsesResponse{
 		ID:        state.MessageID,
@@ -2264,10 +2333,10 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 		return nil
 	}
 
+	// Preserve the caller's MIME as-is; do NOT fabricate a default. A wrong default
+	// (application/pdf) on a non-PDF file propagates to the outgoing request and makes
+	// Gemini reject it with INVALID_ARGUMENT. An empty MIME lets Gemini use the stored type.
 	mimeType := fileData.MIMEType
-	if mimeType == "" {
-		mimeType = "application/pdf"
-	}
 
 	// Handle images
 	if isImageMimeType(mimeType) {
@@ -2287,11 +2356,20 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 		},
 	}
 
-	// Set FileType if available
-	block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+	// Only carry a MIME type when the caller actually provided one.
+	if mimeType != "" {
+		block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+	}
 
 	return block
 }
+
+// OpenAI's search_content_types values, which carry Gemini's googleSearch.searchTypes.
+// Gemini's webSearch returns text results, so it maps to "text".
+const (
+	geminiSearchContentTypeText  = "text"
+	geminiSearchContentTypeImage = "image"
+)
 
 func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 	var responsesTools []schemas.ResponsesTool
@@ -2314,6 +2392,16 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 					}
 				}
 				responsesTool.ResponsesToolWebSearch.Filters = filters
+			}
+			if searchTypes := tool.GoogleSearch.SearchTypes; searchTypes != nil {
+				var contentTypes []string
+				if searchTypes.WebSearch != nil {
+					contentTypes = append(contentTypes, geminiSearchContentTypeText)
+				}
+				if searchTypes.ImageSearch != nil {
+					contentTypes = append(contentTypes, geminiSearchContentTypeImage)
+				}
+				responsesTool.ResponsesToolWebSearch.SearchContentTypes = contentTypes
 			}
 			responsesTools = append(responsesTools, responsesTool)
 		} else if len(tool.FunctionDeclarations) > 0 {
@@ -2381,6 +2469,54 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 	}
 }
 
+// textBlockOf returns the text content block of messages[idx], or nil when idx is
+// out of range or the message carries no text block.
+func textBlockOf(messages []schemas.ResponsesMessage, idx int) *schemas.ResponsesOutputMessageContentText {
+	if idx < 0 || idx >= len(messages) || messages[idx].Content == nil {
+		return nil
+	}
+	for i := range messages[idx].Content.ContentBlocks {
+		block := &messages[idx].Content.ContentBlocks[i]
+		if block.Type == schemas.ResponsesOutputMessageContentTypeText && block.ResponsesOutputMessageContentText != nil {
+			return block.ResponsesOutputMessageContentText
+		}
+	}
+	return nil
+}
+
+// groundingChunkSource converts a grounding chunk to a neutral search source. Image chunks
+// attribute to the containing page, as Google's display terms require, and carry the asset
+// URL alongside. Reports false for chunk types that expose no citable URL.
+func groundingChunkSource(chunk *GroundingChunk) (schemas.ResponsesWebSearchToolCallActionSearchSource, bool) {
+	if chunk == nil {
+		return schemas.ResponsesWebSearchToolCallActionSearchSource{}, false
+	}
+	source := schemas.ResponsesWebSearchToolCallActionSearchSource{Type: "url"}
+
+	switch {
+	case chunk.Web != nil && chunk.Web.URI != "":
+		source.URL = chunk.Web.URI
+		if chunk.Web.Title != "" {
+			source.Title = schemas.Ptr(chunk.Web.Title)
+		}
+	case chunk.Image != nil && chunk.Image.SourceURI != "":
+		source.URL = chunk.Image.SourceURI
+		if chunk.Image.Title != "" {
+			source.Title = schemas.Ptr(chunk.Image.Title)
+		}
+		if chunk.Image.ImageURI != "" {
+			source.ImageURL = schemas.Ptr(chunk.Image.ImageURI)
+		}
+		if chunk.Image.Domain != "" {
+			source.Domain = schemas.Ptr(chunk.Image.Domain)
+		}
+	default:
+		return source, false
+	}
+
+	return source, true
+}
+
 // Helper functions for Responses conversion
 // convertGeminiCandidatesToResponsesOutput converts Gemini candidates to Responses output messages
 func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas.ResponsesMessage {
@@ -2390,6 +2526,10 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 		if candidate.Content == nil || len(candidate.Content.Parts) == 0 {
 			continue
 		}
+
+		// Index into messages of this candidate's first text message; grounding
+		// annotations are attached to it once all parts have been converted.
+		textMessageIdx := -1
 
 		for _, part := range candidate.Content.Parts {
 			// Handle different types of parts
@@ -2438,6 +2578,9 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					msg.Content.ContentBlocks[len(msg.Content.ContentBlocks)-1].Signature = &thoughtSig
 				}
 				messages = append(messages, msg)
+				if textMessageIdx < 0 {
+					textMessageIdx = len(messages) - 1
+				}
 
 			case part.FunctionCall != nil:
 				// Function call message
@@ -2644,15 +2787,14 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			if len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
 				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
 			}
+			if len(candidate.GroundingMetadata.ImageSearchQueries) > 0 {
+				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.ImageQueries = candidate.GroundingMetadata.ImageSearchQueries
+			}
 
 			sources := []schemas.ResponsesWebSearchToolCallActionSearchSource{}
-			for _, source := range candidate.GroundingMetadata.GroundingChunks {
-				if source.Web != nil {
-					sources = append(sources, schemas.ResponsesWebSearchToolCallActionSearchSource{
-						Type:  "url",
-						Title: schemas.Ptr(source.Web.Title),
-						URL:   source.Web.URI,
-					})
+			for _, chunk := range candidate.GroundingMetadata.GroundingChunks {
+				if source, ok := groundingChunkSource(chunk); ok {
+					sources = append(sources, source)
 				}
 			}
 
@@ -2666,49 +2808,53 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			if len(candidate.GroundingMetadata.GroundingSupports) > 0 {
 				annotations := []schemas.ResponsesOutputMessageContentTextAnnotation{}
 				for _, support := range candidate.GroundingMetadata.GroundingSupports {
-					if support.Segment != nil {
+					if support.Segment == nil {
+						continue
+					}
+					// One annotation per (support, chunk) pair so multi-source segments keep every source.
+					for _, chunkIdx := range support.GroundingChunkIndices {
+						if chunkIdx < 0 || int(chunkIdx) >= len(candidate.GroundingMetadata.GroundingChunks) {
+							continue
+						}
+						source, ok := groundingChunkSource(candidate.GroundingMetadata.GroundingChunks[chunkIdx])
+						if !ok {
+							continue
+						}
 						annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
 							Type:       "url_citation",
 							Text:       schemas.Ptr(support.Segment.Text),
 							StartIndex: schemas.Ptr(int(support.Segment.StartIndex)),
 							EndIndex:   schemas.Ptr(int(support.Segment.EndIndex)),
+							URL:        schemas.Ptr(source.URL),
 						}
-
-						// Look up URL from grounding chunks
-						if len(support.GroundingChunkIndices) > 0 {
-							chunkIdx := support.GroundingChunkIndices[0]
-							if chunkIdx >= 0 && int(chunkIdx) < len(candidate.GroundingMetadata.GroundingChunks) {
-								chunk := candidate.GroundingMetadata.GroundingChunks[chunkIdx]
-								if chunk.Web != nil {
-									annotation.URL = schemas.Ptr(chunk.Web.URI)
-									if chunk.Web.Title != "" {
-										annotation.Title = schemas.Ptr(chunk.Web.Title)
-									}
-								}
-							}
-						}
-
-						if annotation.URL != nil {
-							annotations = append(annotations, annotation)
-						}
+						annotation.Title = source.Title
+						annotations = append(annotations, annotation)
 					}
 				}
-				annotationsMessage := schemas.ResponsesMessage{
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-					Status: schemas.Ptr("completed"),
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: schemas.Ptr(""),
-								ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-									Annotations: annotations,
+				// Attach to the candidate's text block: segment offsets index into that text,
+				// and it is where the streaming path puts them. Only when the candidate
+				// produced no text (offsets would reference nothing) fall back to a
+				// standalone message so the citations are not dropped.
+				if block := textBlockOf(messages, textMessageIdx); block != nil {
+					block.Annotations = append(block.Annotations, annotations...)
+				} else if len(annotations) > 0 {
+					messages = append(messages, schemas.ResponsesMessage{
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Status: schemas.Ptr("completed"),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeText,
+									Text: schemas.Ptr(""),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+										Annotations: annotations,
+									},
 								},
 							},
 						},
-					},
+					})
 				}
-				messages = append(messages, annotationsMessage)
 			}
 
 			// Emit rendered content if present
@@ -2737,20 +2883,24 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 }
 
 // convertTextConfigToGenerationConfig converts ResponsesTextConfig to Gemini's GenerationConfig fields
-func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) {
+func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) error {
 	if textConfig == nil || config == nil {
-		return
+		return nil
 	}
 
 	if textConfig.Format == nil {
-		return
+		return nil
 	}
 
 	switch textConfig.Format.Type {
 	case "json_schema":
 		config.ResponseMIMEType = "application/json"
 		if textConfig.Format.JSONSchema != nil {
-			if schema := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema); schema != nil {
+			schema, err := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema)
+			if err != nil {
+				return err
+			}
+			if schema != nil {
 				config.ResponseJSONSchema = schema
 			}
 			// no schema, mime type remains as is
@@ -2762,63 +2912,69 @@ func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig
 	case "text":
 		config.ResponseMIMEType = "text/plain"
 	}
+	return nil
 }
 
 // reconstructSchemaFromJSONSchema rebuilds a schema map from ResponsesTextConfigFormatJSONSchema
-func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) interface{} {
-	var schema map[string]interface{}
+func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) (interface{}, error) {
+	composite, acceptAll, err := jsonSchema.CompositeSchema()
+	if err != nil {
+		return nil, err
+	}
+	if composite != nil {
+		// Composite object schema: use it directly. Normalize via the
+		// OrderedMap-aware path so the client's key order survives end-to-end.
+		return normalizeSchemaValueForGemini(composite), nil
+	}
+	if acceptAll {
+		// Boolean schema `true` accepts any value. responseSchema must be a
+		// Schema object, so the widest representable form is an unconstrained
+		// object.
+		return map[string]interface{}{"type": "object"}, nil
+	}
 
-	if jsonSchema.Schema != nil {
-		// If Schema field is set, use it directly
-		schemaMap, ok := (*jsonSchema.Schema).(map[string]interface{})
-		if !ok {
-			return *jsonSchema.Schema
-		}
-		schema = schemaMap
-	} else {
-		// New format: Schema is spread across individual fields
-		schema = make(map[string]interface{})
+	// New format: Schema is spread across individual fields
+	schema := make(map[string]interface{})
 
-		if jsonSchema.Defs != nil {
-			schema["$defs"] = *jsonSchema.Defs
-		}
+	if jsonSchema.Defs != nil {
+		schema["$defs"] = *jsonSchema.Defs
+	}
 
-		if jsonSchema.Type != nil {
-			schema["type"] = *jsonSchema.Type
-		}
+	if jsonSchema.Type != nil {
+		schema["type"] = *jsonSchema.Type
+	}
 
-		if jsonSchema.Properties != nil {
-			schema["properties"] = *jsonSchema.Properties
-		}
+	if jsonSchema.Properties != nil {
+		schema["properties"] = *jsonSchema.Properties
+	}
 
-		if len(jsonSchema.Required) > 0 {
-			schema["required"] = jsonSchema.Required
-		}
+	if len(jsonSchema.Required) > 0 {
+		schema["required"] = jsonSchema.Required
+	}
 
-		if jsonSchema.Description != nil {
-			schema["description"] = *jsonSchema.Description
-		}
+	if jsonSchema.Description != nil {
+		schema["description"] = *jsonSchema.Description
+	}
 
-		if jsonSchema.AdditionalProperties != nil {
-			schema["additionalProperties"] = *jsonSchema.AdditionalProperties
-		}
+	if jsonSchema.AdditionalProperties != nil {
+		schema["additionalProperties"] = *jsonSchema.AdditionalProperties
+	}
 
-		if jsonSchema.Name != nil {
-			schema["title"] = *jsonSchema.Name
-		}
+	if jsonSchema.Name != nil {
+		schema["title"] = *jsonSchema.Name
+	}
 
-		if len(jsonSchema.PropertyOrdering) > 0 {
-			schema["propertyOrdering"] = jsonSchema.PropertyOrdering
-		}
+	if len(jsonSchema.PropertyOrdering) > 0 {
+		schema["propertyOrdering"] = jsonSchema.PropertyOrdering
+	}
 
-		// Return nil if no fields were populated
-		if len(schema) == 0 {
-			return nil
-		}
+	// Return nil if no fields were populated
+	if len(schema) == 0 {
+		return nil, nil
 	}
 
 	// Normalize the schema for Gemini compatibility (handle union types, etc.)
-	return normalizeSchemaForGemini(schema)
+	return normalizeSchemaForGemini(schema), nil
 }
 
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
@@ -2849,16 +3005,14 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 
 		// Handle "none" effort explicitly (only if max_tokens not present)
 		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
-			config.ThinkingConfig.IncludeThoughts = false
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			setThinkingBudgetZeroIfSupported(&config, capModel)
 		} else if hasMaxTokens {
 			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
 			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
 			budget := *params.Reasoning.MaxTokens
 			switch budget {
 			case 0:
-				config.ThinkingConfig.IncludeThoughts = false
-				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+				setThinkingBudgetZeroIfSupported(&config, capModel)
 			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
 			default:
@@ -2891,7 +3045,9 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		}
 	}
 	if params.Text != nil {
-		convertTextConfigToGenerationConfig(params.Text, &config)
+		if err := convertTextConfigToGenerationConfig(params.Text, &config); err != nil {
+			return config, err
+		}
 	}
 
 	if params.ExtraParams != nil {
@@ -2919,15 +3075,24 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.StopSequences = val
 			}
 		}
+		if mediaResolution, ok := params.ExtraParams["media_resolution"]; ok {
+			delete(params.ExtraParams, "media_resolution")
+			if val, success := schemas.SafeExtractString(mediaResolution); success {
+				config.MediaResolution = val
+			}
+		}
 
 	}
 
 	return config, nil
 }
 
-// convertResponsesToolsToGemini converts Responses tools to Gemini tools
-func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) ([]Tool, error) {
-	geminiTool := Tool{}
+// convertResponsesToolsToGemini converts Responses tools to Gemini tools.
+// includeServerSideToolInvocations opts into Gemini's tool combination mode; without it
+// Gemini rejects function declarations sent alongside Google Search, so they are dropped.
+func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool) ([]Tool, error) {
+	var functionDeclarations []*FunctionDeclaration
+	var googleSearch *GoogleSearch
 
 	hasWebSearchTool := false
 
@@ -2938,9 +3103,10 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) ([]Tool, error
 		}
 	}
 
+	dropFunctionDeclarations := hasWebSearchTool && !includeServerSideToolInvocations
+
 	for _, tool := range tools {
-		// you cant use function declarations and google search together
-		if tool.Type == schemas.ResponsesToolTypeFunction && !hasWebSearchTool {
+		if tool.Type == schemas.ResponsesToolTypeFunction && !dropFunctionDeclarations {
 			// Extract function information from ResponsesExtendedTool
 			if tool.ResponsesToolFunction != nil {
 				if tool.Name != nil && tool.ResponsesToolFunction != nil {
@@ -2960,30 +3126,52 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) ([]Tool, error
 						}
 						funcDecl.ParametersJSONSchema = json.RawMessage(raw)
 					}
-					geminiTool.FunctionDeclarations = append(geminiTool.FunctionDeclarations, funcDecl)
+					functionDeclarations = append(functionDeclarations, funcDecl)
 				}
 			}
 		}
 		if tool.Type == schemas.ResponsesToolTypeWebSearch {
-			geminiTool.GoogleSearch = &GoogleSearch{}
+			googleSearch = &GoogleSearch{}
 			if tool.ResponsesToolWebSearch != nil && tool.ResponsesToolWebSearch.Filters != nil {
 				if tool.ResponsesToolWebSearch.Filters.TimeRangeFilter != nil {
-					geminiTool.GoogleSearch.TimeRangeFilter = &Interval{
+					googleSearch.TimeRangeFilter = &Interval{
 						StartTime: tool.ResponsesToolWebSearch.Filters.TimeRangeFilter.StartTime,
 						EndTime:   tool.ResponsesToolWebSearch.Filters.TimeRangeFilter.EndTime,
 					}
 				}
 				if len(tool.ResponsesToolWebSearch.Filters.BlockedDomains) > 0 {
-					geminiTool.GoogleSearch.ExcludeDomains = tool.ResponsesToolWebSearch.Filters.BlockedDomains
+					googleSearch.ExcludeDomains = tool.ResponsesToolWebSearch.Filters.BlockedDomains
+				}
+			}
+			if tool.ResponsesToolWebSearch != nil && len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+				searchTypes := &SearchTypes{}
+				for _, contentType := range tool.ResponsesToolWebSearch.SearchContentTypes {
+					switch contentType {
+					case geminiSearchContentTypeText:
+						searchTypes.WebSearch = &WebSearch{}
+					case geminiSearchContentTypeImage:
+						searchTypes.ImageSearch = &ImageSearch{}
+					}
+				}
+				if searchTypes.WebSearch != nil || searchTypes.ImageSearch != nil {
+					googleSearch.SearchTypes = searchTypes
 				}
 			}
 		}
 	}
 
-	if len(geminiTool.FunctionDeclarations) > 0 || geminiTool.GoogleSearch != nil {
-		return []Tool{geminiTool}, nil
+	// One Tool entry per tool type, matching Google's documented tool-combination shape.
+	var geminiTools []Tool
+	if len(functionDeclarations) > 0 {
+		geminiTools = append(geminiTools, Tool{FunctionDeclarations: functionDeclarations})
 	}
-	return []Tool{}, nil
+	if googleSearch != nil {
+		geminiTools = append(geminiTools, Tool{GoogleSearch: googleSearch})
+	}
+	if len(geminiTools) == 0 {
+		return []Tool{}, nil
+	}
+	return geminiTools, nil
 }
 
 // convertResponsesToolChoiceToGemini converts Responses tool choice to Gemini tool config
@@ -3049,7 +3237,11 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 // responses, where a tool returns images/files nested in functionResponse.parts). provider
 // distinguishes Vertex AI from the Gemini Developer API, which differ in how multimodal
 // function responses must be referenced (see the FunctionCallOutput handling below).
-func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider) ([]Content, *Content, error) {
+func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
+	if len(allowedImageURLSchemes) == 0 {
+		allowedImageURLSchemes = defaultGeminiImageURLSchemes
+	}
+
 	isVertex := provider == schemas.Vertex
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(messages) == 1 && messages[0].Role != nil && (*messages[0].Role == schemas.ResponsesInputMessageRoleSystem || *messages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
@@ -3062,7 +3254,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			}
 			if messages[0].Content.ContentBlocks != nil {
 				for _, block := range messages[0].Content.ContentBlocks {
-					part, err := convertContentBlockToGeminiPart(block)
+					part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 					if err != nil {
 						return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
 					}
@@ -3119,7 +3311,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				}
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert system message content block: %w", err)
 						}
@@ -3223,6 +3415,10 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					}
 
+					if part.ThoughtSignature == nil {
+						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
+					}
+
 					content.Parts = append(content.Parts, part)
 				}
 
@@ -3271,7 +3467,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							if !supportsMultimodalToolOutput {
 								continue // older models can't accept media in a function response
 							}
-							mediaPart, err := convertContentBlockToGeminiPart(block)
+							mediaPart, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 							if err != nil {
 								return nil, nil, fmt.Errorf("failed to convert function output content block: %w", err)
 							}
@@ -3361,7 +3557,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 				if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
-						part, err := convertContentBlockToGeminiPart(block)
+						part, err := convertContentBlockToGeminiPart(block, allowedImageURLSchemes...)
 						if err != nil {
 							return nil, nil, fmt.Errorf("failed to convert message content block: %w", err)
 						}
@@ -3382,7 +3578,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 }
 
 // convertContentBlockToGeminiPart converts a content block to Gemini part
-func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock) (*Part, error) {
+func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock, allowedImageURLSchemes ...string) (*Part, error) {
+	if len(allowedImageURLSchemes) == 0 {
+		allowedImageURLSchemes = defaultGeminiImageURLSchemes
+	}
+
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeText,
 		schemas.ResponsesOutputMessageContentTypeText:
@@ -3423,12 +3623,18 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 			}
 		}
 
+	case schemas.ResponsesOutputMessageContentTypeFallback:
+		// Anthropic-specific server-side fallback boundary marker. Unlike compaction it
+		// carries no user content (only from/to model names), so drop it rather than
+		// rendering it as text.
+		return nil, nil
+
 	case schemas.ResponsesInputMessageContentBlockTypeImage:
 		if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
 			imageURL := *block.ResponsesInputMessageContentBlockImage.ImageURL
 
 			// Use existing utility functions to handle URL parsing
-			sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
+			sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(imageURL, allowedImageURLSchemes...)
 			if err != nil {
 				return nil, fmt.Errorf("failed to sanitize image URL: %w", err)
 			}
@@ -3498,19 +3704,12 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 
 			// Handle FileURL (URI-based file)
 			if fileBlock.FileURL != nil {
-				mimeType := "application/pdf"
+				// Only set MIMEType when the caller provided one
+				fileData := &FileData{FileURI: *fileBlock.FileURL}
 				if fileBlock.FileType != nil {
-					mimeType = *fileBlock.FileType
+					fileData.MIMEType = *fileBlock.FileType
 				}
-
-				part := &Part{
-					FileData: &FileData{
-						MIMEType: mimeType,
-						FileURI:  *fileBlock.FileURL,
-					},
-				}
-
-				return part, nil
+				return &Part{FileData: fileData}, nil
 			}
 
 			// Handle FileData (inline file data)
@@ -3569,6 +3768,9 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 	} else if action.Query != nil {
 		groundingMetadata.WebSearchQueries = []string{*action.Query}
 	}
+	if len(action.ImageQueries) > 0 {
+		groundingMetadata.ImageSearchQueries = action.ImageQueries
+	}
 
 	// Extract grounding chunks from sources
 	var groundingChunks []*GroundingChunk
@@ -3584,11 +3786,22 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 			title = *source.Title
 		}
 
-		chunk := &GroundingChunk{
-			Web: &GroundingChunkWeb{
+		// An asset URL marks the source as an image-search hit; URL stays the containing page.
+		chunk := &GroundingChunk{}
+		if source.ImageURL != nil && *source.ImageURL != "" {
+			chunk.Image = &GroundingChunkImage{
+				SourceURI: source.URL,
+				ImageURI:  *source.ImageURL,
+				Title:     title,
+			}
+			if source.Domain != nil {
+				chunk.Image.Domain = *source.Domain
+			}
+		} else {
+			chunk.Web = &GroundingChunkWeb{
 				URI:   source.URL,
 				Title: title,
-			},
+			}
 		}
 		groundingChunks = append(groundingChunks, chunk)
 		urlToIndexMap[source.URL] = int32(len(groundingChunks) - 1)
@@ -3598,41 +3811,56 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 		groundingMetadata.GroundingChunks = groundingChunks
 	}
 
-	// Convert annotations to grounding supports
+	// Convert annotations to grounding supports. Annotations carry one entry per
+	// (support, chunk) pair, so regroup by segment to restore multi-source supports.
 	var groundingSupports []*GroundingSupport
+	supportBySegment := make(map[string]*GroundingSupport)
 	for _, annotation := range annotations {
 		if annotation.Type != "url_citation" {
 			continue
 		}
 
-		support := &GroundingSupport{
-			Segment: &Segment{},
-		}
+		segment := &Segment{}
 
 		// Set segment text
 		if annotation.Text != nil {
-			support.Segment.Text = *annotation.Text
+			segment.Text = *annotation.Text
 		}
 
 		// Set segment indices
 		if annotation.StartIndex != nil {
-			support.Segment.StartIndex = int32(*annotation.StartIndex)
+			segment.StartIndex = int32(*annotation.StartIndex)
 		}
 		if annotation.EndIndex != nil {
-			support.Segment.EndIndex = int32(*annotation.EndIndex)
+			segment.EndIndex = int32(*annotation.EndIndex)
 		}
 
 		// Map annotation URL to chunk indices
+		var chunkIndices []int32
 		if annotation.URL != nil {
 			if chunkIdx, exists := urlToIndexMap[*annotation.URL]; exists {
-				support.GroundingChunkIndices = []int32{chunkIdx}
+				chunkIndices = []int32{chunkIdx}
 			}
 		}
 
 		// Only add support if we have valid segment or chunk indices
-		if support.Segment.Text != "" || len(support.GroundingChunkIndices) > 0 {
-			groundingSupports = append(groundingSupports, support)
+		if segment.Text == "" && len(chunkIndices) == 0 {
+			continue
 		}
+
+		key := fmt.Sprintf("%d|%d|%s", segment.StartIndex, segment.EndIndex, segment.Text)
+		if support, exists := supportBySegment[key]; exists {
+			for _, chunkIdx := range chunkIndices {
+				if !slices.Contains(support.GroundingChunkIndices, chunkIdx) {
+					support.GroundingChunkIndices = append(support.GroundingChunkIndices, chunkIdx)
+				}
+			}
+			continue
+		}
+
+		support := &GroundingSupport{Segment: segment, GroundingChunkIndices: chunkIndices}
+		supportBySegment[key] = support
+		groundingSupports = append(groundingSupports, support)
 	}
 
 	if len(groundingSupports) > 0 {
@@ -3640,7 +3868,8 @@ func buildGroundingMetadataFromWebSearch(webSearchCall *schemas.ResponsesMessage
 	}
 
 	// Return nil if no meaningful data was extracted
-	if len(groundingMetadata.WebSearchQueries) == 0 && len(groundingMetadata.GroundingChunks) == 0 {
+	if len(groundingMetadata.WebSearchQueries) == 0 && len(groundingMetadata.ImageSearchQueries) == 0 &&
+		len(groundingMetadata.GroundingChunks) == 0 {
 		return nil
 	}
 
@@ -3655,7 +3884,7 @@ func emitWebSearchFromGroundingMetadata(
 ) []*schemas.BifrostResponsesStreamResponse {
 	var responses []*schemas.BifrostResponsesStreamResponse
 
-	if metadata == nil || len(metadata.WebSearchQueries) == 0 {
+	if metadata == nil || (len(metadata.WebSearchQueries) == 0 && len(metadata.ImageSearchQueries) == 0) {
 		return responses
 	}
 
@@ -3665,8 +3894,9 @@ func emitWebSearchFromGroundingMetadata(
 
 	// Build web search action
 	action := &schemas.ResponsesWebSearchToolCallAction{
-		Type:    "search",
-		Queries: metadata.WebSearchQueries,
+		Type:         "search",
+		Queries:      metadata.WebSearchQueries,
+		ImageQueries: metadata.ImageSearchQueries,
 	}
 	if len(metadata.WebSearchQueries) > 0 {
 		action.Query = &metadata.WebSearchQueries[0]
@@ -3675,16 +3905,7 @@ func emitWebSearchFromGroundingMetadata(
 	// Convert groundingChunks to sources
 	var sources []schemas.ResponsesWebSearchToolCallActionSearchSource
 	for _, chunk := range metadata.GroundingChunks {
-		if chunk.Web != nil && chunk.Web.URI != "" {
-			source := schemas.ResponsesWebSearchToolCallActionSearchSource{
-				Type: "url",
-				URL:  chunk.Web.URI,
-			}
-			if chunk.Web.Title != "" {
-				source.Title = &chunk.Web.Title
-			} else {
-				source.Title = &chunk.Web.URI // Fallback to URI
-			}
+		if source, ok := groundingChunkSource(chunk); ok {
 			sources = append(sources, source)
 		}
 	}
@@ -3781,12 +4002,29 @@ func emitWebSearchFromGroundingMetadata(
 			},
 		})
 
-		// output_item.done for rendered content
+		// output_item.done for rendered content. It must repeat the item: output_item.done
+		// carries the completed item, and consumers that rebuild Gemini's searchEntryPoint
+		// read the rendered content off this event.
 		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
 			SequenceNumber: sequenceNumber + len(responses),
 			OutputIndex:    &renderedIndex,
 			ItemID:         &renderedItemID,
+			Item: &schemas.ResponsesMessage{
+				ID:     &renderedItemID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeRenderedContent,
+							ResponsesOutputMessageContentRenderedContent: &schemas.ResponsesOutputMessageContentRenderedContent{
+								RenderedContent: metadata.SearchEntryPoint.RenderedContent,
+							},
+						},
+					},
+				},
+			},
 		})
 	}
 
@@ -3814,46 +4052,39 @@ func emitAnnotationsFromGroundingSupports(
 			continue
 		}
 
-		annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
-			Type: "url_citation",
-		}
-
-		// Set text and indices
-		if support.Segment.Text != "" {
-			annotation.Text = &support.Segment.Text
-		}
-		annotation.StartIndex = schemas.Ptr(int(support.Segment.StartIndex))
-		annotation.EndIndex = schemas.Ptr(int(support.Segment.EndIndex))
-
-		// Find URL and title from chunk indices
-		if len(support.GroundingChunkIndices) > 0 {
-			chunkIdx := support.GroundingChunkIndices[0]
-			if int(chunkIdx) < len(metadata.GroundingChunks) {
-				chunk := metadata.GroundingChunks[chunkIdx]
-				if chunk.Web != nil {
-					annotation.URL = &chunk.Web.URI
-					if chunk.Web.Title != "" {
-						annotation.Title = &chunk.Web.Title
-					}
-				}
+		// One annotation per (support, chunk) pair so multi-source segments keep every source.
+		for _, chunkIdx := range support.GroundingChunkIndices {
+			if chunkIdx < 0 || int(chunkIdx) >= len(metadata.GroundingChunks) {
+				continue
 			}
-		}
+			source, ok := groundingChunkSource(metadata.GroundingChunks[chunkIdx])
+			if !ok {
+				continue
+			}
 
-		if annotation.URL == nil {
-			continue
-		}
+			annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
+				Type: "url_citation",
+				URL:  &source.URL,
+			}
+			if support.Segment.Text != "" {
+				annotation.Text = &support.Segment.Text
+			}
+			annotation.StartIndex = schemas.Ptr(int(support.Segment.StartIndex))
+			annotation.EndIndex = schemas.Ptr(int(support.Segment.EndIndex))
+			annotation.Title = source.Title
 
-		// Emit annotation.added event
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
-			SequenceNumber:  sequenceNumber + len(responses),
-			OutputIndex:     &state.TextOutputIndex,
-			ItemID:          &itemID,
-			ContentIndex:    schemas.Ptr(0),
-			Annotation:      &annotation,
-			AnnotationIndex: &emmitedIndex,
-		})
-		emmitedIndex++
+			// Emit annotation.added event
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+				SequenceNumber:  sequenceNumber + len(responses),
+				OutputIndex:     &state.TextOutputIndex,
+				ItemID:          &itemID,
+				ContentIndex:    schemas.Ptr(0),
+				Annotation:      &annotation,
+				AnnotationIndex: schemas.Ptr(emmitedIndex),
+			})
+			emmitedIndex++
+		}
 	}
 
 	return responses

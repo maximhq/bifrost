@@ -8,6 +8,22 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
+	override_amount?: number;
+	override_mode?: BudgetOverrideMode;
+	override_cycles_remaining?: number;
+}
+
+export type BudgetOverrideMode = "cycles" | "forever";
+
+export interface BudgetOverrideRequest {
+	amount: number;
+	mode: BudgetOverrideMode;
+	cycles?: number;
+}
+
+export interface BudgetOverrideResponse {
+	budget: Budget;
+	effective_max_limit: number;
 }
 
 export interface RateLimit {
@@ -31,6 +47,10 @@ export interface Team {
 	rate_limit_id?: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendar_aligned?: boolean;
+	// Number of virtual keys assigned to this team (server-computed via a
+	// correlated subquery; the list endpoints report this instead of embedding
+	// the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	customer?: Customer;
 	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
@@ -42,6 +62,9 @@ export interface Customer {
 	name: string;
 	rate_limit_id?: string;
 	calendar_aligned?: boolean;
+	// Number of virtual keys owned by this customer (server-computed; the list
+	// endpoint reports this instead of embedding the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	teams?: Team[];
 	budgets?: Budget[];
@@ -74,6 +97,7 @@ export interface VirtualKey {
 	customer_id?: string;
 	rate_limit_id?: string;
 	is_active: boolean;
+	expires_at?: string | null; // ISO 8601 UTC timestamp; null or absent means never expires
 	calendar_aligned?: boolean;
 	created_at: string;
 	updated_at: string;
@@ -164,6 +188,7 @@ export interface CreateVirtualKeyRequest {
 	rate_limit?: CreateRateLimitRequest;
 	is_active?: boolean;
 	calendar_aligned?: boolean;
+	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -178,6 +203,7 @@ export interface UpdateVirtualKeyRequest {
 	is_active?: boolean;
 	calendar_aligned?: boolean;
 	reset_budget_usage?: boolean;
+	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
 }
 
 export interface BulkRotateVirtualKeysRequest {
@@ -260,6 +286,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only: filters to virtual keys assigned to this user. */
+	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
 	exclude_assigned_virtual_keys?: boolean;
 	for_user_assignment?: boolean;
@@ -388,6 +416,7 @@ export interface GetModelConfigsParams {
 	offset?: number;
 	search?: string;
 	scope?: string;
+	scope_id?: string;
 	provider?: string;
 }
 
@@ -406,7 +435,10 @@ export type PricingOverrideScopeKind =
 	| "provider_key"
 	| "virtual_key"
 	| "virtual_key_provider"
-	| "virtual_key_provider_key";
+	| "virtual_key_provider_key"
+	| "user"
+	| "user_provider"
+	| "user_provider_key";
 export type PricingOverrideMatchType = "exact" | "wildcard";
 
 export interface PricingOverridePatch {
@@ -436,8 +468,10 @@ export interface PricingOverridePatch {
 	// 272k tier
 	input_cost_per_token_above_272k_tokens?: number;
 	input_cost_per_token_above_272k_tokens_priority?: number;
+	input_cost_per_token_flex_above_272k_tokens?: number;
 	output_cost_per_token_above_272k_tokens?: number;
 	output_cost_per_token_above_272k_tokens_priority?: number;
+	output_cost_per_token_flex_above_272k_tokens?: number;
 	// Cache
 	cache_creation_input_token_cost?: number;
 	cache_read_input_token_cost?: number;
@@ -452,6 +486,14 @@ export interface PricingOverridePatch {
 	cache_read_input_image_token_cost?: number;
 	cache_read_input_token_cost_above_272k_tokens?: number;
 	cache_read_input_token_cost_above_272k_tokens_priority?: number;
+	cache_read_input_token_cost_flex_above_272k_tokens?: number;
+	cache_creation_input_token_cost_above_272k_tokens?: number;
+	cache_creation_input_token_cost_flex?: number;
+	cache_creation_input_token_cost_flex_above_272k_tokens?: number;
+	cache_creation_input_token_cost_priority?: number;
+	cache_creation_input_token_cost_fast?: number;
+	cache_creation_input_token_cost_above_1hr_fast?: number;
+	cache_read_input_token_cost_fast?: number;
 	// Image
 	input_cost_per_image_token?: number;
 	output_cost_per_image_token?: number;
@@ -479,6 +521,7 @@ export interface PricingOverridePatch {
 	// Other
 	search_context_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
+	inference_geo_us_multiplier?: number;
 	// OCR
 	ocr_cost_per_page?: number;
 	annotation_cost_per_page?: number;
@@ -488,6 +531,7 @@ export interface PricingOverride {
 	id: string;
 	name: string;
 	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
@@ -503,6 +547,7 @@ export interface PricingOverride {
 export interface CreatePricingOverrideRequest {
 	name: string;
 	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;
@@ -515,6 +560,7 @@ export interface CreatePricingOverrideRequest {
 export interface UpdatePricingOverrideRequest {
 	name?: string;
 	scope_kind?: PricingOverrideScopeKind;
+	user_id?: string;
 	virtual_key_id?: string;
 	provider_id?: string;
 	provider_key_id?: string;

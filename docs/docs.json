@@ -132,10 +132,13 @@
                   "providers/supported-providers/overview",
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
+                  "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
+                  "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
+                  "providers/supported-providers/deepseek",
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/fireworks",
                   "providers/supported-providers/gemini",
@@ -152,9 +155,11 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
+                  "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
+                  "providers/supported-providers/wafer",
                   "providers/supported-providers/xai"
                 ]
               },
@@ -192,6 +197,7 @@
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway",
+              "mcp/gateway-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
             ]
@@ -223,6 +229,7 @@
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
+              "features/webhooks",
               {
                 "group": "Governance",
                 "icon": "user-lock",
@@ -310,20 +317,40 @@
                 "icon": "road-barrier",
                 "pages": [
                   "enterprise/guardrails",
-                  "enterprise/guardrails/secrets-detection",
-                  "enterprise/guardrails/custom-regex",
-                  "integrations/guardrails/aws-bedrock",
-                  "integrations/guardrails/azure-content-safety",
-                  "integrations/guardrails/google-model-armor",
-                  "integrations/guardrails/crowdstrike-aidr",
-                  "integrations/guardrails/grayswan",
-                  "integrations/guardrails/patronus-ai"
+                  "enterprise/guardrails/redaction",
+                  {
+                    "group": "Providers",
+                    "icon": "shield-check",
+                    "pages": [
+                      "enterprise/guardrails/secrets-detection",
+                      "enterprise/guardrails/custom-regex",
+                      "integrations/guardrails/presidio",
+                      "integrations/guardrails/azure-language-pii",
+                      "integrations/guardrails/aws-bedrock",
+                      "integrations/guardrails/azure-content-safety",
+                      "integrations/guardrails/google-model-armor",
+                      "integrations/guardrails/crowdstrike-aidr",
+                      "integrations/guardrails/grayswan",
+                      "integrations/guardrails/patronus-ai",
+                      "integrations/guardrails/lakera",
+                      "integrations/guardrails/repello-argus"
+                    ]
+                  }
+                ]
+              },
+              {
+                "group": "Alerting",
+                "icon": "bell",
+                "pages": [
+                  "enterprise/alerting/overview",
+                  "enterprise/alerting/alert-rules",
+                  "enterprise/alerting/alert-channels",
+                  "enterprise/alerting/alert-history"
                 ]
               },
               "enterprise/audit-logs",
               "enterprise/secret-management",
               "enterprise/log-exports",
-              "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
               "enterprise/circuit-breaker",
@@ -509,6 +536,15 @@
                   "enterprise/setting-up-generic-oidc/oidc",
                   "enterprise/setting-up-generic-oidc/scim"
                 ]
+              },
+              {
+                "group": "Auth Proxy",
+                "icon": "shield-halved",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/auth-proxy/cloudflare-ztna",
+                  "enterprise/auth-proxy/generic-proxy"
+                ]
               }
             ]
           },
@@ -518,12 +554,16 @@
             "pages": [
               "enterprise/guardrails/secrets-detection",
               "enterprise/guardrails/custom-regex",
+              "integrations/guardrails/presidio",
+              "integrations/guardrails/azure-language-pii",
               "integrations/guardrails/aws-bedrock",
               "integrations/guardrails/azure-content-safety",
               "integrations/guardrails/google-model-armor",
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
-              "integrations/guardrails/patronus-ai"
+              "integrations/guardrails/patronus-ai",
+              "integrations/guardrails/lakera",
+              "integrations/guardrails/repello-argus"
             ]
           },
           {
@@ -532,9 +572,13 @@
             "pages": [
               "features/observability/default",
               "features/observability/maxim",
+              "features/observability/datadog",
               "features/observability/otel",
               "features/observability/prometheus",
-              "features/observability/kafka"
+              "features/observability/kafka",
+              "features/observability/bigquery",
+              "features/observability/pubsub",
+              "features/observability/content-logging"
             ]
           },
           {
@@ -577,6 +621,7 @@
                   "deployment-guides/helm/storage",
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
+                  "deployment-guides/helm/alerting",
                   "deployment-guides/helm/guardrails",
                   "deployment-guides/helm/secret-management",
                   "deployment-guides/helm/cluster",
@@ -595,6 +640,7 @@
                   "deployment-guides/config-json/storage",
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/alerting",
                   "deployment-guides/config-json/cluster",
                   "deployment-guides/config-json/guardrails",
                   "deployment-guides/config-json/secret-management"
@@ -620,6 +666,7 @@
               "deployment-guides/how-to/install-make",
               "deployment-guides/how-to/multinode",
               "deployment-guides/how-to/nginx-reverse-proxy",
+              "deployment-guides/how-to/security-best-practices",
               "deployment-guides/how-to/airgapped",
               "deployment-guides/docker-tuning"
             ]
@@ -630,6 +677,13 @@
         "tab": "API",
         "icon": "code",
         "groups": [
+          {
+            "group": "Authentication",
+            "icon": "key",
+            "pages": [
+              "api/procuring-api-keys"
+            ]
+          },
           {
             "group": "API Reference",
             "openapi": "openapi/openapi.json"
@@ -695,6 +749,13 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.6.7",
+              "changelogs/v1.6.6",
+              "changelogs/v1.6.5",
+              "changelogs/v2.0.0-prerelease2",
+              "changelogs/v1.6.4",
+              "changelogs/v2.0.0-prerelease1",
+              "changelogs/v1.6.3",
               "changelogs/v1.6.2",
               {
                 "group": "June 2026",
@@ -888,17 +949,29 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.7",
+              "changelogs/ent-v1.5.6",
+              "changelogs/ent-v1.5.5",
+              "changelogs/ent-v2.0.0-prerelease2",
+              "changelogs/ent-v1.5.4",
+              "changelogs/ent-v2.0.0-prerelease1",
+              "changelogs/ent-v1.5.3",
               "changelogs/ent-v1.5.2",
-              "changelogs/ent-v1.5.1",
-              "changelogs/ent-v1.5.0",
-              "changelogs/ent-v1.4.13",
-              "changelogs/ent-v1.4.12",
-              "changelogs/ent-v1.4.11",
-              "changelogs/ent-v1.4.10",
-              "changelogs/ent-v1.4.9",
-              "changelogs/ent-v1.4.8",
-              "changelogs/ent-v1.4.7",
-              "changelogs/ent-v1.4.7-rc1",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/ent-v1.5.1",
+                  "changelogs/ent-v1.5.0",
+                  "changelogs/ent-v1.4.13",
+                  "changelogs/ent-v1.4.12",
+                  "changelogs/ent-v1.4.11",
+                  "changelogs/ent-v1.4.10",
+                  "changelogs/ent-v1.4.9",
+                  "changelogs/ent-v1.4.8",
+                  "changelogs/ent-v1.4.7",
+                  "changelogs/ent-v1.4.7-rc1"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
@@ -945,6 +1018,15 @@
             ]
           },
           {
+            "item": "Edge",
+            "icon": "grip",
+            "pages": [
+              "changelogs/edge-v0.3.0",
+              "changelogs/edge-v0.2.0",
+              "changelogs/edge-v0.1.0"
+            ]
+          },
+          {
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
@@ -971,11 +1053,24 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
-              "changelogs/helm-v2.1.25",
-              "changelogs/helm-v2.1.24",
-              "changelogs/helm-v2.1.23",
-              "changelogs/helm-v2.1.22",
-              "changelogs/helm-v2.1.21",
+              "changelogs/helm-v2.1.33",
+              "changelogs/helm-v2.1.32",
+              "changelogs/helm-v2.1.31",
+              "changelogs/helm-v2.1.30",
+              "changelogs/helm-v2.1.29",
+              "changelogs/helm-v2.1.28",
+              "changelogs/helm-v2.1.27",
+              "changelogs/helm-v2.1.26",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.25",
+                  "changelogs/helm-v2.1.24",
+                  "changelogs/helm-v2.1.23",
+                  "changelogs/helm-v2.1.22",
+                  "changelogs/helm-v2.1.21"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
@@ -1191,7 +1286,11 @@
     },
     {
       "source": "/enterprise/data-connectors/datadog",
-      "destination": "/enterprise/datadog-connector"
+      "destination": "/features/observability/datadog"
+    },
+    {
+      "source": "/enterprise/datadog-connector",
+      "destination": "/features/observability/datadog"
     },
     {
       "source": "/enterprise/mcp-with-fa",
@@ -1200,6 +1299,10 @@
     {
       "source": "/enterprise/getting-started",
       "destination": "/enterprise/overview"
+    },
+    {
+      "source": "/alerting/:slug*",
+      "destination": "/enterprise/alerting/:slug*"
     }
   ],
   "footer": {

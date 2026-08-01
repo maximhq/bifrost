@@ -258,7 +258,7 @@ The admin sample values you supplied (`user_headers`) didn't pass upstream auth.
 
 <Accordion title="End-users see `requires an identity` even though they sent a VK">
 
-The VK isn't resolving. Confirm the VK exists and the caller is sending it under one of `x-bf-vk`, `Authorization: Bearer …`, or `x-api-key`. If you're behind a proxy that strips `Authorization`, switch the caller to `x-bf-vk`.
+The VK isn't resolving. Confirm the VK exists and the caller is sending it under one of `x-bf-vk`, `Authorization: Bearer …`, `x-api-key`, or `x-goog-api-key`. If you're behind a proxy that strips `Authorization`, switch the caller to `x-bf-vk`.
 </Accordion>
 
 <Accordion title="`Headers submission flow has expired`">

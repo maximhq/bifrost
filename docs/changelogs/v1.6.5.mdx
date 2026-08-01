@@ -1,0 +1,164 @@
+---
+title: "v1.6.5"
+description: "v1.6.5 changelog - 2026-07-21"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.6.5
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.6.5
+    docker run -p 8080:8080 maximhq/bifrost:v1.6.5
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.6.5">
+## ✨ Features
+
+- **Wafer AI Provider** - Added Wafer AI as a supported provider
+- **Async Webhooks** - New webhook delivery system for async jobs: configurable webhook endpoints (config.json, admin API, and UI), SSRF-safe delivery dispatcher with retries, delivery history with server-side pagination/search/filtering, and inference `request_id` propagation through async jobs and webhook payloads; failed jobs now inline `error`/`error_omitted` fields
+- **Reasoning Token Tracking** - Anthropic extended-thinking tokens are now tracked as `ReasoningTokens` across chat, responses, and passthrough
+- **Retain Content Toggle** - New toggle to always retain request/response content in object storage regardless of retention cleanup
+- **Throughput Metrics** - Tokens/sec throughput histogram endpoints, dashboard metrics, and throughput in model rankings and trend data
+- **MCP Metrics** - MCP metrics exported via OTEL and the telemetry (Prometheus) plugin, plus a `resource` parameter on the MCP OAuth handshake
+- **Routing Rule Validation** - Routing CEL expressions and `scope_id` references are now validated at write time in create/update handlers
+- **Network Config** - Configurable keep-alive duration in network config
+- **Object Storage Archival** - Added `archiveInterval`, `archiveGracePeriod`, and `archiveMaxObjectBytes` settings
+- **Connector User Email Export** - Connectors can now export user emails
+- **Logs UI** - Server fallback model shown in logs, content-disabled message on the logs UI, persisted page-size preference, and `prompt_tokens`/`completion_tokens` in search stats
+
+## 🐞 Fixed
+
+- **Anthropic Fallbacks** - Fixed fallback handling and refusal responses on the Anthropic surface, and billing now attributes usage to the fallback model actually served
+- **Bedrock Reasoning** - Fixed double emission of reasoning content on Bedrock streams
+- **Fallback Model Names** - Made `RefineModelForProvider` idempotent so fallback routing no longer truncates model names (fixes Groq/Replicate/Parasail prefix handling)
+- **OpenAI Image Blocks** - `input_image` blocks now default `detail` to `auto`, fixing strict downstream validators such as vLLM (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- **Streaming Responses Surface** - Completed visible thinking items, completed Cohere terminal events with the output array, fixed reasoning item streaming in the mux, and handled line-by-line errors in streaming
+- **Azure Structured Output** - Structured output format is converted to a tool for Azure in the Anthropic integration; unsupported reasoning summary values are dropped for the Azure model router
+- **DeepSeek and SGLang** - Anthropic-compatible APIs supported via key-level setting for SGLang and used for DeepSeek chat/responses; count-tokens handling added for both
+- **vLLM** - Moved vLLM to the native Responses API
+- **Fireworks** - Added support for Anthropic APIs in Fireworks
+- **Mistral OCR** - Raw request capture and log storage enabled for Mistral OCR requests
+- **Rolling Deploy Safety** - Materialized-view read path is gated on a shape check to prevent "column does not exist" errors during rolling deploys
+- **MCP Tool Sync** - Out-of-range `tool_sync_interval` minutes are rejected to prevent nanosecond-scale sync loops
+- **Routing Rules** - Unresolved virtual keys are excluded from the scope ID set and empty routing rule fields are normalized
+- **Pricing Fallback** - Chat and Responses pricing fallback now works bidirectionally
+- **OTEL Content Attributes** - OTEL now uses the central method for content attribute checks
+
+## 🐙 Closed GitHub Issues
+
+- [#5074](https://github.com/maximhq/bifrost/issues/5074) - Fallback routing model selection is truncating model names
+- [#5108](https://github.com/maximhq/bifrost/issues/5108) - Bedrock Converse: reasoning_config/thinking silently dropped on cross-provider translation, fallbacks lose extended thinking
+- [#5308](https://github.com/maximhq/bifrost/issues/5308) - Responses API image blocks missing required "detail" field when converted from non-OpenAI providers
+
+</Update>
+<Update label="Core" description="1.7.3">
+[fix]: OpenAI Responses - preserve JSON schema key order in structured-output requests [@georg-wolflein](https://github.com/georg-wolflein)
+  - breaking: a non-schema scalar (string/number/array) at the nested `text.format.schema.schema` position now fails request decode; boolean schemas (`"schema": true` / `"schema": false`) and objects still decode and are forwarded
+- feat: track Anthropic extended-thinking tokens as `ReasoningTokens` across chat, responses, and passthrough
+- feat: added Wafer AI provider
+- feat: added toggle for always retaining content in object storage
+- feat: added MCP metrics to OTEL and `resource` parameter to MCP OAuth handshake
+- feat: added user email export to connectors
+- feat: configurable keep-alive duration in network config
+- feat: propagate inference `request_id` through async jobs and webhook payloads
+- feat: added `WebhookDispatcher` interface wired to async job terminal states
+- fix: bedrock reasoning double emission
+- fix: anthropic fallbacks and refusal handling; bill for the fallback model actually served
+- fix: complete Cohere streaming Responses terminal events with the output array
+- fix: complete visible thinking items on the streaming Responses surface
+- fix: reasoning item streaming in mux
+- fix: handle line-by-line errors in streaming
+- fix: convert structured output format to tool for Azure provider in Anthropic integration
+- fix: default `detail` to auto on OpenAI `input_image` blocks (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!)
+- fix: SGLang Anthropic-compatible APIs via key-level setting; DeepSeek uses Anthropic endpoints for chat and responses
+- fix: count-tokens handling for DeepSeek and SGLang
+- fix: moved vLLM to native Responses API
+- fix: added support for Anthropic APIs in Fireworks
+- fix: enable raw request and store for Mistral OCR requests
+- fix: reject out-of-range `tool_sync_interval` minutes to prevent nanosecond sync loops
+- perf: hoist Replicate `parseTokenUsageFromLogs` regexps to package level
+- refactor: extract SSRF-safe dial logic into `core/network` package
+
+</Update>
+<Update label="Framework" description="1.5.3">
+- feat: webhook delivery system - `config_webhook_endpoints` table, store CRUD, dispatcher with SSRF-safe HTTP client, jobs work-queue and delivery history tables, endpoint resolution by name at submit time
+- feat: inline `error`/`error_omitted` fields in webhook payloads for failed async jobs
+- feat: throughput (tokens/sec) histogram endpoints, model rankings, and trend data
+- feat: `prompt_tokens` and `completion_tokens` in search stats
+- feat: show server fallback model in logs; content disabled message on logs UI
+- feat: toggle for always retaining content in object storage
+- feat: persist logs page-size preference in localStorage
+- feat: expose ClickHouse table migrations for enterprise
+- feat: `dual_credential_conflict_behavior` to resolve IDP token conflicts
+- feat: user email export to connectors
+- fix: gate matview read path on shape check to prevent "column does not exist" during rolling deploys
+- fix: bill for serving fallback model in anthropic
+- fix: make `RefineModelForProvider` idempotent and unify Groq/Replicate/Parasail prefix handling
+- fix: extend chat-responses pricing fallback to work bidirectionally
+- fix: replace fan-out attribution with single-owner additive rollup
+- fix: query creation from user input
+- fix: use `time.Now().Add` instead of channel receive for deadline
+- chore: upgraded core to v1.7.3
+
+</Update>
+<Update label="compat" description="0.1.29">
+[fix]: deep-copy OrderedMap schema fields when cloning Responses text config [@georg-wolflein](https://github.com/georg-wolflein)
+- fix: drop unsupported reasoning summary values for Azure model router
+- fix: use Anthropic endpoints in chat completion and responses for DeepSeek
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="governance" description="1.6.7">
+- feat: validate routing CEL expressions at write time in create/update handlers
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="jsonparser" description="1.5.30">
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="logging" description="1.6.3">
+- feat: content disabled message on logs UI
+- feat: show server fallback model in logs
+- feat: toggle for always retaining content in object storage
+- feat: throughput (tokens/sec) histogram support
+- fix: extend chat-responses pricing fallback to work bidirectionally
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="maxim" description="1.6.30">
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="mocker" description="1.5.30">
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.11">
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="otel" description="1.4.2">
+- feat: added MCP metrics to OTEL
+- fix: use the central method for content attribute check
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="prompts" description="1.0.30">
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="semanticcache" description="1.5.30">
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>
+<Update label="telemetry" description="1.5.30">
+- feat: added MCP metrics to telemetry plugin
+- chore: upgraded core to v1.7.3 and framework to v1.5.3
+
+</Update>

@@ -25,6 +25,26 @@ func (mc *ModelCatalog) UpsertLiveFromResponse(provider schemas.ModelProvider, k
 	mc.live.Upsert(provider, keyID, unfiltered, extractModelIDs(resp, provider))
 }
 
+// LiveGeneration returns the live cache's invalidation counter for the
+// provider. Read it before issuing a list-models fetch and pass it back to
+// UpsertLiveFromResponseIfCurrent when the response lands.
+func (mc *ModelCatalog) LiveGeneration(provider schemas.ModelProvider) uint64 {
+	return mc.live.Generation(provider)
+}
+
+// UpsertLiveFromResponseIfCurrent is UpsertLiveFromResponse with a staleness
+// guard: the write is dropped, and false returned, if the provider was
+// invalidated (key deleted or disabled, provider removed, entries pruned)
+// after gen was read. A nil resp is a no-op and also reports false, matching
+// UpsertLiveFromResponse's "never clear a cache entry with a missing
+// response" contract.
+func (mc *ModelCatalog) UpsertLiveFromResponseIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, resp *schemas.BifrostListModelsResponse, gen uint64) bool {
+	if resp == nil {
+		return false
+	}
+	return mc.live.UpsertIfCurrent(provider, keyID, unfiltered, extractModelIDs(resp, provider), gen)
+}
+
 // InvalidateLive drops both filtered + unfiltered live entries for one key.
 func (mc *ModelCatalog) InvalidateLive(provider schemas.ModelProvider, keyID string) {
 	mc.live.Invalidate(provider, keyID)
@@ -33,6 +53,13 @@ func (mc *ModelCatalog) InvalidateLive(provider schemas.ModelProvider, keyID str
 // InvalidateLiveProvider drops all live entries for a provider.
 func (mc *ModelCatalog) InvalidateLiveProvider(provider schemas.ModelProvider) {
 	mc.live.InvalidateProvider(provider)
+}
+
+// RetainLiveKeys prunes the provider's live entries down to the keys in keep,
+// leaving those keys' cached models in place. Used before a re-fetch so a
+// failed list-models call cannot empty a catalog that was valid a moment ago.
+func (mc *ModelCatalog) RetainLiveKeys(provider schemas.ModelProvider, keep map[string]struct{}) {
+	mc.live.RetainKeys(provider, keep)
 }
 
 // SetKeyConfigForProvider replaces the keyconfig snapshot for one provider.

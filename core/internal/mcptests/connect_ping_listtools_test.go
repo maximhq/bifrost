@@ -363,30 +363,40 @@ func TestListToolsHook_PreHookShortCircuitWithSyntheticTools(t *testing.T) {
 	assert.False(t, hasEcho, "real server tools should not appear when PreHook short-circuited")
 }
 
-func TestListToolsHook_PreHookShortCircuitError_LeavesEmptyToolMap(t *testing.T) {
+// TestListToolsHook_InitialListToolsFailure_FailsConnect is the regression test for
+// issue #4314. A transport that connects+initializes but whose initial list_tools call
+// fails (here forced via a plugin error short-circuit) must NOT be registered as
+// Connected with an empty ToolMap. Previously the connect path swallowed the failure
+// and left a sticky "connected but serves zero tools" client that /api/mcp/clients
+// reported as healthy while tools/list returned nothing. The fix treats it as a
+// connection failure so the standard Disconnected + health-monitor reconnect path
+// retries a full connect+list.
+func TestListToolsHook_InitialListToolsFailure_FailsConnect(t *testing.T) {
 	t.Parallel()
 
 	plugin := NewTestListToolsPlugin()
 	plugin.SetShortCircuitError(&schemas.BifrostError{
 		IsBifrostError: false,
-		Error:          &schemas.ErrorField{Message: "list_tools blocked"},
+		Error:          &schemas.ErrorField{Message: "list_tools upstream timeout"},
 	})
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
-	// AddClient should still succeed — the connect path tolerates list_tools failure
-	// and falls back to empty tools (matching pre-plugin behavior).
-	require.NoError(t, manager.AddClient(context.Background(), inProcessClientConfig("list_err", buildInProcessServer(t))))
 
-	clients := manager.GetClients()
-	var target *schemas.MCPClientState
-	for i := range clients {
-		if clients[i].Name == "list_err" {
-			target = &clients[i]
-			break
-		}
+	err := manager.AddClient(context.Background(), inProcessClientConfig("list_err", buildInProcessServer(t)))
+	require.Error(t, err, "AddClient must fail when initial list_tools errors")
+	assert.Contains(t, err.Error(), "list_tools upstream timeout")
+
+	// AddClient cleans up the failed entry, so the client must not linger as a
+	// Connected-but-empty entry that would lie to /api/mcp/clients.
+	clientNames := make([]string, 0, len(manager.GetClients()))
+	for _, c := range manager.GetClients() {
+		clientNames = append(clientNames, c.Name)
 	}
-	require.NotNil(t, target)
-	assert.Empty(t, target.ToolMap, "list_tools error short-circuit should result in empty ToolMap")
+	assert.NotContains(t, clientNames, "list_err", "failed list_tools client must be removed")
+
+	// tools/list (served via GetToolPerClient) must not surface this client's tools.
+	served := manager.GetToolPerClient(context.Background())
+	assert.Empty(t, served["list_err"], "no tools should be served for a client that failed list_tools")
 }
 
 func TestListToolsHook_FiresOnConnectAndAgain(t *testing.T) {

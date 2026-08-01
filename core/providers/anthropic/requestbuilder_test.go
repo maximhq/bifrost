@@ -88,9 +88,8 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:         schemas.Vertex,
-			Deployment:       "claude-sonnet-4-5",
-			DeleteModelField: true,
+			Provider: schemas.Vertex,
+			Model:    "claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -112,8 +111,8 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:   schemas.Azure,
-			Deployment: "my-azure-deployment",
+			Provider: schemas.Azure,
+			Model:    "my-azure-deployment",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -141,8 +140,8 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:   schemas.Azure,
-			Deployment: "my-azure-deployment",
+			Provider: schemas.Azure,
+			Model:    "my-azure-deployment",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -213,10 +212,8 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:          schemas.Vertex,
-			Deployment:        "claude-sonnet-4-5",
-			DeleteModelField:  true,
-			DeleteRegionField: true,
+			Provider: schemas.Vertex,
+			Model:    "claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -238,11 +235,8 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:            schemas.Vertex,
-			Deployment:          "claude-sonnet-4-5",
-			DeleteModelField:    true,
-			AddAnthropicVersion: true,
-			AnthropicVersion:    "vertex-2023-10-16",
+			Provider: schemas.Vertex,
+			Model:    "claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -313,10 +307,8 @@ func TestBuildAnthropicResponsesRequestBody_RawBodyPath(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:                  schemas.Vertex,
-			Deployment:                "claude-sonnet-4-5",
-			DeleteModelField:          true,
-			InjectBetaHeadersIntoBody: true,
+			Provider: schemas.Vertex,
+			Model:    "claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -341,7 +333,7 @@ func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
 			Provider:      schemas.Vertex,
-			Deployment:    "claude-sonnet-4-5",
+			Model:         "claude-sonnet-4-5",
 			IsCountTokens: true,
 		})
 		if err != nil {
@@ -371,7 +363,7 @@ func TestBuildAnthropicResponsesRequestBody_CountTokensMode(t *testing.T) {
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
 			Provider:      schemas.Vertex,
-			Deployment:    "new-deployment",
+			Model:         "new-deployment",
 			IsCountTokens: true,
 		})
 		if err != nil {
@@ -443,9 +435,8 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:         schemas.Vertex,
-			Deployment:       "claude-sonnet-4-5",
-			DeleteModelField: true,
+			Provider: schemas.Vertex,
+			Model:    "claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -466,11 +457,8 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:            schemas.Vertex,
-			Deployment:          "claude-sonnet-4-5",
-			DeleteModelField:    true,
-			AddAnthropicVersion: true,
-			AnthropicVersion:    "vertex-2023-10-16",
+			Provider: schemas.Vertex,
+			Model:    "claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -497,7 +485,7 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
 			Provider:      schemas.Vertex,
-			Deployment:    "claude-sonnet-4-5",
+			Model:         "claude-sonnet-4-5",
 			IsCountTokens: true,
 		})
 		if err != nil {
@@ -589,6 +577,7 @@ func TestDoesWebSearchOrFetchAutoInjectCodeExecution(t *testing.T) {
 		{string(AnthropicToolTypeWebFetch20250910), false},
 		{string(AnthropicToolTypeWebFetch20260209), true},
 		{string(AnthropicToolTypeWebFetch20260309), true},
+		{string(AnthropicToolTypeWebFetch20260318), true},
 		{"web_search_unknown", true},
 		{"web_fetch_unknown", true},
 		{"unknown_type", true},
@@ -741,9 +730,8 @@ func TestBuildAnthropicResponsesRequestBody_StripCacheControlScope(t *testing.T)
 		}
 
 		_, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:               schemas.Vertex,
-			Deployment:             "claude-sonnet-4-5",
-			StripCacheControlScope: true,
+			Provider: schemas.Vertex,
+			Model:    "claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -763,10 +751,8 @@ func TestBuildAnthropicResponsesRequestBody_RemapToolVersions(t *testing.T) {
 		}
 
 		result, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-			Provider:          schemas.Vertex,
-			Deployment:        "claude-sonnet-4-5",
-			DeleteModelField:  true,
-			RemapToolVersions: true,
+			Provider: schemas.Vertex,
+			Model:    "claude-sonnet-4-5",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)

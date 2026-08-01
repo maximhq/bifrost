@@ -62,13 +62,18 @@ export interface AliasConfig {
 	api_version?: string;
 	anthropic_version?: string;
 	endpoint?: SecretVar;
-	// Vertex overrides
+	// Shared per-alias project override (Vertex GCP project; Bedrock / Bedrock Mantle
+	// project sent via OpenAI-Project / anthropic-workspace-id). Kept top-level in Go
+	// so the flat project_id key doesn't collide across embedded sub-configs.
 	project_id?: SecretVar;
+	// Vertex overrides
 	project_number?: SecretVar;
+	force_single_region?: boolean;
 	// Bedrock overrides
 	inference_profile_arn?: SecretVar;
 	// Replicate overrides
 	use_deployments_endpoint?: boolean;
+	use_anthropic_endpoints?: boolean;
 }
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
@@ -94,6 +99,7 @@ export interface VertexKeyConfig {
 	project_number?: SecretVar;
 	region: SecretVar;
 	auth_credentials?: SecretVar;
+	force_single_region?: boolean;
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
@@ -101,6 +107,7 @@ export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	project_number: { value: "", ref: "" },
 	region: { value: "", ref: "" },
 	auth_credentials: { value: "", ref: "" },
+	force_single_region: false,
 } as const satisfies Required<VertexKeyConfig>;
 
 export interface S3BucketConfig {
@@ -120,6 +127,7 @@ export interface BedrockKeyConfig {
 	session_token?: SecretVar;
 	region?: SecretVar;
 	arn?: SecretVar;
+	project_id?: SecretVar;
 	batch_s3_config?: BatchS3Config;
 }
 
@@ -130,8 +138,33 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	session_token: undefined as unknown as SecretVar,
 	region: { value: "us-east-1", ref: "" },
 	arn: { value: "", ref: "" },
+	project_id: { value: "", ref: "" },
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
+
+// BedrockMantleKeyConfig matching Go's schemas.BedrockMantleKeyConfig
+export interface BedrockMantleKeyConfig {
+	access_key?: SecretVar;
+	secret_key?: SecretVar;
+	session_token?: SecretVar;
+	region?: SecretVar;
+	role_arn?: SecretVar;
+	external_id?: SecretVar;
+	session_name?: SecretVar;
+	project_id?: SecretVar;
+}
+
+// Default BedrockMantleKeyConfig
+export const DefaultBedrockMantleKeyConfig: BedrockMantleKeyConfig = {
+	access_key: { value: "", ref: "" },
+	secret_key: { value: "", ref: "" },
+	session_token: undefined as unknown as SecretVar,
+	region: { value: "us-east-1", ref: "" },
+	role_arn: undefined as unknown as SecretVar,
+	external_id: undefined as unknown as SecretVar,
+	session_name: undefined as unknown as SecretVar,
+	project_id: undefined as unknown as SecretVar,
+} as const satisfies Required<BedrockMantleKeyConfig>;
 
 // VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
 export interface VLLMKeyConfig {
@@ -185,10 +218,12 @@ export interface ModelProviderKey {
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
+	use_anthropic_endpoints?: boolean;
 	aliases?: Record<string, AliasConfig>;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
+	bedrock_mantle_key_config?: BedrockMantleKeyConfig;
 	vllm_key_config?: VLLMKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
@@ -224,6 +259,7 @@ export interface NetworkConfig {
 	insecure_skip_verify?: boolean;
 	ca_cert_pem?: SecretVar;
 	stream_idle_timeout_in_seconds?: number;
+	keep_alive_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
 	beta_header_overrides?: Record<string, boolean>;
@@ -257,6 +293,10 @@ export type RequestType =
 	| "chat_completion_stream"
 	| "responses"
 	| "responses_stream"
+	| "responses_retrieve"
+	| "responses_delete"
+	| "responses_cancel"
+	| "responses_input_items"
 	| "embedding"
 	| "rerank"
 	| "speech"
@@ -308,6 +348,10 @@ export interface AllowedRequests {
 	chat_completion_stream: boolean;
 	responses: boolean;
 	responses_stream: boolean;
+	responses_retrieve?: boolean;
+	responses_delete?: boolean;
+	responses_cancel?: boolean;
+	responses_input_items?: boolean;
 	embedding: boolean;
 	speech: boolean;
 	speech_stream: boolean;
@@ -434,7 +478,16 @@ export interface FrameworkConfig {
 	model_parameters_url: string;
 	mcp_library_url?: string;
 	mcp_library_sync_interval?: number;
+	/** Seconds between background re-fetches of each provider's model list. 0 disables it. */
+	live_models_sync_interval?: number;
 }
+
+/** Seconds between background model-list refreshes when the user has not set one. */
+export const DEFAULT_LIVE_MODELS_SYNC_INTERVAL = 3600;
+/** Sentinel for "never refresh the model list in the background". */
+export const LIVE_MODELS_SYNC_DISABLED = 0;
+/** Server-side floor for a non-zero live models sync interval, in seconds. */
+export const MIN_LIVE_MODELS_SYNC_INTERVAL = 60;
 
 // Auth config
 export interface AuthConfig {
@@ -513,6 +566,7 @@ export interface BifrostConfig {
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	is_object_storage_connected?: boolean;
 	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
@@ -533,6 +587,7 @@ export interface CoreConfig {
 	prometheus_labels: string[];
 	enable_logging: boolean;
 	disable_content_logging: boolean;
+	retain_content_in_object_storage: boolean;
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
 	allow_direct_keys: boolean;
@@ -540,6 +595,7 @@ export interface CoreConfig {
 	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
+	dual_credential_conflict_behavior?: "error" | "prefer_vk" | "prefer_idp";
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
@@ -558,6 +614,13 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	mcp_server_auth_mode?: "headers" | "both" | "oauth";
+	oauth2_server_config?: {
+		issuer_url?: SecretVar;
+		auth_code_ttl?: number;
+		access_token_ttl?: number;
+		disable_vk_identity?: boolean;
+	};
 }
 
 export const DefaultCoreConfig: CoreConfig = {
@@ -566,6 +629,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	prometheus_labels: [],
 	enable_logging: true,
 	disable_content_logging: false,
+	retain_content_in_object_storage: false,
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,
@@ -573,6 +637,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
+	dual_credential_conflict_behavior: "prefer_idp",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },

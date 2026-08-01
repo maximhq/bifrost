@@ -5,11 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/framework/sidekiq"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 )
@@ -41,6 +47,82 @@ func TestShouldUseFilterDataCacheRejectsScopedContext(t *testing.T) {
 	})
 	if shouldUseFilterDataCache(ctx, "") {
 		t.Fatal("expected scoped request to bypass filterdata cache")
+	}
+}
+
+// TestShouldCacheFilterDimensions_NarrowsToRawScans verifies the cache is spent
+// only where it saves real work. Matview-backed dimensions are indexed lookups
+// and a cache entry serves exactly one caller, so they are not worth caching;
+// metadata_keys still hits the raw logs table and is.
+func TestShouldCacheFilterDimensions_NarrowsToRawScans(t *testing.T) {
+	pg := &LoggingHandler{config: &lib.Config{
+		LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypePostgres},
+	}}
+
+	cases := []struct {
+		name string
+		dims []string
+		want bool
+	}{
+		{"single matview dimension", []string{filterDimUsers}, false},
+		{"several matview dimensions", []string{filterDimUsers, filterDimTeams, filterDimModels}, false},
+		{"metadata keys alone", []string{filterDimMetadataKeys}, true},
+		{"metadata keys mixed in", []string{filterDimUsers, filterDimMetadataKeys}, true},
+		{"default all dimensions", allFilterDimensions, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pg.shouldCacheFilterDimensions(tc.dims); got != tc.want {
+				t.Fatalf("shouldCacheFilterDimensions(%v) = %v, want %v", tc.dims, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShouldCacheFilterDimensions_NonPostgresCachesEverything verifies stores
+// without matviews keep the original behaviour: there every dimension is a raw
+// 30-day DISTINCT, so none of them should lose the cache.
+func TestShouldCacheFilterDimensions_NonPostgresCachesEverything(t *testing.T) {
+	for _, h := range []*LoggingHandler{
+		{config: &lib.Config{LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeSQLite}}},
+		{config: &lib.Config{}}, // no logs-store config: fail safe, keep caching
+		{},                      // no config at all
+	} {
+		if !h.shouldCacheFilterDimensions([]string{filterDimUsers}) {
+			t.Fatal("stores without matviews must keep caching every dimension")
+		}
+	}
+}
+
+// TestFilterDataCacheIdentity_PartitionsPerCaller is the regression for
+// cross-user leakage through the filterdata cache. Filter dropdowns are
+// row-visibility-scoped, but the scope is resolved below the handler, so the
+// cache cannot detect it — two callers must therefore never share a key.
+func TestFilterDataCacheIdentity_PartitionsPerCaller(t *testing.T) {
+	withUser := func(userID string, roleID uint) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		if userID != "" {
+			ctx.SetUserValue(schemas.BifrostContextKeyUserID, userID)
+			ctx.SetUserValue(schemas.BifrostContextKeyUserRoleID, roleID)
+		}
+		return ctx
+	}
+
+	alice := filterDataCacheIdentity(withUser("alice", 2))
+	bob := filterDataCacheIdentity(withUser("bob", 2))
+	if alice == bob {
+		t.Fatalf("distinct users must not share a cache partition, both got %q", alice)
+	}
+
+	// A role change flips visibility, so it must miss the cache immediately
+	// rather than serve the old scope for the remainder of the TTL.
+	if promoted := filterDataCacheIdentity(withUser("alice", 1)); promoted == alice {
+		t.Fatalf("role change must repartition the cache, both got %q", alice)
+	}
+
+	// Unauthenticated / local-admin requests keep the single shared partition.
+	if anon := filterDataCacheIdentity(withUser("", 0)); anon != "anon" {
+		t.Fatalf("identity-less request should use the shared partition, got %q", anon)
 	}
 }
 
@@ -148,10 +230,154 @@ func TestGetDashboard(t *testing.T) {
 	}
 }
 
+func TestRecalculateLogCostsResolvesPeriodFilter(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	store := newFakeSidekiqStore()
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
+	h := &LoggingHandler{logManager: mgr}
+	h.SetSidekiqBackend(runner, store)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"1h"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	// The job is enqueued for background processing, so the endpoint returns 202.
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	// The period must be resolved into an explicit window before the job is built.
+	filters := mgr.lastRecalculateFilters
+	if filters.StartTime == nil || filters.EndTime == nil {
+		t.Fatalf("expected period to resolve start/end, got start=%v end=%v", filters.StartTime, filters.EndTime)
+	}
+	if !filters.EndTime.After(*filters.StartTime) {
+		t.Fatalf("expected end_time after start_time, got start=%s end=%s", filters.StartTime, filters.EndTime)
+	}
+	if store.createdCount() != 1 {
+		t.Fatalf("expected exactly one job to be enqueued, got %d", store.createdCount())
+	}
+}
+
+func TestRecalculateLogCostsRejectsDuplicateJob(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	store := newFakeSidekiqStore()
+	// Seed an in-flight job so the endpoint should refuse to start a second one.
+	store.inFlight = &tables.TableSidekiqJob{
+		ID:       "logs_recalculate_cost_existing",
+		Kind:     loggingplugin.CostRecalcJobKind,
+		Status:   tables.SidekiqStatusRunning,
+		Metadata: "{}",
+	}
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
+	h := &LoggingHandler{logManager: mgr}
+	h.SetSidekiqBackend(runner, store)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"1h"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusConflict {
+		t.Fatalf("expected status 409, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	if store.createdCount() != 0 {
+		t.Fatalf("expected no new job to be enqueued, got %d", store.createdCount())
+	}
+}
+
+// fakeSidekiqStore implements both sidekiq.Store (for the runner) and
+// handlers.SidekiqJobStore (for the endpoints), backed by an in-memory map.
+type fakeSidekiqStore struct {
+	mu       sync.Mutex
+	jobs     map[string]*tables.TableSidekiqJob
+	created  int
+	inFlight *tables.TableSidekiqJob
+}
+
+func newFakeSidekiqStore() *fakeSidekiqStore {
+	return &fakeSidekiqStore{jobs: make(map[string]*tables.TableSidekiqJob)}
+}
+
+func (s *fakeSidekiqStore) createdCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.created
+}
+
+func (s *fakeSidekiqStore) CreateSidekiqJob(ctx context.Context, job *tables.TableSidekiqJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.created++
+	copy := *job
+	s.jobs[job.ID] = &copy
+	return nil
+}
+
+func (s *fakeSidekiqStore) GetSidekiqJob(ctx context.Context, id string) (*tables.TableSidekiqJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, ok := s.jobs[id]; ok {
+		copy := *job
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeSidekiqStore) GetInFlightSidekiqJobByKind(ctx context.Context, kind string) (*tables.TableSidekiqJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inFlight != nil && s.inFlight.Kind == kind {
+		copy := *s.inFlight
+		return &copy, nil
+	}
+	return nil, nil
+}
+
+func (s *fakeSidekiqStore) ClaimSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time) (bool, error) {
+	return true, nil
+}
+func (s *fakeSidekiqStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error) {
+	return true, nil
+}
+func (s *fakeSidekiqStore) HeartbeatSidekiqJob(ctx context.Context, id, runnerID string) (bool, error) {
+	return true, nil
+}
+func (s *fakeSidekiqStore) UpdateSidekiqJobProgress(ctx context.Context, id, runnerID, metadata string) error {
+	return nil
+}
+func (s *fakeSidekiqStore) CompleteSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
+	return nil
+}
+func (s *fakeSidekiqStore) FailSidekiqJob(ctx context.Context, id, runnerID, metadata, lastErr string) error {
+	return nil
+}
+func (s *fakeSidekiqStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
+	return nil, nil
+}
+
 type dashboardLogManager struct {
-	failStats      bool
-	lastLLMFilters logstore.SearchFilters
-	lastMCPFilters logstore.MCPToolLogSearchFilters
+	failStats              bool
+	lastLLMFilters         logstore.SearchFilters
+	lastMCPFilters         logstore.MCPToolLogSearchFilters
+	lastRecalculateFilters logstore.SearchFilters
+	lastRecalculateContext chan context.Context
 }
 
 func (m *dashboardLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
@@ -196,6 +422,12 @@ func (m *dashboardLogManager) GetProviderTokenHistogram(ctx context.Context, fil
 }
 func (m *dashboardLogManager) GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
 	return &logstore.ProviderLatencyHistogramResult{}, nil
+}
+func (m *dashboardLogManager) GetThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ThroughputHistogramResult, error) {
+	return &logstore.ThroughputHistogramResult{}, nil
+}
+func (m *dashboardLogManager) GetProviderThroughputHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderThroughputHistogramResult, error) {
+	return &logstore.ProviderThroughputHistogramResult{}, nil
 }
 func (m *dashboardLogManager) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
 	return &logstore.ModelRankingResult{}, nil
@@ -252,7 +484,22 @@ func (m *dashboardLogManager) GetDimensionLatencyHistogram(ctx context.Context, 
 func (m *dashboardLogManager) DeleteLog(ctx context.Context, id string) error     { return nil }
 func (m *dashboardLogManager) DeleteLogs(ctx context.Context, ids []string) error { return nil }
 func (m *dashboardLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*loggingplugin.RecalculateCostResult, error) {
+	m.lastRecalculateFilters = *filters
+	return &loggingplugin.RecalculateCostResult{}, nil
+}
+func (m *dashboardLogManager) RecalculateCostsWithProgress(ctx context.Context, filters *logstore.SearchFilters, limit int, progress func(loggingplugin.RecalculateCostProgress)) (*loggingplugin.RecalculateCostResult, error) {
+	m.lastRecalculateFilters = *filters
+	if m.lastRecalculateContext != nil {
+		m.lastRecalculateContext <- ctx
+	}
 	return nil, nil
+}
+func (m *dashboardLogManager) BuildCostRecalcJobMeta(ctx context.Context, filters logstore.SearchFilters, missingCostOnly bool) (string, error) {
+	m.lastRecalculateFilters = filters
+	return "{}", nil
+}
+func (m *dashboardLogManager) RunCostRecalcJob(ctx context.Context, metaJSON string, checkpoint func(string) error) (string, error) {
+	return metaJSON, nil
 }
 func (m *dashboardLogManager) GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error) {
 	return nil, nil

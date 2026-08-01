@@ -32,6 +32,7 @@ type CredentialSweepWorker struct {
 	expiredFlowEvery   time.Duration
 	stopCh             chan struct{}
 	stopOnce           sync.Once
+	cancel             context.CancelFunc
 	logger             schemas.Logger
 }
 
@@ -57,7 +58,9 @@ func NewCredentialSweepWorker(provider *Provider, orphanRetention time.Duration,
 
 // Start begins the sweep worker in a background goroutine.
 func (w *CredentialSweepWorker) Start(ctx context.Context) {
-	go w.run(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+	go w.run(runCtx)
 	if w.logger != nil {
 		w.logger.Info("Per-user headers sweep worker started (orphan=%s, retention=%s, expired_flow=%s)",
 			w.orphanSweepEvery, w.orphanRetention, w.expiredFlowEvery)
@@ -68,6 +71,11 @@ func (w *CredentialSweepWorker) Start(ctx context.Context) {
 // panics from redundant shutdown paths.
 func (w *CredentialSweepWorker) Stop() {
 	w.stopOnce.Do(func() {
+		// Cancel any in-flight sweep so a blocked DB call unwinds promptly,
+		// then signal run() to exit its ticker loop.
+		if w.cancel != nil {
+			w.cancel()
+		}
 		close(w.stopCh)
 		if w.logger != nil {
 			w.logger.Info("Per-user headers credential sweep worker stopped")

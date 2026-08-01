@@ -69,6 +69,15 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 		}
 	}
 
+	// Extended-thinking tokens are already inside au.OutputTokens, so CompletionTokens
+	// and TotalTokens above stay as-is.
+	if au.OutputTokensDetails != nil && au.OutputTokensDetails.ThinkingTokens > 0 {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+		usage.CompletionTokensDetails.ReasoningTokens = au.OutputTokensDetails.ThinkingTokens
+	}
+
 	u := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
 	if au.ServiceTier != nil {
 		t := MapAnthropicServiceTierToBifrost(*au.ServiceTier)
@@ -76,6 +85,9 @@ func buildAnthropicPassthroughUsage(au *AnthropicUsage) *schemas.BifrostPassthro
 	}
 	if au.Speed != nil {
 		u.Speed = au.Speed
+	}
+	if au.InferenceGeo != nil {
+		u.InferenceGeo = au.InferenceGeo
 	}
 	return u
 }
@@ -136,11 +148,22 @@ func (a *AnthropicPassthroughStreamUsage) ObserveEvent(event []byte) *schemas.Bi
 			c.ServerToolUse.WebSearchRequests = u.ServerToolUse.WebSearchRequests
 		}
 	}
+	if u.OutputTokensDetails != nil {
+		if c.OutputTokensDetails == nil {
+			c.OutputTokensDetails = &AnthropicOutputTokensDetails{}
+		}
+		if u.OutputTokensDetails.ThinkingTokens > c.OutputTokensDetails.ThinkingTokens {
+			c.OutputTokensDetails.ThinkingTokens = u.OutputTokensDetails.ThinkingTokens
+		}
+	}
 	if u.ServiceTier != nil {
 		c.ServiceTier = u.ServiceTier
 	}
 	if u.Speed != nil {
 		c.Speed = u.Speed
+	}
+	if u.InferenceGeo != nil {
+		c.InferenceGeo = u.InferenceGeo
 	}
 	return a.usage()
 }

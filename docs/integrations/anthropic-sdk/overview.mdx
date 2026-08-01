@@ -31,7 +31,7 @@ import anthropic
 # Configure client to use Bifrost
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key"  # Keys handled by Bifrost
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Make requests as usual
@@ -53,7 +53,7 @@ import Anthropic from "@anthropic-ai/sdk";
 // Configure client to use Bifrost
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key", // Keys handled by Bifrost
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Make requests as usual
@@ -83,7 +83,7 @@ import anthropic
 
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Anthropic models (default)
@@ -130,7 +130,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Anthropic models (default)
@@ -184,11 +184,12 @@ Pass custom headers required by Bifrost plugins (like governance, telemetry, etc
 ```python
 import anthropic
 
+# Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     default_headers={
-        "x-bf-vk": "vk_12345",  # Virtual key for governance
+        "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
     }
 )
 
@@ -205,11 +206,12 @@ response = client.messages.create(
 ```javascript
 import Anthropic from "@anthropic-ai/sdk";
 
+// Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
   defaultHeaders: {
-    "x-bf-vk": "vk_12345", // Virtual key for governance
+    "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
   },
 });
 
@@ -244,7 +246,7 @@ import time
 
 client = anthropic.Anthropic(
     base_url="http://localhost:8080/anthropic",
-    api_key="dummy-key"
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 
 # Submit async request
@@ -281,7 +283,7 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic({
   baseURL: "http://localhost:8080/anthropic",
-  apiKey: "dummy-key",
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
 });
 
 // Submit async request

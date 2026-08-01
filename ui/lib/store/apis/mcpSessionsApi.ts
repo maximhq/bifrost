@@ -19,6 +19,7 @@ function buildMCPSessionsListParams(params?: MCPSessionsQueryParams) {
 	if (!params) return {};
 	const out: Record<string, string | number> = {};
 	if (params.q) out.q = params.q;
+	if (params.identity) out.identity = params.identity;
 	if (params.kind?.length) out.kind = [...params.kind].sort().join(",");
 	if (params.status?.length) out.status = [...params.status].sort().join(",");
 	if (params.auth_mode?.length) out.auth_mode = [...params.auth_mode].sort().join(",");

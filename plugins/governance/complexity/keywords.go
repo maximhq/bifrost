@@ -6,18 +6,15 @@ const (
 	codeWeight                         = 0.30
 	reasoningWeight                    = 0.25
 	technicalWeight                    = 0.25
-	simpleWeight                       = 0.05 // dampener, subtracted
+	simpleWeight                       = 0.05
 	tokenCountWeight                   = 0.10
 	systemPromptAssistFactor           = 0.25
 	defaultLastMessageBlendWeight      = 0.60
 	defaultConversationBlendWeight     = 0.40
 	referentialLastMessageBlendWeight  = 0.35
 	referentialConversationBlendWeight = 0.65
-	referentialMaxStandaloneScore      = 0.15
-	referentialMaxWordCount            = 6
 	referentialMinContextScore         = 0.20
 	wordPresenceSetMinBytes            = 8 * 1024
-	// Output complexity is applied as a score floor, not a weighted dimension
 )
 
 // --- Keyword lists ---
@@ -36,21 +33,12 @@ var codeKeywords = []string{
 	"cel", "auto-routing", "rwmutex", "goroutine",
 }
 
-// Reasoning markers, split into strong and weak for override logic.
 var strongReasoningKeywords = []string{
 	"step by step", "think through", "tradeoffs", "pros and cons",
 	"justify", "critique", "implications", "explain why",
 	"root cause analysis", "reconstruct the sequence",
 	"reconstruct the most likely sequence", "what should have happened instead",
 	"explain your reasoning", "weigh the tradeoffs", "recommend a design",
-}
-
-var weakReasoningKeywords = []string{
-	"reason", "analyze", "evaluate", "compare", "assess", "consider",
-	"why does", "what if", "how would", "what are the", "which approach",
-	"think about", "design", "most likely", "reconstruct", "verify",
-	"assumption", "hypothesis", "compare and contrast", "weigh the options",
-	"recommend one", "given these constraints", "under these constraints",
 }
 
 // TechnicalTerms: architecture/distributed/security/infrastructure signals
@@ -86,46 +74,9 @@ var simpleKeywords = []string{
 	"short", "quick", "beginner", "basic", "concise",
 }
 
-// --- Output complexity keywords ---
-
-var enumTriggers = []string{
-	"list every", "list all", "enumerate all", "all possible",
-	"every single", "show all", "name all", "give me all",
-}
-
-var comprehensivenessMarkers = []string{
-	"comprehensive", "exhaustive", "complete list", "full list",
-	"in detail", "detailed breakdown", "thorough", "in-depth",
-}
-
-var elaborationMarkers = []string{
-	"and what it does", "explain each", "describe each", "for each",
-	"with examples", "with descriptions", "along with",
-}
-
-var limitingQualifiers = []string{
-	"briefly", "top 3", "top 5", "top 10", "in one sentence",
-	"quickly", "summarize", "just the", "only the", "keep it short",
-	"tl;dr", "tldr",
-}
-
-var referentialPhrases = []string{
+var continuationPhrases = []string{
 	"do it", "try again", "continue", "go ahead", "proceed",
-	"that one", "this one", "same thing", "again", "retry",
+	"that one", "this one", "same thing", "again",
 	"yes do that", "go with that", "use option 1", "use option 2", "use option 3",
 	"now write it",
-}
-
-var referentialReferenceWords = []string{
-	"it", "this", "that", "same", "previous", "earlier",
-}
-
-var referentialActionWords = []string{
-	"do", "retry", "continue", "proceed", "use", "fix",
-	"rewrite", "shorten", "clean", "adjust", "make", "give", "answer",
-}
-
-var taskShiftPhrases = []string{
-	"translate", "summarize", "in one sentence", "one sentence",
-	"in spanish", "in french", "in german", "more politely", "more polite",
 }

@@ -29,6 +29,10 @@ For each MCP client associated with a Virtual Key, you can specify the allowed t
 - **Leave tool list empty**: All tools from that client will be **blocked**.
 - **Do not configure a client**: All tools from that client will be **blocked** (if other clients are configured).
 
+<Note>
+Inactive or [expired](./virtual-keys#key-expiry) Virtual Keys are rejected at MCP tool execution time with a `403`, regardless of their tool configuration.
+</Note>
+
 ## Setting MCP Tool Restrictions
 
 <Tabs group="mcp-tool-restrictions">

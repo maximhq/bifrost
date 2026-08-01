@@ -270,7 +270,9 @@ function DimensionRankingsTabImpl({ data, loading, dimensionLabel, testIdPrefix,
 									<TableCell>
 										<div className="flex flex-col">
 											<span className="font-medium">{entry.name || entry.id}</span>
-											{entry.name && entry.name !== entry.id && <span className="text-muted-foreground text-xs">{entry.id}</span>}
+											{entry.name && entry.name !== entry.id && entry.id !== "unassigned" && (
+												<span className="text-muted-foreground text-xs">{entry.id}</span>
+											)}
 										</div>
 									</TableCell>
 									<TableCell className="text-right">

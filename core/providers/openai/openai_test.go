@@ -95,6 +95,7 @@ func TestOpenAI(t *testing.T) {
 			FileContent:                true,
 			FileBatchInput:             true,
 			CountTokens:                true,
+			ResponsesLifecycle:         true,
 			ExternalCompaction:         true,
 			ChatAudio:                  true,
 			StructuredOutputs:          true, // Structured outputs with nullable enum support

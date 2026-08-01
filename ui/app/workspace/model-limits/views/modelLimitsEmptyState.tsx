@@ -16,9 +16,9 @@ export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLim
 				<Wallet className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>
 			<div className="flex flex-col gap-1">
-				<h1 className="text-muted-foreground text-xl font-medium">Budgets and rate limits at the model level</h1>
+				<h1 className="text-muted-foreground text-xl font-medium">Budgets and rate limits</h1>
 				<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
-					Set spending caps and rate limits per model. For provider-specific limits, configure each provider in Model providers.
+					Set spending caps and rate limits at any scope: virtual keys, users, providers, or specific models.
 				</div>
 				<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
 					<Button
@@ -32,12 +32,12 @@ export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLim
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
 					<Button
-						aria-label="Add your first model limit"
+						aria-label="Add your first limit"
 						onClick={onAddClick}
 						disabled={!canCreate}
 						data-testid="model-limits-button-create"
 					>
-						Add Model Limit
+						Add Limit
 					</Button>
 				</div>
 			</div>

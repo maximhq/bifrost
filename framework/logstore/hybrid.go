@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"gorm.io/gorm"
 )
 
 const (
@@ -51,6 +52,10 @@ type HybridLogStore struct {
 	pendingBytes   atomic.Int64
 	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
 	excludedPayloadFields map[string]struct{}
+}
+
+type scopedDBLogStore interface {
+	ScopedDB(context.Context) *gorm.DB
 }
 
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
@@ -226,9 +231,31 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 // prepareDBEntry builds the lightweight DB entry by extracting the content
 // summary, trimming input history to the last user message, and clearing
 // payload fields that will be offloaded to object storage. Fields in the
-// excluded set are kept intact in the DB row.
+// excluded set are kept intact in the DB row. Pricing metadata is always kept
+// DB-resident regardless of hybrid configuration or content visibility.
 // Must be called after SerializeFields() populates the Parsed fields.
 func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
+	tokenUsage := dbEntry.TokenUsage
+	cacheDebug := dbEntry.CacheDebug
+	tokenUsageParsed := dbEntry.TokenUsageParsed
+	cacheDebugParsed := dbEntry.CacheDebugParsed
+	restorePricingMetadata := func() {
+		dbEntry.TokenUsage = tokenUsage
+		dbEntry.CacheDebug = cacheDebug
+		dbEntry.TokenUsageParsed = tokenUsageParsed
+		dbEntry.CacheDebugParsed = cacheDebugParsed
+	}
+
+	// Hidden entries keep no request/response content in the DB row: no summary,
+	// last-user-message preview, or exclusion-list carve-outs. Pricing metadata is
+	// not content and remains in the log store.
+	if dbEntry.ContentHidden {
+		ClearPayload(dbEntry)
+		restorePricingMetadata()
+		dbEntry.ContentSummary = ""
+		return
+	}
+
 	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
 
 	// Content summary: extract text from the found user message.
@@ -242,10 +269,13 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, maxContentSummaryBytes)
 
 	// Serialize last user message before ClearPayload zeros everything.
-	// msgs[idx:idx+1] reuses the backing array — no heap alloc, no struct copy.
+	// Attachment payloads (base64 images/files/audio, media URLs) are replaced
+	// with a placeholder so they never bloat the DB row; the full message stays
+	// in object storage and is merged back on read.
 	var lastUserMessage string
 	if idx >= 0 {
-		lastUserMessage, _ = sonic.MarshalString(dbEntry.InputHistoryParsed[idx : idx+1])
+		stripped := stripChatMessageAttachments(&dbEntry.InputHistoryParsed[idx])
+		lastUserMessage, _ = sonic.MarshalString([]schemas.ChatMessage{stripped})
 	}
 
 	// Responses API requests carry their history in responses_input_history
@@ -256,11 +286,13 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 	var lastUserResponsesMessage string
 	if idx < 0 {
 		if responsesIdx := findLastUserResponsesMessageIndex(dbEntry.ResponsesInputHistoryParsed); responsesIdx >= 0 {
-			lastUserResponsesMessage, _ = sonic.MarshalString(dbEntry.ResponsesInputHistoryParsed[responsesIdx : responsesIdx+1])
+			stripped := stripResponsesMessageAttachments(&dbEntry.ResponsesInputHistoryParsed[responsesIdx])
+			lastUserResponsesMessage, _ = sonic.MarshalString([]schemas.ResponsesMessage{stripped})
 		}
 	}
 
 	ClearPayloadFiltered(dbEntry, excluded)
+	restorePricingMetadata()
 
 	if _, hasInputHistoryExclusion := excluded["input_history"]; !hasInputHistoryExclusion {
 		dbEntry.InputHistory = sanitizeJSONForJSONB(lastUserMessage)
@@ -275,11 +307,21 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 // object storage. The caller's entry is preserved on DB failure by writing to
 // a shallow copy; on success, only ContentSummary is propagated back so the
 // caller can observe what was persisted.
+// extractUploadPayload returns the payload map to offload for entry. Hidden
+// entries always upload the complete payload: the exclusion list exists to
+// keep fields DB-resident, and hidden rows must not retain content in the DB.
+func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
+	if entry.ContentHidden {
+		return ExtractPayload(entry)
+	}
+	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+}
+
 func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
-	payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+	payload := h.extractUploadPayload(entry)
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
@@ -299,7 +341,7 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	if err := entry.SerializeFields(); err != nil {
 		return fmt.Errorf("logstore: serialize before extract: %w", err)
 	}
-	payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+	payload := h.extractUploadPayload(entry)
 	tags := BuildTags(entry)
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
@@ -336,7 +378,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		if err := entry.SerializeFields(); err != nil {
 			return fmt.Errorf("logstore: serialize before extract: %w", err)
 		}
-		payload := ExtractPayloadFiltered(entry, h.excludedPayloadFields)
+		payload := h.extractUploadPayload(entry)
 		tags := BuildTags(entry)
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
@@ -387,7 +429,9 @@ func (h *HybridLogStore) FindByID(ctx context.Context, id string) (*Log, error) 
 // projection are kept after merge — unrequested payload fields are cleared to
 // honour projection semantics and avoid pulling large blobs unnecessarily.
 func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields ...string) {
-	if log == nil || !log.HasObject {
+	// ContentHidden is the read-side enforcement for hidden logs: the payload
+	// stays in object storage and is never fetched back into the serving path.
+	if log == nil || !log.HasObject || log.ContentHidden {
 		return
 	}
 	key := ObjectKey(h.prefix, log.Timestamp, log.ID)
@@ -533,6 +577,16 @@ func (h *HybridLogStore) DroppedUploads() int64 {
 
 // --- Delegated methods (pass through to inner store unchanged) ---
 
+// ScopedDB exposes the underlying RDB query surface when hybrid mode wraps a
+// Postgres/SQLite logstore. Enterprise logstore extensions use this for their
+// own logstore-owned tables, such as alert history.
+func (h *HybridLogStore) ScopedDB(ctx context.Context) *gorm.DB {
+	if scoped, ok := h.inner.(scopedDBLogStore); ok {
+		return scoped.ScopedDB(ctx)
+	}
+	return nil
+}
+
 // Ping delegates to the inner store's health check.
 func (h *HybridLogStore) Ping(ctx context.Context) error {
 	return h.inner.Ping(ctx)
@@ -594,6 +648,216 @@ func (h *HybridLogStore) HasLogs(ctx context.Context) (bool, error) {
 // columns (including ContentSummary); payloads are not hydrated here.
 func (h *HybridLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
 	return h.inner.SearchLogs(ctx, filters, pagination)
+}
+
+// SearchLogsForBilling delegates to the inner store. Hydration is deliberately NOT
+// done here — see HydrateBillingChunk.
+func (h *HybridLogStore) SearchLogsForBilling(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error) {
+	return h.inner.SearchLogsForBilling(ctx, filters, pagination)
+}
+
+// HydrateBillingChunk restores offloaded pricing inputs for a small slice of rows.
+//
+// This exists because of a real mis-billing bug: a row whose token_usage was offloaded
+// comes back with a stub rebuilt from denormalized columns, and because PromptTokens is
+// inclusive of the cache buckets, pricing that stub charges every cache-read token at
+// the full input rate — inflating a cache-heavy request several fold.
+//
+// Two deliberate properties:
+//
+// SEQUENTIAL — one object in flight at a time. A parallel fan-out multiplies peak
+// memory by its width, since each in-flight fetch holds the whole object as a []byte
+// plus the map[string]string that MergePayloadFromJSON unmarshals it into, and objects
+// can carry full message histories and raw request/response bodies. This runs inside a
+// checkpointed background job, so predictability beats throughput. Combined with the
+// caller paging and chunking at BillingHydrationChunkSize, a recompute worker's
+// payload memory is bounded by a handful of rows no matter how large the window.
+//
+// SKIPS ROWS THAT DO NOT NEED IT — a row already carrying its pricing inputs costs no
+// I/O at all. See billingRowNeedsHydration.
+func (h *HybridLogStore) HydrateBillingChunk(ctx context.Context, logs []*Log) (BillingHydrationResult, error) {
+	var result BillingHydrationResult
+	for _, log := range logs {
+		if log == nil || !log.HasObject {
+			// Never offloaded: the row already carries its own payload.
+			continue
+		}
+		if !billingRowNeedsHydration(log, h.excludedPayloadFields) {
+			continue
+		}
+		// Checked per row rather than relying on Get to notice: on shutdown or job
+		// cancellation this should stop fetching immediately, not walk the rest of
+		// the chunk collecting context errors.
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if hydrateErr := h.hydrateLogForBilling(ctx, log); hydrateErr != nil {
+			h.logger.Warn("objectstore: cannot hydrate pricing inputs for log %s: %v", log.ID, hydrateErr)
+			result.Unpriceable = append(result.Unpriceable, log.ID)
+			continue
+		}
+		result.Hydrated = append(result.Hydrated, log.ID)
+	}
+	return result, nil
+}
+
+// billingRowNeedsHydration reports whether an offloaded row is actually missing
+// something pricing reads. Fetching a whole object to recover fields the row already
+// has is pure waste — and because the store exposes only whole-key Get, one wasted
+// fetch downloads the entire payload, message histories included.
+//
+// excluded is the store's object_storage_exclude_fields set, and it is what makes the
+// check precise. An empty column on its own is ambiguous: it can mean "offloaded" or
+// "never written". A row with no semantic cache has an empty cache_debug forever, so
+// treating empty as "go fetch" would fetch nearly every row and would keep fetching
+// the same row after a successful hydration recovered nothing. Consulting the
+// exclusion set resolves that: if a column is configured DB-resident, empty means
+// genuinely empty and there is nothing in the object to recover.
+//
+// The fields considered:
+//
+//   - token_usage: the field whose absence caused the overbill.
+//   - cache_debug: absent means a semantic-cache hit could be priced at full LLM cost
+//     instead of $0, so it is fetched unless configured resident.
+//   - the modality payload: only the column this row's own request type bills on. A
+//     chat row is not missing anything by having no speech_output.
+func billingRowNeedsHydration(l *Log, excluded map[string]struct{}) bool {
+	// Already fetched in this pass: whatever the object held is now on the row, and the
+	// fields it did not hold will never appear no matter how often we ask.
+	if l.billingPayloadsHydrated {
+		return false
+	}
+	// Content-hidden rows are eligible for billing-only hydration even though ordinary
+	// serving reads never hydrate them — but eligible is not the same as force-fetched.
+	// They get their own branch rather than falling through because they are written with
+	// ClearPayload, which ignores the DB-resident exclusion list entirely, so `excluded`
+	// vouches for nothing on them and the checks below would misread it in both
+	// directions: it would wave through an emptied-but-"resident" modality column, and it
+	// would defeat the backfilled inference for a deployment that keeps token_usage
+	// resident, refetching such a row on every pass to recover nothing.
+	//
+	// A stronger signal replaces it. prepareDBEntry restores token_usage and cache_debug
+	// together on every hidden row, so a present token_usage means this row was written
+	// after that change and its empty cache_debug is genuinely empty. A blank one is a
+	// legacy hidden row whose pricing inputs live only in the retained object.
+	if l.ContentHidden {
+		if l.TokenUsage == "" {
+			return true
+		}
+		// Modality payloads are cleared unconditionally here and are never backfilled,
+		// so an empty column means the object holds the only copy.
+		if col := billingPayloadColumnFor(l.Object); col != "" {
+			return billingPayloadColumnValue(l, col) == ""
+		}
+		return false
+	}
+
+	resident := func(column string) bool {
+		_, ok := excluded[column]
+		return ok
+	}
+
+	// A previous recompute already fetched this row and wrote the small pricing inputs
+	// back (see BulkBackfillBillingPayloads). That state is detectable without a marker
+	// column: offloading blanks token_usage, so a has_object row that nonetheless has
+	// one can only have been backfilled. The exception is a deployment that configured
+	// token_usage to stay resident — there its presence is just config and says nothing
+	// about whether anything else was recovered.
+	//
+	// This matters because writing an empty cache_debug back cannot speak for itself:
+	// most rows have no semantic cache, so without this inference the gate would keep
+	// refetching them forever and the backfill would buy nothing.
+	backfilled := l.TokenUsage != "" && !resident("token_usage")
+
+	vouched := func(column, value string) bool {
+		return value != "" || resident(column) || backfilled
+	}
+
+	if !vouched("token_usage", l.TokenUsage) || !vouched("cache_debug", l.CacheDebug) {
+		return true
+	}
+	if col := billingPayloadColumnFor(l.Object); col != "" {
+		// Modality payloads are never backfilled — they are precisely what offloading
+		// exists to keep out of the database — so only the exclusion set can vouch for
+		// an empty column here, never a prior backfill.
+		return billingPayloadColumnValue(l, col) == "" && !resident(col)
+	}
+	return false
+}
+
+// BulkBackfillBillingPayloads delegates to the inner store.
+//
+// Safe to write these columns even though the offload path blanked them: Update is a
+// plain pass-through here (it does not re-run prepareDBEntry), so nothing re-strips
+// them. The object keeps its own copy, so this is a cache, not a move.
+func (h *HybridLogStore) BulkBackfillBillingPayloads(ctx context.Context, updates map[string]BillingPayloadBackfill) error {
+	return h.inner.BulkBackfillBillingPayloads(ctx, updates)
+}
+
+// billingPayloadColumnValue reads the serialized value of one modality payload column.
+func billingPayloadColumnValue(l *Log, column string) string {
+	switch column {
+	case "speech_output":
+		return l.SpeechOutput
+	case "transcription_output":
+		return l.TranscriptionOutput
+	case "image_generation_output":
+		return l.ImageGenerationOutput
+	case "video_generation_output":
+		return l.VideoGenerationOutput
+	case "ocr_output":
+		return l.OCROutput
+	default:
+		return ""
+	}
+}
+
+// hydrateLogForBilling fetches the offloaded payload and merges back only the
+// fields pricing reads, then re-deserializes so the virtual structs match.
+//
+// Unlike hydrateLog it returns the error instead of degrading gracefully. Silent
+// degradation is right for a rendering path — a missing message preview is
+// cosmetic — but here it would leave the lossy usage stub in place and bill it,
+// which is exactly the failure this method exists to prevent.
+func (h *HybridLogStore) hydrateLogForBilling(ctx context.Context, log *Log) error {
+	// Only the payload this row's own request type bills on is kept; the rest are
+	// pruned after merge so an unrelated blob never lingers in memory.
+	fields := []string{"token_usage", "cache_debug"}
+	if col := billingPayloadColumnFor(log.Object); col != "" {
+		fields = append(fields, col)
+	}
+
+	data, err := h.objects.Get(ctx, ObjectKey(h.prefix, log.Timestamp, log.ID))
+	if err != nil {
+		return fmt.Errorf("fetch payload: %w", err)
+	}
+	if err := MergePayloadFromJSON(log, data); err != nil {
+		return fmt.Errorf("merge payload: %w", err)
+	}
+	pruneUnrequestedPayloadFields(log, fields)
+	// MergePayloadFromJSON writes the serialized columns only. Re-deserialize so
+	// TokenUsageParsed reflects the hydrated payload rather than the stub AfterFind
+	// built while token_usage was still blank.
+	if err := log.DeserializeFields(); err != nil {
+		return fmt.Errorf("deserialize hydrated payload: %w", err)
+	}
+	// Recorded before the usage check below: the object was read, so re-asking would
+	// return the same thing. Only a fetch that never happened should be retried.
+	log.billingPayloadsHydrated = true
+	// Drop the generated-image bytes the hydrated payload carries but pricing never
+	// reads; it only needs the image count.
+	stripNonBillingPayloadBytes(log)
+	// Only token-billed rows need token_usage. A speech/ocr/video/image row prices off
+	// the modality payload recovered above — input chars, pages processed, seconds,
+	// image count — and computeOCRCost takes no usage argument at all. Rejecting those
+	// here would report Unpriceable, which claims the inputs are unrecoverable, when
+	// hydration in fact recovered everything pricing reads.
+	if log.TokenUsage == "" && billingPayloadColumnFor(log.Object) == "" {
+		// The object exists but carries no usage. Nothing to price from, and the
+		// stub is still in place — report rather than let the caller bill it.
+		return fmt.Errorf("hydrated payload has no token_usage")
+	}
+	return nil
 }
 
 // GetSessionLogs delegates to the inner store and returns the paginated logs
@@ -660,6 +924,18 @@ func (h *HybridLogStore) GetProviderTokenHistogram(ctx context.Context, filters 
 // per-provider latency histogram bucketed by bucketSizeSeconds.
 func (h *HybridLogStore) GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	return h.inner.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetThroughputHistogram delegates to the inner store and returns a
+// token-generation throughput (tokens/sec) histogram bucketed by bucketSizeSeconds.
+func (h *HybridLogStore) GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
+	return h.inner.GetThroughputHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetProviderThroughputHistogram delegates to the inner store and returns a
+// per-provider throughput (tokens/sec) histogram bucketed by bucketSizeSeconds.
+func (h *HybridLogStore) GetProviderThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderThroughputHistogramResult, error) {
+	return h.inner.GetProviderThroughputHistogram(ctx, filters, bucketSizeSeconds)
 }
 
 // GetModelRankings delegates to the inner store and returns ranked usage
@@ -1222,4 +1498,27 @@ func (h *HybridLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, err
 // DeleteStaleAsyncJobs deletes async jobs that have not been updated since the given time.
 func (h *HybridLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error) {
 	return h.inner.DeleteStaleAsyncJobs(ctx, staleSince)
+}
+
+// Webhook Delivery methods — delegated directly; delivery history rows are
+// metadata-only and never carry offloadable payloads.
+
+// CreateWebhookDelivery appends one webhook delivery attempt record.
+func (h *HybridLogStore) CreateWebhookDelivery(ctx context.Context, delivery *WebhookDelivery) error {
+	return h.inner.CreateWebhookDelivery(ctx, delivery)
+}
+
+// FindWebhookDeliveryByID retrieves a webhook delivery attempt by its ID.
+func (h *HybridLogStore) FindWebhookDeliveryByID(ctx context.Context, id string) (*WebhookDelivery, error) {
+	return h.inner.FindWebhookDeliveryByID(ctx, id)
+}
+
+// SearchWebhookDeliveries returns one page of delivery history for an endpoint.
+func (h *HybridLogStore) SearchWebhookDeliveries(ctx context.Context, endpointID string, pagination PaginationOptions) (*WebhookDeliverySearchResult, error) {
+	return h.inner.SearchWebhookDeliveries(ctx, endpointID, pagination)
+}
+
+// DeleteExpiredWebhookDeliveries deletes delivery history whose expiry has passed.
+func (h *HybridLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
+	return h.inner.DeleteExpiredWebhookDeliveries(ctx)
 }

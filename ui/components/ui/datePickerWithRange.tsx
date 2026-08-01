@@ -374,6 +374,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 
 interface DateTimePickerProps extends React.HTMLAttributes<HTMLDivElement> {
 	buttonClassName?: string;
+	buttonVariant?: React.ComponentProps<typeof Button>["variant"];
 	triggerLabel?: string;
 	onTrigger?: (e: React.MouseEvent<HTMLButtonElement>, dateTime: { date?: Date; time: TimeValue }) => void;
 	popupAlignment?: "start" | "end" | "center";
@@ -384,7 +385,7 @@ interface DateTimePickerProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 export function DateTimePicker(props: DateTimePickerProps) {
-	const { className, buttonClassName, triggerLabel, onTrigger, dateTime } = props;
+	const { className, buttonClassName, buttonVariant, triggerLabel, onTrigger, dateTime } = props;
 
 	const initialDate = dateTime ? new Date(dateTime) : new Date();
 	const [date, setDate] = React.useState<Date | undefined>(initialDate);
@@ -438,7 +439,7 @@ export function DateTimePicker(props: DateTimePickerProps) {
 				<PopoverTrigger asChild>
 					<Button
 						id="date"
-						variant="default"
+						variant={buttonVariant ?? "default"}
 						className={cn(
 							"w-max justify-start text-left font-normal",
 							!date && "text-content-disabled",

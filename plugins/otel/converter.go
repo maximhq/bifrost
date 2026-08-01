@@ -222,7 +222,12 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 	}
 	kvs := make([]*KeyValue, 0, len(attrs))
 	for k, v := range attrs {
-		if disableContentLogging && isContentAttribute(k) {
+		if disableContentLogging && schemas.IsContentAttribute(k) {
+			continue
+		}
+		// Overhead is not exported to connectors; it is still computed and stored in
+		// the logs DB. Skip it here so it does not ride the exported span.
+		if k == schemas.AttrBifrostOverheadDurationMs {
 			continue
 		}
 		kv := anyToKeyValue(k, v)
@@ -231,26 +236,6 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 		}
 	}
 	return kvs
-}
-
-// isContentAttribute returns true if the attribute key contains message/input/output content
-// or tool definitions/arguments/results that should be filtered when content logging is disabled.
-func isContentAttribute(key string) bool {
-	switch key {
-	case schemas.AttrInputMessages, schemas.AttrOutputMessages,
-		schemas.AttrInputText, schemas.AttrInputSpeech,
-		schemas.AttrInputEmbedding:
-		return true
-	case schemas.AttrTools, schemas.AttrRespTools,
-		schemas.AttrToolName, schemas.AttrToolCallID,
-		schemas.AttrToolCallArguments, schemas.AttrToolCallResult,
-		schemas.AttrToolType,
-		schemas.AttrToolChoiceType, schemas.AttrToolChoiceName,
-		schemas.AttrRespToolChoiceType, schemas.AttrRespToolChoiceName:
-		return true
-	default:
-		return false
-	}
 }
 
 // anyToKeyValue converts any Go value to OTEL KeyValue
@@ -373,6 +358,8 @@ func convertSpanKind(kind schemas.SpanKind) tracepb.Span_SpanKind {
 	case schemas.SpanKindFallback:
 		return tracepb.Span_SPAN_KIND_INTERNAL
 	case schemas.SpanKindMCPTool:
+		return tracepb.Span_SPAN_KIND_CLIENT
+	case schemas.SpanKindMCPClient:
 		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindEmbedding:
 		return tracepb.Span_SPAN_KIND_CLIENT

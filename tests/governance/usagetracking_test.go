@@ -20,7 +20,8 @@ func TestUsageTrackingRateLimitReset(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -50,8 +51,10 @@ func TestUsageTrackingRateLimitReset(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getVKResp1.StatusCode)
 	}
 
-	virtualKeysMap1 := getVKResp1.Body["virtual_keys"].(map[string]interface{})
-	vkData1 := virtualKeysMap1[vkValue].(map[string]interface{})
+	vkData1 := FindListItem(t, getVKResp1.Body, "virtual_keys", "value", vkValue)
+	if vkData1 == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
 	rateLimitID, _ := vkData1["rate_limit_id"].(string)
 	if rateLimitID == "" {
 		t.Fatalf("Rate limit ID not found for VK")
@@ -142,11 +145,12 @@ func TestUsageTrackingBudgetReset(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      budgetLimit,
 				ResetDuration: resetDuration,
-			},
+			}},
 		},
 	})
 
@@ -168,22 +172,24 @@ func TestUsageTrackingBudgetReset(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap := getVKResp.Body["virtual_keys"].(map[string]interface{})
-
 	getBudgetsResp := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap := getBudgetsResp.Body["budgets"].(map[string]interface{})
-
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
-	budgetID, _ := vkData["budget_id"].(string)
+	vkData := FindListItem(t, getVKResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
+	budgetID := FirstBudgetID(vkData)
 	if budgetID == "" {
 		t.Fatalf("Budget ID not found for VK")
 	}
 
-	budgetData := budgetsMap[budgetID].(map[string]interface{})
+	budgetData := FindListItem(t, getBudgetsResp.Body, "budgets", "id", budgetID)
+	if budgetData == nil {
+		t.Fatalf("Budget %s not found in budgets list", budgetID)
+	}
 	initialUsage, _ := budgetData["current_usage"].(float64)
 
 	t.Logf("Initial budget usage: $%.6f", initialUsage)
@@ -217,8 +223,10 @@ func TestUsageTrackingBudgetReset(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-	budgetData2 := budgetsMap2[budgetID].(map[string]interface{})
+	budgetData2 := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+	if budgetData2 == nil {
+		t.Fatalf("Budget %s not found in budgets list after request", budgetID)
+	}
 	usageAfterRequest, _ := budgetData2["current_usage"].(float64)
 
 	t.Logf("Budget usage after request: $%.6f", usageAfterRequest)
@@ -242,8 +250,10 @@ func TestUsageTrackingBudgetReset(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap3 := getBudgetsResp3.Body["budgets"].(map[string]interface{})
-	budgetData3 := budgetsMap3[budgetID].(map[string]interface{})
+	budgetData3 := FindListItem(t, getBudgetsResp3.Body, "budgets", "id", budgetID)
+	if budgetData3 == nil {
+		t.Fatalf("Budget %s not found in budgets list after reset", budgetID)
+	}
 	usageAfterReset, _ := budgetData3["current_usage"].(float64)
 
 	// Budget should be reset (close to 0)
@@ -268,7 +278,8 @@ func TestInMemoryUsageUpdateOnRequest(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -337,13 +348,8 @@ func TestInMemoryUsageUpdateOnRequest(t *testing.T) {
 			return false
 		}
 
-		virtualKeysMap, ok := getDataResp.Body["virtual_keys"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-
-		vkData, ok := virtualKeysMap[vkValue].(map[string]interface{})
-		if !ok {
+		vkData := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+		if vkData == nil {
 			return false
 		}
 
@@ -363,13 +369,8 @@ func TestInMemoryUsageUpdateOnRequest(t *testing.T) {
 			return false
 		}
 
-		rateLimitsMap, ok := getRateLimitsResp.Body["rate_limits"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-
-		rateLimitData, ok := rateLimitsMap[rateLimitID].(map[string]interface{})
-		if !ok {
+		rateLimitData := FindListItem(t, getRateLimitsResp.Body, "rate_limits", "id", rateLimitID)
+		if rateLimitData == nil {
 			return false
 		}
 
@@ -413,11 +414,12 @@ func TestResetTickerBothBudgetAndRateLimit(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      budgetLimit,
 				ResetDuration: budgetResetDuration,
-			},
+			}},
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:      &tokenLimit,
 				TokenResetDuration: &tokenResetDuration,
@@ -471,21 +473,23 @@ func TestResetTickerBothBudgetAndRateLimit(t *testing.T) {
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
 
-	virtualKeysMap := getVKResp.Body["virtual_keys"].(map[string]interface{})
-
 	getBudgetsResp := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap := getBudgetsResp.Body["budgets"].(map[string]interface{})
-
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
-	budgetID, _ := vkData["budget_id"].(string)
+	vkData := FindListItem(t, getVKResp.Body, "virtual_keys", "value", vkValue)
+	if vkData == nil {
+		t.Fatalf("VK %s not found in virtual keys list", vkValue)
+	}
+	budgetID := FirstBudgetID(vkData)
 
 	var usageBeforeReset float64
 	if budgetID != "" {
-		budgetData := budgetsMap[budgetID].(map[string]interface{})
+		budgetData := FindListItem(t, getBudgetsResp.Body, "budgets", "id", budgetID)
+		if budgetData == nil {
+			t.Fatalf("Budget %s not found in budgets list", budgetID)
+		}
 		usageBeforeReset, _ = budgetData["current_usage"].(float64)
 	}
 
@@ -501,11 +505,12 @@ func TestResetTickerBothBudgetAndRateLimit(t *testing.T) {
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-
 	var usageAfterReset float64
 	if budgetID != "" {
-		budgetData2 := budgetsMap2[budgetID].(map[string]interface{})
+		budgetData2 := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+		if budgetData2 == nil {
+			t.Fatalf("Budget %s not found in budgets list after reset", budgetID)
+		}
 		usageAfterReset, _ = budgetData2["current_usage"].(float64)
 	}
 
@@ -537,11 +542,12 @@ func TestDataPersistenceAcrossRequests(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      budgetLimit,
 				ResetDuration: budgetResetDuration,
-			},
+			}},
 			RateLimit: &CreateRateLimitRequest{
 				TokenMaxLimit:        &tokenLimit,
 				TokenResetDuration:   &tokenResetDuration,
@@ -604,15 +610,12 @@ func TestDataPersistenceAcrossRequests(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
 	}
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-
-	vkData, exists := virtualKeysMap[vkValue]
-	if !exists {
+	vkDataMap := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkDataMap == nil {
 		t.Fatalf("VK not found in in-memory store after requests")
 	}
 
-	vkDataMap := vkData.(map[string]interface{})
-	budgetID, _ := vkDataMap["budget_id"].(string)
+	budgetID := FirstBudgetID(vkDataMap)
 	rateLimitID, _ := vkDataMap["rate_limit_id"].(string)
 
 	if budgetID == "" {

@@ -174,10 +174,28 @@ type URLTypeInfo struct {
 	DataURLWithoutPrefix *string // URL without the prefix (eg data:image/png;base64,iVBORw0KGgo...)
 }
 
-// SanitizeImageURL sanitizes and validates an image URL.
-// It handles both data URLs and regular HTTP/HTTPS URLs.
-// It also detects raw base64 image data and adds proper data URL headers.
+// defaultImageURLSchemes is the historical allowlist enforced by SanitizeImageURL.
+// Provider-specific code paths that need to accept additional schemes (e.g. Vertex's
+// gs://) must use SanitizeImageURLWithAllowedSchemes with an explicit list.
+var defaultImageURLSchemes = []string{"http", "https"}
+
+// SanitizeImageURL sanitizes and normalizes an image URL.
+// It handles both data URLs and regular URLs, accepting only http/https for non-data
+// URLs. Callers that need to accept provider-specific schemes (e.g. gs://) must use
+// SanitizeImageURLWithAllowedSchemes.
 func SanitizeImageURL(rawURL string) (string, error) {
+	return sanitizeImageURL(rawURL, defaultImageURLSchemes)
+}
+
+// SanitizeImageURLWithAllowedSchemes sanitizes and normalizes an image URL, then
+// validates regular URL schemes against the target provider's allowlist. Passing an
+// empty list is treated as "no non-data URL is acceptable" — call SanitizeImageURL
+// if you want the default http/https policy.
+func SanitizeImageURLWithAllowedSchemes(rawURL string, allowedSchemes ...string) (string, error) {
+	return sanitizeImageURL(rawURL, allowedSchemes)
+}
+
+func sanitizeImageURL(rawURL string, allowedSchemes []string) (string, error) {
 	if rawURL == "" {
 		return rawURL, fmt.Errorf("URL cannot be empty")
 	}
@@ -212,9 +230,22 @@ func SanitizeImageURL(rawURL string) (string, error) {
 		return rawURL, fmt.Errorf("invalid URL format: %w", err)
 	}
 
-	// Validate scheme
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return rawURL, fmt.Errorf("URL must use http or https scheme")
+	if parsedURL.Scheme == "" {
+		return rawURL, fmt.Errorf("URL must have a valid scheme")
+	}
+
+	if len(allowedSchemes) == 0 {
+		return rawURL, fmt.Errorf("URL scheme %q is not allowed: no schemes permitted", parsedURL.Scheme)
+	}
+	allowed := false
+	for _, scheme := range allowedSchemes {
+		if strings.EqualFold(parsedURL.Scheme, scheme) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return rawURL, fmt.Errorf("URL scheme %q is not allowed; expected one of: %s", parsedURL.Scheme, strings.Join(allowedSchemes, ", "))
 	}
 
 	// Validate host
@@ -726,6 +757,10 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyURL := *annotation.URLCitation.URL
 					copyAnnotation.URLCitation.URL = &copyURL
 				}
+				if annotation.URLCitation.Text != nil {
+					copyText := *annotation.URLCitation.Text
+					copyAnnotation.URLCitation.Text = &copyText
+				}
 				if annotation.URLCitation.Sources != nil {
 					copySources := *annotation.URLCitation.Sources
 					copyAnnotation.URLCitation.Sources = &copySources
@@ -760,6 +795,9 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 					copyName := *toolCall.Function.Name
 					copyToolCall.Function.Name = &copyName
 				}
+				if len(toolCall.ExtraContent) > 0 {
+					copyToolCall.ExtraContent = append(json.RawMessage(nil), toolCall.ExtraContent...)
+				}
 				copy.ChatAssistantMessage.ToolCalls[i] = copyToolCall
 			}
 		}
@@ -787,6 +825,10 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 	if original.ImageURLStruct != nil {
 		copyImage := ChatInputImage{
 			URL: original.ImageURLStruct.URL,
+		}
+		if original.ImageURLStruct.FileID != nil {
+			copyFileID := *original.ImageURLStruct.FileID
+			copyImage.FileID = &copyFileID
 		}
 		if original.ImageURLStruct.Detail != nil {
 			copyDetail := *original.ImageURLStruct.Detail
@@ -1242,6 +1284,17 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 	if original.Recipient != nil {
 		copy.Recipient = append(json.RawMessage(nil), original.Recipient...)
 	}
+	if original.ToolSearchOutputTools != nil {
+		copy.ToolSearchOutputTools = append(json.RawMessage(nil), original.ToolSearchOutputTools...)
+	}
+	if original.AdditionalTools != nil {
+		copy.AdditionalTools = append(json.RawMessage(nil), original.AdditionalTools...)
+	}
+	// Raw-preserved items re-marshal from these bytes; without them the copy
+	// falls back to a field-by-field encode and loses the item's payload.
+	if original.rawPreserved != nil {
+		copy.rawPreserved = append([]byte(nil), original.rawPreserved...)
+	}
 
 	if original.Content != nil {
 		copy.Content = &ResponsesMessageContent{}
@@ -1277,6 +1330,16 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		if original.ResponsesToolMessage.Arguments != nil {
 			copyArguments := *original.ResponsesToolMessage.Arguments
 			copy.ResponsesToolMessage.Arguments = &copyArguments
+		}
+
+		if original.ResponsesToolMessage.Namespace != nil {
+			copyNamespace := *original.ResponsesToolMessage.Namespace
+			copy.ResponsesToolMessage.Namespace = &copyNamespace
+		}
+
+		if original.ResponsesToolMessage.Execution != nil {
+			copyExecution := *original.ResponsesToolMessage.Execution
+			copy.ResponsesToolMessage.Execution = &copyExecution
 		}
 
 		if original.ResponsesToolMessage.Error != nil {
@@ -1350,6 +1413,15 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			}
 		}
 
+		if original.ResponsesToolMessage.Caller != nil {
+			copyCaller := *original.ResponsesToolMessage.Caller
+			if original.ResponsesToolMessage.Caller.ToolID != nil {
+				copyToolID := *original.ResponsesToolMessage.Caller.ToolID
+				copyCaller.ToolID = &copyToolID
+			}
+			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
 		// Deep copy embedded tool call structs (simplified version - add more as needed)
 		if original.ResponsesToolMessage.ResponsesFileSearchToolCall != nil {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesFileSearchToolCall
@@ -1361,6 +1433,23 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				}
 			}
 			copy.ResponsesToolMessage.ResponsesFileSearchToolCall = &copyToolCall
+		}
+
+		if original.ResponsesToolMessage.ResponsesWebFetchCall != nil {
+			copyCall := *original.ResponsesToolMessage.ResponsesWebFetchCall
+			if original.ResponsesToolMessage.ResponsesWebFetchCall.Document != nil {
+				docCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source != nil {
+					srcCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Source
+					docCopy.Source = &srcCopy
+				}
+				if original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations != nil {
+					citationsCopy := *original.ResponsesToolMessage.ResponsesWebFetchCall.Document.Citations
+					docCopy.Citations = &citationsCopy
+				}
+				copyCall.Document = &docCopy
+			}
+			copy.ResponsesToolMessage.ResponsesWebFetchCall = &copyCall
 		}
 
 		// Add other embedded tool calls as needed...
@@ -1565,6 +1654,45 @@ func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
 }
 
+// IsOpenAIModel checks if the model is an OpenAI model.
+func IsOpenAIModel(model string) bool {
+	if strings.Contains(model, "gpt-") || strings.Contains(model, "text-embedding-") {
+		return true
+	}
+	// OpenAI reasoning families (o1, o3, o4, ...). Match the bare id or a
+	// version-suffixed variant (e.g. "o3", "o4-mini", "o1-preview") while
+	// avoiding false matches on substrings like "co1" or "model-o3x".
+	return isOpenAIReasoningModel(model)
+}
+
+// isOpenAIReasoningModel reports whether model names an OpenAI o-series
+// reasoning model. It strips any provider prefix (e.g. "openai/o3") and matches
+// an "o" followed by a single digit, where the next character is either end of
+// string or a "-" separator, so "o3" and "o4-mini" match but "co1" and "o3x"
+// do not.
+func isOpenAIReasoningModel(model string) bool {
+	name := model
+	if idx := strings.LastIndexAny(name, "/:"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if len(name) < 2 || name[0] != 'o' || name[1] < '0' || name[1] > '9' {
+		return false
+	}
+	return len(name) == 2 || name[2] == '-'
+}
+
+// IsAzureModelRouter reports whether model is Azure's model-router model.
+func IsAzureModelRouter(model string) bool {
+	return strings.Contains(model, "model-router")
+}
+
+// IsElevenlabsSoundModel checks if the model targets ElevenLabs' text-to-sound
+// effects API (POST /v1/sound-generation, e.g. "eleven_text_to_sound_v2")
+// rather than text-to-speech. These models are not tied to a voice.
+func IsElevenlabsSoundModel(model string) bool {
+	return strings.Contains(model, "eleven_text_to_sound")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
@@ -1623,6 +1751,11 @@ func IsCohereModel(model string) bool {
 // Bedrock identifier prefix ("amazon.titan-*").
 func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
+}
+
+// IsGrokModel checks if the model is an xAI Grok model.
+func IsGrokModel(model string) bool {
+	return strings.Contains(model, "grok")
 }
 
 // List of grok reasoning models

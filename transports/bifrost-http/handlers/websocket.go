@@ -5,6 +5,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -69,16 +70,25 @@ func (h *WebSocketHandler) getUpgrader() websocket.FastHTTPUpgrader {
 
 // isLocalhost checks if the given host is localhost
 func isLocalhost(host string) bool {
-	// Remove port if present
-	if idx := strings.LastIndex(host, ":"); idx != -1 {
-		host = host[:idx]
+	// Remove port if present; SplitHostPort also unwraps IPv6 brackets ("[::1]:8080" -> "::1")
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	// Bare bracketed IPv6 literal without a port ("[::1]"); reject half-bracketed hosts
+	if strings.HasPrefix(host, "[") || strings.HasSuffix(host, "]") {
+		if !strings.HasPrefix(host, "[") || !strings.HasSuffix(host, "]") {
+			return false
+		}
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
 	}
 
-	// Check for localhost variations
-	return host == "localhost" ||
-		host == "127.0.0.1" ||
-		host == "::1" ||
-		host == ""
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // connectStream handles WebSocket connections for real-time streaming

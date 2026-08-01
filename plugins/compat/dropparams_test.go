@@ -170,3 +170,52 @@ func TestDropUnsupportedParams_ChatMaxCompletionTokensUnchanged(t *testing.T) {
 		t.Errorf("max_completion_tokens = preserved, want dropped (no token cap supported)")
 	}
 }
+
+func TestDropUnsupportedParams_ChatReasoningWithUnsupportedTools(t *testing.T) {
+	newChat := func() *schemas.BifrostRequest {
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "reasoning-no-tools-model",
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{},
+					Tools: []schemas.ChatTool{{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "get_weather",
+							Description: schemas.Ptr("Returns weather"),
+						},
+					}},
+				},
+			},
+		}
+	}
+
+	preserveReasoning := newChat()
+	dropped := dropUnsupportedParams(newTestContext(), preserveReasoning, []string{"reasoning"})
+	if preserveReasoning.ChatRequest.Params.Reasoning == nil {
+		t.Fatalf("reasoning = dropped, want preserved when tools are also dropped")
+	}
+	if preserveReasoning.ChatRequest.Params.Tools != nil {
+		t.Fatalf("tools = preserved, want dropped")
+	}
+	if slices.Contains(dropped, "reasoning") {
+		t.Errorf("reasoning reported in dropped=%v, want absent", dropped)
+	}
+	if !slices.Contains(dropped, "tools") {
+		t.Errorf("tools not reported in dropped=%v, want present", dropped)
+	}
+
+	dropReasoning := newChat()
+	dropped = dropUnsupportedParams(newTestContext(), dropReasoning, []string{"reasoning", "tools"})
+	if dropReasoning.ChatRequest.Params.Reasoning != nil {
+		t.Fatalf("reasoning = preserved, want dropped when tools survive without reasoning_with_tool_calls")
+	}
+	if dropReasoning.ChatRequest.Params.Tools == nil {
+		t.Fatalf("tools = dropped, want preserved")
+	}
+	if !slices.Contains(dropped, "reasoning") {
+		t.Errorf("reasoning not reported in dropped=%v, want present", dropped)
+	}
+}

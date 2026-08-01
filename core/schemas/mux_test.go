@@ -976,10 +976,12 @@ func TestToResponsesRequest_NoResponseFormat(t *testing.T) {
 }
 
 func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
-	schema := map[string]interface{}{
-		"type":     "object",
-		"required": []interface{}{"country"},
-	}
+	// "type" before "required" is non-alphabetical on purpose: a regression to
+	// sorted marshaling would reorder them and fail the exact-bytes assertion below.
+	schema := NewOrderedMapFromPairs(
+		KV("type", "object"),
+		KV("required", []interface{}{"country"}),
+	)
 	rr := &BifrostResponsesRequest{
 		Params: &ResponsesParameters{
 			Text: &ResponsesTextConfig{
@@ -988,7 +990,7 @@ func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
 					Name:        Ptr("CityInfo"),
 					Description: Ptr("City schema"),
 					Strict:      Ptr(true),
-					JSONSchema:  &ResponsesTextConfigFormatJSONSchema{Schema: func() *any { v := any(schema); return &v }()},
+					JSONSchema:  &ResponsesTextConfigFormatJSONSchema{Schema: &JSONSchemaOrBool{SchemaMap: schema}},
 				},
 			},
 		},
@@ -1020,6 +1022,13 @@ func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
 	}
 	if jsObj["schema"] == nil {
 		t.Fatal("expected schema to be set")
+	}
+	schemaBytes, err := MarshalSorted(jsObj["schema"])
+	if err != nil {
+		t.Fatalf("failed to marshal schema: %v", err)
+	}
+	if want := `{"type":"object","required":["country"]}`; string(schemaBytes) != want {
+		t.Fatalf("schema key order not preserved: want %s, got %s", want, string(schemaBytes))
 	}
 }
 
@@ -1156,7 +1165,12 @@ func TestToResponsesRequest_JSONSchema_NoDoubleNesting(t *testing.T) {
 // ResponsesTextConfigFormatJSONSchema (Schema==nil), ToChatRequest still
 // produces a valid response_format with a non-empty json_schema.schema body.
 func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
-	props := map[string]any{"name": map[string]any{"type": "string"}}
+	// "zip" before "age" is non-alphabetical on purpose: a regression to sorted
+	// marshaling would reorder them and fail the exact-bytes assertion below.
+	props := NewOrderedMapFromPairs(
+		KV("zip", map[string]any{"type": "string"}),
+		KV("age", map[string]any{"type": "integer"}),
+	)
 	rr := &BifrostResponsesRequest{
 		Params: &ResponsesParameters{
 			Text: &ResponsesTextConfig{
@@ -1167,9 +1181,9 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 					// Schema is nil — fields are spread across typed fields (direct client path)
 					JSONSchema: &ResponsesTextConfigFormatJSONSchema{
 						Type:       Ptr("object"),
-						Properties: &props,
-						Required:   []string{"name"},
-						// Schema *any is intentionally nil here
+						Properties: props,
+						Required:   []string{"zip", "age"},
+						// Schema is intentionally nil here
 					},
 				},
 			},
@@ -1203,5 +1217,122 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 	}
 	if schemaMap["type"] != "object" {
 		t.Fatalf("expected schema.type=object, got %v", schemaMap["type"])
+	}
+	propsBytes, err := MarshalSorted(schemaMap["properties"])
+	if err != nil {
+		t.Fatalf("failed to marshal properties: %v", err)
+	}
+	if want := `{"zip":{"type":"string"},"age":{"type":"integer"}}`; string(propsBytes) != want {
+		t.Fatalf("properties key order not preserved: want %s, got %s", want, string(propsBytes))
+	}
+}
+
+// streamChunk builds a single Chat streaming chunk for the reasoning/text ordering tests.
+func streamChunk(id string, delta *ChatStreamResponseChoiceDelta, finishReason *string) *BifrostChatResponse {
+	return &BifrostChatResponse{
+		ID:    id,
+		Model: "deepseek-reasoner",
+		Choices: []BifrostResponseChoice{
+			{
+				Index:                    0,
+				FinishReason:             finishReason,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+			},
+		},
+	}
+}
+
+// TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock reproduces the
+// Claude Code "Content block not found" disconnect: a Chat-Completions reasoning
+// model (reasoning_content first, then content) must yield a proper reasoning output
+// item (added -> deltas carrying its ItemID -> done) BEFORE the text item, so the
+// Anthropic reverse converter emits content_block_start type=thinking before any
+// thinking delta. Previously reasoning only opened a text item and the reasoning
+// delta had no ItemID, producing an orphan thinking block.
+func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	chunks := []*BifrostChatResponse{
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Role: Ptr("assistant"), Reasoning: Ptr("")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Reasoning: Ptr("The")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Reasoning: Ptr(" user")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Content: Ptr("Run ")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{Content: Ptr("tests")}, nil),
+		streamChunk("c1", &ChatStreamResponseChoiceDelta{}, Ptr("stop")),
+	}
+
+	var events []*BifrostResponsesStreamResponse
+	for _, c := range chunks {
+		events = append(events, c.ToBifrostResponsesStreamResponse(state)...)
+	}
+
+	var reasoningItemID string
+	var reasoningOutputIndex, textOutputIndex = -1, -1
+	reasoningAddedIdx, reasoningDoneIdx, textAddedIdx := -1, -1, -1
+	firstReasoningDeltaIdx := -1
+
+	for i, e := range events {
+		switch e.Type {
+		case ResponsesStreamResponseTypeOutputItemAdded:
+			if e.Item != nil && e.Item.Type != nil && *e.Item.Type == ResponsesMessageTypeReasoning {
+				if reasoningAddedIdx == -1 {
+					reasoningAddedIdx = i
+				}
+				if e.Item.ID != nil {
+					reasoningItemID = *e.Item.ID
+				}
+				if e.OutputIndex != nil {
+					reasoningOutputIndex = *e.OutputIndex
+				}
+			}
+			if e.Item != nil && e.Item.Type != nil && *e.Item.Type == ResponsesMessageTypeMessage {
+				if textAddedIdx == -1 {
+					textAddedIdx = i
+				}
+				if e.OutputIndex != nil {
+					textOutputIndex = *e.OutputIndex
+				}
+			}
+		case ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+			if firstReasoningDeltaIdx == -1 {
+				firstReasoningDeltaIdx = i
+			}
+			if e.ItemID == nil || *e.ItemID == "" {
+				t.Fatalf("reasoning delta at event %d has no ItemID (orphan thinking block)", i)
+			}
+			if e.ItemID != nil && *e.ItemID != reasoningItemID {
+				t.Fatalf("reasoning delta ItemID %q != reasoning item ID %q", *e.ItemID, reasoningItemID)
+			}
+		case ResponsesStreamResponseTypeOutputItemDone:
+			if e.Item != nil && e.Item.Type != nil && *e.Item.Type == ResponsesMessageTypeReasoning && reasoningDoneIdx == -1 {
+				reasoningDoneIdx = i
+			}
+		}
+	}
+
+	if reasoningAddedIdx == -1 {
+		t.Fatal("no reasoning output_item.added emitted")
+	}
+	if firstReasoningDeltaIdx == -1 {
+		t.Fatal("no reasoning delta emitted")
+	}
+	if reasoningAddedIdx >= firstReasoningDeltaIdx {
+		t.Fatalf("reasoning output_item.added (%d) must precede first reasoning delta (%d)", reasoningAddedIdx, firstReasoningDeltaIdx)
+	}
+	if reasoningDoneIdx == -1 {
+		t.Fatal("no reasoning output_item.done emitted (thinking block never closed)")
+	}
+	if textAddedIdx == -1 {
+		t.Fatal("no text output_item.added emitted")
+	}
+	if reasoningDoneIdx >= textAddedIdx {
+		t.Fatalf("reasoning output_item.done (%d) must precede text output_item.added (%d)", reasoningDoneIdx, textAddedIdx)
+	}
+	if reasoningOutputIndex != 0 {
+		t.Fatalf("reasoning output index = %d, want 0 (reasoning first)", reasoningOutputIndex)
+	}
+	if textOutputIndex <= reasoningOutputIndex {
+		t.Fatalf("text output index %d must be greater than reasoning output index %d", textOutputIndex, reasoningOutputIndex)
 	}
 }

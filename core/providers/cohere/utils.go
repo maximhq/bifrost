@@ -260,7 +260,9 @@ func convertResponseFormatToCohere(responseFormat *interface{}) *CohereResponseF
 		// Extract the nested schema
 		// OpenAI format: { type: "json_schema", json_schema: { name: "X", strict: true, schema: {...} } }
 		if jsonSchemaWrapper, ok := formatMap["json_schema"].(map[string]interface{}); ok {
-			if schema, ok := jsonSchemaWrapper["schema"].(map[string]interface{}); ok {
+			// The schema may be a plain map or an order-preserving OrderedMap
+			// (e.g. when built from a Responses request).
+			if schema, ok := schemas.SafeExtractOrderedMap(jsonSchemaWrapper["schema"]); ok {
 				var schemaInterface interface{} = schema
 				cohereFormat.JSONSchema = &schemaInterface
 			}

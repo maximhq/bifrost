@@ -86,7 +86,7 @@ func TestProviderConfig_Redacted_DoesNotMaskPlainNonSecretFields(t *testing.T) {
 
 	assert.Equal(t, "https://foo.openai.azure.com", out.Value,
 		"plain Endpoint was incorrectly redacted")
-	assert.Empty(t, out.SecretType)
+	assert.Equal(t, out.SecretType, string(schemas.SecretTypePlainText))
 }
 
 // TestProviderConfig_Redacted_PreservesSecretVarReferenceForVertex verifies that

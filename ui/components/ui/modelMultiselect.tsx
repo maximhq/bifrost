@@ -20,6 +20,8 @@ interface ModelMultiselectPropsBase {
 	loadModelsOnEmptyProvider?: boolean | "base_models";
 	/** Prepends an "Allow All Models" option (value: "*") to the dropdown */
 	allowAllOption?: boolean;
+	/** Hides the search icon rendered inside the control */
+	hideSearchIcon?: boolean;
 	/** id for the search input (accessibility) */
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
@@ -56,6 +58,9 @@ interface ModelOption {
 	label: string;
 	value: string;
 	provider?: string;
+	isDeprecated?: boolean;
+	/** react-select reads this to make an option non-selectable */
+	isDisabled?: boolean;
 }
 
 const ALL_MODELS_OPTION: ModelOption = { label: "All Models", value: "*" };
@@ -159,6 +164,8 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 							label: model.name,
 							value: model.name,
 							provider: model.provider,
+							isDeprecated: model.is_deprecated,
+							isDisabled: model.is_deprecated,
 						}));
 						callback([...prefix, ...options]);
 					})
@@ -242,6 +249,8 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				label: model.name,
 				value: model.name,
 				provider: model.provider,
+				isDeprecated: model.is_deprecated,
+				isDisabled: model.is_deprecated,
 			})) || []),
 		];
 	}, [modelsData, baseModelsData, shouldUseBaseModels, allowAllOption]);
@@ -252,6 +261,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		<AsyncMultiSelect<ModelOption>
 			isSingleSelect={isSingleSelect}
 			hideSelectedOptions
+			hideSearchIcon={props.hideSearchIcon}
 			inputId={props.inputId}
 			ariaLabelledBy={props.ariaLabelledBy}
 			data-testid={props["data-testid"]}
@@ -307,17 +317,23 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 						},
 				option: (optionProps: OptionProps<ModelOption>) => {
 					const { Option } = components;
+					const isDeprecated = optionProps.data.isDeprecated;
 					return (
 						<Option
 							{...optionProps}
 							className={cn(
-								"flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm",
-								optionProps.isFocused && "bg-accent dark:!bg-card",
-								"hover:bg-accent",
-								optionProps.isSelected && "bg-accent dark:!bg-card",
+								"flex w-full items-center gap-2 rounded-sm px-2 py-2 text-sm",
+								isDeprecated ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-accent",
+								!isDeprecated && optionProps.isFocused && "bg-accent dark:!bg-card",
+								!isDeprecated && optionProps.isSelected && "bg-accent dark:!bg-card",
 							)}
 						>
-							<span className="grow truncate text-sm">{optionProps.data.label}</span>
+							<span className={cn("grow truncate text-sm", isDeprecated && "text-muted-foreground")}>{optionProps.data.label}</span>
+							{isDeprecated && (
+								<span className="text-muted-foreground border-border shrink-0 rounded-sm border px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
+									Deprecated
+								</span>
+							)}
 						</Option>
 					);
 				},

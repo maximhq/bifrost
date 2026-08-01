@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,8 @@ var reservedKeys = []any{
 	BifrostContextKeyAttemptTrail,
 	BifrostContextKeyStreamGated,
 	BifrostContextKeyMCPHealthCheckRequest,
+	BifrostContextKeyUpstreamLatency,
+	BifrostContextKeyRoutingInfo,
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
@@ -370,6 +373,16 @@ func (bc *BifrostContext) setReservedValue(key, value any) {
 	bc.userValues[key] = value
 }
 
+// SetRoutingInfoSnapshot writes the routed-identity RoutingInfo snapshot,
+// bypassing the restricted-writes guard. The orchestrator needs this because a
+// streaming response's async per-chunk post-hooks hold blockRestrictedWrites
+// while they run, and BifrostContextKeyRoutingInfo is reserved — a plain
+// SetValue from the orchestrator would be silently dropped whenever it races a
+// post-hook. Bifrost-internal (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
+	bc.setReservedValue(BifrostContextKeyRoutingInfo, ri)
+}
+
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) ClearValue(key any) {
@@ -486,6 +499,25 @@ func (bc *BifrostContext) ResumeStream() {
 	tr.ResumeStream(tid)
 }
 
+// streamBufferClearer is an optional tracer capability for dropping paused replay chunks.
+type streamBufferClearer interface {
+	ClearPausedStreamBuffer(traceID string) error
+}
+
+// ClearPausedStreamBuffer drops chunks buffered while the active stream is paused.
+func (bc *BifrostContext) ClearPausedStreamBuffer() error {
+	tr, _ := bc.Value(BifrostContextKeyTracer).(Tracer)
+	tid, _ := bc.Value(BifrostContextKeyTraceID).(string)
+	if tr == nil || tid == "" {
+		return fmt.Errorf("stream tracer or trace ID is missing")
+	}
+	clearer, ok := any(tr).(streamBufferClearer)
+	if !ok {
+		return fmt.Errorf("stream tracer does not support buffer clearing")
+	}
+	return clearer.ClearPausedStreamBuffer(tid)
+}
+
 // EndStream terminates the active streaming response. Any buffered chunks are
 // flushed first; if err is non-nil it is then delivered as a final error chunk.
 // After EndStream returns, all further provider chunks for this stream are
@@ -545,6 +577,60 @@ func (bc *BifrostContext) GetAccumulatedResponse() *BifrostResponse {
 		return nil
 	}
 	return tr.GetAccumulatedResponse(tid)
+}
+
+// GetModelInfo returns pricing and capability metadata for a (provider, model)
+// pair: the same information the /v1/models endpoint reports, including
+// per-token pricing, context length, max input/output tokens, architecture and
+// deprecation status.
+//
+// Returns nil when the model is unknown to the catalog, and also when no
+// catalog is wired into this Bifrost instance (e.g. core used directly as a Go
+// SDK without the framework). Callers must nil-check.
+//
+// The returned *Model is freshly built and owned by the caller. Mutating it
+// does not affect the catalog or any other caller.
+//
+// PLUGIN AUTHORS: provider must be the concrete provider that serves the model
+// (e.g. schemas.Anthropic), not an empty string. Inside a hook, read it from
+// req.GetRequestFields() or the response's RoutingInfo rather than guessing
+// from the model string.
+func (bc *BifrostContext) GetModelInfo(provider ModelProvider, model string) *Model {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	if catalog == nil || model == "" {
+		return nil
+	}
+	return catalog.GetModelInfo(provider, model)
+}
+
+// CalculateCost returns the dollar cost of a completed response.
+//
+// Prefer this over doing arithmetic on GetModelInfo(...).Pricing: that field
+// carries only flat prompt/completion rates, whereas this path applies the full
+// pricing resolution: long-context tiers (128k/200k/272k), batch/priority/flex
+// /fast rates, cache read/write costs, the provider and request-mode fallback
+// chain, and any virtual-key / user / provider-key pricing overrides in effect
+// for this request.
+//
+// Returns 0 when no catalog is wired or the response has no billable usage.
+//
+// PLUGIN AUTHORS: call this synchronously inside your hook. It reads the
+// governance scopes (user ID, virtual key ID, selected key ID) off the context,
+// and that read is not safe once the request context has been cancelled. If you
+// need the cost in a background goroutine, compute it in the hook and close over
+// the float64:
+//
+//	func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp ...) (...) {
+//	    cost := ctx.CalculateCost(resp) // synchronous
+//	    go func() { p.report(cost) }()
+//	    return resp, nil, nil
+//	}
+func (bc *BifrostContext) CalculateCost(resp *BifrostResponse) float64 {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	if catalog == nil || resp == nil {
+		return 0
+	}
+	return catalog.CalculateRequestCost(bc, resp)
 }
 
 // AppendRoutingEngineLog appends a routing engine log entry to the context.
