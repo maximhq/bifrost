@@ -4254,6 +4254,46 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				outputMessages = append(outputMessages, toolMsg)
 			}
 
+		} else if block.Image != nil {
+			// Image content - convert Bedrock image source to a data URL so it
+			// flows through the Responses pipeline as an input_image block.
+			// Skip blocks without bytes; without a usable image URL there is
+			// nothing meaningful to append.
+			if block.Image.Source.Bytes != nil {
+				role := convertBedrockRoleToBifrostRole(msg.Role)
+
+				format := block.Image.Format
+				if format == "" {
+					format = "png"
+				}
+				mediaType := "image/" + format
+
+				imageDataURL := *block.Image.Source.Bytes
+				if !strings.HasPrefix(imageDataURL, "data:") {
+					imageDataURL = fmt.Sprintf("data:%s;base64,%s", mediaType, imageDataURL)
+				}
+
+				imageBlock := schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+						ImageURL: &imageDataURL,
+					},
+				}
+
+				bifrostMsg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Status: schemas.Ptr("completed"),
+					Role:   &role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{imageBlock},
+					},
+				}
+				if isOutputMessage {
+					bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+				}
+				outputMessages = append(outputMessages, bifrostMsg)
+			}
+
 		} else if block.Document != nil {
 			// Document content
 			role := convertBedrockRoleToBifrostRole(msg.Role)
