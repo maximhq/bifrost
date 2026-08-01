@@ -5002,16 +5002,25 @@ func (c *Config) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {
 	return c.AsyncJobExecutor
 }
 
-// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
+// streamKeepAliveIntervalUpperBoundSeconds is the largest value that survives
+// conversion to time.Duration (int64 nanoseconds) without overflow:
+// math.MaxInt64 / time.Second, floored.
+const streamKeepAliveIntervalUpperBoundSeconds = 9223372036
+
 // GetStreamKeepAliveInterval returns the configured SSE keepalive interval in
-// seconds. The keepalive is opt-in: zero (the default) disables it.
+// seconds. The keepalive is opt-in: zero (the default) disables it. Clamped so
+// the * time.Second conversion at the call site can't silently overflow int64.
 func (c *Config) GetStreamKeepAliveInterval() int {
-	if c.ClientConfig != nil {
-		return c.ClientConfig.StreamKeepAliveInterval
+	if c.ClientConfig == nil {
+		return 0
 	}
-	return 0
+	if c.ClientConfig.StreamKeepAliveInterval > streamKeepAliveIntervalUpperBoundSeconds {
+		return streamKeepAliveIntervalUpperBoundSeconds
+	}
+	return c.ClientConfig.StreamKeepAliveInterval
 }
 
+// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
 func (c *Config) GetAsyncJobResultTTL() int {
 	if c.ClientConfig.AsyncJobResultTTL > 0 {
 		return c.ClientConfig.AsyncJobResultTTL

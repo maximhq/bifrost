@@ -9,3 +9,7 @@
 ## ✨ Features (unreleased)
 
 - **SSE Stream Keepalive** - Emit SSE keepalive comments at a configurable interval while a provider stream is idle, preventing idle-timeout drops on long, quiet streams (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
+
+## 🐞 Fixed (unreleased)
+
+- **Stream Keepalive Overflow** - Clamped `stream_keepalive_interval` to avoid int64 overflow on conversion to `time.Duration`, and capped it in `config.schema.json` (thanks [@jeremym-tanium](https://github.com/jeremym-tanium)!)
