@@ -61,7 +61,9 @@ type BifrostResponsesRetrieveRequest struct {
 	Include            []string      `json:"include,omitempty"`
 	StartingAfter      *int          `json:"starting_after,omitempty"`
 	IncludeObfuscation *bool         `json:"include_obfuscation,omitempty"`
-	RawRequestBody     []byte        `json:"-"`
+	// Stream replays the stored response as an SSE stream (OpenAI GET /v1/responses/{id}?stream=true).
+	Stream         *bool  `json:"stream,omitempty"`
+	RawRequestBody []byte `json:"-"`
 }
 
 // GetRawRequestBody implements raw body passthrough when enabled on context.
@@ -70,6 +72,11 @@ func (r *BifrostResponsesRetrieveRequest) GetRawRequestBody() []byte {
 		return nil
 	}
 	return r.RawRequestBody
+}
+
+// IsStreamingRequested reports whether the caller asked for a streamed retrieve.
+func (r *BifrostResponsesRetrieveRequest) IsStreamingRequested() bool {
+	return r != nil && r.Stream != nil && *r.Stream
 }
 
 // BifrostResponsesDeleteRequest deletes a stored response (OpenAI DELETE /v1/responses/{id}).
@@ -515,6 +522,12 @@ type ResponsesParameters struct {
 	Tools                []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
 	Truncation           *string                       `json:"truncation,omitempty"`
 	User                 *string                       `json:"user,omitempty"`
+
+	// Opts into running built-in server-side tools (e.g. Google Search) in the same
+	// turn as function declarations. Required by Gemini 3+, which otherwise rejects
+	// the combination; providers without the concept ignore it.
+	IncludeServerSideToolInvocations *bool `json:"include_server_side_tool_invocations,omitempty"`
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -1179,6 +1192,8 @@ const (
 	ResponsesMessageTypeWebFetchCall         ResponsesMessageType = "web_fetch_call"
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
+	ResponsesMessageTypeToolSearchCall       ResponsesMessageType = "tool_search_call"
+	ResponsesMessageTypeToolSearchOutput     ResponsesMessageType = "tool_search_output"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
 	ResponsesMessageTypeLocalShellCall       ResponsesMessageType = "local_shell_call"
 	ResponsesMessageTypeLocalShellCallOutput ResponsesMessageType = "local_shell_call_output"
@@ -1193,17 +1208,8 @@ const (
 	ResponsesMessageTypeItemReference        ResponsesMessageType = "item_reference"
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
-	// Codex deferred-tool discovery (tool_search) and code-mode tool
-	// declarations (additional_tools). OpenAI's Responses API supports these
-	// item types natively; Bifrost preserves them verbatim because its typed
-	// schema doesn't model them (tool_search_call's `arguments` is a JSON
-	// object — unlike function_call's string — and tool_search_output /
-	// additional_tools carry `tools` arrays whose entries don't fit any typed
-	// tool shape). See ResponsesMessage's (Un)MarshalJSON.
-	ResponsesMessageTypeToolSearchCall   ResponsesMessageType = "tool_search_call"
-	ResponsesMessageTypeToolSearchOutput ResponsesMessageType = "tool_search_output"
-	ResponsesMessageTypeAdditionalTools  ResponsesMessageType = "additional_tools"
-	ResponsesMessageTypeAdvisorCall      ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeAdditionalTools      ResponsesMessageType = "additional_tools"
+	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1224,6 +1230,14 @@ type ResponsesMessage struct {
 	// Preserved as raw JSON to survive bifrost round-trip without schema coupling.
 	Author    json.RawMessage `json:"author,omitempty"`
 	Recipient json.RawMessage `json:"recipient,omitempty"`
+
+	// Discovered tool_search_output tools. Programmatic callers must set this,
+	// not ResponsesMCPListTools.Tools, because the entries are ResponsesTool-shaped.
+	ToolSearchOutputTools json.RawMessage `json:"-"`
+
+	// Tools declared by a codex additional_tools item, surfaced so providers that
+	// reject the item type can hoist them into the top-level tools param.
+	AdditionalTools json.RawMessage `json:"-"`
 
 	*ResponsesToolMessage // For Tool calls and outputs
 
@@ -1279,6 +1293,29 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		// consumers that read Arguments keep working; MarshalJSON still re-emits the
 		// preserved bytes verbatim, so this is additive and does not affect round-trip.
 		m.setToolArguments(json.RawMessage(gjson.GetBytes(data, "arguments").Raw))
+		// Same rationale for `execution`: Codex reads it to decide whether to
+		// dispatch the call client-side, and returning early here skips the
+		// field-level decode that would otherwise populate it.
+		if execution := gjson.GetBytes(data, "execution"); execution.Type == gjson.String && execution.String() != "" {
+			if m.ResponsesToolMessage == nil {
+				m.ResponsesToolMessage = &ResponsesToolMessage{}
+			}
+			m.Execution = Ptr(execution.String())
+		}
+		// tool_search_output carries the discovered tool list; surface it for the
+		// same reason. Held as raw JSON because the embedded ResponsesMCPListTools
+		// decode drops the per-tool type discriminator.
+		if t == string(ResponsesMessageTypeToolSearchOutput) {
+			if tools := gjson.GetBytes(data, "tools"); tools.IsArray() {
+				m.ToolSearchOutputTools = json.RawMessage(tools.Raw)
+			}
+		}
+		// additional_tools carries the codex tool declarations; same rationale.
+		if t == string(ResponsesMessageTypeAdditionalTools) {
+			if tools := gjson.GetBytes(data, "tools"); tools.IsArray() {
+				m.AdditionalTools = json.RawMessage(tools.Raw)
+			}
+		}
 		m.rawPreserved = append([]byte(nil), data...)
 		return nil
 	}
@@ -1296,6 +1333,20 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	m.setToolArguments(aux.Arguments)
+
+	// The embedded ResponsesMCPListTools decode of `tools` drops the type
+	// discriminator, so capture the raw array and skip that lossy parse.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
+		var probe struct {
+			Tools json.RawMessage `json:"tools,omitempty"`
+		}
+		if err := Unmarshal(data, &probe); err == nil && len(probe.Tools) > 0 && string(probe.Tools) != "null" {
+			m.ToolSearchOutputTools = probe.Tools
+		}
+		if m.ResponsesToolMessage != nil {
+			m.ResponsesMCPListTools = nil
+		}
+	}
 
 	return nil
 }
@@ -1315,17 +1366,6 @@ func (m *ResponsesMessage) setToolArguments(raw json.RawMessage) {
 	m.Arguments = &args
 }
 
-// MarshalJSON re-emits preserved tool_search items verbatim and defers every
-// other item type to the default (sorted-key) struct encoding.
-
-func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
-	if m.rawPreserved != nil {
-		return m.rawPreserved, nil
-	}
-	type alias ResponsesMessage
-	return MarshalSorted(alias(m))
-}
-
 // responsesToolArgumentsToString normalizes a function/tool-call `arguments`
 // value into the stringified-JSON form expected downstream. function_call items
 // send a JSON string; tool_search_call items send a JSON object. Both are
@@ -1336,6 +1376,60 @@ func responsesToolArgumentsToString(raw json.RawMessage) string {
 		return str
 	}
 	return string(raw)
+}
+
+// MarshalJSON preserves OpenAI's per-item argument shape after UnmarshalJSON
+// normalizes both forms into the internal string field.
+func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
+	type Alias ResponsesMessage
+
+	// Items decoded through the raw-preserved fast path are re-emitted byte for
+	// byte. That path deliberately skips field-level decoding, so the struct holds
+	// only Type plus the few fields surfaced for downstream readers — marshalling
+	// from those fields would silently drop everything else on the item (id,
+	// status, call_id, per-tool type discriminators), which OpenAI then rejects.
+	if len(m.rawPreserved) > 0 {
+		return append([]byte(nil), m.rawPreserved...), nil
+	}
+
+	// Re-emit the raw tools captured during unmarshal so the type discriminator survives.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
+		aux := &struct {
+			Arguments json.RawMessage `json:"arguments,omitempty"`
+			Tools     json.RawMessage `json:"tools,omitempty"`
+			*Alias
+		}{
+			Alias: (*Alias)(&m),
+		}
+		if m.ToolSearchOutputTools != nil {
+			aux.Tools = m.ToolSearchOutputTools
+		}
+		if m.ResponsesToolMessage != nil && m.Arguments != nil {
+			aux.Arguments = json.RawMessage(*m.Arguments)
+		}
+		return MarshalSorted(aux)
+	}
+
+	aux := &struct {
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(&m),
+	}
+
+	if m.ResponsesToolMessage != nil && m.Arguments != nil {
+		if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchCall {
+			aux.Arguments = json.RawMessage(*m.Arguments)
+		} else {
+			encoded, err := Marshal(*m.Arguments)
+			if err != nil {
+				return nil, err
+			}
+			aux.Arguments = encoded
+		}
+	}
+
+	return MarshalSorted(aux)
 }
 
 type ResponsesMessageRoleType string
@@ -1533,6 +1627,7 @@ type ResponsesToolMessage struct {
 	Name      *string                           `json:"name,omitempty"`      // Common name field for tool calls
 	Namespace *string                           `json:"namespace,omitempty"` // Namespace for function_call items (set by OpenAI when namespace tools are used)
 	Arguments *string                           `json:"arguments,omitempty"`
+	Execution *string                           `json:"execution,omitempty"` // "client" on deferred calls (e.g. tool_search_call); Codex needs it to dispatch the call
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
 	Error     *string                           `json:"error,omitempty"`
@@ -1895,6 +1990,9 @@ type ResponsesWebSearchToolCallAction struct {
 	Queries []string                                       `json:"queries,omitempty"`
 	Sources []ResponsesWebSearchToolCallActionSearchSource `json:"sources,omitempty"`
 	Pattern *string                                        `json:"pattern,omitempty"`
+
+	// Gemini only
+	ImageQueries []string `json:"image_queries,omitempty"` // Queries run against image search, kept apart from Queries
 }
 
 // ResponsesWebSearchToolCallActionSearchSource represents a web search action search source
@@ -1906,6 +2004,10 @@ type ResponsesWebSearchToolCallActionSearchSource struct {
 	Title            *string `json:"title,omitempty"`
 	EncryptedContent *string `json:"encrypted_content,omitempty"`
 	PageAge          *string `json:"page_age,omitempty"`
+
+	// Gemini only
+	ImageURL *string `json:"image_url,omitempty"` // Image asset; URL stays the page to attribute
+	Domain   *string `json:"domain,omitempty"`    // Root domain of the source page
 }
 
 // -----------------------------------------------------------------------------
@@ -2599,6 +2701,39 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		if err := Unmarshal(data, &funcTool); err != nil {
 			return err
 		}
+		// Chat Completions format nests the definition under "function":
+		//   {"type":"function","function":{"name":...,"parameters":...}}
+		// Clients like Cursor send this shape to Responses endpoints; without
+		// lifting the nested fields the tool parses with a nil name and
+		// providers that require one (e.g. Bedrock) reject the request.
+		// Top-level (Responses format) fields win when both are present.
+		if _, hasWrapper := raw["function"]; hasWrapper {
+			var wrapper struct {
+				Function *struct {
+					Name        *string                 `json:"name"`
+					Description *string                 `json:"description"`
+					Parameters  *ToolFunctionParameters `json:"parameters"`
+					Strict      *bool                   `json:"strict"`
+				} `json:"function"`
+			}
+			if err := Unmarshal(data, &wrapper); err != nil {
+				return fmt.Errorf("invalid 'function' object in ResponsesTool: %w", err)
+			}
+			if wrapper.Function != nil {
+				if t.Name == nil {
+					t.Name = wrapper.Function.Name
+				}
+				if t.Description == nil {
+					t.Description = wrapper.Function.Description
+				}
+				if funcTool.Parameters == nil {
+					funcTool.Parameters = wrapper.Function.Parameters
+				}
+				if funcTool.Strict == nil {
+					funcTool.Strict = wrapper.Function.Strict
+				}
+			}
+		}
 		t.ResponsesToolFunction = &funcTool
 
 	case ResponsesToolTypeFileSearch:
@@ -2870,7 +3005,7 @@ type ResponsesToolComputerUsePreview struct {
 type ResponsesToolWebSearch struct {
 	ExternalWebAccess  *bool                               `json:"external_web_access,omitempty"`
 	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"` // Filters for the search
-	SearchContentTypes []string                            `json:"search_content_types,omitempty"`
+	SearchContentTypes []string                            `json:"search_content_types,omitempty"` // "text" | "image"
 	SearchContextSize  *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
 	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
 
@@ -2954,6 +3089,10 @@ type ResponsesToolWebSearchUserLocation struct {
 	Region   *string `json:"region,omitempty"`   // Free text input for the region
 	Timezone *string `json:"timezone,omitempty"` // IANA timezone
 	Type     *string `json:"type,omitempty"`     // always "approximate"
+
+	// Gemini only
+	Latitude  *float64 `json:"latitude,omitempty"`  // Degrees, [-90.0, +90.0]
+	Longitude *float64 `json:"longitude,omitempty"` // Degrees, [-180.0, +180.0]
 }
 
 // ResponsesToolMCP - Give the model access to additional tools via remote MCP servers

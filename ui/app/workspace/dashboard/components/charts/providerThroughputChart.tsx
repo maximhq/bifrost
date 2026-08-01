@@ -1,7 +1,14 @@
 import type { ProviderThroughputHistogramResponse } from "@/lib/types/logs";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatFullTimestamp, formatTimestamp, formatTokensPerSecond, getModelColor, pickTopSeries, THROUGHPUT_COLOR } from "../../utils/chartUtils";
+import {
+	formatFullTimestamp,
+	formatTimestamp,
+	formatTokensPerSecond,
+	computeDisplaySeries,
+	getModelColor,
+	THROUGHPUT_COLOR,
+} from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
 
@@ -81,7 +88,7 @@ function ProviderThroughputChartImpl({ data, chartType, startTime, endTime, sele
 		// Rank by total_requests so we keep the highest-volume providers visible.
 		const providers = isSingleProvider
 			? [selectedProvider]
-			: pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_requests ?? 0);
+			: computeDisplaySeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_requests ?? 0, false);
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {

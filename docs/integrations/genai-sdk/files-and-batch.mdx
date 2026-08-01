@@ -25,7 +25,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-gemini-api-key",
+    api_key="<YOUR-GEMINI-API-KEY>", # replace with gemini api key here
     http_options=HttpOptions(base_url="http://localhost:8080/genai")
 )
 ```
@@ -42,7 +42,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-gemini-api-key",
+    api_key="<YOUR-GEMINI-API-KEY>", # replace with your gemini api key here.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "gemini"}
@@ -58,7 +58,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-openai-api-key",
+    api_key="<YOUR-OPENAI-API-KEY>", # replace with your OpenAI API key here.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "openai"}
@@ -74,7 +74,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-anthropic-api-key",
+    api_key="<YOUR-ANTHROPIC-API-KEY>", # replace with your Anthropic api key here.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "anthropic"}
@@ -94,7 +94,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-api-key",
+    api_key="<YOUR-BEDROCK-API-KEY>",  # Replace with your actual Bedrock API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "bedrock"}
@@ -115,10 +115,10 @@ Bedrock requires S3-based file storage for batch operations. Use the [Bedrock SD
 from google import genai
 from google.genai.types import HttpOptions
 
-def get_provider_client(provider: str, api_key: str):
+def get_provider_client(provider: str, bifrost_virtual_key: str):
     """Create GenAI client with x-model-provider header"""
     return genai.Client(
-        api_key=api_key,
+        api_key=bifrost_virtual_key,
         http_options=HttpOptions(
             base_url="http://localhost:8080/genai",
             headers={"x-model-provider": provider}
@@ -126,8 +126,8 @@ def get_provider_client(provider: str, api_key: str):
     )
 
 # Usage
-gemini_client = get_provider_client("gemini", "your-gemini-key")
-openai_client = get_provider_client("openai", "your-openai-key")
+gemini_client = get_provider_client("gemini", "<YOUR-BIFROST-VIRTUAL-KEY>")
+openai_client = get_provider_client("openai", "<YOUR-BIFROST-VIRTUAL-KEY>")
 ```
 
 ---
@@ -151,7 +151,7 @@ def add_gemini_header():
     return {"x-model-provider": "gemini"}
 
 client = genai.Client(
-    api_key="your-gemini-api-key",
+    api_key="<YOUR-GEMINI-API-KEY>",  # Replace with your gemini api key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers=add_gemini_header()
@@ -202,7 +202,7 @@ import json
 import tempfile
 
 client = genai.Client(
-    api_key="your-openai-api-key",
+    api_key="<YOUR-OPENAI-API-KEY>",  # Replace with your OpenAI API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "openai"}
@@ -270,7 +270,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-gemini-api-key",
+    api_key="<YOUR-GEMINI-API-KEY>",  # Replace with your Gemini API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "gemini"}
@@ -294,7 +294,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-openai-api-key",
+    api_key="<YOUR-OPENAI-API-KEY>",  # Replace with your OpenAI API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "openai"}
@@ -388,7 +388,7 @@ import json
 import tempfile
 
 client = genai.Client(
-    api_key="your-gemini-api-key",
+    api_key="<YOUR-GEMINI-API-KEY>",  # Replace with your Gemini API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "gemini"}
@@ -435,7 +435,7 @@ import json
 import tempfile
 
 client = genai.Client(
-    api_key="your-openai-api-key",
+    api_key="<YOUR-OPENAI-API-KEY>",  # Replace with your OpenAI API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "openai"}
@@ -501,7 +501,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-gemini-api-key",
+    api_key="<YOUR-GEMINI-API-KEY>",  # Replace with your Gemini API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "gemini"}
@@ -548,7 +548,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-openai-api-key",
+    api_key="<YOUR-OPENAI-API-KEY>",  # Replace with your OpenAI API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "openai"}
@@ -594,7 +594,7 @@ from google import genai
 from google.genai.types import HttpOptions
 
 client = genai.Client(
-    api_key="your-anthropic-api-key",
+    api_key="<YOUR-ANTHROPIC-API-KEY>",  # Replace with your Anthropic API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": "anthropic"}
@@ -747,7 +747,7 @@ provider = "gemini"
 model = "gemini-1.5-flash"
 
 client = genai.Client(
-    api_key="your-gemini-api-key",
+    api_key="<YOUR-GEMINI-API-KEY>",  # Replace with your Gemini API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": provider}
@@ -844,7 +844,7 @@ provider = "openai"
 model = "gpt-4o-mini"
 
 client = genai.Client(
-    api_key="your-openai-api-key",
+    api_key="<YOUR-OPENAI-API-KEY>",  # Replace with your OpenAI API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": provider}
@@ -911,7 +911,7 @@ provider = "anthropic"
 model = "claude-3-sonnet-20240229"
 
 client = genai.Client(
-    api_key="your-anthropic-api-key",
+    api_key="<YOUR-ANTHROPIC-API-KEY>",  # Replace with your Anthropic API key.
     http_options=HttpOptions(
         base_url="http://localhost:8080/genai",
         headers={"x-model-provider": provider}
@@ -1019,4 +1019,3 @@ print(f"\nSuccess! Anthropic batch {batch_job.name} completed via GenAI SDK.")
 - **[Overview](./overview)** - GenAI SDK integration basics
 - **[Configuration](../../quickstart/gateway/provider-configuration)** - Bifrost setup and configuration
 - **[Core Features](../../features/)** - Governance, semantic caching, and more
-

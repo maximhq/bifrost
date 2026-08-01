@@ -1,4 +1,6 @@
 import { BudgetDisplay } from "@/components/budgetDisplay";
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
+import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { RateLimitDisplay } from "@/components/rateLimitDisplay";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -14,7 +16,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ComboboxSelect } from "@/components/ui/combobox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
@@ -24,6 +25,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { resetDurationLabels } from "@/lib/constants/governance";
+import { getUserPicker } from "@/lib/registries/userPicker";
 import {
 	getErrorMessage,
 	useBulkDeleteVirtualKeysMutation,
@@ -33,9 +35,9 @@ import {
 	useLazyGetVirtualKeysQuery,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
-import { Customer, Team, VirtualKey } from "@/lib/types/governance";
+import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/lib/utils/governance";
+import { formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -53,10 +55,11 @@ import {
 	MoreHorizontal,
 	Plus,
 	RotateCcw,
+	ScrollText,
 	Search,
 	ShieldCheck,
-	ScrollText,
 	Trash2,
+	X,
 } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
@@ -66,15 +69,19 @@ import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
 
+// Registers the enterprise user picker as a side effect; a no-op in OSS builds,
+// where the user filter stays hidden because no picker is registered.
+import "@enterprise/lib/registrations/userPicker";
+
 const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration;
 
 type ExportScope = "current_page" | "all";
 
-function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, string> = {}): string {
+function virtualKeysToCSV(vks: VirtualKey[]): string {
 	const headers = ["Name", "Status", "Assigned To", "Budget Limit", "Budget Spent", "Budget Reset", "Description", "Created At"];
 	const rows = vks.map((vk) => {
 		const isExhausted =
-			vk.budgets?.some((b) => b.current_usage >= b.max_limit) ||
+			vk.budgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ||
 			(vk.rate_limit?.token_current_usage &&
 				vk.rate_limit?.token_max_limit &&
 				vk.rate_limit.token_current_usage >= vk.rate_limit.token_max_limit) ||
@@ -84,7 +91,7 @@ function virtualKeysToCSV(vks: VirtualKey[], accessProfileNames: Record<number, 
 		const isExpired = !!vk.expires_at && Date.now() >= new Date(vk.expires_at).getTime();
 		const status = !vk.is_active ? "Inactive" : isExpired ? "Expired" : isExhausted ? "Exhausted" : "Active";
 		const assignedTo = vk.team ? `Team: ${vk.team.name}` : vk.customer ? `Customer: ${vk.customer.name}` : "";
-		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.max_limit)).join("; ") : "";
+		const budgetLimit = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(getEffectiveBudgetLimit(b))).join("; ") : "";
 		const budgetSpent = vk.budgets?.length ? vk.budgets.map((b) => formatCurrency(b.current_usage)).join("; ") : "";
 		const budgetReset = vk.budgets?.length ? vk.budgets.map((b) => formatResetDuration(b.reset_duration)).join("; ") : "";
 		return [vk.name, status, assignedTo, budgetLimit, budgetSpent, budgetReset, vk.description || "", vk.created_at];
@@ -105,6 +112,35 @@ function downloadCSV(content: string) {
 function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 	const { displayBudgets } = useVirtualKeyUsage(vk);
 	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} />;
+}
+
+// Entity selectors only ever set a value, so a filter built on one needs its own
+// reset back to "all" — this restores the affordance ComboboxSelect gave for free.
+function FilterClearButton({
+	show,
+	label,
+	onClear,
+	"data-testid": dataTestId,
+}: {
+	show: boolean;
+	label: string;
+	onClear: () => void;
+	"data-testid"?: string;
+}) {
+	if (!show) return null;
+	return (
+		<Button
+			type="button"
+			variant="ghost"
+			size="icon"
+			className="h-9 w-7 shrink-0"
+			aria-label={label}
+			onClick={onClear}
+			data-testid={dataTestId}
+		>
+			<X className="h-3.5 w-3.5" />
+		</Button>
+	);
 }
 
 function VKAssignedToCell({ vk }: { vk: VirtualKey }) {
@@ -264,8 +300,6 @@ function VKActionsMenu({
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
 	totalCount: number;
-	teams: Team[];
-	customers: Customer[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
@@ -273,6 +307,8 @@ interface VirtualKeysTableProps {
 	onCustomerFilterChange: (value: string) => void;
 	teamFilter: string;
 	onTeamFilterChange: (value: string) => void;
+	userFilter: string;
+	onUserFilterChange: (value: string) => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -286,8 +322,6 @@ interface VirtualKeysTableProps {
 export default function VirtualKeysTable({
 	virtualKeys,
 	totalCount,
-	teams,
-	customers,
 	search,
 	debouncedSearch,
 	onSearchChange,
@@ -295,6 +329,8 @@ export default function VirtualKeysTable({
 	onCustomerFilterChange,
 	teamFilter,
 	onTeamFilterChange,
+	userFilter,
+	onUserFilterChange,
 	offset,
 	limit,
 	onOffsetChange,
@@ -328,7 +364,9 @@ export default function VirtualKeysTable({
 	// The target may not be on the current page/filter, so fetch it by id as a fallback.
 	const [vkParam, setVkParam] = useQueryState("vk");
 	const needsVkFetch = !!selectedVkId && !selectedVkInList;
-	const { data: fetchedVkData } = useGetVirtualKeyQuery(selectedVkId ?? "", { skip: !needsVkFetch });
+	const { data: fetchedVkData } = useGetVirtualKeyQuery(selectedVkId ?? "", {
+		skip: !needsVkFetch,
+	});
 	const selectedVirtualKey = selectedVkInList ?? (needsVkFetch ? (fetchedVkData?.virtual_key ?? null) : null);
 
 	useEffect(() => {
@@ -505,6 +543,7 @@ export default function VirtualKeysTable({
 					search: debouncedSearch || undefined,
 					customer_id: customerFilter || undefined,
 					team_id: teamFilter || undefined,
+					user_id: userFilter || undefined,
 					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 					order: (order as "asc" | "desc") || undefined,
 				}).then((result) => {
@@ -528,6 +567,7 @@ export default function VirtualKeysTable({
 					search: debouncedSearch || undefined,
 					customer_id: customerFilter || undefined,
 					team_id: teamFilter || undefined,
+					user_id: userFilter || undefined,
 					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 					order: (order as "asc" | "desc") || undefined,
 				}).then((result) => {
@@ -559,7 +599,11 @@ export default function VirtualKeysTable({
 
 	const { copy: copyToClipboard } = useCopyToClipboard();
 
-	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter;
+	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter || userFilter;
+
+	// Registered by the downstream build at module load; undefined in builds
+	// without a user directory, which hides the user filter entirely.
+	const UserPicker = getUserPicker();
 
 	const toggleSort = (column: string) => {
 		if (sortBy === column) {
@@ -593,6 +637,7 @@ export default function VirtualKeysTable({
 				search: debouncedSearch || undefined,
 				customer_id: customerFilter || undefined,
 				team_id: teamFilter || undefined,
+				user_id: userFilter || undefined,
 				sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 				order: (order as "asc" | "desc") || undefined,
 				export: true,
@@ -628,13 +673,7 @@ export default function VirtualKeysTable({
 		return (
 			<>
 				{showVirtualKeySheet && (
-					<VirtualKeySheet
-						virtualKey={editingVirtualKey}
-						teams={teams}
-						customers={customers}
-						onSave={handleVirtualKeySaved}
-						onCancel={() => setShowVirtualKeySheet(false)}
-					/>
+					<VirtualKeySheet virtualKey={editingVirtualKey} onSave={handleVirtualKeySaved} onCancel={() => setShowVirtualKeySheet(false)} />
 				)}
 				<VirtualKeysEmptyState onAddClick={handleAddVirtualKey} canCreate={hasCreateAccess} />
 			</>
@@ -644,13 +683,7 @@ export default function VirtualKeysTable({
 	return (
 		<>
 			{showVirtualKeySheet && (
-				<VirtualKeySheet
-					virtualKey={editingVirtualKey}
-					teams={teams}
-					customers={customers}
-					onSave={handleVirtualKeySaved}
-					onCancel={() => setShowVirtualKeySheet(false)}
-				/>
+				<VirtualKeySheet virtualKey={editingVirtualKey} onSave={handleVirtualKeySaved} onCancel={() => setShowVirtualKeySheet(false)} />
 			)}
 
 			{!!selectedVkId && selectedVirtualKey && (
@@ -723,7 +756,12 @@ export default function VirtualKeysTable({
 						{hasActiveFilters && (
 							<p className="text-muted-foreground text-xs">
 								Filters applied:{" "}
-								{[debouncedSearch && `search "${debouncedSearch}"`, customerFilter && "customer filter", teamFilter && "team filter"]
+								{[
+									debouncedSearch && `search "${debouncedSearch}"`,
+									customerFilter && "customer filter",
+									teamFilter && "team filter",
+									userFilter && "user filter",
+								]
 									.filter(Boolean)
 									.join(", ")}
 							</p>
@@ -853,23 +891,59 @@ export default function VirtualKeysTable({
 							data-testid="vk-search-input"
 						/>
 					</div>
-					<ComboboxSelect
-						data-testid="vk-customer-filter"
-						options={customers.map((c) => ({ label: c.name, value: c.id }))}
-						value={customerFilter || null}
-						onValueChange={(val) => onCustomerFilterChange(val ?? "")}
-						placeholder="All Customers"
-						className="h-9 w-[180px]"
-					/>
+					{/* Both filters search server-side and resolve their own label for a
+					    value restored from the URL, so the page fetches no entity lists. */}
+					<div className="flex items-center gap-1" data-testid="vk-customer-filter">
+						<CustomerSelector
+							value={customerFilter}
+							onChange={onCustomerFilterChange}
+							placeholder="All Customers"
+							triggerClassName="h-9"
+							className="w-[250px]"
+						/>
+						<FilterClearButton
+							show={!!customerFilter}
+							label="Clear customer filter"
+							onClear={() => onCustomerFilterChange("")}
+							data-testid="vk-customer-filter-clear-btn"
+						/>
+					</div>
 					{customerFilter && teamFilter && <span className="text-muted-foreground text-xs font-medium">or</span>}
-					<ComboboxSelect
-						data-testid="vk-team-filter"
-						options={teams.map((t) => ({ label: t.name, value: t.id }))}
-						value={teamFilter || null}
-						onValueChange={(val) => onTeamFilterChange(val ?? "")}
-						placeholder="All Teams"
-						className="h-9 w-[180px]"
-					/>
+					<div className="flex items-center gap-1" data-testid="vk-team-filter">
+						<TeamSelector
+							value={teamFilter}
+							onChange={onTeamFilterChange}
+							placeholder="All Teams"
+							triggerClassName="h-9"
+							className="w-[250px]"
+						/>
+						<FilterClearButton
+							show={!!teamFilter}
+							label="Clear team filter"
+							onClear={() => onTeamFilterChange("")}
+							data-testid="vk-team-filter-clear-btn"
+						/>
+					</div>
+					{UserPicker && (customerFilter || teamFilter) && userFilter && (
+						<span className="text-muted-foreground text-xs font-medium">or</span>
+					)}
+					{UserPicker && (
+						<div className="flex items-center gap-1" data-testid="vk-user-filter">
+							<UserPicker
+								value={userFilter}
+								onChange={onUserFilterChange}
+								placeholder="All Users"
+								triggerClassName="h-9"
+								className="w-[250px]"
+							/>
+							<FilterClearButton
+								show={!!userFilter}
+								label="Clear user filter"
+								onClear={() => onUserFilterChange("")}
+								data-testid="vk-user-filter-clear-btn"
+							/>
+						</div>
+					)}
 				</div>
 
 				<div className="mb-2 min-h-0 grow overflow-hidden rounded-sm border">

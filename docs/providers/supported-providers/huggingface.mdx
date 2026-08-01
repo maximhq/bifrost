@@ -39,6 +39,10 @@ The Hugging Face provider supports routing to 20+ inference backends. Below is t
 | `together` | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
 | `z-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
+<Warning>
+Usage metadata depends on the selected inference provider and model. In particular, Novita models do not consistently return token usage, and other Hugging Face inference backends may behave similarly. When an upstream backend omits usage, Bifrost cannot determine how many tokens the request consumed or calculate and correlate its cost. Applications that rely on token or cost tracking should handle missing usage and validate the specific provider and model they use.
+</Warning>
+
 <Note>Provider capabilities may change over time. For the most up-to-date information, refer to the [Hugging Face Inference Providers documentation](https://huggingface.co/docs/inference-providers/en/index#partners). Also checkmarks (✅) indicate capabilities supported by the inference provider itself.</Note>
 
 <Info>All Chat-supported models automatically support Responses(`v1/responses`) as well via Bifrost's internal conversion logic.</Info>

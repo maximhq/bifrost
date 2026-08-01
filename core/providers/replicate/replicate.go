@@ -762,6 +762,14 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 				return
 			}
 		}
+
+		// Replicate terminates a prediction stream with a `done` event, which every
+		// branch of the loop returns on. Falling out means the body ended first — a
+		// plain io.EOF, indistinguishable from a healthy close. The read-error path
+		// above sets the indicator, so an already-reported failure stays quiet here.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+		}
 	}()
 
 	return responseChan, nil
@@ -1119,6 +1127,13 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 				return
 			}
 		}
+
+		// See TextCompletionStream: no `done` event means the body ended before the
+		// prediction finished, which a plain io.EOF cannot distinguish from a
+		// healthy close.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+		}
 	}()
 
 	return responseChan, nil
@@ -1287,7 +1302,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	// Make the streaming request
 	startTime = time.Now()
-	streamErr := provider.streamingClient.Do(req, resp)
+	streamErr := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
 	latency = time.Since(startTime)
 	if streamErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1692,6 +1707,13 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 					return
 				}
 			}
+		}
+
+		// See TextCompletionStream: no `done` event means the body ended before the
+		// prediction finished, which a plain io.EOF cannot distinguish from a
+		// healthy close.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 		}
 	}()
 
@@ -2137,6 +2159,13 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 				return
 			}
 		}
+
+		// See TextCompletionStream: no `done` event means the body ended before the
+		// prediction finished, which a plain io.EOF cannot distinguish from a
+		// healthy close.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+		}
 	}()
 
 	return responseChan, nil
@@ -2523,6 +2552,13 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 				return
 			}
+		}
+
+		// See TextCompletionStream: no `done` event means the body ended before the
+		// prediction finished, which a plain io.EOF cannot distinguish from a
+		// healthy close.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
 		}
 	}()
 

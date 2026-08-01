@@ -474,6 +474,7 @@ func TestMCPToolLogCreateSerializesFields(t *testing.T) {
 		ResultParsed: map[string]any{
 			"ok": true,
 		},
+		RedactionMapping: `plain:{"input":{"EMAIL-1":"private@example.com"}}`,
 	}
 
 	if err := store.CreateMCPToolLog(context.Background(), entry); err != nil {
@@ -489,6 +490,9 @@ func TestMCPToolLogCreateSerializesFields(t *testing.T) {
 	}
 	if logEntry.Result == "" {
 		t.Fatalf("expected Result to be serialized")
+	}
+	if logEntry.RedactionMapping != entry.RedactionMapping {
+		t.Fatalf("RedactionMapping = %q, want %q", logEntry.RedactionMapping, entry.RedactionMapping)
 	}
 }
 
@@ -574,7 +578,8 @@ func TestUpdateMCPToolLogSerializesStructEntry(t *testing.T) {
 	}
 
 	if err := store.UpdateMCPToolLog(context.Background(), entry.ID, MCPToolLog{
-		Status: "success",
+		Status:           "success",
+		RedactionMapping: `plain:{"output":{"EMAIL-2":"result@example.com"}}`,
 		ResultParsed: map[string]any{
 			"message": "done",
 		},
@@ -588,6 +593,9 @@ func TestUpdateMCPToolLogSerializesStructEntry(t *testing.T) {
 	}
 	if logEntry.Result == "" {
 		t.Fatalf("expected Result to be serialized on UpdateMCPToolLog")
+	}
+	if logEntry.RedactionMapping == "" {
+		t.Fatal("expected RedactionMapping to be updated")
 	}
 }
 

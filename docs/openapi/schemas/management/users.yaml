@@ -230,9 +230,30 @@ CreateTeamRequest:
 UpdateTeamRequest:
   type: object
   properties:
-    description:
+    name:
       type: string
-      description: Updated team description
+      description: >-
+        Team name. Renaming is not allowed - sending a value different from the
+        team's current name returns 400.
+    customer_id:
+      type: string
+      description: >-
+        Customer to attach to this team. Additive: the customer is attached and
+        any customers already attached are left in place. Re-sending an
+        already-attached customer is a no-op. To detach, use
+        DELETE /api/teams/{id}/customers/{customerId}.
+
+        This is the team <-> customer many-to-many association that drives
+        governance and DAC customer derivation. It is distinct from the
+        customer_id on PUT /api/governance/teams/{team_id}, which sets the
+        team's budget-hierarchy parent and is not modified by this endpoint.
+    customer_ids:
+      type: array
+      description: >-
+        Customers to attach to this team, same semantics as customer_id. May be
+        combined with customer_id; the two sets are merged.
+      items:
+        type: string
 
 CreateTeamResponse:
   type: object
@@ -241,6 +262,27 @@ CreateTeamResponse:
       type: string
     name:
       type: string
+
+UpdateTeamResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    attached_customer_ids:
+      type: array
+      description: >-
+        Customers attached by this request. Omitted when the request carried no
+        customer_id or customer_ids.
+      items:
+        type: string
+    warning:
+      type: string
+      description: >-
+        Present only when the attachment was persisted but refreshing the cached
+        team scope failed. The association is durable; the derived customer scope
+        may lag until the next reload.
 
 ListTeamsResponse:
   type: object

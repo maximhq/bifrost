@@ -14,8 +14,7 @@
 //     user clicks the Scope Target badge on the Model Limits table.
 
 import type { ComponentType } from "react";
-import { ComboboxSelect } from "@/components/ui/combobox";
-import { useGetVirtualKeysQuery } from "@/lib/store";
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 
 export interface ScopePickerProps {
 	value: string;
@@ -68,25 +67,6 @@ export function getModelLimitScope(value: string): ModelLimitScopeEntry | undefi
 // OSS default registrations.
 // ---------------------------------------------------------------------------
 
-function VirtualKeyPicker({ value, onChange, disabled, fallbackOption }: ScopePickerProps) {
-	const { data: vksData } = useGetVirtualKeysQuery();
-	const virtualKeys = vksData?.virtual_keys ?? [];
-	const options = [
-		...(fallbackOption && !virtualKeys.some((vk) => vk.id === fallbackOption.value) ? [fallbackOption] : []),
-		...virtualKeys.map((vk) => ({ label: vk.name, value: vk.id })),
-	];
-	return (
-		<ComboboxSelect
-			options={options}
-			value={value || null}
-			onValueChange={(v: string | null) => onChange(v ?? "")}
-			placeholder="Select a virtual key..."
-			disabled={disabled}
-			noPortal
-		/>
-	);
-}
-
 registerModelLimitScope({
 	value: "global",
 	label: "Global",
@@ -95,7 +75,7 @@ registerModelLimitScope({
 registerModelLimitScope({
 	value: "virtual_key",
 	label: "Virtual Key",
-	PickerComponent: VirtualKeyPicker,
+	PickerComponent: VirtualKeySelector,
 	buildDeepLink: (scopeId) => ({
 		to: "/workspace/governance/virtual-keys",
 		search: { vk: scopeId },

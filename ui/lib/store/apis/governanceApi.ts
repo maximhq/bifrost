@@ -1,7 +1,12 @@
 import {
 	Budget,
+<<<<<<< HEAD
 	BulkDeleteVirtualKeysRequest,
 	BulkDeleteVirtualKeysResponse,
+=======
+	BudgetOverrideRequest,
+	BudgetOverrideResponse,
+>>>>>>> upstream/dev
 	BulkRotateVirtualKeysRequest,
 	BulkRotateVirtualKeysResponse,
 	CreateCustomerRequest,
@@ -46,6 +51,7 @@ import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
 	scopeKind?: string;
+	userID?: string;
 	virtualKeyID?: string;
 	providerID?: string;
 	providerKeyID?: string;
@@ -66,6 +72,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.customer_id && { customer_id: params.customer_id }),
 					...(params?.team_id && { team_id: params.team_id }),
+					...(params?.user_id && { user_id: params.user_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
 					}),
@@ -132,6 +139,7 @@ export const governanceApi = baseApi.injectEndpoints({
 			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
 		}),
 
+<<<<<<< HEAD
 		bulkDeleteVirtualKeys: builder.mutation<BulkDeleteVirtualKeysResponse, BulkDeleteVirtualKeysRequest>({
 			query: (data) => ({
 				url: "/governance/virtual-keys",
@@ -139,6 +147,23 @@ export const governanceApi = baseApi.injectEndpoints({
 				body: data,
 			}),
 			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
+=======
+		setVirtualKeyBudgetOverride: builder.mutation<BudgetOverrideResponse, { vkId: string; budgetId: string; data: BudgetOverrideRequest }>({
+			query: ({ vkId, budgetId, data }) => ({
+				url: `/governance/virtual-keys/${encodeURIComponent(vkId)}/budgets/${encodeURIComponent(budgetId)}/override`,
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
+		}),
+
+		removeVirtualKeyBudgetOverride: builder.mutation<BudgetOverrideResponse, { vkId: string; budgetId: string }>({
+			query: ({ vkId, budgetId }) => ({
+				url: `/governance/virtual-keys/${encodeURIComponent(vkId)}/budgets/${encodeURIComponent(budgetId)}/override`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
+>>>>>>> upstream/dev
 		}),
 
 		// Teams
@@ -520,6 +545,7 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
 					...(params?.scope && { scope: params.scope }),
+					...(params?.scope_id && { scope_id: params.scope_id }),
 					...(params?.provider && { provider: params.provider }),
 				},
 			}),
@@ -551,6 +577,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args = entry.originalArgs as GetModelConfigsParams | undefined;
 						if (args?.search && !mc.model_name.toLowerCase().includes(args.search.toLowerCase())) continue;
 						if (args?.scope && mc.scope !== args.scope) continue;
+						if (args?.scope_id && mc.scope_id !== args.scope_id) continue;
 						if (args?.provider && mc.provider !== args.provider) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
@@ -642,6 +669,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: "/governance/pricing-overrides",
 				params: {
 					scope_kind: params?.scopeKind,
+					user_id: params?.userID,
 					virtual_key_id: params?.virtualKeyID,
 					provider_id: params?.providerID,
 					provider_key_id: params?.providerKeyID,
@@ -669,6 +697,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
 						const matchesQuery =
 							(!args.scopeKind || args.scopeKind === created.scope_kind) &&
+							(!args.userID || args.userID === created.user_id) &&
 							(!args.virtualKeyID || args.virtualKeyID === created.virtual_key_id) &&
 							(!args.providerID || args.providerID === created.provider_id) &&
 							(!args.providerKeyID || args.providerKeyID === created.provider_key_id) &&
@@ -712,6 +741,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
 						const matchesQuery =
 							(!args.scopeKind || args.scopeKind === updated.scope_kind) &&
+							(!args.userID || args.userID === updated.user_id) &&
 							(!args.virtualKeyID || args.virtualKeyID === updated.virtual_key_id) &&
 							(!args.providerID || args.providerID === updated.provider_id) &&
 							(!args.providerKeyID || args.providerKeyID === updated.provider_key_id);
@@ -875,7 +905,12 @@ export const {
 	useRotateVirtualKeyMutation,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+<<<<<<< HEAD
 	useBulkDeleteVirtualKeysMutation,
+=======
+	useSetVirtualKeyBudgetOverrideMutation,
+	useRemoveVirtualKeyBudgetOverrideMutation,
+>>>>>>> upstream/dev
 
 	// Teams
 	useGetTeamsQuery,

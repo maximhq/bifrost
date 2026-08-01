@@ -129,7 +129,7 @@ Seeds governance resources at startup. All sub-keys are optional arrays.
 | `budgets` | Spend caps in USD over a rolling window |
 | `rate_limits` | Request and token rate limits |
 | `customers` | Customer entities (attach budgets/rate limits) |
-| `teams` | Team entities (attach to customers, budgets, rate limits) |
+| `teams` | Team entities (attach to customers and rate limits; budgets attach to teams through `budgets[].team_id`) |
 | `routing_rules` | CEL-based dynamic provider/model routing |
 | `pricing_overrides` | Scoped per-model pricing overrides |
 | `model_configs` | Per-model rate limit and budget configurations |
@@ -218,14 +218,15 @@ Full documentation: [Storage](/deployment-guides/config-json/storage).
 
 ## `framework`
 
-Controls model pricing catalog sync:
+Controls model pricing catalog sync and background model discovery:
 
 ```json
 {
   "framework": {
     "pricing": {
       "pricing_url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
-      "pricing_sync_interval": 86400
+      "pricing_sync_interval": 86400,
+      "live_models_sync_interval": 3600
     }
   }
 }
@@ -235,6 +236,24 @@ Controls model pricing catalog sync:
 |-------|---------|-------------|
 | `pricing.pricing_url` | LiteLLM catalog | URL of a model pricing JSON file |
 | `pricing.pricing_sync_interval` | `86400` | Sync interval in seconds (minimum: `3600`) |
+| `pricing.live_models_sync_interval` | `3600` | How often each provider's model list is re-fetched, in seconds. `0` disables it (minimum when enabled: `60`) |
+
+### Background model discovery
+
+Each provider's model list is fetched at startup and whenever you add, edit, or
+delete a key. `live_models_sync_interval` additionally re-fetches it on a timer,
+so a model a provider starts serving after the gateway booted becomes routable
+without a restart.
+
+Every node runs its own refresh, because the model list is cached in process
+memory rather than in the database. Each pass costs two `list models` calls per
+enabled key, per provider, so raise the interval if a provider meters that
+endpoint. The interval is jittered by ±10% to keep replicas that booted together
+from calling every upstream at the same instant.
+
+Set it to `0` to turn the timer off entirely. Model discovery then happens only
+at startup and on key edits, and you can trigger it on demand from the
+**Providers** page.
 
 ---
 

@@ -29,7 +29,7 @@ import {
 } from "@/lib/store/apis/skillsApi";
 import { AllSkillsVersionBump, SkillListItem } from "@/lib/types/skills";
 import { cn } from "@/lib/utils";
-import { getApiBaseUrl } from "@/lib/utils/port";
+import { getApiBaseUrl, getExampleBaseUrl } from "@/lib/utils/port";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import {
 	ArrowDown,
@@ -63,7 +63,7 @@ const SKILLS_REPOSITORY_DOCS_URL = "https://docs.getbifrost.ai/features/skills-r
 function MarketplacePopover() {
 	const [copiedKey, setCopiedKey] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
-	const marketplaceBaseUrl = getApiBaseUrl();
+	const marketplaceBaseUrl = `${getExampleBaseUrl()}/api`;
 
 	const items = [
 		{

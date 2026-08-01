@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
-import { Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
+import { mapAppToClientApp, mapUserAgentToApp, Status, StatusBarColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
 import { ColumnDef, Row } from "@tanstack/react-table";
 import { format, isValid } from "date-fns";
@@ -20,6 +20,7 @@ const getValidatedStatus = (status: string): Status => {
 export const createMCPColumns = (
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>,
 	hasDeleteAccess: boolean,
+	customAppIcons: Record<string, string> = {},
 ): ColumnDef<MCPToolLogEntry>[] => [
 	{
 		accessorKey: "status",
@@ -67,6 +68,22 @@ export const createMCPColumns = (
 				</Badge>
 			) : (
 				<span className="text-muted-foreground">-</span>
+			);
+		},
+	},
+	{
+		id: "app",
+		accessorKey: "app",
+		header: "App",
+		size: 140,
+		cell: ({ row }) => {
+			const app = row.original.app ? mapAppToClientApp(row.original.app) : mapUserAgentToApp(row.original.user_agent);
+			const icon = row.original.app ? customAppIcons[row.original.app] || app.icon : app.icon;
+			return (
+				<div className="flex min-w-0 items-center gap-2" title={row.original.user_agent || undefined}>
+					{icon ? <img src={icon} alt={app.name} width={14} height={14} loading="lazy" decoding="async" /> : null}
+					<span className="truncate text-[12px]">{app.name}</span>
+				</div>
 			);
 		},
 	},

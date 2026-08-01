@@ -478,7 +478,16 @@ export interface FrameworkConfig {
 	model_parameters_url: string;
 	mcp_library_url?: string;
 	mcp_library_sync_interval?: number;
+	/** Seconds between background re-fetches of each provider's model list. 0 disables it. */
+	live_models_sync_interval?: number;
 }
+
+/** Seconds between background model-list refreshes when the user has not set one. */
+export const DEFAULT_LIVE_MODELS_SYNC_INTERVAL = 3600;
+/** Sentinel for "never refresh the model list in the background". */
+export const LIVE_MODELS_SYNC_DISABLED = 0;
+/** Server-side floor for a non-zero live models sync interval, in seconds. */
+export const MIN_LIVE_MODELS_SYNC_INTERVAL = 60;
 
 // Auth config
 export interface AuthConfig {

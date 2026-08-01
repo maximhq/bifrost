@@ -598,6 +598,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.RoleSessionName != nil {
 				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
 			}
+			if key.BedrockKeyConfig.BatchRoleARN != nil {
+				bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
+			}
 			// Mantle project ID is an identifier, not a credential — surface it in plaintext.
 			if key.BedrockKeyConfig.ProjectID != nil {
 				bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID
@@ -1426,6 +1429,7 @@ func GeneratePricingOverrideHash(p tables.TablePricingOverride) (string, error) 
 	hash.Write([]byte(p.ID))
 	hash.Write([]byte(p.Name))
 	hash.Write([]byte(p.ScopeKind))
+	hash.Write([]byte(derefStr(p.UserID)))
 	hash.Write([]byte(derefStr(p.VirtualKeyID)))
 	hash.Write([]byte(derefStr(p.ProviderID)))
 	hash.Write([]byte(derefStr(p.ProviderKeyID)))
@@ -1619,10 +1623,16 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 }
 
 // frameworkConfigHashPayload holds the config.json-sourced fields used for hashing.
+//
+// LiveModelsSyncInterval carries omitempty deliberately: a nil pointer must
+// marshal to exactly the bytes this struct produced before the field existed,
+// so hashes already persisted in framework_configs stay valid and no upgraded
+// deployment sees a spurious "file changed" override on first boot.
 type frameworkConfigHashPayload struct {
-	PricingURL          *string `json:"pricing_url"`
-	ModelParametersURL  *string `json:"model_parameters_url"`
-	PricingSyncInterval *int64  `json:"pricing_sync_interval"`
+	PricingURL             *string `json:"pricing_url"`
+	ModelParametersURL     *string `json:"model_parameters_url"`
+	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
+	LiveModelsSyncInterval *int64  `json:"live_models_sync_interval,omitempty"`
 }
 
 type frameworkConfigHashPayloadWithMCP struct {
@@ -1631,6 +1641,7 @@ type frameworkConfigHashPayloadWithMCP struct {
 	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
 	MCPLibraryURL          *string `json:"mcp_library_url"`
 	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval"`
+	LiveModelsSyncInterval *int64  `json:"live_models_sync_interval,omitempty"`
 }
 
 // FrameworkConfigHashOptions adds optional framework config fields to the
@@ -1639,6 +1650,7 @@ type frameworkConfigHashPayloadWithMCP struct {
 type FrameworkConfigHashOptions struct {
 	MCPLibraryURL          *string
 	MCPLibrarySyncInterval *int64
+	LiveModelsSyncInterval *int64
 }
 
 // GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
@@ -1647,13 +1659,26 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 	var data []byte
 	var err error
 	if len(opts) > 0 {
-		data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
-			PricingURL:             pricingURL,
-			ModelParametersURL:     modelParametersURL,
-			PricingSyncInterval:    pricingSyncInterval,
-			MCPLibraryURL:          opts[0].MCPLibraryURL,
-			MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
-		})
+		if opts[0].MCPLibraryURL == nil && opts[0].MCPLibrarySyncInterval == nil {
+			// Only live-models config was supplied. Staying on the pricing-only
+			// payload keeps the digest identical to a pre-MCP deployment's when
+			// the live interval is also nil.
+			data, err = sonic.Marshal(frameworkConfigHashPayload{
+				PricingURL:             pricingURL,
+				ModelParametersURL:     modelParametersURL,
+				PricingSyncInterval:    pricingSyncInterval,
+				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
+			})
+		} else {
+			data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
+				PricingURL:             pricingURL,
+				ModelParametersURL:     modelParametersURL,
+				PricingSyncInterval:    pricingSyncInterval,
+				MCPLibraryURL:          opts[0].MCPLibraryURL,
+				MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
+				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
+			})
+		}
 	} else {
 		data, err = sonic.Marshal(frameworkConfigHashPayload{
 			PricingURL:          pricingURL,

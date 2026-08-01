@@ -12,7 +12,10 @@ type TableFrameworkConfig struct {
 	// PricingURL: the default ships out of the box and the user can override it.
 	MCPLibraryURL          *string `gorm:"type:text" json:"mcp_library_url"`
 	MCPLibrarySyncInterval *int64  `gorm:"" json:"mcp_library_sync_interval"`
-	ConfigHash             string  `gorm:"type:text" json:"config_hash"`
+	// LiveModelsSyncInterval is how often each provider's list-models response
+	// is re-fetched in the background, in seconds. 0 disables the refresher.
+	LiveModelsSyncInterval *int64 `gorm:"" json:"live_models_sync_interval"`
+	ConfigHash             string `gorm:"type:text" json:"config_hash"`
 }
 
 // TableName sets the table name for each model
