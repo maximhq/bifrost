@@ -1,7 +1,12 @@
 import {
 	Budget,
+<<<<<<< HEAD
+	BulkDeleteVirtualKeysRequest,
+	BulkDeleteVirtualKeysResponse,
+=======
 	BudgetOverrideRequest,
 	BudgetOverrideResponse,
+>>>>>>> upstream/dev
 	BulkRotateVirtualKeysRequest,
 	BulkRotateVirtualKeysResponse,
 	CreateCustomerRequest,
@@ -134,6 +139,15 @@ export const governanceApi = baseApi.injectEndpoints({
 			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
 		}),
 
+<<<<<<< HEAD
+		bulkDeleteVirtualKeys: builder.mutation<BulkDeleteVirtualKeysResponse, BulkDeleteVirtualKeysRequest>({
+			query: (data) => ({
+				url: "/governance/virtual-keys",
+				method: "DELETE",
+				body: data,
+			}),
+			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
+=======
 		setVirtualKeyBudgetOverride: builder.mutation<BudgetOverrideResponse, { vkId: string; budgetId: string; data: BudgetOverrideRequest }>({
 			query: ({ vkId, budgetId, data }) => ({
 				url: `/governance/virtual-keys/${encodeURIComponent(vkId)}/budgets/${encodeURIComponent(budgetId)}/override`,
@@ -149,6 +163,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "DELETE",
 			}),
 			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
+>>>>>>> upstream/dev
 		}),
 
 		// Teams
@@ -890,8 +905,12 @@ export const {
 	useRotateVirtualKeyMutation,
 	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+<<<<<<< HEAD
+	useBulkDeleteVirtualKeysMutation,
+=======
 	useSetVirtualKeyBudgetOverrideMutation,
 	useRemoveVirtualKeyBudgetOverrideMutation,
+>>>>>>> upstream/dev
 
 	// Teams
 	useGetTeamsQuery,

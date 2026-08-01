@@ -332,8 +332,12 @@
                       "integrations/guardrails/crowdstrike-aidr",
                       "integrations/guardrails/grayswan",
                       "integrations/guardrails/patronus-ai",
+<<<<<<< HEAD
+                      "integrations/guardrails/lakera"
+=======
                       "integrations/guardrails/lakera",
                       "integrations/guardrails/repello-argus"
+>>>>>>> upstream/dev
                     ]
                   }
                 ]
@@ -562,8 +566,12 @@
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
               "integrations/guardrails/patronus-ai",
+<<<<<<< HEAD
+              "integrations/guardrails/lakera"
+=======
               "integrations/guardrails/lakera",
               "integrations/guardrails/repello-argus"
+>>>>>>> upstream/dev
             ]
           },
           {
@@ -749,8 +757,11 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+<<<<<<< HEAD
+=======
               "changelogs/v1.6.7",
               "changelogs/v1.6.6",
+>>>>>>> upstream/dev
               "changelogs/v1.6.5",
               "changelogs/v2.0.0-prerelease2",
               "changelogs/v1.6.4",
