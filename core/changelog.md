@@ -10,3 +10,4 @@
 - fix: inject placeholder text block for document-only messages on Bedrock, which otherwise rejected the request (#5817)
 - fix: retain tool `cache_control` markers through Bedrock Converse invoke requests so prompt caching applies to system blocks and tools (#5811)
 - feat: opt-in HTTP/2 PING keepalives on the Bedrock provider via a configurable interval (0 = off) [@jeremym-tanium](https://github.com/jeremym-tanium)
+- fix: clamp http2_ping_interval_in_seconds to avoid int64 overflow on conversion to time.Duration [@jeremym-tanium](https://github.com/jeremym-tanium)

@@ -5740,6 +5740,7 @@
         "http2_ping_interval_in_seconds": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 9223372036,
           "description": "Seconds of stream idle before a client-initiated HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)."
         },
         "beta_header_overrides": {

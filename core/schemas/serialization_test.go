@@ -1173,6 +1173,12 @@ func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	cfgOff := &ProviderConfig{}
 	cfgOff.CheckAndSetDefaults()
 	assert.Equal(t, 0, cfgOff.NetworkConfig.HTTP2PingIntervalInSeconds)
+
+	// a value above the int64-nanosecond ceiling is clamped rather than left to
+	// overflow silently when the Bedrock transport multiplies it by time.Second
+	cfgOverflow := &ProviderConfig{NetworkConfig: NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: HTTP2PingIntervalUpperBoundSeconds + 1}}
+	cfgOverflow.CheckAndSetDefaults()
+	assert.Equal(t, HTTP2PingIntervalUpperBoundSeconds, cfgOverflow.NetworkConfig.HTTP2PingIntervalInSeconds)
 }
 
 // TestNormalizeResponsesToolType verifies that versioned/provider-specific tool type

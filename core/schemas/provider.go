@@ -23,6 +23,10 @@ const (
 	DefaultMaxConnsPerHost            = 5000
 	MaxConnsPerHostUpperBound         = 10000
 	DefaultMaxIdleConnsPerHost        = 40
+	// HTTP2PingIntervalUpperBoundSeconds is the largest value that survives
+	// conversion to time.Duration (int64 nanoseconds) without overflow:
+	// math.MaxInt64 / time.Second, floored.
+	HTTP2PingIntervalUpperBoundSeconds = 9223372036
 )
 
 // Pre-defined errors for provider operations
@@ -596,6 +600,12 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.NetworkConfig.MaxConnsPerHost = DefaultMaxConnsPerHost
 	} else if config.NetworkConfig.MaxConnsPerHost > MaxConnsPerHostUpperBound {
 		config.NetworkConfig.MaxConnsPerHost = MaxConnsPerHostUpperBound
+	}
+
+	// Clamp before the seconds-to-time.Duration conversion in the Bedrock
+	// transport (* time.Second) can silently overflow int64.
+	if config.NetworkConfig.HTTP2PingIntervalInSeconds > HTTP2PingIntervalUpperBoundSeconds {
+		config.NetworkConfig.HTTP2PingIntervalInSeconds = HTTP2PingIntervalUpperBoundSeconds
 	}
 
 	// Create a defensive copy of ExtraHeaders to prevent data races
