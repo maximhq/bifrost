@@ -138,9 +138,17 @@ Here you can:
 
 ### Add STDIO Client
 
+<Note>
+  Registering a stdio client makes Bifrost run the given `command` as a subprocess of the gateway. If [dashboard
+  authentication](/quickstart/gateway/setting-up-auth) is disabled or not yet configured, this call is refused - you
+  must either enable dashboard auth and authenticate first, or define the client in `config.json` instead. This
+  restriction applies only to `connection_type: "stdio"`; HTTP and SSE clients are unaffected.
+</Note>
+
 ```bash
 curl -X POST http://localhost:8080/api/mcp/client \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-session-token>" \
   -d '{
     "name": "filesystem",
     "connection_type": "stdio",
@@ -668,16 +676,18 @@ curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 ```
 
 **Edit client configuration:**
+
+<Note>
+  `connection_type`, `stdio_config`, `auth_type`, and `connection_string` are immutable after
+  creation and are ignored by this endpoint. To change a client's connection type or command,
+  delete it and add it again.
+</Note>
+
 ```bash
 curl -X PUT http://localhost:8080/api/mcp/client/{id} \
   -H "Content-Type: application/json" \
   -d '{
     "name": "filesystem",
-    "connection_type": "stdio",
-    "stdio_config": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/mcp-filesystem"]
-    },
     "tools_to_execute": ["read_file", "list_directory"]
   }'
 ```
