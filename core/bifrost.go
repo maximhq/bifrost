@@ -5047,8 +5047,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.StampUpstreamLatency()
 		resp.PopulateUpstreamLatency(ctx)
 		if resp != nil && bifrostErr == nil {
-			cost := ctx.CalculateCost(resp)
-			resp.GetExtraFields().Cost = &cost
+			resp.GetExtraFields().Cost = ctx.CalculateCostIfAvailable(resp)
 		}
 	}()
 
