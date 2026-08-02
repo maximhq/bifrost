@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"sync"
@@ -12,9 +13,21 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	bifrostmcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMain points MCP HTTP/SSE client connections at an unguarded dialer for
+// the whole package. Every test here connects to a loopback-bound
+// httptest.Server standing in for a remote MCP server, which the production
+// SSRF guard (core/mcp.buildTLSHTTPClient) correctly refuses to dial. No test
+// in this package exercises that guard itself; it has its own unit coverage
+// in core/mcp and core/network.
+func TestMain(m *testing.M) {
+	bifrostmcp.SetDialContextForTests((&net.Dialer{}).DialContext)
+	os.Exit(m.Run())
+}
 
 // =============================================================================
 // MOCK STDIO MCP SERVER
