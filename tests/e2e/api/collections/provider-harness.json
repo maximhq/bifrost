@@ -155,6 +155,9 @@
           "    } else if (typeof j.text === 'string' && !j.choices && !j.candidates && !j.output) {",
           "        shape = 'audio-transcription';",
           "        hasContent = j.text.length > 0;",
+          "    } else if (__u.indexOf('/api/session/is-auth-enabled') !== -1 && typeof j.inference_auth_enforced === 'boolean') {",
+          "        shape = 'session-auth-status';",
+          "        hasContent = typeof j.is_auth_enabled === 'boolean';",
           "    } else if (Array.isArray(j.data)) {",
           "        shape = 'list-data';",
           "        hasContent = j.data.length >= 0;",
@@ -167798,6 +167801,36 @@
             ],
             "url": "{{baseUrl}}/api/plugins/..%2Foauth2%2Fconsent%2Fflows%2F{{pathAuthFlow}}"
           }
+        }
+      ]
+    },
+    {
+      "name": "115. Inference Auth Setup Status (PR #5767)",
+      "description": "Read-only regression for GHSA-9vcc-9mmm-556x. The unauthenticated session-status endpoint must expose inference enforcement independently of dashboard auth. First-admin writes and anonymous spend/read blocking are tested against isolated stores and mock upstreams in Go; this shared provider profile is never reconfigured by this case.",
+      "item": [
+        {
+          "name": "openai inference-auth-setup status exposes independent enforcement - PR #5767",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/session/is-auth-enabled"
+          },
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('inference-auth-setup reports independent auth states', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                "  var body = pm.response.json();",
+                "  pm.expect(body.is_auth_enabled).to.be.a('boolean');",
+                "  pm.expect(body.has_valid_token).to.be.a('boolean');",
+                "  pm.expect(body.inference_auth_enforced).to.be.a('boolean');",
+                "});"
+              ]
+            }
+          }]
         }
       ]
     }

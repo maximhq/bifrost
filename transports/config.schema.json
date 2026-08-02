@@ -160,7 +160,7 @@
         },
         "enforce_auth_on_inference": {
           "type": "boolean",
-          "description": "Require auth (VK, API key, or user token) on inference endpoints"
+          "description": "Require auth (VK, API key, or user token) on inference endpoints. Defaults to true when creating the first enabled admin account if omitted; explicit false opts out. Existing deployments retain their setting when omitted."
         },
         "dual_credential_conflict_behavior": {
           "type": "string",

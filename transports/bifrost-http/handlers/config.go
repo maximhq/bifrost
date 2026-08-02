@@ -403,6 +403,38 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	copied := *currentConfig
 	updatedConfig := &copied
 
+	// Validate first-admin setup before any live mutation or persistence below.
+	var existingAuthConfig *configstore.AuthConfig
+	var initialPasswordHash string
+	if payload.AuthConfig != nil {
+		var err error
+		existingAuthConfig, err = h.store.ConfigStore.GetAuthConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
+			return
+		}
+		if existingAuthConfig == nil && payload.AuthConfig.IsEnabled {
+			if !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account")
+				return
+			}
+			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" ||
+				payload.AuthConfig.AdminPassword == nil || payload.AuthConfig.AdminPassword.GetValue() == "" || payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
+				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
+				return
+			}
+			if failures := getPasswordPolicyFailures(payload.AuthConfig.AdminPassword.GetValue()); len(failures) > 0 {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth password must include %s", strings.Join(failures, ", ")))
+				return
+			}
+			initialPasswordHash, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+			if err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid auth password: %v", err))
+				return
+			}
+		}
+	}
+
 	// Validate MCP auth-mode / OAuth2 server settings before any live mutation
 	// below (drop-excess flag, MCP tool-manager reload, compat plugin reload,
 	// in-memory MCP config). A late rejection would return 400 while runtime
@@ -583,10 +615,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// which atomically swaps in a fresh immutable snapshot carrying the new value.
 	updatedConfig.DumpErrorsInConsoleLogs = payload.ClientConfig.DumpErrorsInConsoleLogs
 
-	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	enforceAuthOnInference := currentConfig.EnforceAuthOnInference
+	if payload.ClientConfig.HasInferenceAuthSetting() {
+		enforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	} else if payload.AuthConfig != nil && payload.AuthConfig.IsEnabled && existingAuthConfig == nil {
+		enforceAuthOnInference = true
+	}
+	updatedConfig.EnforceAuthOnInference = enforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB
-	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
-	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
+	updatedConfig.EnforceGovernanceHeader = enforceAuthOnInference
+	updatedConfig.EnforceSCIMAuth = enforceAuthOnInference
 
 	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp).
 	// The conflict-vs-token_exchange validation already ran up front, before
@@ -862,15 +900,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Checking auth config and trying to update if required
 	if payload.AuthConfig != nil {
-		// Getting current governance config
-		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
-		if err != nil {
-			if !errors.Is(err, configstore.ErrNotFound) {
-				logger.Warn("failed to get auth config from store: %v", err)
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
-				return
-			}
-		}
+		authConfig := existingAuthConfig
 
 		// Check if auth config has changed
 		authChanged := false
@@ -945,7 +975,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 						return
 					}
 					// We will hash the password
-					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+					hashedPassword := initialPasswordHash
+					if hashedPassword == "" {
+						hashedPassword, err = encrypt.Hash(payload.AuthConfig.AdminPassword.GetValue())
+					}
 					if err != nil {
 						logger.Warn("failed to hash password: %v", err)
 						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
