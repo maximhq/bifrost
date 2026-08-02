@@ -185229,6 +185229,190 @@
           }
         }
       ]
+    },
+    {
+      "name": "138. Provider endpoint updates require dashboard auth (provider-endpoint-updates)",
+      "description": "Management-plane regression for the default harness profile (tests/integrations/python/config.json, dashboard auth unconfigured). A caller admitted without a credential check must not be able to point the global proxy or a provider key's endpoint at a new host, and nothing may persist after the refusal. No provider calls are made; the openai keyword is only a harness filter label. Under a profile with dashboard auth enabled these rows return 401 and fail loudly on purpose - run them against the default profile.",
+      "item": [
+        {
+          "name": "[EXPECT-403] openai provider-endpoint-updates proxy url change refused without dashboard auth",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates proxy url change is refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('authenticated admin session');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/proxy-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true,\n  \"type\": \"http\",\n  \"url\": \"http://127.0.0.1:3128\",\n  \"timeout\": 0\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai provider-endpoint-updates proxy url unchanged after refused write",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates refused proxy url was not persisted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.url, 'failed: ' + pm.response.text()).to.not.equal('http://127.0.0.1:3128');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/proxy-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai provider-endpoint-updates azure key endpoint refused without dashboard auth",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates key endpoint is refused with 403', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('azure_key_config.endpoint');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/azure/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-endpoint-guard\",\n  \"value\": \"harness-placeholder\",\n  \"weight\": 1,\n  \"azure_key_config\": {\n    \"endpoint\": \"https://harness-endpoint-guard.example.invalid\",\n    \"api_version\": \"2024-02-01\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai provider-endpoint-updates azure key not persisted after refused write",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider-endpoint-updates refused key was not persisted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  var keys = Array.isArray(j) ? j : (j.keys || []);",
+                  "  var leaked = keys.filter(function (k) { return k && k.name === 'harness-endpoint-guard'; });",
+                  "  pm.expect(leaked.length, 'failed: ' + pm.response.text()).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/azure/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "azure",
+                "keys"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
