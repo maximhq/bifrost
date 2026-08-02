@@ -496,3 +496,50 @@ func TestUpdateConfig_RejectsFileURLsOverAPI(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateProxyConfig_RejectsLinkLocalURL pins that the global proxy URL is held to the
+// same destination rule as a provider base URL. Every proxied request carries its provider
+// credentials to this host, so an address that can never be a legitimate egress proxy
+// (link-local such as the cloud metadata endpoint, or unspecified) is refused even for a
+// genuinely authenticated admin. Private and loopback hosts stay allowed: a self-hosted
+// proxy on the local network is the normal setup.
+func TestUpdateProxyConfig_RejectsLinkLocalURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	cases := []struct {
+		name       string
+		url        string
+		wantStatus int
+	}{
+		{name: "link-local metadata endpoint", url: "http://169.254.169.254:80", wantStatus: fasthttp.StatusBadRequest},
+		{name: "unspecified address", url: "http://0.0.0.0:3128", wantStatus: fasthttp.StatusBadRequest},
+		{name: "private network proxy", url: "http://10.0.0.5:3128", wantStatus: fasthttp.StatusOK},
+		{name: "loopback proxy", url: "http://127.0.0.1:3128", wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+			ctx := newTestRequestCtx(`{"enabled":true,"type":"http","url":"` + tc.url + `","timeout":0}`)
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+
+			h.updateProxyConfig(ctx)
+
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+			stored, err := store.GetProxyConfig(context.Background())
+			if tc.wantStatus == fasthttp.StatusOK {
+				require.NoError(t, err)
+				assert.Equal(t, tc.url, stored.URL)
+				return
+			}
+			if err != nil {
+				require.ErrorIs(t, err, configstore.ErrNotFound)
+				return
+			}
+			if stored != nil {
+				assert.Empty(t, stored.URL, "a rejected proxy URL must not be persisted")
+			}
+		})
+	}
+}
