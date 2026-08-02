@@ -7,6 +7,8 @@ import (
 	"context"
 	cryptoRand "crypto/rand"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -415,6 +417,191 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 
 	chained := lib.ChainMiddlewares(handler, middleware)
 	chained(ctx)
+}
+
+// TestRecoveryMiddleware_RecoversFromPanic proves a panicking handler no longer
+// takes down the process: the request is answered with a 500 instead of
+// unwinding past RecoveryMiddleware.
+func TestRecoveryMiddleware_RecoversFromPanic(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := &fasthttp.RequestCtx{}
+
+	handler := func(ctx *fasthttp.RequestCtx) {
+		values := []int{1, 2, 3}
+		_ = values[10] // out-of-bounds access, mirrors an unguarded slice index in request-derived parsing
+	}
+
+	wrapped := RecoveryMiddleware(newRecoveryTestCors())(handler)
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panic escaped RecoveryMiddleware: %v", r)
+			}
+		}()
+		wrapped(ctx)
+	}()
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	}
+}
+
+// TestRecoveryMiddleware_DoesNotLogPanicValue asserts the recovery log never echoes
+// an arbitrary panic value, which can wrap request content or secrets, while still
+// keeping runtime error messages, which are runtime-generated and carry no request data.
+func TestRecoveryMiddleware_DoesNotLogPanicValue(t *testing.T) {
+	capLogger := &captureLogger{}
+	SetLogger(capLogger)
+	defer SetLogger(&mockLogger{})
+
+	secretPanic := func(*fasthttp.RequestCtx) { panic(errors.New("upstream rejected key sk-secret-123")) }
+	RecoveryMiddleware(newRecoveryTestCors())(secretPanic)(&fasthttp.RequestCtx{})
+
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs = %d, want 1", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[0], "sk-secret-123") {
+		t.Errorf("recovery log leaked the panic value: %q", capLogger.errors[0])
+	}
+	if !strings.Contains(capLogger.errors[0], "*errors.errorString") {
+		t.Errorf("recovery log = %q, want the panic value type *errors.errorString", capLogger.errors[0])
+	}
+
+	runtimePanic := func(*fasthttp.RequestCtx) {
+		values := []int{1, 2, 3}
+		idx := 10
+		_ = values[idx]
+	}
+	RecoveryMiddleware(newRecoveryTestCors())(runtimePanic)(&fasthttp.RequestCtx{})
+
+	if len(capLogger.errors) != 2 {
+		t.Fatalf("error logs = %d, want 2", len(capLogger.errors))
+	}
+	if !strings.Contains(capLogger.errors[1], "index out of range [10] with length 3") {
+		t.Errorf("recovery log = %q, want the runtime error message kept", capLogger.errors[1])
+	}
+}
+
+// TestRecoveryMiddleware_PassesThroughNormalRequests confirms the middleware is
+// a no-op for handlers that don't panic.
+func TestRecoveryMiddleware_PassesThroughNormalRequests(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := &fasthttp.RequestCtx{}
+	handlerCalled := false
+
+	handler := func(ctx *fasthttp.RequestCtx) {
+		handlerCalled = true
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	}
+
+	wrapped := RecoveryMiddleware(newRecoveryTestCors())(handler)
+	wrapped(ctx)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusOK, ctx.Response.StatusCode())
+	}
+}
+
+// newRecoveryTestCors returns a CorsMiddleware with default config (localhost
+// origins allowed) for RecoveryMiddleware tests.
+func newRecoveryTestCors() *CorsMiddleware {
+	return NewCorsMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{}})
+}
+
+// TestRecoveryMiddleware_KeepsOuterHeadersAndLogsStatus runs a panic through the
+// production server-level chain (ServerRootHandler). The 500 must still
+// carry the security and CORS headers the outer middlewares set before the
+// panic, and the CORS access log must record 500, not the default 200.
+func TestRecoveryMiddleware_KeepsOuterHeadersAndLogsStatus(t *testing.T) {
+	capLogger := &captureLogger{}
+	SetLogger(capLogger)
+	defer SetLogger(&mockLogger{})
+
+	cors := newRecoveryTestCors()
+	panicking := func(ctx *fasthttp.RequestCtx) {
+		ctx.Response.Header.Set("X-Handler-Partial", "stale")
+		panic("boom")
+	}
+	handler := ServerRootHandler(cors, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, panicking)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Origin", "http://localhost:3000")
+	handler(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusInternalServerError)
+	}
+	if got := string(ctx.Response.Header.Peek("X-Frame-Options")); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")); got != "http://localhost:3000" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want http://localhost:3000", got)
+	}
+	if got := string(ctx.Response.Header.Peek("X-Handler-Partial")); got != "" {
+		t.Errorf("X-Handler-Partial = %q, want partial handler headers dropped", got)
+	}
+	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got != "" {
+		t.Errorf("x-bifrost-trace-id = %q, want none when Tracing did not run", got)
+	}
+	if len(capLogger.events) != 1 {
+		t.Fatalf("access log events = %d, want 1", len(capLogger.events))
+	}
+	if got := capLogger.events[0].intFields["http.status_code"]; got != fasthttp.StatusInternalServerError {
+		t.Errorf("access log http.status_code = %d, want %d", got, fasthttp.StatusInternalServerError)
+	}
+}
+
+// TestRecoveryMiddleware_TracingRecordsPanicAsError runs a panic through the
+// production stack: ServerRootHandler around the inference-route outer chain
+// (InferenceOuterMiddlewares). The root span must end as an
+// error with http.status_code 500, not be exported as a successful request.
+func TestRecoveryMiddleware_TracingRecordsPanicAsError(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	plugin := &captureTracePlugin{done: make(chan struct{})}
+	tm := NewTracingMiddleware(tracer)
+	tm.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	panicking := func(*fasthttp.RequestCtx) { panic("boom") }
+	cors := newRecoveryTestCors()
+	route := lib.ChainMiddlewares(panicking, InferenceOuterMiddlewares(tm, cors)...)
+	handler := ServerRootHandler(cors, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, route)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("x-request-id", "req-panic-1")
+	handler(ctx)
+
+	// The 500 must still carry the correlation IDs so the caller can find the trace.
+	if got := string(ctx.Response.Header.Peek("x-request-id")); got != "req-panic-1" {
+		t.Errorf("x-request-id = %q, want req-panic-1", got)
+	}
+	if got := string(ctx.Response.Header.Peek("x-bifrost-trace-id")); got == "" {
+		t.Error("expected x-bifrost-trace-id on the recovered 500")
+	}
+
+	select {
+	case <-plugin.done:
+		if plugin.rootStatus != schemas.SpanStatusError {
+			t.Errorf("root span status = %v, want %v", plugin.rootStatus, schemas.SpanStatusError)
+		}
+		if plugin.rootStatusCode != fasthttp.StatusInternalServerError {
+			t.Errorf("root span http.status_code = %v, want %d", plugin.rootStatusCode, fasthttp.StatusInternalServerError)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("trace was not flushed to the observability plugin")
+	}
 }
 
 func TestIsInferenceWSEndpoint(t *testing.T) {
@@ -2165,6 +2352,49 @@ func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T)
 	}
 }
 
+// TestRequestDecompressionMiddleware_StreamingPath_ReleasedOnPanic asserts the pooled
+// streaming decompressor is released even when the handler chain panics and
+// RecoveryMiddleware recovers it. zstd is used because ReleaseZstdDecoder calls
+// Reset(nil), which detaches the source: a released decoder can no longer yield
+// the body, while an unreleased one still can.
+func TestRequestDecompressionMiddleware_StreamingPath_ReleasedOnPanic(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	compressedBody, err := zstdCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to encode body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "zstd")
+	// Chunked (-1) triggers the streaming path regardless of compressed size.
+	ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), -1)
+
+	var decoder io.Reader
+	panicking := func(ctx *fasthttp.RequestCtx) {
+		decoder = ctx.RequestBodyStream()
+		panic("boom")
+	}
+	RecoveryMiddleware(newRecoveryTestCors())(RequestDecompressionMiddleware(config)(panicking))(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", ctx.Response.StatusCode(), fasthttp.StatusInternalServerError)
+	}
+	if decoder == nil {
+		t.Fatal("handler did not observe the streaming decompressor")
+	}
+	if got, _ := io.ReadAll(decoder); bytes.Equal(got, plainBody) {
+		t.Error("streaming decompressor was not released after a recovered panic")
+	}
+}
+
 func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{
@@ -2373,15 +2603,18 @@ func zstdCompress(data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// captureTracePlugin is an ObservabilityPlugin that captures the root and llm.call
-// span timestamps from a flushed trace. Timestamps are copied synchronously inside
-// Inject because the tracer releases the pooled trace once Inject returns.
+// captureTracePlugin is an ObservabilityPlugin that captures the root span status and
+// the root and llm.call span timestamps from a flushed trace. Values are copied
+// synchronously inside Inject because the tracer releases the pooled trace once
+// Inject returns.
 type captureTracePlugin struct {
-	done      chan struct{}
-	rootStart time.Time
-	rootEnd   time.Time
-	llmEnd    time.Time
-	foundLLM  bool
+	done           chan struct{}
+	rootStart      time.Time
+	rootEnd        time.Time
+	rootStatus     schemas.SpanStatus
+	rootStatusCode any
+	llmEnd         time.Time
+	foundLLM       bool
 }
 
 func (p *captureTracePlugin) GetName() string { return "capture-trace" }
@@ -2393,6 +2626,8 @@ func (p *captureTracePlugin) Inject(_ context.Context, trace *schemas.Trace) err
 	}
 	p.rootStart = trace.RootSpan.StartTime
 	p.rootEnd = trace.RootSpan.EndTime
+	p.rootStatus = trace.RootSpan.Status
+	p.rootStatusCode = trace.RootSpan.Attributes["http.status_code"]
 	for _, span := range trace.Spans {
 		if span != nil && span.Kind == schemas.SpanKindLLMCall {
 			p.llmEnd = span.EndTime
@@ -2558,27 +2793,36 @@ func TestTracingMiddleware_SetsCorrelationHeaders(t *testing.T) {
 	})
 }
 
-// captureLogEvent records the structured string fields emitted on the access log so
-// a test can assert which correlation keys were written.
+// captureLogEvent records the structured string and int fields emitted on the access
+// log so a test can assert which correlation keys and status were written.
 type captureLogEvent struct {
 	strFields map[string]string
+	intFields map[string]int
 }
 
 func (c *captureLogEvent) Str(key, val string) schemas.LogEventBuilder {
 	c.strFields[key] = val
 	return c
 }
-func (c *captureLogEvent) Int(string, int) schemas.LogEventBuilder     { return c }
+func (c *captureLogEvent) Int(key string, val int) schemas.LogEventBuilder {
+	c.intFields[key] = val
+	return c
+}
 func (c *captureLogEvent) Int64(string, int64) schemas.LogEventBuilder { return c }
 func (c *captureLogEvent) Send()                                       {}
 
 type captureLogger struct {
 	mockLogger
 	events []*captureLogEvent
+	errors []string
+}
+
+func (l *captureLogger) Error(format string, args ...any) {
+	l.errors = append(l.errors, fmt.Sprintf(format, args...))
 }
 
 func (l *captureLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
-	e := &captureLogEvent{strFields: map[string]string{}}
+	e := &captureLogEvent{strFields: map[string]string{}, intFields: map[string]int{}}
 	l.events = append(l.events, e)
 	return e
 }
