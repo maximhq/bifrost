@@ -253,7 +253,7 @@ Use `env.VARIABLE_NAME` syntax to reference environment variables for sensitive 
 
 #### Auth-aware clients in `config.json`
 
-All five auth types can be declared in `config.json`. The three that need an admin verification step (`oauth`, `per_user_oauth`, `per_user_headers`) boot into a **`pending_verification`** runtime state and surface an admin CTA in the MCP Gateway UI:
+All six auth types can be declared in `config.json`. The four that need an admin verification step (`oauth`, `per_user_oauth`, `per_user_headers`, `token_exchange`) boot into a **`pending_verification`** runtime state and surface an admin CTA in the MCP Gateway UI:
 
 ```json
 {
