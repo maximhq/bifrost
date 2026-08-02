@@ -734,6 +734,75 @@ func TestAuthMiddleware_SkillsPublicServeManagementSplit(t *testing.T) {
 	})
 }
 
+// TestAuthMiddleware_EncodedTraversalDoesNotBypassAuth is a regression test for a
+// path-normalization desync: fasthttp/router dispatches routes by matching
+// ctx.Request.URI().PathOriginal() (raw, still percent-encoded) against registered
+// patterns, so "%2F" is one opaque character to the router rather than a segment
+// separator. If the whitelist check instead matches against ctx.Path() (decoded AND
+// dot-segment-collapsed), an encoded traversal like "..%2Fskills%2Fserve%2Fx" looks
+// like the whitelisted "/api/skills/serve/x" to auth while the router actually
+// dispatches to a protected, parameterized route (e.g. "/api/providers/{provider}"),
+// letting an unauthenticated caller reach it. Verifies the fix: matching on the same
+// raw path the router uses keeps these decisions congruent, for any prefix collision,
+// not just this one.
+func TestAuthMiddleware_EncodedTraversalDoesNotBypassAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	cases := []string{
+		// The exact PoC from the advisory: decodes+normalizes to the whitelisted
+		// "/api/skills/serve/malicious", but the router dispatches this raw string
+		// (one opaque "{provider}" segment) to the protected providers handler.
+		"/api/providers/..%2Fskills%2Fserve%2Fmalicious",
+		// Same trick against a different whitelisted prefix.
+		"/api/plugins/..%2Fapi%2Fdev%2Fmalicious",
+		// Doubly-encoded dot segment, in case any layer decodes twice.
+		"/api/providers/%252e%252e%252Fskills%252Fserve%252Fmalicious",
+	}
+
+	for _, uri := range cases {
+		t.Run(uri, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(uri)
+
+			nextCalled := false
+			handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			})
+			handler(ctx)
+
+			if nextCalled {
+				t.Fatalf("encoded-traversal request %q must not bypass auth", uri)
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+				t.Fatalf("expected %d for %q, got %d", fasthttp.StatusUnauthorized, uri, ctx.Response.StatusCode())
+			}
+		})
+	}
+
+	// Sanity check: the legitimate, unencoded whitelisted route must still bypass auth.
+	t.Run("legitimate skills serve route still bypasses auth", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/skills/serve/my-skill.git/info/refs")
+
+		nextCalled := false
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {
+			nextCalled = true
+		})
+		handler(ctx)
+
+		if !nextCalled {
+			t.Fatal("expected legitimate public skills serving route to still bypass auth")
+		}
+	})
+}
+
 // TestAuthMiddleware_WhitelistedRoutes tests that whitelisted routes bypass auth
 func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	SetLogger(&mockLogger{})

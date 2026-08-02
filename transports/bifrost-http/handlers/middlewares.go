@@ -1011,8 +1011,18 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				next(ctx)
 				return
 			}
-			// Match the whitelist against the path only
-			url := string(ctx.Path())
+			// Match the whitelist against the RAW request path (PathOriginal), not the
+			// decoded/normalized ctx.Path(). fasthttp/router dispatches routes by matching
+			// PathOriginal() directly against registered patterns (it never decodes %2F or
+			// collapses ".." before route selection - see router.Handler), so an encoded
+			// traversal like "/api/providers/..%2Fskills%2Fserve%2Fx" is ONE opaque segment
+			// to the router (matching the protected "/api/providers/{provider}" route) but
+			// decodes+normalizes to "/api/skills/serve/x" via ctx.Path() - a whitelisted
+			// prefix. Matching on ctx.Path() here let that request sail through unauthenticated
+			// while the router dispatched it to a protected, parameterized admin handler.
+			// Using the same raw string the router uses keeps this decision congruent with
+			// router dispatch for every route, not just the specific one in a given PoC.
+			url := string(ctx.Request.URI().PathOriginal())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
 				next(ctx)
