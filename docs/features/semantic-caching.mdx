@@ -400,6 +400,15 @@ The cache key is the **partition** every lookup and write is scoped to — it's 
 
 Pick a key granularity that matches how much you want to share: a coarse key (e.g. a feature name) maximizes hit rate across users; a fine key (e.g. a per-user or per-session ID) keeps caches private at the cost of fewer hits.
 
+<Note>
+When a request carries a resolved virtual key, the effective cache partition is automatically
+scoped to that virtual key on top of whatever `x-bf-cache-key`/`default_cache_key` you set - two
+different virtual keys can never share a cache entry, even if they're configured with the exact
+same cache key. This applies with zero configuration; there's nothing to opt into. Requests
+without a virtual key (no governance/VK enforcement in use) are partitioned by cache key alone,
+same as before.
+</Note>
+
 <Tabs group="cache-triggering">
 
 <Tab title="HTTP API">
@@ -443,7 +452,7 @@ Every plugin default can be overridden per request via headers (HTTP) or context
 |--------|------------------|-------|--------|
 | `x-bf-cache-key` | `CacheKey` | string | Scope this request to a cache partition. Required (or `default_cache_key`) for caching to engage. |
 | `x-bf-cache-ttl` | `CacheTTLKey` | duration string or seconds | Override TTL for this request. Invalid values are ignored. |
-| `x-bf-cache-threshold` | `CacheThresholdKey` | float (0–1) | Override the semantic similarity threshold. Clamped to `[0,1]`. |
+| `x-bf-cache-threshold` | `CacheThresholdKey` | float (0–1) | Raise the semantic similarity threshold for this request (stricter matching, fewer hits). Clamped to `[0,1]`; a value below the plugin's configured threshold is floored at the configured value rather than loosening it - callers can only make matching stricter, never looser. |
 | `x-bf-cache-type` | `CacheTypeKey` | `direct` or `semantic` | Limit lookup to a single path. |
 | `x-bf-cache-no-store` | `CacheNoStoreKey` | `true` | Skip writing the response (still serves cached hits). |
 

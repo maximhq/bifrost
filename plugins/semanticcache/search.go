@@ -67,14 +67,7 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, state *
 	state.Embeddings = embedding
 	state.EmbeddingsInputTokens = inputTokens
 
-	cacheThreshold := plugin.config.Threshold
-	if v := ctx.Value(CacheThresholdKey); v != nil {
-		if threshold, ok := v.(float64); ok {
-			cacheThreshold = threshold
-		} else {
-			plugin.logger.Warn("Threshold is not a float64, using default threshold")
-		}
-	}
+	cacheThreshold := plugin.resolveCacheThreshold(ctx)
 
 	provider, model, _ := req.GetRequestFields()
 	strictFilters := []vectorstore.Query{

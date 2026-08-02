@@ -455,14 +455,54 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 // resolveCacheKey returns the per-request cache key (or the configured default)
 // and a bool indicating whether the caller should proceed with caching.
+//
+// The returned key is always scoped to the authenticated virtual key when one is
+// present on the request, so a shared cache_key/default_cache_key - a common,
+// intentional config to make caching work across a whole deployment - can never
+// let one tenant's cached response (including any PII or tool-call payload it
+// contains) be served to a different tenant's request. This is the single choke
+// point both the write path (PostLLMHook) and read path (PreLLMHook, both direct
+// and semantic search modes) resolve the cache bucket through, so scoping it here
+// closes the leak everywhere at once.
+//
+// Requests with no virtual key (governance/VK enforcement not in use) keep
+// today's un-scoped behavior: there's no tenant boundary to protect in that
+// deployment shape, and scoping by an empty identity would just be a no-op with
+// extra steps.
 func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool) {
-	if cacheKey, ok := ctx.Value(CacheKey).(string); ok && cacheKey != "" {
-		return cacheKey, true
+	rawKey, ok := ctx.Value(CacheKey).(string)
+	if !ok || rawKey == "" {
+		rawKey, ok = plugin.config.DefaultCacheKey, plugin.config.DefaultCacheKey != ""
 	}
-	if plugin.config.DefaultCacheKey != "" {
-		return plugin.config.DefaultCacheKey, true
+	if !ok {
+		return "", false
 	}
-	return "", false
+	if vkID, isSet := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); isSet && vkID != "" {
+		return "vk:" + vkID + ":" + rawKey, true
+	}
+	return rawKey, true
+}
+
+// resolveCacheThreshold returns the similarity threshold to use for a semantic search: the
+// operator-configured value, optionally raised (never lowered) by a per-request override. A
+// caller may only make the match stricter, never looser - an unfloored override would defeat
+// the similarity gate entirely, letting any probe, however unrelated, return the nearest entry
+// in the caller's bucket.
+func (plugin *Plugin) resolveCacheThreshold(ctx *schemas.BifrostContext) float64 {
+	cacheThreshold := plugin.config.Threshold
+	v := ctx.Value(CacheThresholdKey)
+	if v == nil {
+		return cacheThreshold
+	}
+	threshold, ok := v.(float64)
+	if !ok {
+		plugin.logger.Warn("Threshold is not a float64, using default threshold")
+		return cacheThreshold
+	}
+	if threshold > cacheThreshold {
+		return threshold
+	}
+	return cacheThreshold
 }
 
 // resolveCacheTypes returns whether direct and semantic search paths should
