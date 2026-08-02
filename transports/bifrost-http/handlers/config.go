@@ -1013,6 +1013,20 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
 				return
 			}
+			// Setting the outbound proxy is at least as sensitive as setting a
+			// provider's base URL: once enabled for inference/API, this proxy
+			// URL replaces the client's Dial function entirely (see
+			// HTTPClientFactory.configureFasthttpProxy), which routes every
+			// outbound provider request - including Authorization/x-api-key
+			// headers - through it and bypasses ConfigureDialer's own
+			// private-IP guard for that client. The destination itself isn't
+			// inherently unsafe - corporate egress proxies are normally on an
+			// internal address - the vulnerability is that anyone
+			// unauthenticated could set it at all.
+			if isAuthBypassed(ctx) {
+				SendError(ctx, fasthttp.StatusForbidden, "Setting the outbound proxy URL requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.")
+				return
+			}
 			// Validate timeout if provided
 			if payload.Timeout < 0 {
 				SendError(ctx, fasthttp.StatusBadRequest, "proxy timeout must be non-negative")
@@ -1100,6 +1114,16 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		"status":  "success",
 		"message": "proxy configuration updated successfully",
 	})
+}
+
+// isAuthBypassed reports whether ctx was let through the auth middleware's fail-open
+// branch (dashboard auth disabled/unconfigured) rather than a genuine credential check.
+// Handlers gating a capability that's fine for a real admin but dangerous for anyone on
+// the network should check this, not IsLocalAdminContextKey, which is also true for
+// genuinely authenticated sessions.
+func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	return bypassed
 }
 
 // headerFilterConfigEqual compares two GlobalHeaderFilterConfig for equality

@@ -99,7 +99,13 @@ proxy-config:
   put:
     operationId: updateProxyConfig
     summary: Update proxy configuration
-    description: Updates the global proxy configuration.
+    description: |
+      Updates the global proxy configuration.
+
+      Enabling the proxy with a URL requires a genuinely authenticated admin session - it is
+      refused with 403 if dashboard authentication is disabled or unconfigured, even though
+      other management endpoints remain reachable in that state. Disabling the proxy is not
+      restricted.
     tags:
       - Configuration
     requestBody:
@@ -119,6 +125,10 @@ proxy-config:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          The proxy was enabled with a URL and dashboard authentication is disabled or
+          unconfigured (the request was not genuinely authenticated)
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
