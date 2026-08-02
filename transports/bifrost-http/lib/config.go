@@ -1165,6 +1165,21 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	if oc := cc.OAuth2ServerConfig; oc != nil && oc.AuthCodeTTL > configstoreTables.MaxAuthCodeTTL {
 		return fmt.Errorf("oauth2_server_config.auth_code_ttl %d exceeds the maximum of %d seconds (15 minutes)", oc.AuthCodeTTL, configstoreTables.MaxAuthCodeTTL)
 	}
+	// When OAuth discovery is enabled, every issuer reference (the discovery
+	// documents' issuer/token_endpoint/jwks_uri, the authorize redirect, JWT
+	// iss/aud) must come from a fixed, operator-set value. Left unset, the
+	// server falls back to deriving it from the per-request Host header - fully
+	// attacker-controlled and reachable pre-auth via the always-public
+	// /.well-known/ routes - letting a spoofed Host poison the issuer every
+	// client trusts. Same fail-fast-at-load philosophy as the auth_code_ttl
+	// check above: a config.json or pre-existing DB row that predates this
+	// requirement must not silently run in a vulnerable state.
+	if cc.IsMCPOAuthDiscoveryEnabled() {
+		oc := cc.OAuth2ServerConfig
+		if oc == nil || !oc.IssuerURL.IsSet() {
+			return fmt.Errorf("oauth2_server_config.issuer_url must be set when mcp_server_auth_mode is oauth or both")
+		}
+	}
 	return nil
 }
 

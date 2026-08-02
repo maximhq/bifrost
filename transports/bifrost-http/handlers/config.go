@@ -403,6 +403,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Enabling discovery without a pinned issuer_url would leave every issuer
+	// reference (discovery documents, authorize redirect, JWT iss/aud) derived
+	// from the unauthenticated, per-request Host header - reject the write here
+	// rather than accepting it and requiring a restart to discover the
+	// misconfiguration (validateClientConfig enforces the same invariant at
+	// load time, for config.json and pre-existing DB rows).
+	if (effectiveAuthMode == configstoreTables.MCPServerAuthModeOAuth || effectiveAuthMode == configstoreTables.MCPServerAuthModeBoth) &&
+		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet()) {
+		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set when mcp_server_auth_mode is oauth or both")
+		return
+	}
+
 	// Cap auth_code_ttl so a leaked one-time code can't stay valid for long.
 	// This is an unconditional invariant on the stored value — enforced in every
 	// mode (not just both | oauth), mirroring the load-time validateClientConfig

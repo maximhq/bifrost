@@ -103,7 +103,7 @@ During the consent step, Bifrost shows the user how they can identify themselves
 
 1. Open **Config** and go to the **MCP** settings.
 2. Set **MCP Server Auth Mode** to `headers`, `both`, or `oauth`.
-3. When using `both` or `oauth`, optionally set the **OAuth Server** settings: an **Issuer URL** (required for multi-host deployments), and the **Authorization Code** and **Access Token** lifetimes.
+3. When using `both` or `oauth`, set the **OAuth Server** settings: an **Issuer URL** (required, since otherwise the issuer would be derived from the unauthenticated request `Host` header), and the **Authorization Code** and **Access Token** lifetimes.
 4. Click **Save**.
 
 ![MCP server auth mode and OAuth server settings](/media/ui-mcp-server-auth-mode.png)
@@ -145,7 +145,7 @@ curl -X PUT http://localhost:8080/api/config \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `mcp_server_auth_mode` | string | No | `headers` (default), `both`, or `oauth`. |
-| `oauth2_server_config.issuer_url` | string | No | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. Required for multi-host deployments; single-host can omit it (falls back to the request `Host`). Supports `env.MY_VAR` syntax. |
+| `oauth2_server_config.issuer_url` | string | Yes, when mode is `both` or `oauth` | Stable public URL advertised as the issuer in discovery docs and the JWT `iss` claim. Supports `env.MY_VAR` syntax. |
 | `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
 
@@ -155,6 +155,10 @@ curl -X PUT http://localhost:8080/api/config \
 <Note>
 `oauth2_server_config` only applies when `mcp_server_auth_mode` is `both` or `oauth`. The RSA signing key used for JWTs is generated automatically the first time it's needed — no setup required. It is persisted to the database, so it survives restarts and is shared across all replicas; previously issued tokens stay valid after a restart.
 </Note>
+
+<Warning>
+`issuer_url` is required whenever `mcp_server_auth_mode` is `both` or `oauth`, for single-host deployments too: saving a config that turns on discovery without one is rejected. Left to a per-request fallback, the issuer identity would be derived from the (unauthenticated, spoofable) request `Host` header, which lets an attacker who can reach the always-public `/.well-known/` endpoints, even on a locked dashboard, poison the `issuer`, `token_endpoint`, and `jwks_uri` that MCP clients trust.
+</Warning>
 
 ---
 
@@ -241,7 +245,12 @@ In `headers` mode these endpoints return `404`.
 ### Token rejected after issuer change
 **Symptom:** Previously issued tokens fail validation after changing `issuer_url`.
 **Cause:** The `iss` claim in existing tokens no longer matches the configured issuer.
-**Fix:** Clients reconnect to obtain tokens with the new issuer; set a stable `issuer_url` up front in multi-host deployments.
+**Fix:** Clients reconnect to obtain tokens with the new issuer.
+
+### Save rejected with "issuer_url must be set"
+**Symptom:** Switching `mcp_server_auth_mode` to `both` or `oauth` is rejected with a 400 mentioning `issuer_url`.
+**Cause:** `issuer_url` is required whenever discovery is enabled; see the warning above.
+**Fix:** Set `oauth2_server_config.issuer_url` to Bifrost's stable public URL in the same request.
 
 ---
 
