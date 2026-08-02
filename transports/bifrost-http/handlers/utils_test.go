@@ -2,12 +2,23 @@ package handlers
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// useUnguardedURLAccessibilityDialer swaps checkURLAccessibility's dial context
+// for a plain dialer so the test can reach a loopback-bound httptest.Server,
+// restoring the production SSRF-safe dialer afterward. Test-only.
+func useUnguardedURLAccessibilityDialer(t *testing.T) {
+	t.Helper()
+	prev := checkURLAccessibilityDialContext
+	checkURLAccessibilityDialContext = (&net.Dialer{}).DialContext
+	t.Cleanup(func() { checkURLAccessibilityDialContext = prev })
+}
 
 // TestIsUniqueConstraintError recognizes common database unique-constraint messages.
 func TestIsUniqueConstraintError(t *testing.T) {
@@ -57,6 +68,7 @@ func TestCheckURLAccessibility_FileMissing(t *testing.T) {
 }
 
 func TestCheckURLAccessibility_HTTP200(t *testing.T) {
+	useUnguardedURLAccessibilityDialer(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -68,6 +80,7 @@ func TestCheckURLAccessibility_HTTP200(t *testing.T) {
 }
 
 func TestCheckURLAccessibility_HTTPNon200(t *testing.T) {
+	useUnguardedURLAccessibilityDialer(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -75,5 +88,26 @@ func TestCheckURLAccessibility_HTTPNon200(t *testing.T) {
 
 	if err := checkURLAccessibility(srv.URL); err == nil {
 		t.Fatal("expected error for HTTP 404, got nil")
+	}
+}
+
+// TestCheckURLAccessibility_BlocksLoopbackByDefault proves the production
+// dialer (not overridden) refuses a loopback target - the actual SSRF guard
+// this advisory closes: a plain HTTP client with no dial-time IP validation
+// let an admin-supplied pricing_url/model_parameters_url/mcp_library_url probe
+// internal ports and reflect service banners (e.g. SSH) back in the error.
+func TestCheckURLAccessibility_BlocksLoopbackByDefault(t *testing.T) {
+	SetLogger(&mockLogger{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := checkURLAccessibility(srv.URL)
+	if err == nil {
+		t.Fatal("expected loopback target to be blocked, got nil error")
+	}
+	if err.Error() != "URL is not accessible" {
+		t.Fatalf("expected a generic error (no reflected transport detail), got: %v", err)
 	}
 }
