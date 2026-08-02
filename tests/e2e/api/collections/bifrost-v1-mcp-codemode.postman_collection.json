@@ -1,0 +1,1146 @@
+{
+  "info": {
+    "name": "Bifrost V1 - MCP Code Mode",
+    "description": "Validates MCP Code Mode end to end against one Code Mode client (codemcp: tools_to_execute [echo, add], tools_to_auto_execute [echo]; greet is not executable) and a scripted OpenAI-compatible model. Run via runners/individual/run-newman-mcp-codemode-tests.sh, which boots the server, the upstream MCP server and the model fixture. Core guarantees: (1) the Code Mode meta-tools expose only tools_to_execute; (2) /v1/mcp/tool/execute is the approved path, bound by tools_to_execute only, however the code reaches the tool (direct, getattr, def); (3) in the agent loop the pre-flight scan returns code that calls a non-auto tool for approval, and code that hides such a call is refused at invocation time; (4) an approved call returned by the agent runs when re-submitted.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// One nonce per run: the LLM fixture filters its recorded requests by it.",
+          "if (!pm.collectionVariables.get('run_nonce')) {",
+          "  pm.collectionVariables.set('run_nonce', 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8092",
+      "type": "string"
+    },
+    {
+      "key": "llm_fixture_url",
+      "value": "http://127.0.0.1:8791",
+      "type": "string"
+    },
+    {
+      "key": "run_nonce",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "approved_tool_call",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Discovery",
+      "item": [
+        {
+          "name": "listToolFiles lists the codemcp server file",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('lists servers/codemcp.pyi', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('servers/');",
+                  "  pm.expect(content, pm.response.text()).to.include('codemcp.pyi');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-list\", \"type\": \"function\", \"function\": {\"name\": \"listToolFiles\", \"arguments\": \"{}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "readToolFile shows only tools_to_execute tools",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('declares add and echo', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('def add(');",
+                  "  pm.expect(content, pm.response.text()).to.include('def echo(');",
+                  "});",
+                  "pm.test('greet is hidden (not in tools_to_execute)', function () {",
+                  "  pm.expect(content, pm.response.text()).to.not.include('greet');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-read\", \"type\": \"function\", \"function\": {\"name\": \"readToolFile\", \"arguments\": \"{\\\"fileName\\\": \\\"servers/codemcp.pyi\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "getToolDocs documents codemcp.add",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('docs name the tool and its description', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('codemcp.add');",
+                  "  pm.expect(content, pm.response.text()).to.include('Add two numbers');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-docs\", \"type\": \"function\", \"function\": {\"name\": \"getToolDocs\", \"arguments\": \"{\\\"server\\\": \\\"codemcp\\\", \\\"tool\\\": \\\"add\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Approved execution (/v1/mcp/tool/execute)",
+      "item": [
+        {
+          "name": "Plain logic without tool calls",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('returns 42', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Execution completed successfully');",
+                  "  pm.expect(content, pm.response.text()).to.include('Return value: 42');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-pure\", \"type\": \"function\", \"function\": {\"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"result = 6 * 7\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Calls echo (on both allow-lists)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('echo ran', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Return value: \"Echo: hi-echo\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-echo\", \"type\": \"function\", \"function\": {\"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"result = codemcp.echo(message=\\\\\\\"hi-echo\\\\\\\")\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Calls add (executable, not auto-executable) - approved run is not denied",
+          "description": "Regression for PR #5766 review 4083464953: tools_to_auto_execute means 'needs approval', never 'denied'. A call through /v1/mcp/tool/execute is the approved path.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('add ran', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Return value: \"2 + 3 = 5\"');",
+                  "});",
+                  "pm.test('tools_to_auto_execute does not deny an approved run', function () {",
+                  "  pm.expect(content, pm.response.text()).to.not.include('requires approval');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-add\", \"type\": \"function\", \"function\": {\"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"result = codemcp.add(a=2, b=3)\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Calls add via getattr - approved run is not denied",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('add ran through getattr', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Return value: \"4 + 5 = 9\"');",
+                  "  pm.expect(content, pm.response.text()).to.not.include('requires approval');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-getattr-add\", \"type\": \"function\", \"function\": {\"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"result = getattr(codemcp, \\\\\\\"add\\\\\\\")(a=4, b=5)\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Calls add from a user-defined function",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('helper() ran and called add', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Return value: \"7 + 10 = 17\"');",
+                  "  pm.expect(content, pm.response.text()).to.not.include('requires approval');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-def-add\", \"type\": \"function\", \"function\": {\"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"def helper(x):\\\\n    return codemcp.add(a=x, b=10)\\\\n\\\\nresult = helper(7)\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Responses format calls add",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('returns a function_call_output for the same call_id', function () {",
+                  "  pm.expect(body.type, pm.response.text()).to.equal('function_call_output');",
+                  "  pm.expect(body.call_id, pm.response.text()).to.equal('cm-resp-add');",
+                  "});",
+                  "pm.test('add ran', function () {",
+                  "  pm.expect(String(body.output || ''), pm.response.text()).to.include('Return value: \"2 + 3 = 5\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"type\": \"function_call\", \"call_id\": \"cm-resp-add\", \"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"result = codemcp.add(a=2, b=3)\\\"}\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute?format=responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ],
+              "query": [
+                {
+                  "key": "format",
+                  "value": "responses"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rejections",
+      "item": [
+        {
+          "name": "Calls greet (not in tools_to_execute)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('greet is not bound in the sandbox', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Execution runtime error');",
+                  "  pm.expect(content, pm.response.text()).to.include('no .greet attribute');",
+                  "});",
+                  "pm.test('greet never ran', function () {",
+                  "  pm.expect(content, pm.response.text()).to.not.include('[TOOL] codemcp.greet');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-greet\", \"type\": \"function\", \"function\": {\"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"result = codemcp.greet(name=\\\\\\\"bob\\\\\\\")\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Calls greet via getattr (not in tools_to_execute)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('getattr cannot reach greet', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Execution runtime error');",
+                  "  pm.expect(content, pm.response.text()).to.include('no .greet attribute');",
+                  "  pm.expect(content, pm.response.text()).to.not.include('[TOOL] codemcp.greet');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-getattr-greet\", \"type\": \"function\", \"function\": {\"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"result = getattr(codemcp, \\\\\\\"greet\\\\\\\")(name=\\\\\\\"bob\\\\\\\")\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Syntax error is reported and runs no tool",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('reports the parse error with its location', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Execution runtime error');",
+                  "  pm.expect(content, pm.response.text()).to.include('code.star:1');",
+                  "});",
+                  "pm.test('no tool ran', function () {",
+                  "  pm.expect(content, pm.response.text()).to.not.include('[TOOL]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-syntax\", \"type\": \"function\", \"function\": {\"name\": \"executeToolCode\", \"arguments\": \"{\\\"code\\\": \\\"result = codemcp.add(a=1,\\\"}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Invalid format query is rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('names the allowed formats', function () {",
+                  "  pm.expect(pm.response.text()).to.include(\"must be 'chat' or 'responses'\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-bad-format\", \"type\": \"function\", \"function\": {\"name\": \"listToolFiles\", \"arguments\": \"{}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute?format=bogus",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ],
+              "query": [
+                {
+                  "key": "format",
+                  "value": "bogus"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Missing tool name is rejected",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('says the tool name is required', function () {",
+                  "  pm.expect(pm.response.text()).to.include('Tool function name is required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"cm-no-name\", \"type\": \"function\", \"function\": {\"arguments\": \"{}\"}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Agent mode (unattended)",
+      "item": [
+        {
+          "name": "Auto-executable echo runs unattended",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var choice = (body.choices || [])[0] || {};",
+                  "var message = choice.message || {};",
+                  "function fixtureRequests(scenario, done) {",
+                  "  var url = pm.variables.get('llm_fixture_url') + '/__requests?scenario=' + scenario + '&nonce=' + encodeURIComponent(pm.variables.get('run_nonce'));",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    pm.test('LLM fixture answered /__requests', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    done(err ? [] : (res.json().requests || []));",
+                  "  });",
+                  "}",
+                  "function toolMessages(req) {",
+                  "  return (req.messages || []).filter(function (m) { return m.role === 'tool'; }).map(function (m) { return String(m.content || ''); });",
+                  "}",
+                  "pm.test('loop finished with the model final answer', function () {",
+                  "  pm.expect(message.content, pm.response.text()).to.equal('done:agent_auto_echo');",
+                  "});",
+                  "fixtureRequests('agent_auto_echo', function (reqs) {",
+                  "  pm.test('model was called twice (tool call, then final)', function () {",
+                  "    pm.expect(reqs.length, JSON.stringify(reqs)).to.equal(2);",
+                  "  });",
+                  "  pm.test('model sees only the Code Mode tools, not raw codemcp-* tools', function () {",
+                  "    var names = ((reqs[0] || {}).tools || []).map(function (t) { return t.function && t.function.name; });",
+                  "    pm.expect(names, JSON.stringify(names)).to.include('executeToolCode');",
+                  "    pm.expect(names.filter(function (n) { return String(n).indexOf('codemcp') === 0; }), JSON.stringify(names)).to.have.length(0);",
+                  "  });",
+                  "  pm.test('echo result was fed back to the model', function () {",
+                  "    var tools = toolMessages(reqs[1] || {});",
+                  "    pm.expect(tools.join('\\n'), JSON.stringify(tools)).to.include('Echo: agent-auto');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Run the Code Mode scenario [scenario:agent_auto_echo] nonce={{run_nonce}}\"}]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Direct call to add is returned for approval",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var choice = (body.choices || [])[0] || {};",
+                  "var message = choice.message || {};",
+                  "function fixtureRequests(scenario, done) {",
+                  "  var url = pm.variables.get('llm_fixture_url') + '/__requests?scenario=' + scenario + '&nonce=' + encodeURIComponent(pm.variables.get('run_nonce'));",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    pm.test('LLM fixture answered /__requests', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    done(err ? [] : (res.json().requests || []));",
+                  "  });",
+                  "}",
+                  "function toolMessages(req) {",
+                  "  return (req.messages || []).filter(function (m) { return m.role === 'tool'; }).map(function (m) { return String(m.content || ''); });",
+                  "}",
+                  "var calls = message.tool_calls || [];",
+                  "pm.test('executeToolCode is returned to the caller, not run', function () {",
+                  "  pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
+                  "  pm.expect(calls.length, pm.response.text()).to.equal(1);",
+                  "  pm.expect(calls[0].function.name, pm.response.text()).to.equal('executeToolCode');",
+                  "  pm.expect(calls[0].function.arguments, pm.response.text()).to.include('codemcp.add');",
+                  "});",
+                  "// Hand the exact call to the next request, as a client does after a human approves it.",
+                  "pm.collectionVariables.set('approved_tool_call', calls.length ? JSON.stringify({ id: calls[0].id, type: 'function', function: calls[0].function }) : '');",
+                  "fixtureRequests('agent_direct_add', function (reqs) {",
+                  "  pm.test('model was called once (nothing ran, so no follow-up turn)', function () {",
+                  "    pm.expect(reqs.length, JSON.stringify(reqs)).to.equal(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Run the Code Mode scenario [scenario:agent_direct_add] nonce={{run_nonce}}\"}]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Approved executeToolCode from the agent runs add",
+          "description": "End-to-end approval flow: re-submits the tool call the previous request returned for approval. Regression for PR #5766 review 4083464953.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var content = String(body.content || '');",
+                  "pm.test('returns a tool message', function () {",
+                  "  pm.expect(body.role, pm.response.text()).to.equal('tool');",
+                  "});",
+                  "pm.test('approved code ran add', function () {",
+                  "  pm.expect(content, pm.response.text()).to.include('Return value: \"2 + 3 = 5\"');",
+                  "  pm.expect(content, pm.response.text()).to.not.include('requires approval');",
+                  "});",
+                  "pm.test('answers the approved call id', function () {",
+                  "  pm.expect(body.tool_call_id, pm.response.text()).to.equal('call_agent_direct_add');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{approved_tool_call}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/mcp/tool/execute",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Hidden add via getattr is refused at invocation",
+          "description": "The core guarantee of PR #5766: getattr hides add from the pre-flight scan, so the code auto-runs, and only the invocation-time check stops the nested call.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var choice = (body.choices || [])[0] || {};",
+                  "var message = choice.message || {};",
+                  "function fixtureRequests(scenario, done) {",
+                  "  var url = pm.variables.get('llm_fixture_url') + '/__requests?scenario=' + scenario + '&nonce=' + encodeURIComponent(pm.variables.get('run_nonce'));",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    pm.test('LLM fixture answered /__requests', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    done(err ? [] : (res.json().requests || []));",
+                  "  });",
+                  "}",
+                  "function toolMessages(req) {",
+                  "  return (req.messages || []).filter(function (m) { return m.role === 'tool'; }).map(function (m) { return String(m.content || ''); });",
+                  "}",
+                  "pm.test('loop continued to the model final answer', function () {",
+                  "  pm.expect(message.content, pm.response.text()).to.equal('done:agent_getattr_add');",
+                  "});",
+                  "fixtureRequests('agent_getattr_add', function (reqs) {",
+                  "  pm.test('model was called twice (code auto-ran, then final)', function () {",
+                  "    pm.expect(reqs.length, JSON.stringify(reqs)).to.equal(2);",
+                  "  });",
+                  "  var tools = toolMessages(reqs[1] || {}).join('\\n');",
+                  "  pm.test('nested add was refused as requiring approval', function () {",
+                  "    pm.expect(tools, tools).to.include('tool \"codemcp-add\" requires approval');",
+                  "  });",
+                  "  pm.test('add never ran', function () {",
+                  "    pm.expect(tools, tools).to.not.include('2 + 3 = 5');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Run the Code Mode scenario [scenario:agent_getattr_add] nonce={{run_nonce}}\"}]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "add inside a def is returned for approval",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('status is 200', function () {",
+                  "  pm.expect(code, pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "var choice = (body.choices || [])[0] || {};",
+                  "var message = choice.message || {};",
+                  "function fixtureRequests(scenario, done) {",
+                  "  var url = pm.variables.get('llm_fixture_url') + '/__requests?scenario=' + scenario + '&nonce=' + encodeURIComponent(pm.variables.get('run_nonce'));",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    pm.test('LLM fixture answered /__requests', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.equal(200);",
+                  "    });",
+                  "    done(err ? [] : (res.json().requests || []));",
+                  "  });",
+                  "}",
+                  "function toolMessages(req) {",
+                  "  return (req.messages || []).filter(function (m) { return m.role === 'tool'; }).map(function (m) { return String(m.content || ''); });",
+                  "}",
+                  "var calls = message.tool_calls || [];",
+                  "pm.test('executeToolCode is returned to the caller, not run', function () {",
+                  "  pm.expect(choice.finish_reason, pm.response.text()).to.equal('tool_calls');",
+                  "  pm.expect(calls.length, pm.response.text()).to.equal(1);",
+                  "  pm.expect(calls[0].function.arguments, pm.response.text()).to.include('def helper');",
+                  "});",
+                  "fixtureRequests('agent_def_add', function (reqs) {",
+                  "  pm.test('model was called once', function () {",
+                  "    pm.expect(reqs.length, JSON.stringify(reqs)).to.equal(1);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-4o-mini\", \"messages\": [{\"role\": \"user\", \"content\": \"Run the Code Mode scenario [scenario:agent_def_add] nonce={{run_nonce}}\"}]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
