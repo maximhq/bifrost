@@ -149,6 +149,102 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 }
 
+// TestAddProvider_RejectsBaseURLWhenAuthBypassed covers the second route the advisory
+// (GHSA-vj9g-7rqh-x2p4) flags: a custom provider's network_config.base_url + explicit
+// allow_private_network:true is "another route to the same SSRF primitive" as the
+// Ollama key case, since an unauthenticated caller could set both fields together and
+// self-authorize its own destination past ValidateExternalURL's private-IP check.
+func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider: "mock-openai",
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			IsKeyLess:        true,
+		},
+		NetworkConfig: &schemas.NetworkConfig{
+			BaseURL:             "http://169.254.169.254/",
+			AllowPrivateNetwork: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
+		t.Fatalf("expected provider not to be persisted")
+	}
+}
+
+// TestUpdateProvider_RejectsBaseURLWhenAuthBypassed is the PUT-endpoint sibling of
+// TestAddProvider_RejectsBaseURLWhenAuthBypassed.
+func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"mock-openai": {
+					CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+				},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+
+	body, err := sonic.Marshal(struct {
+		Keys []schemas.Key `json:"keys"`
+		providerUpdatePayload
+	}{
+		providerUpdatePayload: providerUpdatePayload{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:             "http://169.254.169.254/",
+				AllowPrivateNetwork: true,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 1},
+			CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+	ctx.Request.SetRequestURI("/api/providers/mock-openai")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("provider", "mock-openai")
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.updateProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if got := h.inMemoryStore.Providers["mock-openai"].NetworkConfig; got != nil && got.BaseURL == "http://169.254.169.254/" {
+		t.Fatalf("expected base URL not to be persisted")
+	}
+}
+
 func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 	SetLogger(&mockLogger{})
 	lib.SetLogger(&mockLogger{})
