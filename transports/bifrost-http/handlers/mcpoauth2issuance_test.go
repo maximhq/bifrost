@@ -645,13 +645,51 @@ func TestUpdateConfig_RejectsAuthCodeTTLAboveMax(t *testing.T) {
 			cfg := newTestOAuth2Config(store, mode, false)
 			h := &ConfigHandler{store: cfg}
 
+			// issuer_url is set so oauth/both modes clear the (separate) issuer_url-required
+			// check and this test exercises only the auth_code_ttl guard it's named for.
 			body := `{"client_config":{"mcp_server_auth_mode":"` + string(mode) +
-				`","oauth2_server_config":{"auth_code_ttl":5000,"access_token_ttl":600}}}`
+				`","oauth2_server_config":{"issuer_url":"https://issuer.example.com","auth_code_ttl":5000,"access_token_ttl":600}}}`
 			ctx := putConfigCtx(body)
 			h.updateConfig(ctx)
 
 			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 			assert.Contains(t, string(ctx.Response.Body()), "auth_code_ttl must not exceed")
+		})
+	}
+}
+
+// TestUpdateConfig_RejectsMissingIssuerURLForDiscovery covers the API-layer guard
+// added for the Host-header discovery-poisoning fix: switching to OAuth discovery
+// (oauth|both) from a starting config with no issuer_url pinned is rejected with
+// 400 before any live runtime mutation, since the fallback would derive the
+// issuer from the unauthenticated, per-request Host header. Starts from headers
+// mode with no OAuth2ServerConfig at all (the zero-config default) so the request
+// itself must supply everything needed to turn discovery on. The handler returns
+// at this validation, so configManager is never invoked (left nil), same
+// harness shape as TestUpdateConfig_RejectsAuthCodeTTLAboveMax. The allowed
+// (headers-mode, no restriction) path isn't exercised here for the same reason
+// noted there: it proceeds into live-mutation code that needs a fully-wired
+// configManager, which this lightweight harness doesn't provide.
+func TestUpdateConfig_RejectsMissingIssuerURLForDiscovery(t *testing.T) {
+	for _, mode := range []configtables.MCPServerAuthMode{
+		configtables.MCPServerAuthModeOAuth,
+		configtables.MCPServerAuthModeBoth,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			cfg := &lib.Config{
+				ConfigStore:  store,
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+
+			body := `{"client_config":{"mcp_server_auth_mode":"` + string(mode) + `"}}`
+			ctx := putConfigCtx(body)
+			h.updateConfig(ctx)
+
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+			assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
 		})
 	}
 }
