@@ -413,6 +413,57 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 	chained(ctx)
 }
 
+// TestRecoveryMiddleware_RecoversFromPanic proves a panicking handler no longer
+// takes down the process: the request is answered with a 500 instead of
+// unwinding past RecoveryMiddleware.
+func TestRecoveryMiddleware_RecoversFromPanic(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := &fasthttp.RequestCtx{}
+
+	handler := func(ctx *fasthttp.RequestCtx) {
+		values := []int{1, 2, 3}
+		_ = values[10] // out-of-bounds access, mirrors an unguarded slice index in request-derived parsing
+	}
+
+	wrapped := RecoveryMiddleware()(handler)
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("panic escaped RecoveryMiddleware: %v", r)
+			}
+		}()
+		wrapped(ctx)
+	}()
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	}
+}
+
+// TestRecoveryMiddleware_PassesThroughNormalRequests confirms the middleware is
+// a no-op for handlers that don't panic.
+func TestRecoveryMiddleware_PassesThroughNormalRequests(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := &fasthttp.RequestCtx{}
+	handlerCalled := false
+
+	handler := func(ctx *fasthttp.RequestCtx) {
+		handlerCalled = true
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	}
+
+	wrapped := RecoveryMiddleware()(handler)
+	wrapped(ctx)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusOK, ctx.Response.StatusCode())
+	}
+}
+
 func TestIsInferenceWSEndpoint(t *testing.T) {
 	paths := []string{
 		"/v1/responses",
