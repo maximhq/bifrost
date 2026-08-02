@@ -6365,6 +6365,12 @@
                 "type": "boolean",
                 "description": "Whether this rule is enabled"
               },
+              "target": {
+                "type": "string",
+                "enum": ["llm", "mcp"],
+                "default": "llm",
+                "description": "Execution target for the rule. Omitted values default to LLM guardrails."
+              },
               "cel_expression": {
                 "type": "string",
                 "description": "CEL (Common Expression Language) expression for rule evaluation"
