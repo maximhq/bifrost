@@ -475,6 +475,32 @@ func TestPool_EmptyReader_NoPanic(t *testing.T) {
 	})
 }
 
+// TestAcquireZstdDecoder_RejectsOversizedWindow reproduces the reported
+// memory-bomb frame: a ~9-byte zstd frame whose header declares a 512 MiB
+// window, decoding to zero bytes. Without a max-memory bound, the decoder
+// pre-allocates the full window buffer at header-parse time, before any
+// output exists - klauspost/compress defaults to a 512 MiB window cap. With
+// zstdDecoderMaxMemory in place, the decoder must reject the frame instead
+// of pre-allocating for it.
+func TestAcquireZstdDecoder_RejectsOversizedWindow(t *testing.T) {
+	// zstd magic (28 b5 2f fd) + Frame_Header_Descriptor (00) +
+	// Window_Descriptor (98 -> 512 MiB window) + empty last raw block (01 00 00).
+	maliciousFrame := []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x98, 0x01, 0x00, 0x00}
+
+	dec, err := AcquireZstdDecoder(bytes.NewReader(maliciousFrame))
+	if err != nil {
+		// Some decoder versions reject an oversized window eagerly on Reset;
+		// that's an equally valid way to close this off.
+		return
+	}
+	defer ReleaseZstdDecoder(dec)
+
+	_, readErr := io.ReadAll(dec)
+	if readErr == nil {
+		t.Fatal("expected the oversized-window frame to be rejected, got nil error")
+	}
+}
+
 // TestSafeReset verifies safeReset correctly handles panics and errors.
 func TestSafeReset(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
