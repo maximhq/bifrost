@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
@@ -36,6 +37,7 @@ import {
 	Box,
 	ChevronLeft,
 	ChevronRight,
+	Info,
 	KeyRound,
 	Loader2,
 	MoreHorizontal,
@@ -46,7 +48,7 @@ import {
 	Trash2,
 	X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -812,7 +814,28 @@ export default function MCPClientsTable({
 								<TableHead className="w-[120px] font-semibold">VK Access</TableHead>
 								<TableHead className="w-[130px] font-semibold">Enabled Tools</TableHead>
 								<TableHead className="w-[160px] font-semibold">Auto-execute Tools</TableHead>
-								<TableHead className="w-[140px] font-semibold">State</TableHead>
+								<TableHead className="w-[140px] font-semibold">
+									<HeaderWithTooltip
+										label="State"
+										tooltip={
+											<>
+												<p>
+													The client's connection state (connected, disconnected, error, and so on). Per-user clients (OAuth, headers, token
+													exchange) hold no shared connection, so this links to sessions instead.
+												</p>
+												<a
+													data-testid="mcp-client-state-link"
+													href="https://docs.getbifrost.ai/mcp/auth/overview#connection-states"
+													target="_blank"
+													rel="noreferrer"
+													className="text-primary mt-2 inline-block underline"
+												>
+													See all connection states
+												</a>
+											</>
+										}
+									/>
+								</TableHead>
 								<TableHead className="w-[90px] font-semibold">Status</TableHead>
 								<TableHead className={`bg-muted/50 sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
@@ -1103,5 +1126,26 @@ export default function MCPClientsTable({
 				/>
 			)}
 		</div>
+	);
+}
+
+function HeaderWithTooltip({ label, tooltip }: { label: string; tooltip: ReactNode }) {
+	return (
+		<Popover>
+			<PopoverTrigger asChild>
+				<button
+					type="button"
+					aria-label={`${label} column guidance`}
+					data-testid="mcp-client-state-info-trigger"
+					className="inline-flex cursor-help items-center gap-2"
+				>
+					{label}
+					<Info className="text-muted-foreground size-3" />
+				</button>
+			</PopoverTrigger>
+			<PopoverContent className="w-xs text-xs" align="start">
+				{tooltip}
+			</PopoverContent>
+		</Popover>
 	);
 }
