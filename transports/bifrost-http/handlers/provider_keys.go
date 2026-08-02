@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -133,6 +134,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
 	}
 
+	if requireGenuineAuthForEndpointChange(ctx, nil, key) {
+		return
+	}
+
 	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
@@ -248,6 +253,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	baseProvider := provider
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
 		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
+	}
+
+	if requireGenuineAuthForEndpointChange(ctx, oldRawKey, mergedKey) {
+		return
 	}
 
 	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" {
@@ -859,4 +868,114 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		}
 	}
 	return nil
+}
+
+// keyDialTargets returns every caller-chosen host Bifrost will later dial with this key's
+// credentials, keyed by its JSON path. It reads every provider's config block, not just the
+// key's own provider: an unused block is harmless to include and fails closed, while a
+// provider-type list silently misses new fields (Databricks workspace_url, Bedrock endpoints,
+// Copilot github_domain and the per-alias Azure endpoint were all missed that way). Unset values are omitted.
+func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
+	targets := make(map[string]*schemas.SecretVar)
+	add := func(name string, v *schemas.SecretVar) {
+		if v.IsSet() {
+			targets[name] = v
+		}
+	}
+	addBedrockEndpoints := func(prefix string, e *schemas.BedrockEndpoints) {
+		if e == nil {
+			return
+		}
+		add(prefix+".runtime", e.Runtime)
+		add(prefix+".control_plane", e.ControlPlane)
+		add(prefix+".mantle", e.Mantle)
+		add(prefix+".agent_runtime", e.AgentRuntime)
+		add(prefix+".s3", e.S3)
+	}
+	if c := key.OllamaKeyConfig; c != nil {
+		add("ollama_key_config.url", &c.URL)
+	}
+	if c := key.SGLKeyConfig; c != nil {
+		add("sgl_key_config.url", &c.URL)
+	}
+	if c := key.VLLMKeyConfig; c != nil {
+		add("vllm_key_config.url", &c.URL)
+	}
+	if c := key.AzureKeyConfig; c != nil {
+		add("azure_key_config.endpoint", &c.Endpoint)
+	}
+	if c := key.DatabricksKeyConfig; c != nil {
+		add("databricks_key_config.workspace_url", &c.WorkspaceURL)
+	}
+	if c := key.GithubCopilotKeyConfig; c != nil {
+		add("github_copilot_key_config.github_domain", &c.GithubDomain)
+	}
+	if c := key.BedrockKeyConfig; c != nil {
+		addBedrockEndpoints("bedrock_key_config.endpoints", c.Endpoints)
+	}
+	if c := key.BedrockMantleKeyConfig; c != nil {
+		addBedrockEndpoints("bedrock_mantle_key_config.endpoints", c.Endpoints)
+	}
+	for alias, cfg := range key.Aliases {
+		if cfg.AzureAliasCfg != nil {
+			add("aliases."+alias+".endpoint", cfg.AzureAliasCfg.Endpoint)
+		}
+	}
+	return targets
+}
+
+// changedDialTargets returns the sorted paths of dial targets next adds, removes or changes
+// relative to old (nil on create, so every set target counts). Equality is SecretVar.Equals,
+// so swapping an env or vault reference counts as a change even when the resolved value
+// happens to match.
+func changedDialTargets(old *schemas.Key, next schemas.Key) []string {
+	nextTargets := keyDialTargets(next)
+	oldTargets := map[string]*schemas.SecretVar{}
+	if old != nil {
+		oldTargets = keyDialTargets(*old)
+	}
+	var changed []string
+	for name, v := range nextTargets {
+		if !v.Equals(oldTargets[name]) {
+			changed = append(changed, name)
+		}
+	}
+	for name := range oldTargets {
+		if _, ok := nextTargets[name]; !ok {
+			changed = append(changed, name)
+		}
+	}
+	slices.Sort(changed)
+	return changed
+}
+
+// isAuthBypassed reports whether ctx was let through the auth middleware's fail-open branch
+// (dashboard auth disabled/unconfigured) rather than a genuine credential check. Handlers
+// gating a capability that's fine for a real admin but dangerous for anyone on the network
+// (e.g. pointing a dial destination somewhere new) should check this, not
+// IsLocalAdminContextKey, which is also true for genuinely authenticated sessions.
+func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	return bypassed
+}
+
+// requireGenuineAuthForEndpointChange rejects a provider-key create/update that sets, moves
+// or removes a dial target (see keyDialTargets) when the caller was only let through by the
+// fail-open bypass (dashboard auth disabled/unconfigured), not by a real credential. The
+// destination itself isn't inherently unsafe - self-hosted Ollama/vLLM on a loopback or
+// private address is the normal, documented setup - the vulnerability is that anyone
+// unauthenticated can choose where Bifrost sends the key's credentials. oldKey is the
+// persisted key on update and nil on create; an update that keeps every stored dial target
+// passes, so bypassed callers can still edit weight, models and other non-endpoint fields.
+// On rejection this sends the response and returns true; callers should return immediately.
+func requireGenuineAuthForEndpointChange(ctx *fasthttp.RequestCtx, oldKey *schemas.Key, newKey schemas.Key) bool {
+	if !isAuthBypassed(ctx) {
+		return false
+	}
+	changed := changedDialTargets(oldKey, newKey)
+	if len(changed) == 0 {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing a provider key's endpoint (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	return true
 }

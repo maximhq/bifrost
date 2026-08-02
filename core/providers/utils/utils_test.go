@@ -3693,3 +3693,21 @@ func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
 		t.Fatal("an unchanged plain-map schema was copied instead of shared")
 	}
 }
+
+// TestIsAbsoluteRequestURL pins the rule GetRequestPath and the management API's auth guard
+// share: only a scheme plus host makes a request-path override a full destination URL.
+func TestIsAbsoluteRequestURL(t *testing.T) {
+	cases := map[string]bool{
+		"https://evil.example.com/v1/chat": true,
+		"  http://10.0.0.5:8080/x  ":       true,
+		"/v2/chat/completions":             false,
+		"v2/chat/completions":              false,
+		"https:///no-host":                 false,
+		"":                                 false,
+	}
+	for in, want := range cases {
+		if got := IsAbsoluteRequestURL(in); got != want {
+			t.Errorf("IsAbsoluteRequestURL(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

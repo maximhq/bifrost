@@ -1230,6 +1230,13 @@ func GetPathFromContext(ctx context.Context, defaultPath string) string {
 	return defaultPath
 }
 
+// IsAbsoluteRequestURL reports whether a request-path override is a full URL (scheme and host)
+// that GetRequestPath sends requests to directly, rather than a path on the provider's base URL.
+func IsAbsoluteRequestURL(s string) bool {
+	u, err := url.Parse(strings.TrimSpace(s))
+	return err == nil && u != nil && u.IsAbs() && u.Host != ""
+}
+
 // GetRequestPath gets the request path from the context, if it exists, checking for path overrides in the custom provider config.
 // It returns the resolved value and a boolean indicating whether the value is a full absolute URL.
 // If the boolean is false, the returned string is a path (leading slash ensured).
@@ -1252,7 +1259,7 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 			}
 
 			// Treat absolute URLs with scheme+host as full URLs.
-			if u, err := url.Parse(override); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+			if IsAbsoluteRequestURL(override) {
 				return override, true
 			}
 
