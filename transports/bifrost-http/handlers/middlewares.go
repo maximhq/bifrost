@@ -1008,6 +1008,12 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters
 				// a logout/login redirect loop.
 				ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
+				// Distinct from IsLocalAdminContextKey (also true for genuinely
+				// authenticated sessions): this specifically marks requests that
+				// were let through with no credential check at all, so handlers
+				// gating a dangerous capability can refuse it even while the
+				// rest of the API stays open under the default-open posture.
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 				next(ctx)
 				return
 			}

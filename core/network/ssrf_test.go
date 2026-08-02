@@ -170,3 +170,38 @@ func TestSSRFSafeDialContextBlocksLoopbackLiteral(t *testing.T) {
 		t.Fatalf("expected blocked-connection error, got %v", err)
 	}
 }
+
+func TestPrivateNetworkDialContextBlocksLinkLocal(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	if _, err := dial(context.Background(), "tcp", "169.254.169.254:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to link-local address") {
+		t.Fatalf("expected blocked link-local error, got %v", err)
+	}
+}
+
+func TestPrivateNetworkDialContextBlocksUnspecified(t *testing.T) {
+	dial := PrivateNetworkDialContext(time.Second)
+	if _, err := dial(context.Background(), "tcp", "0.0.0.0:80"); err == nil || !strings.Contains(err.Error(), "blocked connection to unspecified address") {
+		t.Fatalf("expected blocked unspecified error, got %v", err)
+	}
+}
+
+func TestPrivateNetworkDialContextAllowsLoopback(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start test listener: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			conn.Close()
+		}
+	}()
+
+	dial := PrivateNetworkDialContext(time.Second)
+	conn, err := dial(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("expected loopback dial to succeed, got %v", err)
+	}
+	conn.Close()
+}

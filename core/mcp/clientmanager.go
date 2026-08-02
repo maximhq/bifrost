@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -18,8 +19,30 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/mcp/utils"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// mcpDialTimeout bounds each dial attempted by the SSRF-safe HTTP client MCP
+// client connections use, matching the timeout convention used by the other
+// SSRF-guarded outbound clients in this codebase (image/document fetch, skill
+// URL sources).
+const mcpDialTimeout = 10 * time.Second
+
+// testDialContextOverride, when non-nil, replaces the SSRF-safe dialer used by
+// buildTLSHTTPClient. It exists solely so that integration tests (which stand
+// up MCP servers on loopback-bound httptest.Server instances) can reach them;
+// production code must never call SetDialContextForTests.
+var testDialContextOverride func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// SetDialContextForTests overrides the dial function used to build outbound MCP
+// HTTP/SSE connections. Test-only: this disables the SSRF guard that keeps
+// unauthenticated callers from making the gateway dial loopback/private/internal
+// addresses through MCP client registration. Pass nil to restore the default
+// SSRF-safe dialer.
+func SetDialContextForTests(dial func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	testDialContextOverride = dial
+}
 
 // AcquireClientConn returns a live upstream MCP client connection for the
 // given client state, along with a release function the caller must invoke
@@ -1609,36 +1632,55 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	return nil
 }
 
-// buildTLSHTTPClient constructs an *http.Client with a custom TLS configuration derived
-// from MCPTLSConfig. Returns nil when tlsCfg is nil so callers can use the library default.
+// buildTLSHTTPClient constructs an *http.Client for MCP server connections. The
+// transport is always routed through network.PrivateNetworkDialContext, which
+// blocks link-local and unspecified destinations (including the
+// 169.254.169.254 cloud metadata endpoint) but - unlike the stricter
+// network.SSRFSafeDialContext used for image/document fetch, webhook
+// delivery, and skill URL sources - permits loopback and private-network
+// targets. Loopback/private MCP servers are the documented primary use case
+// for this feature (docs/mcp/connecting-to-servers.mdx's own HTTP-client
+// example is http://localhost:3001/mcp), so this is dial-time defense in
+// depth against the categorically illegitimate ranges, not a substitute for
+// the caller's own authorization check: an unauthenticated caller is refused
+// outright before reaching this code (rejectPrivateMCPTargetIfAuthBypassed in
+// transports/bifrost-http/handlers/mcp.go).
+// Previously this returned nil when tlsCfg was nil, leaving callers to fall
+// back to the mcp-go library's own default client, which carried no guard at
+// all - not even the link-local/metadata block applied here.
+// TLS customization from MCPTLSConfig is layered on top when provided.
 // InsecureSkipVerify takes priority over CACertPEM when both are set.
 func (m *MCPManager) buildTLSHTTPClient(tlsCfg *schemas.MCPTLSConfig) (*http.Client, error) {
-	if tlsCfg == nil {
-		return nil, nil
-	}
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if tlsCfg.InsecureSkipVerify {
-		m.logger.Warn("MCP client: skipping TLS verification — do not use in production")
-		tlsConfig.InsecureSkipVerify = true
-	} else if tlsCfg.CACertPEM != nil {
-		caPEM := tlsCfg.CACertPEM.GetValue()
-		if caPEM != "" {
-			rootCAs, err := x509.SystemCertPool()
-			if err != nil {
-				rootCAs = x509.NewCertPool()
-			}
-			if !rootCAs.AppendCertsFromPEM([]byte(caPEM)) {
-				return nil, fmt.Errorf("failed to parse MCP CA certificate PEM")
-			}
-			tlsConfig.RootCAs = rootCAs
-		}
-	}
-	transport, ok := http.DefaultTransport.(*http.Transport)
+	baseTransport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
-		transport = &http.Transport{}
+		baseTransport = &http.Transport{}
 	}
-	cloned := transport.Clone()
-	cloned.TLSClientConfig = tlsConfig
+	cloned := baseTransport.Clone()
+	cloned.DialContext = network.PrivateNetworkDialContext(mcpDialTimeout)
+	if testDialContextOverride != nil {
+		cloned.DialContext = testDialContextOverride
+	}
+
+	if tlsCfg != nil {
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if tlsCfg.InsecureSkipVerify {
+			m.logger.Warn("MCP client: skipping TLS verification — do not use in production")
+			tlsConfig.InsecureSkipVerify = true
+		} else if tlsCfg.CACertPEM != nil {
+			caPEM := tlsCfg.CACertPEM.GetValue()
+			if caPEM != "" {
+				rootCAs, err := x509.SystemCertPool()
+				if err != nil {
+					rootCAs = x509.NewCertPool()
+				}
+				if !rootCAs.AppendCertsFromPEM([]byte(caPEM)) {
+					return nil, fmt.Errorf("failed to parse MCP CA certificate PEM")
+				}
+				tlsConfig.RootCAs = rootCAs
+			}
+		}
+		cloned.TLSClientConfig = tlsConfig
+	}
 	return &http.Client{Transport: cloned}, nil
 }
 

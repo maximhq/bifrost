@@ -155,6 +155,14 @@ curl -X POST http://localhost:8080/api/mcp/client \
 
 ### Add HTTP Client
 
+<Note>
+  If [dashboard authentication](/quickstart/gateway/setting-up-auth) is disabled or not yet
+  configured, an HTTP or SSE client whose `connection_string` resolves to a loopback,
+  private-network, link-local, or carrier-grade-NAT address is refused - you must either enable
+  dashboard auth and authenticate first, or define the client in `config.json` instead. Clients
+  pointed at a public address (like the SSE example below) are unaffected either way.
+</Note>
+
 ```bash
 curl -X POST http://localhost:8080/api/mcp/client \
   -H "Content-Type: application/json" \
