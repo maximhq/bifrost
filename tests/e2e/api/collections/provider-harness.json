@@ -59,7 +59,7 @@
           "// Only register the content-shape test when the request actually succeeded.",
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
-          "var __skipShape = (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1);",
+          "var __skipShape = __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1);",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -167390,6 +167390,413 @@
                 "messages"
               ]
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "114. Raw Path Authorization (PR #5765)",
+      "description": "Opt-in auth-profile regression for GHSA-m82j-pr23-9hph and the analogous scoped-temp-token bypass. Run with provider_config/path-auth/config.json on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=raw-path-auth. The openai keyword is only a harness filter label; no provider calls are made. Cookies, inherited auth, and redirect following are disabled. Requires dashboard auth and mcp_enable_temp_token_auth. Whitelist probes use read-only GETs or invalid JSON, so a vulnerable handler cannot create provider/plugin configuration. Public OAuth registration/authorization creates only disposable client and consent-flow rows in the isolated test database. The successful consent GET proves the token is valid before testing scope escape. Every unexpected status fails. Run the whole folder in order, not individual rows.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai raw-path-auth dashboard auth precondition - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/config"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai raw-path-auth provider update traversal - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/..%2Fskills%2Fserve%2Fpath-auth-regression",
+            "body": {
+              "mode": "raw",
+              "raw": "{"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai raw-path-auth provider key traversal - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/..%2Fskills%2Fserve%2Fpath-auth-regression/keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai raw-path-auth provider read lowercase traversal - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/%2e%2e%2fskills%2fserve%2fpath-auth-regression?source=test"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai raw-path-auth plugin dev traversal - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/plugins/..%2Fdev%2Fpath-auth-regression"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-201] openai raw-path-auth register consent client - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('pathAuthClient');",
+                  "pm.collectionVariables.unset('pathAuthFlow');",
+                  "pm.collectionVariables.unset('pathAuthToken');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(201);",
+                  "});",
+                  "pm.test('consent client created', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.client_id).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('pathAuthClient', body.client_id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\":\"raw-path-auth regression\",\"redirect_uris\":[\"https://harness.example/cb\"],\"token_endpoint_auth_method\":\"none\"}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] openai raw-path-auth obtain consent token - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('pathAuthClient'), 'consent client missing').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(302);",
+                  "});",
+                  "pm.test('redirect carries a scoped consent token', function () {",
+                  "  var location = pm.response.headers.get('Location') || '';",
+                  "  pm.expect(location).to.include('/oauth/consent?flow=');",
+                  "  pm.expect(location).not.to.include('error=');",
+                  "  var flow = location.match(/[?&]flow=([^&#]+)/);",
+                  "  var token = location.match(/#t=([^&]+)/);",
+                  "  pm.expect(flow, 'flow missing in redirect').not.to.equal(null);",
+                  "  pm.expect(token, 'token missing in redirect').not.to.equal(null);",
+                  "  pm.collectionVariables.set('pathAuthFlow', decodeURIComponent(flow[1]));",
+                  "  pm.collectionVariables.set('pathAuthToken', decodeURIComponent(token[1]));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/oauth2/authorize?client_id={{pathAuthClient}}&redirect_uri=https%3A%2F%2Fharness.example%2Fcb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai raw-path-auth legitimate consent token control - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('pathAuthToken'), 'run the entire raw-path-auth folder to obtain a valid token').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('pathAuthFlow'), 'consent flow missing').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('valid token reaches its bound consent flow', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.client_name).to.equal('raw-path-auth regression');",
+                  "  pm.expect(body.available_modes).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{pathAuthToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{pathAuthFlow}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai raw-path-auth scoped token provider traversal - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('pathAuthToken'), 'run the entire raw-path-auth folder to obtain a valid token').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('pathAuthFlow'), 'consent flow missing').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{pathAuthToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/..%2Foauth2%2Fconsent%2Fflows%2F{{pathAuthFlow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai raw-path-auth scoped token plugin traversal - #5765",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('pathAuthToken'), 'run the entire raw-path-auth folder to obtain a valid token').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('pathAuthFlow'), 'consent flow missing').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('raw-path-auth exact response status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{pathAuthToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/plugins/..%2Foauth2%2Fconsent%2Fflows%2F{{pathAuthFlow}}"
           }
         }
       ]
