@@ -294,4 +294,7 @@ func TestApplyModelInfoNilSafe(t *testing.T) {
 	if got := nilCatalog.CalculateRequestCost(nil, nil); got != 0 {
 		t.Errorf("CalculateRequestCost on nil catalog = %v, want 0", got)
 	}
+	if got := nilCatalog.CalculateRequestCostIfAvailable(nil, nil); got != nil {
+		t.Errorf("CalculateRequestCostIfAvailable on nil catalog = %v, want nil", got)
+	}
 }

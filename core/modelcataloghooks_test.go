@@ -12,8 +12,9 @@ import (
 // reading a real one proves the handle reached it rather than that some other
 // lookup happened to succeed.
 type probeCatalog struct {
-	info *schemas.Model
-	cost float64
+	info          *schemas.Model
+	cost          float64
+	costAvailable bool
 
 	gotProvider schemas.ModelProvider
 	gotModel    string
@@ -31,6 +32,14 @@ func (p *probeCatalog) GetModelInfo(provider schemas.ModelProvider, model string
 func (p *probeCatalog) CalculateRequestCost(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) float64 {
 	p.costCalls++
 	return p.cost
+}
+
+func (p *probeCatalog) CalculateRequestCostIfAvailable(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *float64 {
+	p.costCalls++
+	if !p.costAvailable {
+		return nil
+	}
+	return &p.cost
 }
 
 // catalogProbePlugin reads ctx.GetModelInfo / ctx.CalculateCost from each hook
@@ -126,7 +135,7 @@ func chatProbeRequest() *schemas.BifrostChatRequest {
 // in a third-party plugin.
 func TestModelCatalogReachesPluginHooksOnRealRequest(t *testing.T) {
 	want := &schemas.Model{ID: "gpt-4o", ContextLength: new(128000)}
-	catalog := &probeCatalog{info: want, cost: 0.25}
+	catalog := &probeCatalog{info: want, cost: 0.25, costAvailable: true}
 	plugin := &catalogProbePlugin{}
 	client := newCatalogProbeClient(t, catalog, plugin)
 
@@ -180,7 +189,8 @@ func TestModelCatalogAbsentLeavesHooksInert(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
 	defer ctx.Cancel()
 
-	if _, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest()); bfErr != nil {
+	resp, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest())
+	if bfErr != nil {
 		t.Fatalf("ChatCompletionRequest failed: %v", bfErr)
 	}
 
@@ -196,5 +206,40 @@ func TestModelCatalogAbsentLeavesHooksInert(t *testing.T) {
 	}
 	if plugin.postCost != 0 {
 		t.Errorf("CalculateCost = %v with no catalog wired, want 0", plugin.postCost)
+	}
+	if resp.ExtraFields.Cost != nil {
+		t.Errorf("response cost = %v with no catalog wired, want nil", resp.ExtraFields.Cost)
+	}
+}
+
+func TestModelCatalogCalculatedZeroCostIsRetained(t *testing.T) {
+	catalog := &probeCatalog{costAvailable: true}
+	client := newCatalogProbeClient(t, catalog, &catalogProbePlugin{})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest())
+	if bfErr != nil {
+		t.Fatalf("ChatCompletionRequest failed: %v", bfErr)
+	}
+	if resp.ExtraFields.Cost == nil || *resp.ExtraFields.Cost != 0 {
+		t.Errorf("response cost = %v, want pointer to zero", resp.ExtraFields.Cost)
+	}
+}
+
+func TestModelCatalogUnavailableCostIsOmitted(t *testing.T) {
+	catalog := &probeCatalog{cost: 0.25}
+	client := newCatalogProbeClient(t, catalog, &catalogProbePlugin{})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest())
+	if bfErr != nil {
+		t.Fatalf("ChatCompletionRequest failed: %v", bfErr)
+	}
+	if resp.ExtraFields.Cost != nil {
+		t.Errorf("response cost = %v, want nil", resp.ExtraFields.Cost)
 	}
 }

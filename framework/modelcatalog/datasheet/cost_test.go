@@ -2524,6 +2524,36 @@ func TestCalculateCost_NoUsageData(t *testing.T) {
 	assert.Equal(t, 0.0, cost)
 }
 
+func TestCalculateCostBreakdown_UnavailablePricing(t *testing.T) {
+	s := testStoreWithPricing(nil)
+	resp := makeChatResponse(schemas.OpenAI, "unknown-model", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+
+	cost := s.CalculateCostBreakdown(resp, nil)
+
+	assert.Nil(t, cost)
+}
+
+func TestCalculateCostBreakdown_CalculatedZero(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("free-model", "openai", "chat"): chatPricing(0, 0),
+	})
+	resp := makeChatResponse(schemas.OpenAI, "free-model", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+
+	cost := s.CalculateCostBreakdown(resp, nil)
+
+	if assert.NotNil(t, cost) {
+		assert.Equal(t, 0.0, cost.TotalCost)
+	}
+}
+
 func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 	// GPT-4o: $5/M input, $15/M output, cache_read=$0.5/M
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
