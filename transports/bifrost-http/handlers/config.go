@@ -522,10 +522,26 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// which atomically swaps in a fresh immutable snapshot carrying the new value.
 	updatedConfig.DumpErrorsInConsoleLogs = payload.ClientConfig.DumpErrorsInConsoleLogs
 
-	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	enforceAuthOnInference := payload.ClientConfig.EnforceAuthOnInference
+	// Dashboard auth and inference auth (virtual-key enforcement) are two independent
+	// toggles, and inference defaults to open. An operator who takes the deliberate step of
+	// creating the first admin account (locking the dashboard) almost certainly intends
+	// inference calls to be gated too - leaving this request's own explicit
+	// enforce_auth_on_inference value untouched otherwise, since an operator who already has
+	// an admin account may have a deliberate reason to keep it off (e.g. a public read-only
+	// deployment), and this should only supply the secure default at the one moment nothing
+	// has been decided yet, not override a standing choice on every subsequent config save.
+	if payload.AuthConfig != nil && payload.AuthConfig.IsEnabled && !enforceAuthOnInference {
+		if existingAuthConfig, err := h.store.ConfigStore.GetAuthConfig(ctx); err == nil && existingAuthConfig == nil {
+			enforceAuthOnInference = true
+		} else if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			logger.Warn("failed to check existing auth config while defaulting enforce_auth_on_inference: %v", err)
+		}
+	}
+	updatedConfig.EnforceAuthOnInference = enforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB
-	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
-	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
+	updatedConfig.EnforceGovernanceHeader = enforceAuthOnInference
+	updatedConfig.EnforceSCIMAuth = enforceAuthOnInference
 
 	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp)
 	if payload.ClientConfig.DualCredentialConflictBehavior != "" {

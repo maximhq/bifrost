@@ -48,7 +48,11 @@ For Enterprise deployments, prefer **SSO / OIDC** over a shared dashboard passwo
 
 ## 2. Enforce authentication on inference
 
-By default, inference endpoints (`/v1/chat/completions`, `/v1/embeddings`, `/v1/images/generations`, and related endpoints) accept anonymous requests. On a public host that means anyone who finds the URL can spend against your provider keys.
+By default, inference endpoints (`/v1/chat/completions`, `/v1/embeddings`, `/v1/images/generations`, and related endpoints) accept anonymous requests. On a public host that means anyone who finds the URL can spend against your provider keys - and, for endpoints that list or retrieve stored provider-side resources (files, batches, videos, responses), read whatever any other caller stored there.
+
+<Warning>
+**This is a separate control from the dashboard password.** Locking the dashboard with an admin password does not, by itself, protect `/v1/*` - that surface is intentionally public-by-default because it's the API your own clients call, and enforcement is delegated to this toggle instead of session auth. Check both.
+</Warning>
 
 Turn on the **Enable Auth on Inference** toggle on the Security Settings page (labeled **Enforce Virtual Keys on Inference** in OSS). This requires every inference call to present a valid credential, such as a [Virtual Key](/features/governance/virtual-keys), API key, or user token, which Bifrost resolves to scoped upstream provider keys. Your raw provider keys never leave the gateway.
 
@@ -62,6 +66,12 @@ Turn on the **Enable Auth on Inference** toggle on the Security Settings page (l
 
 <Note>
 This is the main setting. The older fields `enforce_governance_header` and `enforce_scim_auth` are deprecated. Don't use them in new deployments. Changing this setting requires a Bifrost restart in Enterprise.
+</Note>
+
+<Note>
+**Defaults on when you create your first admin account**, unless your `PUT /api/config` request explicitly sets it to `false`. This only applies the moment the account is created - it does not retroactively change the setting for a deployment that already has one, so if you set up your admin account before this behavior shipped, check the toggle yourself. `GET /api/session/is-auth-enabled` also reports the current state as `inference_auth_enforced`, and the Security Settings page shows a warning when the dashboard is locked but this is still off.
+
+If you don't already have a virtual key, inference calls will start returning `401 virtual_key_required` as soon as this is on - [create one](/features/governance/virtual-keys) before or immediately after locking the dashboard so existing integrations don't break.
 </Note>
 
 Once enforced, pair it with [budgets and rate limits](/features/governance/budget-and-limits) per virtual key so a runaway client can't burn through your provider spend even with valid credentials.
