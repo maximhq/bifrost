@@ -1,0 +1,152 @@
+# Paths for MCP Tool Group management.
+
+mcp-tool-groups:
+  get:
+    operationId: listMCPToolGroups
+    summary: List MCP Tool Groups
+    description: |
+      Returns tool groups visible to the caller. When all of `limit`, `offset`, and `search` are omitted, every group is returned in one response.
+    tags:
+      - MCP Tool Groups
+    parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+      - name: offset
+        in: query
+        schema:
+          type: integer
+      - name: search
+        in: query
+        description: Search by name.
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcptoolgroups.yaml#/MCPToolGroupListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createMCPToolGroup
+    summary: Create MCP Tool Group
+    description: |
+      Creates a new tool group along with its attachments in a single transaction.
+      Validates that every `mcp_client_id` points to a deployed MCP client and that every named
+      tool exists on its server.
+    tags:
+      - MCP Tool Groups
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcptoolgroups.yaml#/CreateMCPToolGroupRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '201':
+        description: Group created
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcptoolgroups.yaml#/MCPToolGroupResponse'
+      '400':
+        description: Validation failed (missing name, invalid MCP client IDs, or invalid tool names).
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+mcp-tool-groups-by-id:
+  get:
+    operationId: getMCPToolGroup
+    summary: Get MCP Tool Group by ID
+    tags:
+      - MCP Tool Groups
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcptoolgroups.yaml#/MCPToolGroupResponse'
+      '404':
+        description: MCP tool group not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateMCPToolGroup
+    summary: Update MCP Tool Group
+    description: |
+      Partial update. Scalar fields preserve the current value when omitted.
+      Array fields are replace-on-send: an empty array clears all attachments in that dimension.
+    tags:
+      - MCP Tool Groups
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcptoolgroups.yaml#/UpdateMCPToolGroupRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Group updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcptoolgroups.yaml#/MCPToolGroupResponse'
+      '400':
+        description: Validation failed.
+      '404':
+        description: MCP tool group not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteMCPToolGroup
+    summary: Delete MCP Tool Group
+    description: Deletes the group; attachments are removed automatically.
+    tags:
+      - MCP Tool Groups
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Group deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcptoolgroups.yaml#/MCPToolGroupDeleteResponse'
+      '404':
+        description: MCP tool group not found
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

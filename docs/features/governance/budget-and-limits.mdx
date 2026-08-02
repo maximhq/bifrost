@@ -6,6 +6,19 @@ icon: "money-bills"
 
 ## Overview
 
+<Warning>
+  Running multiple OSS Bifrost nodes with a Postgres backend is not supported.
+  
+  Here is the short technical explanation:
+  
+  - Bifrost is designed to keep all critical information in memory, including provider configs, API keys, budgets, usage, and traffic distribution.
+  - Once a node is initialized, it does not read this information back from the database.
+  - In the Enterprise version, we use a slightly modified version of RAFT to synchronize this state in real time across nodes, while the database acts only as a dumb store.
+  - Based on our current view, OSS is sufficient for startups and medium-scale teams, and can easily handle around 3,000–5,000 RPS on a single instance.
+  - If you need high availability and enterprise capabilities such as real-time synchronization, the Enterprise plan is the right fit.
+  - And yes, that is part of how we draw the OSS vs Enterprise line 💰.
+</Warning>
+
 Budgeting and rate limiting are a core feature of Bifrost's governance system managed through [Virtual Keys](./virtual-keys).
 
 Bifrost's budget management system provides comprehensive cost control and financial governance for enterprise AI deployments. It operates through a **hierarchical budget structure** that enables granular cost management, usage tracking, and financial oversight across your entire organization.
@@ -156,6 +169,77 @@ By default, a budget **rolls**: after `reset_duration` elapses since `last_reset
 **Supported `reset_duration` suffixes:** only day (`d`), week (`w`), month (`M`), and year (`Y`). Examples: `1d` → midnight UTC each day; `1w` → Monday 00:00 UTC each week; `1M` → first day of each month; `1Y` → January 1 each year. Sub-day durations (for example `1h`, `30m`) **cannot** use calendar alignment; the API rejects invalid combinations.
 
 Calendar alignment applies to budgets on **customers**, **teams**, **virtual keys**, and **per–provider-config** budgets. You can set it when creating a budget (`calendar_aligned` on create) or toggle it on update (`calendar_aligned` on the budget in `PUT` requests). Turning calendar alignment **on** for an existing budget resets **current usage to zero** and snaps **`last_reset`** to the current period start.
+
+### Budget overrides
+
+A budget can carry a temporary **override** that adds spending capacity on top of its configured limit without touching the base limit, current usage, or reset schedule. While an override is active, enforcement uses:
+
+```text
+Effective limit = max_limit + override_amount
+```
+
+An override lasts either for a fixed number of reset cycles (the current cycle counts as the first) or until it is explicitly removed. Manage it from the virtual key's **Budget Information** panel, or through `PUT`/`DELETE` on `/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override` — see [Budget Overrides](./virtual-keys#budget-overrides) for the UI walkthrough and API examples.
+
+---
+
+## Customer-scoped requests
+
+<Note>
+Customer scoping is a **Bifrost Enterprise** feature. It applies to requests made with a **team-attached virtual key** when that team is linked to more than one customer.
+</Note>
+
+In Enterprise deployments a team can be attached to multiple customers. By default, a request through a team's virtual key charges and enforces **every** customer the team belongs to. To attribute a single request to **one** specific customer, send a customer-scope header:
+
+| Header | Description |
+|--------|-------------|
+| `x-bf-customer-id` | The customer's ID. |
+| `x-bf-customer-name` | The customer's display name (must be globally unique). |
+
+When a scope header is present, only the named customer is charged, rate-limited, and recorded in that request's usage logs — the team's other customers are left untouched. The team's own budget, the virtual key budget, and provider-config limits are always enforced regardless of scope.
+
+**Resolution rules:**
+- `x-bf-customer-id` takes precedence over `x-bf-customer-name` when both are sent.
+- Surrounding whitespace is trimmed, and the header name is **case-insensitive** (like all Bifrost headers).
+- Send no customer-scope header to charge and enforce all of the team's customers (the default).
+
+### Examples
+
+Scope a chat request to a customer by ID:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: <your-virtual-key>" \
+  -H "x-bf-customer-id: cust_acme" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+Or scope by name instead:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: <your-virtual-key>" \
+  -H "x-bf-customer-name: Acme Corp" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+### Validation
+
+The customer scope is validated **before** the request reaches a provider, and it **fails closed**: an invalid scope is rejected even when budget and rate-limit enforcement is otherwise skipped. A request is rejected with **400 Bad Request** when the scope header is:
+
+- present but empty or whitespace-only,
+- an ID or name that does not match any customer, or
+- a customer that exists but is **not** attached to the virtual key's team.
+
+**Example error response:**
+```json
+{
+  "error": {
+    "message": "customer \"Acme Corp\" is not attached to this team"
+  }
+}
+```
 
 ---
 

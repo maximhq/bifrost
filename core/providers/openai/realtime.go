@@ -30,14 +30,14 @@ func (provider *OpenAIProvider) RealtimeWebSocketURL(key schemas.Key, model stri
 }
 
 // RealtimeHeaders returns the headers required for the OpenAI Realtime WebSocket connection.
-func (provider *OpenAIProvider) RealtimeHeaders(key schemas.Key) map[string]string {
+func (provider *OpenAIProvider) RealtimeHeaders(_ *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
 	headers := map[string]string{
 		"Authorization": "Bearer " + key.Value.GetValue(),
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
 		headers[k] = v
 	}
-	return headers
+	return headers, nil
 }
 
 // SupportsRealtimeWebRTC reports that OpenAI supports WebRTC SDP exchange.
@@ -114,7 +114,7 @@ func (provider *OpenAIProvider) exchangeWebRTCSDP(
 	}
 	req.SetBody(bodyBuf.Bytes())
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return "", bifrostErr
@@ -122,7 +122,7 @@ func (provider *OpenAIProvider) exchangeWebRTCSDP(
 
 	answerBody := resp.Body()
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return "", provider.realtimeWebRTCUpstreamError(ctx, resp.StatusCode(), answerBody)
+		return "", providerUtils.SetErrorLatency(provider.realtimeWebRTCUpstreamError(ctx, resp.StatusCode(), answerBody), latency)
 	}
 
 	return string(answerBody), nil
@@ -217,7 +217,7 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 		return nil, err
 	}
 
-	normalizedBody, _, bifrostErr := normalizeRealtimeClientSecretRequest(rawRequest, provider.GetProviderKey(), endpointType)
+	normalizedBody, _, bifrostErr := NormalizeRealtimeClientSecretRequest(rawRequest, provider.GetProviderKey(), endpointType)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -226,7 +226,8 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	req.SetRequestURI(provider.buildRequestURL(ctx, realtimeSessionUpstreamPath(endpointType), schemas.RealtimeRequest))
+	upstreamURL := provider.buildRequestURL(ctx, realtimeSessionUpstreamPath(endpointType), schemas.RealtimeRequest)
+	req.SetRequestURI(upstreamURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	for k, v := range provider.realtimeSessionHeaders(key, endpointType) {
@@ -244,7 +245,7 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
-		return nil, ParseOpenAIError(resp)
+		return nil, providerUtils.SetErrorLatency(ParseOpenAIError(resp), latency)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -268,7 +269,11 @@ func (provider *OpenAIProvider) CreateRealtimeClientSecret(
 	return out, nil
 }
 
-func normalizeRealtimeClientSecretRequest(
+// NormalizeRealtimeClientSecretRequest normalizes a realtime client secret request body
+// by parsing the model string, resolving the provider, and restructuring the body
+// to match the upstream provider's expected format. Exported for reuse by providers
+// that share the same OpenAI-compatible Realtime protocol (e.g. Azure).
+func NormalizeRealtimeClientSecretRequest(
 	rawRequest json.RawMessage,
 	defaultProvider schemas.ModelProvider,
 	endpointType schemas.RealtimeSessionEndpointType,
@@ -315,13 +320,38 @@ func normalizeRealtimeClientSecretsRequest(
 	if marshalErr != nil {
 		return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode normalized model", marshalErr)
 	}
-	session["model"] = modelJSON
-	if _, ok := session["type"]; !ok {
-		typeJSON, marshalErr := json.Marshal("realtime")
-		if marshalErr != nil {
-			return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode realtime session type", marshalErr)
+
+	if schemas.IsGATranscriptionSessionBody(root) {
+		// RealtimeTranscriptionSessionCreateRequestGA has no top-level session.model
+		// field at all — the model lives only at session.audio.input.transcription.model.
+		// Writing a bogus top-level session.model here would send OpenAI a field its
+		// transcription-session schema doesn't define. Also strip any stray
+		// session.model a permissive client sent alongside the transcription
+		// shape — IsGATranscriptionSessionBody's classification (checked
+		// against root, not session, before we ever get here) guarantees
+		// session.model was absent when the shape was decided, but delete it
+		// defensively in case a caller constructs the map directly.
+		delete(session, "model")
+		if bifrostErr := writeGASessionTranscriptionModel(session, modelJSON); bifrostErr != nil {
+			return nil, "", bifrostErr
 		}
-		session["type"] = typeJSON
+		if _, ok := session["type"]; !ok {
+			typeJSON, marshalErr := json.Marshal("transcription")
+			if marshalErr != nil {
+				return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode transcription session type", marshalErr)
+			}
+			session["type"] = typeJSON
+		}
+	} else {
+		session["model"] = modelJSON
+		StripNestedModelPrefixes(session)
+		if _, ok := session["type"]; !ok {
+			typeJSON, marshalErr := json.Marshal("realtime")
+			if marshalErr != nil {
+				return nil, "", newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode realtime session type", marshalErr)
+			}
+			session["type"] = typeJSON
+		}
 	}
 	delete(root, "model")
 
@@ -337,6 +367,51 @@ func normalizeRealtimeClientSecretsRequest(
 	}
 
 	return normalizedBody, normalizedModel, nil
+}
+
+// writeGASessionTranscriptionModel sets session.audio.input.transcription.model
+// to the already-bare, already-resolved model, creating the object if the
+// client's transcription config was otherwise empty.
+func writeGASessionTranscriptionModel(session map[string]json.RawMessage, modelJSON json.RawMessage) *schemas.BifrostError {
+	audioJSON, ok := session["audio"]
+	if !ok {
+		return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio is required for transcription sessions", nil)
+	}
+	var audio map[string]json.RawMessage
+	if err := json.Unmarshal(audioJSON, &audio); err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio must be an object", err)
+	}
+	inputJSON, ok := audio["input"]
+	if !ok {
+		return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input is required for transcription sessions", nil)
+	}
+	var input map[string]json.RawMessage
+	if err := json.Unmarshal(inputJSON, &input); err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input must be an object", err)
+	}
+	transcription := map[string]json.RawMessage{}
+	if transJSON, ok := input["transcription"]; ok && len(transJSON) > 0 && !bytes.Equal(transJSON, []byte("null")) {
+		if err := json.Unmarshal(transJSON, &transcription); err != nil {
+			return newRealtimeClientSecretError(fasthttp.StatusBadRequest, "invalid_request_error", "session.audio.input.transcription must be an object", err)
+		}
+	}
+	transcription["model"] = modelJSON
+	transcriptionJSON, err := json.Marshal(transcription)
+	if err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode session.audio.input.transcription", err)
+	}
+	input["transcription"] = transcriptionJSON
+	inputJSON, err = json.Marshal(input)
+	if err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode session.audio.input", err)
+	}
+	audio["input"] = inputJSON
+	audioJSON, err = json.Marshal(audio)
+	if err != nil {
+		return newRealtimeClientSecretError(fasthttp.StatusInternalServerError, "server_error", "failed to encode session.audio", err)
+	}
+	session["audio"] = audioJSON
+	return nil
 }
 
 func normalizeRealtimeSessionsRequest(
@@ -361,6 +436,7 @@ func normalizeRealtimeSessionsRequest(
 	}
 	root["model"] = modelJSON
 	delete(root, "session")
+	StripNestedModelPrefixes(root)
 
 	normalizedBody, marshalErr := json.Marshal(root)
 	if marshalErr != nil {
@@ -368,6 +444,68 @@ func normalizeRealtimeSessionsRequest(
 	}
 
 	return normalizedBody, normalizedModel, nil
+}
+
+// StripNestedModelPrefixes removes provider prefixes (e.g. "openai/whisper-1" → "whisper-1")
+// from known nested model fields in the realtime session config. This prevents forwarding
+// Bifrost-style "provider/model" strings to upstream providers that expect bare model names.
+func StripNestedModelPrefixes(session map[string]json.RawMessage) {
+	// Old format: input_audio_transcription.model
+	stripModelInNestedObject(session, "input_audio_transcription")
+
+	// New format: audio.input.transcription.model
+	if audioRaw, ok := session["audio"]; ok {
+		var audio map[string]json.RawMessage
+		if json.Unmarshal(audioRaw, &audio) == nil {
+			if inputRaw, ok := audio["input"]; ok {
+				var input map[string]json.RawMessage
+				if json.Unmarshal(inputRaw, &input) == nil {
+					if stripModelInNestedObject(input, "transcription") {
+						if updated, err := json.Marshal(input); err == nil {
+							audio["input"] = updated
+							if updatedAudio, err := json.Marshal(audio); err == nil {
+								session["audio"] = updatedAudio
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// stripModelInNestedObject strips the provider prefix from a "model" field inside a nested
+// object at session[key]. Returns true if any change was made.
+func stripModelInNestedObject(parent map[string]json.RawMessage, key string) bool {
+	objRaw, ok := parent[key]
+	if !ok || len(objRaw) == 0 || bytes.Equal(objRaw, []byte("null")) {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(objRaw, &obj) != nil {
+		return false
+	}
+	modelRaw, ok := obj["model"]
+	if !ok {
+		return false
+	}
+	var modelStr string
+	if json.Unmarshal(modelRaw, &modelStr) != nil {
+		return false
+	}
+	// Strip provider prefix if present (e.g. "openai/whisper-1" → "whisper-1")
+	_, bareModel := schemas.ParseModelString(modelStr, "")
+	if bareModel == modelStr {
+		return false // no prefix to strip
+	}
+	if updated, err := json.Marshal(bareModel); err == nil {
+		obj["model"] = updated
+		if updatedObj, err := json.Marshal(obj); err == nil {
+			parent[key] = updatedObj
+			return true
+		}
+	}
+	return false
 }
 
 func (provider *OpenAIProvider) realtimeSessionHeaders(
@@ -964,4 +1102,17 @@ func isRealtimeDeltaEvent(eventType string) bool {
 		return true
 	}
 	return false
+}
+
+// ExtractNestedVoice digs into the new session.audio.output.voice path.
+func ExtractNestedVoice(audioRaw json.RawMessage) string {
+	var audio struct {
+		Output struct {
+			Voice string `json:"voice"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(audioRaw, &audio); err == nil && audio.Output.Voice != "" {
+		return audio.Output.Voice
+	}
+	return ""
 }

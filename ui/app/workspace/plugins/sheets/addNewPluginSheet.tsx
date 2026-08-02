@@ -165,7 +165,7 @@ export default function AddNewPluginSheet({ open, onClose, onCreate, plugin }: A
 							<PluginFormFragment form={form} isEditMode={isEditMode} />
 						</div>
 
-						<div className="flex justify-end gap-2 bg-card sticky bottom-0 border-t px-8 py-4">
+						<div className="bg-card sticky bottom-0 flex justify-end gap-2 border-t px-8 py-4">
 							<Button type="button" variant="outline" onClick={handleClose} disabled={isLoading}>
 								Cancel
 							</Button>

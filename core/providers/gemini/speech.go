@@ -11,7 +11,7 @@ import (
 
 // ToBifrostSpeechRequest converts a GeminiGenerationRequest to a BifrostSpeechRequest
 func (request *GeminiGenerationRequest) ToBifrostSpeechRequest(ctx *schemas.BifrostContext) *schemas.BifrostSpeechRequest {
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	bifrostReq := &schemas.BifrostSpeechRequest{
 		Provider: provider,

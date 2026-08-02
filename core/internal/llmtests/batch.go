@@ -84,6 +84,7 @@ func RunBatchCreateTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 				},
 				CompletionWindow: "24h",
 				ExtraParams:      testConfig.BatchExtraParams,
+				OutputFolder:     testConfig.BatchOutputFolder,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchCreateRequest(bfCtx, request)
@@ -231,6 +232,7 @@ func RunBatchRetrieveTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				},
 				CompletionWindow: "24h",
 				ExtraParams:      testConfig.BatchExtraParams,
+				OutputFolder:     testConfig.BatchOutputFolder,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchCreateRequest(bfCtx, createRequest)
@@ -358,6 +360,7 @@ func RunBatchCancelTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 				},
 				CompletionWindow: "24h",
 				ExtraParams:      testConfig.BatchExtraParams,
+				OutputFolder:     testConfig.BatchOutputFolder,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchCreateRequest(bfCtx, createRequest)
@@ -603,9 +606,10 @@ func RunFileUploadTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 			request := &schemas.BifrostFileUploadRequest{
 				Provider:    testConfig.Provider,
 				File:        fileContent,
-				Filename:    "test_batch.jsonl",
-				Purpose:     "batch",
-				ExtraParams: testConfig.FileExtraParams,
+				Filename:      "test_batch.jsonl",
+				Purpose:       "batch",
+				ExtraParams:   testConfig.FileExtraParams,
+				StorageConfig: testConfig.FileStorageConfig,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileUploadRequest(bfCtx, request)
@@ -672,9 +676,10 @@ func RunFileListTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 
 		response, err := WithFileListTestRetry(t, fileListRetryConfig, retryContext, expectations, "FileList", func() (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
 			request := &schemas.BifrostFileListRequest{
-				Provider:    testConfig.Provider,
-				Limit:       10,
-				ExtraParams: testConfig.FileExtraParams,
+				Provider:      testConfig.Provider,
+				Limit:         10,
+				ExtraParams:   testConfig.FileExtraParams,
+				StorageConfig: testConfig.FileStorageConfig,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileListRequest(bfCtx, request)
@@ -742,9 +747,10 @@ func RunFileRetrieveTest(t *testing.T, client *bifrost.Bifrost, ctx context.Cont
 			uploadRequest := &schemas.BifrostFileUploadRequest{
 				Provider:    testConfig.Provider,
 				File:        fileContent,
-				Filename:    "test_retrieve.jsonl",
-				Purpose:     "batch",
-				ExtraParams: testConfig.FileExtraParams,
+				Filename:      "test_retrieve.jsonl",
+				Purpose:       "batch",
+				ExtraParams:   testConfig.FileExtraParams,
+				StorageConfig: testConfig.FileStorageConfig,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileUploadRequest(bfCtx, uploadRequest)
@@ -860,9 +866,10 @@ func RunFileDeleteTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 			uploadRequest := &schemas.BifrostFileUploadRequest{
 				Provider:    testConfig.Provider,
 				File:        fileContent,
-				Filename:    "test_delete.jsonl",
-				Purpose:     "batch",
-				ExtraParams: testConfig.FileExtraParams,
+				Filename:      "test_delete.jsonl",
+				Purpose:       "batch",
+				ExtraParams:   testConfig.FileExtraParams,
+				StorageConfig: testConfig.FileStorageConfig,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileUploadRequest(bfCtx, uploadRequest)
@@ -978,9 +985,10 @@ func RunFileContentTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 			uploadRequest := &schemas.BifrostFileUploadRequest{
 				Provider:    testConfig.Provider,
 				File:        originalContent,
-				Filename:    "test_content.jsonl",
-				Purpose:     "batch",
-				ExtraParams: testConfig.FileExtraParams,
+				Filename:      "test_content.jsonl",
+				Purpose:       "batch",
+				ExtraParams:   testConfig.FileExtraParams,
+				StorageConfig: testConfig.FileStorageConfig,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileUploadRequest(bfCtx, uploadRequest)
@@ -1117,9 +1125,10 @@ func RunFileAndBatchIntegrationTest(t *testing.T, client *bifrost.Bifrost, ctx c
 		uploadRequest := &schemas.BifrostFileUploadRequest{
 			Provider:    testConfig.Provider,
 			File:        fileContent,
-			Filename:    "integration_test_batch.jsonl",
-			Purpose:     "batch",
-			ExtraParams: testConfig.FileExtraParams,
+			Filename:      "integration_test_batch.jsonl",
+			Purpose:       "batch",
+			ExtraParams:   testConfig.FileExtraParams,
+			StorageConfig: testConfig.FileStorageConfig,
 		}
 
 		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
@@ -1148,6 +1157,7 @@ func RunFileAndBatchIntegrationTest(t *testing.T, client *bifrost.Bifrost, ctx c
 			Endpoint:         schemas.BatchEndpointChatCompletions,
 			CompletionWindow: "24h",
 			ExtraParams:      testConfig.BatchExtraParams,
+			OutputFolder:     testConfig.BatchOutputFolder,
 		}
 
 		bfCtx2 := schemas.NewBifrostContext(ctx, schemas.NoDeadline)

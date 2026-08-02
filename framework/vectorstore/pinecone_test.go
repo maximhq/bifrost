@@ -28,8 +28,8 @@ type PineconeTestSetup struct {
 }
 
 func NewPineconeTestSetup(t *testing.T) *PineconeTestSetup {
-	apiKey := schemas.NewEnvVar(getEnvWithDefault("PINECONE_API_KEY", PineconeTestDefaultAPIKey))
-	indexHost := schemas.NewEnvVar(getEnvWithDefault("PINECONE_INDEX_HOST", PineconeTestDefaultIndexHost))
+	apiKey := schemas.NewSecretVar(getEnvWithDefault("PINECONE_API_KEY", PineconeTestDefaultAPIKey))
+	indexHost := schemas.NewSecretVar(getEnvWithDefault("PINECONE_INDEX_HOST", PineconeTestDefaultIndexHost))
 
 	config := PineconeConfig{
 		APIKey:    *apiKey,
@@ -94,7 +94,7 @@ func TestPineconeConfig_Validation(t *testing.T) {
 		{
 			name: "missing api key",
 			config: PineconeConfig{
-				IndexHost: *schemas.NewEnvVar("https://my-index.svc.environment.pinecone.io"),
+				IndexHost: *schemas.NewSecretVar("https://my-index.svc.environment.pinecone.io"),
 			},
 			expectError: true,
 			errorMsg:    "pinecone api_key is required",
@@ -102,7 +102,7 @@ func TestPineconeConfig_Validation(t *testing.T) {
 		{
 			name: "missing index host",
 			config: PineconeConfig{
-				APIKey: *schemas.NewEnvVar("test-api-key"),
+				APIKey: *schemas.NewSecretVar("test-api-key"),
 			},
 			expectError: true,
 			errorMsg:    "pinecone index_host is required",
@@ -110,8 +110,8 @@ func TestPineconeConfig_Validation(t *testing.T) {
 		{
 			name: "empty api key",
 			config: PineconeConfig{
-				APIKey:    *schemas.NewEnvVar(""),
-				IndexHost: *schemas.NewEnvVar("https://my-index.svc.environment.pinecone.io"),
+				APIKey:    *schemas.NewSecretVar(""),
+				IndexHost: *schemas.NewSecretVar("https://my-index.svc.environment.pinecone.io"),
 			},
 			expectError: true,
 			errorMsg:    "pinecone api_key is required",
@@ -119,8 +119,8 @@ func TestPineconeConfig_Validation(t *testing.T) {
 		{
 			name: "empty index host",
 			config: PineconeConfig{
-				APIKey:    *schemas.NewEnvVar("test-api-key"),
-				IndexHost: *schemas.NewEnvVar(""),
+				APIKey:    *schemas.NewSecretVar("test-api-key"),
+				IndexHost: *schemas.NewSecretVar(""),
 			},
 			expectError: true,
 			errorMsg:    "pinecone index_host is required",
@@ -586,8 +586,8 @@ func TestVectorStoreFactory_Pinecone(t *testing.T) {
 		t.Skip("Skipping integration tests in short mode")
 	}
 
-	apiKey := schemas.NewEnvVar(getEnvWithDefault("PINECONE_API_KEY", PineconeTestDefaultAPIKey))
-	indexHost := schemas.NewEnvVar(getEnvWithDefault("PINECONE_INDEX_HOST", PineconeTestDefaultIndexHost))
+	apiKey := schemas.NewSecretVar(getEnvWithDefault("PINECONE_API_KEY", PineconeTestDefaultAPIKey))
+	indexHost := schemas.NewSecretVar(getEnvWithDefault("PINECONE_INDEX_HOST", PineconeTestDefaultIndexHost))
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	config := &Config{

@@ -2,17 +2,27 @@ import { BaseProvider, ConcurrencyAndBufferSize, NetworkConfig } from "@/lib/typ
 import { ProviderName } from "./logs";
 
 /**
- * Parse a date string in YYYY-MM-DD format with strict validation.
- * Returns null if the string is empty, malformed, or represents an invalid date.
+ * Parse a trial expiry string with strict validation.
+ * Accepts either a bare date (YYYY-MM-DD) or a full RFC3339 timestamp
+ * (YYYY-MM-DDTHH:mm:ssZ) — the Docker build injects the latter, since the Go
+ * side needs an RFC3339 value. Only the calendar date is significant for the
+ * banner, so any time component is ignored and the date is taken at local
+ * midnight. Returns null if the string is empty, malformed, or represents an
+ * invalid date.
  */
 function parseTrialExpiry(dateStr: string | undefined): Date | null {
 	if (!dateStr || !dateStr.trim()) return null;
 
-	// Strict format check: YYYY-MM-DD
-	const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-	if (!dateRegex.test(dateStr)) return null;
+	// Accept YYYY-MM-DD optionally followed by a time component (e.g. the
+	// RFC3339 "T00:00:00Z" suffix), and capture just the date part.
+	const dateRegex = /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/;
+	const match = dateRegex.exec(dateStr.trim());
+	if (!match) return null;
 
-	const [year, month, day] = dateStr.split("-").map(Number);
+	const [, yearStr, monthStr, dayStr] = match;
+	const year = Number(yearStr);
+	const month = Number(monthStr);
+	const day = Number(dayStr);
 	const date = new Date(year, month - 1, day);
 
 	// Validate the date components match (catches invalid dates like 2024-02-30)
@@ -29,8 +39,10 @@ export const ModelPlaceholders = {
 	anthropic: "e.g. claude-3-haiku, claude-2.1",
 	azure: "e.g. gpt-4, gpt-35-turbo (must match alias keys)",
 	bedrock: "e.g. claude-v2, titan-text-express-v1, ai21-j2-mid",
+	bedrock_mantle: "e.g. anthropic.claude-opus-4-8, openai.gpt-oss-120b",
 	cerebras: "e.g. cerebras-2, cerebras-2-vision",
 	cohere: "e.g. command-r, command-r-plus",
+	deepseek: "e.g. deepseek-v4-flash, deepseek-v4-pro",
 	gemini: "e.g. gemini-1.5-pro, gemini-1.5-flash",
 	groq: "e.g. llama3-70b-8192, mixtral-8x7b-32768",
 	huggingface: "e.g. sambanova/meta-llama/Llama-3.1-8B-Instruct, nebius/Qwen/Qwen3-Embedding-8B",
@@ -41,6 +53,8 @@ export const ModelPlaceholders = {
 	elevenlabs: "e.g. eleven_multilingual_v2, eleven_turbo_v2",
 	perplexity: "e.g. sonar-pro, sonar-deep-research",
 	ollama: "e.g. llama3.1, llama2",
+	"opencode-go": "e.g. gpt-5.5, claude-sonnet-4-6",
+	"opencode-zen": "e.g. gpt-5.5, claude-sonnet-4-6",
 	openai: "e.g. gpt-4, gpt-4o, gpt-4o-mini, gpt-3.5-turbo",
 	vertex: "e.g. gemini-1.5-pro, text-bison, chat-bison",
 	nebius: "e.g. openai/gpt-oss-120b, google/gemma-2-9b-it-fast, Qwen/Qwen2.5-VL-72B-Instruct",
@@ -48,15 +62,20 @@ export const ModelPlaceholders = {
 	replicate: "e.g. meta/llama3-1-8b-instruct, black-forest-labs/flux-dev",
 	vllm: "e.g. Qwen/Qwen3-0.6B, Qwen/Qwen3-1.5B",
 	runway: "e.g. gen4_turbo_image_to_video, gen3a_turbo_image_to_video",
+	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
+	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	wafer: "e.g. glm-5.2, kimi-k2.6",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	anthropic: true,
 	azure: true,
 	bedrock: true,
+	bedrock_mantle: true,
 	cerebras: true,
 	cohere: true,
+	deepseek: true,
 	gemini: true,
 	groq: true,
 	huggingface: true,
@@ -66,6 +85,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	parasail: true,
 	elevenlabs: true,
 	ollama: false,
+	"opencode-go": true,
+	"opencode-zen": true,
 	openai: true,
 	vertex: true,
 	perplexity: true,
@@ -73,21 +94,26 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	xai: true,
 	replicate: true,
 	runway: true,
+	runware: true,
 	vllm: false,
 	fireworks: true,
+	sarvam: true,
+	wafer: true,
 };
 
 export const DefaultNetworkConfig = {
 	base_url: "",
-	default_request_timeout_in_seconds: 30,
+	default_request_timeout_in_seconds: 300,
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
 	insecure_skip_verify: false,
-	ca_cert_pem: { value: "", env_var: "", from_env: false },
-	stream_idle_timeout_in_seconds: 60,
+	ca_cert_pem: { value: "", ref: "" },
+	stream_idle_timeout_in_seconds: 120,
+	keep_alive_timeout_in_seconds: 30,
 	max_conns_per_host: 5000,
 	enforce_http2: false,
+	allow_private_network: false,
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {
@@ -113,6 +139,10 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"chat_completion_stream",
 		"responses",
 		"responses_stream",
+		"responses_retrieve",
+		"responses_delete",
+		"responses_cancel",
+		"responses_input_items",
 		"embedding",
 		"speech",
 		"speech_stream",

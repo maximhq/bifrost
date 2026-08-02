@@ -14,10 +14,7 @@ export function isValidRuleGroupType(q: unknown): q is RuleGroupType {
 		return false;
 	}
 	const candidate = q as RuleGroupType;
-	return (
-		(candidate.combinator === "and" || candidate.combinator === "or") &&
-		Array.isArray(candidate.rules)
-	);
+	return (candidate.combinator === "and" || candidate.combinator === "or") && Array.isArray(candidate.rules);
 }
 
 export function normalizeRoutingRuleGroupQuery(q: unknown): RuleGroupType {

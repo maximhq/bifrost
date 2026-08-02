@@ -29,8 +29,9 @@ const (
 //   - APIKey: API key for Maxim SDK authentication
 //   - LogRepoID: Optional default ID for the Maxim logger instance
 type Config struct {
-	LogRepoID string `json:"log_repo_id,omitempty"` // Optional - can be empty
-	APIKey    string `json:"api_key"`
+	LogRepoID      string   `json:"log_repo_id,omitempty"` // Optional - can be empty
+	APIKey         string   `json:"api_key"`
+	RequestHeaders []string `json:"request_headers,omitempty"` // Optional request-header name patterns (exact or wildcard) to attach as trace tags
 }
 
 // Plugin implements the schemas.LLMPlugin interface for Maxim's logger.
@@ -48,6 +49,7 @@ type Plugin struct {
 	loggers          map[string]*logging.Logger
 	loggerMutex      *sync.RWMutex
 	logger           schemas.Logger
+	requestHeaders   []string
 }
 
 // Init initializes and returns a Plugin instance for Maxim's logger.
@@ -75,6 +77,7 @@ func Init(config *Config, logger schemas.Logger) (schemas.LLMPlugin, error) {
 		loggers:          make(map[string]*logging.Logger),
 		loggerMutex:      &sync.RWMutex{},
 		logger:           logger,
+		requestHeaders:   config.RequestHeaders,
 	}
 
 	// Initialize default logger if LogRepoId is provided
@@ -224,6 +227,11 @@ func (plugin *Plugin) getOrCreateLogger(logRepoID string) (*logging.Logger, erro
 
 	plugin.loggers[logRepoID] = logger
 	return logger, nil
+}
+
+// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
+func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	return nil
 }
 
 // PreLLMHook is called before a request is processed by Bifrost.
@@ -554,6 +562,13 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 	tags, hasTags := ctx.Value(TagsKey).(map[string]string)
 	// Also capture x-bf-dim-* dimensions to forward as tags
 	dims, hasDims := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+	// Capture configured request headers (exact or wildcard patterns) to forward as tags.
+	var reqHeaders map[string]string
+	if len(plugin.requestHeaders) > 0 {
+		allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+		reqHeaders = schemas.FilterHeaders(allHeaders, plugin.requestHeaders)
+	}
+	hasReqHeaders := len(reqHeaders) > 0
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -569,7 +584,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 			// Use central tracer's accumulator
 			tracer, bifrostTraceID, err := bifrost.GetTracerFromContext(ctx)
 			if err == nil && tracer != nil && bifrostTraceID != "" {
-				accResult := tracer.ProcessStreamingChunk(bifrostTraceID, isFinalChunk, result, bifrostErr)
+				accResult := tracer.ProcessStreamingChunk(ctx, bifrostTraceID, isFinalChunk, result, bifrostErr)
 				if accResult != nil {
 					streamResponse = convertAccResultToProcessedStreamResponse(accResult)
 				}
@@ -686,6 +701,18 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 		}
 		if hasTraceID && traceID != "" && modelTag != "" {
 			logger.AddTagToTrace(traceID, "model", string(modelTag))
+		}
+		// add configured request headers as tags (prefixed to avoid colliding with other tags)
+		if hasReqHeaders {
+			for key, value := range reqHeaders {
+				tagKey := "header." + key
+				if generationID != "" {
+					logger.AddTagToGeneration(generationID, tagKey, value)
+				}
+				if traceID != "" {
+					logger.AddTagToTrace(traceID, tagKey, value)
+				}
+			}
 		}
 		// Flush only the effective logger that was used for this request
 		logger.Flush()

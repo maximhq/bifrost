@@ -40,7 +40,7 @@ func NewElevenlabsProvider(config *schemas.ProviderConfig, logger schemas.Logger
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
+		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
@@ -48,7 +48,7 @@ func NewElevenlabsProvider(config *schemas.ProviderConfig, logger schemas.Logger
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
@@ -103,7 +103,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	// Extract and set provider response headers so they're available on error paths
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseElevenlabsError(resp)
+		return nil, providerUtils.SetErrorLatency(parseElevenlabsError(resp), latency)
 	}
 
 	var elevenlabsResponse ElevenlabsListModelsResponse
@@ -185,6 +185,13 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 		return nil, err
 	}
 
+	// Sound-effects models hit a different upstream API (/v1/sound-generation) with
+	// no voice. Dispatch internally so they ride the existing speech request type
+	// (and thus the existing virtual-key governance keyed on provider+model).
+	if schemas.IsElevenlabsSoundModelFamily(ctx, request.Model) {
+		return provider.soundGeneration(ctx, key, request)
+	}
+
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -237,20 +244,20 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	// Extract and set provider response headers so they're available on error paths
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Get the response body
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Create response based on whether timestamps were requested
@@ -350,9 +357,10 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 
 	// Make request
 	startTime := time.Now()
-	err := provider.streamingClient.Do(req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	latency := time.Since(startTime)
 	if err != nil {
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
 			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
@@ -361,12 +369,16 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		// Request failed before the first response byte (server closed an idle/pooled connection,
+		// broken pipe, connection refused, DNS failure, etc.). Surface as a retriable upstream
+		// connection error (502) so executeRequestWithRetries honors max_retries, matching the
+		// non-streaming path - see https://github.com/maximhq/bifrost/issues/4496.
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -374,8 +386,8 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	// Create response channel
@@ -390,15 +402,15 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 			} else if ctx.Err() == context.DeadlineExceeded {
 				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 			}
-			close(responseChan)
+			providerUtils.CloseStream(ctx, responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
 		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
 		defer releaseGzip()
 
 		// Wrap reader with idle timeout to detect stalled streams.
-		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx))
+		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
 		defer stopIdleTimeout()
 
 		// Setup cancellation handler to close the raw network stream on ctx cancellation,
@@ -539,7 +551,7 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	// Extract and set provider response headers so they're available on error paths
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseElevenlabsError(resp)
+		return nil, providerUtils.SetErrorLatency(parseElevenlabsError(resp), latency)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -876,6 +888,11 @@ func (provider *ElevenlabsProvider) FileContent(_ *schemas.BifrostContext, _ []s
 // CountTokens is not supported by the Elevenlabs provider.
 func (provider *ElevenlabsProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// Compaction is not supported by the Elevenlabs provider.
+func (provider *ElevenlabsProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Elevenlabs provider.

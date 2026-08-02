@@ -8,17 +8,21 @@ import (
 
 // Plugin configuration
 type PluginConfig struct {
-	BlockedTools       []string `json:"blocked_tools"`        // List of tool names to block
+	BlockedTools       []string `json:"blocked_tools"`        // List of tool names to block (envelope hooks)
+	BlockedClients     []string `json:"blocked_clients"`      // MCP client names to refuse connections to (Connect hooks)
+	AuditHeader        string   `json:"audit_header"`         // If non-empty, inject this header into HTTP/SSE Connect requests
 	EnableAudit        bool     `json:"enable_audit"`         // Enable audit trail logging
 	EnableLogging      bool     `json:"enable_logging"`       // Enable detailed logging
 	TransformErrors    bool     `json:"transform_errors"`     // Transform 404 errors to friendly messages
-	CustomErrorMessage string   `json:"custom_error_message"` // Custom error message for blocked tools
+	CustomErrorMessage string   `json:"custom_error_message"` // Custom error message for blocked tools / clients
 }
 
 var (
 	// Default configuration
 	pluginConfig = &PluginConfig{
 		BlockedTools:       []string{"dangerous_tool"},
+		BlockedClients:     []string{},
+		AuditHeader:        "",
 		EnableAudit:        true,
 		EnableLogging:      true,
 		TransformErrors:    true,
@@ -59,6 +63,20 @@ func Init(config any) error {
 
 		if customMsg, ok := configMap["custom_error_message"].(string); ok {
 			pluginConfig.CustomErrorMessage = customMsg
+		}
+
+		if blockedClients, ok := configMap["blocked_clients"].([]interface{}); ok {
+			pluginConfig.BlockedClients = []string{}
+			for _, c := range blockedClients {
+				if name, ok := c.(string); ok {
+					pluginConfig.BlockedClients = append(pluginConfig.BlockedClients, name)
+				}
+			}
+			fmt.Printf("[MCP-Only Plugin] Blocked clients: %v\n", pluginConfig.BlockedClients)
+		}
+
+		if auditHeader, ok := configMap["audit_header"].(string); ok {
+			pluginConfig.AuditHeader = auditHeader
 		}
 	}
 
@@ -183,6 +201,99 @@ func PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, 
 	}
 
 	// Return modified response and error
+	return resp, bifrostErr, nil
+}
+
+// PreMCPConnectionHook is called once per MCP client when its transport is
+// being established (Connect lifecycle), separate from the per-call PreMCPHook
+// path above. The request carries transport-level inputs — some are mutable
+// and survive into the actual transport creation, others are observe-only.
+//
+// Mutable fields (changes are honored by Bifrost):
+//   - req.ConnectionString  → URL for http/sse transports
+//   - req.Headers           → transport-level headers (http/sse only; stdio/inprocess ignore)
+//   - req.StdioCommand      → command for stdio transports
+//   - req.StdioArgs         → argv for stdio transports
+//
+// Observe-only fields (mutations are ignored; changing them mid-flight would
+// break the rest of the connect codepath):
+//   - req.ClientName
+//   - req.ConnectionType
+//   - req.AuthType
+//
+// Returning a non-nil *MCPConnectionShortCircuit blocks the connection.
+// Use Error to surface a refusal; use Response to synthesize a successful
+// handshake (rare — typically for testing or mocking).
+func PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
+	if pluginConfig.EnableLogging {
+		fmt.Printf("[MCP-Only Plugin] PreMCPConnectionHook called: client=%s type=%s auth=%s\n",
+			req.ClientName, req.ConnectionType, req.AuthType)
+
+		allHeaders := ctx.Value(schemas.BifrostContextKeyRequestHeaders)
+		fmt.Printf("[MCP-Only Plugin] Request headers: %+v\n", allHeaders)
+
+	}
+
+	// Example: refuse connections to blocklisted clients.
+	for _, blocked := range pluginConfig.BlockedClients {
+		if req.ClientName == blocked {
+			fmt.Printf("[MCP-Only Plugin] Refusing Connect for blocked client: %s\n", req.ClientName)
+			errMsg := fmt.Sprintf("%s: client %q is not allowed", pluginConfig.CustomErrorMessage, req.ClientName)
+			return req, &schemas.MCPConnectionShortCircuit{
+				Error: &schemas.BifrostError{
+					StatusCode: schemas.Ptr(403),
+					Error: &schemas.ErrorField{
+						Message: errMsg,
+					},
+				},
+			}, nil
+		}
+	}
+
+	// Example: inject an audit header on HTTP/SSE transports. STDIO and
+	// InProcess transports ignore Headers, so this mutation is silently a
+	// no-op for them — the observe-only ConnectionType tells you which
+	// transport you're about to bring up.
+	if pluginConfig.AuditHeader != "" &&
+		(req.ConnectionType == schemas.MCPConnectionTypeHTTP || req.ConnectionType == schemas.MCPConnectionTypeSSE) {
+		if req.Headers == nil {
+			req.Headers = make(map[string]string)
+		}
+		req.Headers[pluginConfig.AuditHeader] = fmt.Sprintf("bifrost-mcp-connect:%s", req.ClientName)
+	}
+
+	return req, nil, nil
+}
+
+// PostMCPConnectionHook runs after the upstream MCP handshake completes.
+// The response carries ServerInfo + capability flags + protocol version
+// negotiated during initialize. Use this for observation, capability gating,
+// or to attach connection metadata to downstream telemetry.
+//
+// On a failed handshake, resp is nil and bifrostErr is populated. Plugins
+// can return a transformed error (mirroring PostMCPHook's pattern below).
+func PostMCPConnectionHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError, error) {
+	if pluginConfig.EnableLogging {
+		fmt.Println("[MCP-Only Plugin] PostMCPConnectionHook called")
+	}
+
+	if bifrostErr != nil {
+		if pluginConfig.EnableLogging && bifrostErr.Error != nil {
+			fmt.Printf("[MCP-Only Plugin] Connect failed: %s\n", bifrostErr.Error.Message)
+		}
+		return resp, bifrostErr, nil
+	}
+
+	if resp != nil && pluginConfig.EnableLogging {
+		if resp.ServerInfo != nil {
+			fmt.Printf("[MCP-Only Plugin] Connected: server=%s version=%s protocol=%s\n",
+				resp.ServerInfo.Name, resp.ServerInfo.Version, resp.ProtocolVersion)
+		}
+		if resp.ServerCapabilities != nil && !resp.ServerCapabilities.Tools {
+			fmt.Printf("[MCP-Only Plugin] Warning: server %q does not advertise Tools capability\n", resp.ExtraFields.ClientName)
+		}
+	}
+
 	return resp, bifrostErr, nil
 }
 

@@ -13,6 +13,7 @@ FLOW ?=
 VERSION ?= dev-build
 LOCAL ?=
 DEBUG ?=
+COMPAT ?=
 
 # Colors for output
 RED=\033[0;31m
@@ -66,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed format ui install-newman run-provider-harness-test run-cli-harness-test
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index
 
 all: help
 
@@ -153,6 +154,38 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 
 dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment (UI + API with proxy)
 	@$(EXPOSE_ENV); \
+	set +m; \
+	ui_pid=""; \
+	api_pid=""; \
+	cleanup() { \
+		$(ECHO) "$(YELLOW)[make dev] cleanup started; ui_pid=$$ui_pid api_pid=$$api_pid$(NC)"; \
+		trap - EXIT INT TERM HUP; \
+		for pid in "$$ui_pid" "$$api_pid"; do \
+			if [ -n "$$pid" ]; then \
+				children="$$(pgrep -P "$$pid" 2>/dev/null || true)"; \
+				$(ECHO) "$(YELLOW)[make dev] sending TERM to pid $$pid and children: $${children:-none}$(NC)"; \
+				kill -TERM $$children "$$pid" 2>/dev/null || true; \
+			fi; \
+		done; \
+		sleep 1; \
+		for pid in "$$ui_pid" "$$api_pid"; do \
+			if [ -n "$$pid" ]; then \
+				children="$$(pgrep -P "$$pid" 2>/dev/null || true)"; \
+				$(ECHO) "$(YELLOW)[make dev] sending KILL to pid $$pid and remaining children: $${children:-none}$(NC)"; \
+				kill -KILL $$children "$$pid" 2>/dev/null || true; \
+			fi; \
+		done; \
+		$(ECHO) "$(YELLOW)[make dev] waiting for background jobs to exit...$(NC)"; \
+		wait 2>/dev/null || true; \
+		$(ECHO) "$(GREEN)[make dev] cleanup completed.$(NC)"; \
+	}; \
+	stop_dev() { \
+		$(ECHO) "$(YELLOW)[make dev] received shutdown signal; starting cleanup...$(NC)"; \
+		cleanup; \
+		exit 130; \
+	}; \
+	trap cleanup EXIT; \
+	trap stop_dev INT TERM HUP; \
 	$(ECHO) "$(GREEN)Starting Bifrost complete development environment...$(NC)"; \
 	$(ECHO) "$(YELLOW)This will start:$(NC)"; \
 	$(ECHO) "  1. UI development server (localhost:3000)"; \
@@ -170,35 +203,75 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"; \
 	$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev & \
+		(cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev) & \
 	else \
-		cd ui && npm run dev & \
+		(cd ui && npm run dev) & \
 	fi; \
+	ui_pid="$$!"; \
+	$(ECHO) "$(YELLOW)[make dev] UI dev server started with pid $$ui_pid$(NC)"; \
 	sleep 3; \
 	$(ECHO) "$(YELLOW)Starting API server with UI proxy...$(NC)"; \
 	$(MAKE) setup-workspace >/dev/null; \
 	if [ -n "$(DEBUG)" ]; then \
 		$(ECHO) "$(CYAN)Starting with air + delve debugger on port 2345...$(NC)"; \
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
-		cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.debug.toml -- \
+		(cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.debug.toml -- \
 			-host "$(HOST)" \
 			-port "$(PORT)" \
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))"); \
+			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")) & \
 	else \
-		cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
+		(cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
 			-host "$(HOST)" \
 			-port "$(PORT)" \
 			-log-style "$(LOG_STYLE)" \
 			-log-level "$(LOG_LEVEL)" \
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))"); \
-	fi
+			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))")) & \
+	fi; \
+	api_pid="$$!"; \
+	$(ECHO) "$(YELLOW)[make dev] API dev server started with pid $$api_pid$(NC)"; \
+	while kill -0 "$$ui_pid" 2>/dev/null && kill -0 "$$api_pid" 2>/dev/null; do sleep 1; done; \
+	$(ECHO) "$(YELLOW)[make dev] one of the dev processes exited; running cleanup...$(NC)"; \
+	cleanup; \
+	exit 1
 
 dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment using pulse for hot reloading
 	@$(EXPOSE_ENV); \
+	set +m; \
+	ui_pid=""; \
+	pulse_pid=""; \
+	cleanup() { \
+		$(ECHO) "$(YELLOW)[make dev-pulse] cleanup started; ui_pid=$$ui_pid pulse_pid=$$pulse_pid$(NC)"; \
+		trap - EXIT INT TERM HUP; \
+		for pid in "$$ui_pid" "$$pulse_pid"; do \
+			if [ -n "$$pid" ]; then \
+				children="$$(pgrep -P "$$pid" 2>/dev/null || true)"; \
+				$(ECHO) "$(YELLOW)[make dev-pulse] sending TERM to pid $$pid and children: $${children:-none}$(NC)"; \
+				kill -TERM $$children "$$pid" 2>/dev/null || true; \
+			fi; \
+		done; \
+		sleep 1; \
+		for pid in "$$ui_pid" "$$pulse_pid"; do \
+			if [ -n "$$pid" ]; then \
+				children="$$(pgrep -P "$$pid" 2>/dev/null || true)"; \
+				$(ECHO) "$(YELLOW)[make dev-pulse] sending KILL to pid $$pid and remaining children: $${children:-none}$(NC)"; \
+				kill -KILL $$children "$$pid" 2>/dev/null || true; \
+			fi; \
+		done; \
+		$(ECHO) "$(YELLOW)[make dev-pulse] waiting for background jobs to exit...$(NC)"; \
+		wait 2>/dev/null || true; \
+		$(ECHO) "$(GREEN)[make dev-pulse] cleanup completed.$(NC)"; \
+	}; \
+	stop_dev() { \
+		$(ECHO) "$(YELLOW)[make dev-pulse] received shutdown signal; starting cleanup...$(NC)"; \
+		cleanup; \
+		exit 130; \
+	}; \
+	trap cleanup EXIT; \
+	trap stop_dev INT TERM HUP; \
 	$(ECHO) "$(GREEN)Starting Bifrost complete development environment (pulse)...$(NC)"; \
 	$(ECHO) "$(YELLOW)This will start:$(NC)"; \
 	$(ECHO) "  1. UI development server (localhost:3000)"; \
@@ -216,32 +289,30 @@ dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve)
 	$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"; \
 	$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
 		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev & \
+		(cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev) & \
 	else \
-		cd ui && npm run dev & \
+		(cd ui && npm run dev) & \
 	fi; \
+	ui_pid="$$!"; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] UI dev server started with pid $$ui_pid$(NC)"; \
 	sleep 3; \
 	$(ECHO) "$(YELLOW)Starting API server with UI proxy...$(NC)"; \
 	$(MAKE) setup-workspace >/dev/null; \
 	if [ -n "$(DEBUG)" ]; then \
 		$(ECHO) "$(CYAN)Starting with pulse + delve debugger on port 2345...$(NC)"; \
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
-		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
-			-host "$(HOST)" \
-			-port "$(PORT)" \
-			-log-style "$(LOG_STYLE)" \
-			-log-level "$(LOG_LEVEL)" \
-			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))"); \
+		PORT="$(PORT)" HOST="$(HOST)" LOG_STYLE="$(LOG_STYLE)" LOG_LEVEL="$(LOG_LEVEL)" BIFROST_UI_DEV=true \
+			$(if $(APP_DIR),APP_DIR="$(abspath $(APP_DIR))") pulse & \
 	else \
-		PORT="$(PORT)" BIFROST_UI_DEV=true pulse -- \
-			-host "$(HOST)" \
-			-port "$(PORT)" \
-			-log-style "$(LOG_STYLE)" \
-			-log-level "$(LOG_LEVEL)" \
-			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-			$(if $(APP_DIR),-app-dir "$(abspath $(APP_DIR))"); \
-	fi
+		PORT="$(PORT)" HOST="$(HOST)" LOG_STYLE="$(LOG_STYLE)" LOG_LEVEL="$(LOG_LEVEL)" BIFROST_UI_DEV=true \
+			$(if $(APP_DIR),APP_DIR="$(abspath $(APP_DIR))") pulse & \
+	fi; \
+	pulse_pid="$$!"; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] pulse started with pid $$pulse_pid$(NC)"; \
+	while kill -0 "$$ui_pid" 2>/dev/null && kill -0 "$$pulse_pid" 2>/dev/null; do sleep 1; done; \
+	$(ECHO) "$(YELLOW)[make dev-pulse] one of the dev processes exited; running cleanup...$(NC)"; \
+	cleanup; \
+	exit 1
 
 build-ui: install-ui ## Build ui
 	@$(ECHO) "$(GREEN)Building ui...$(NC)"
@@ -329,7 +400,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.1-alpine3.23 \
+				golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -346,7 +417,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26.1-alpine3.23 \
+				golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -382,7 +453,9 @@ docker-run: ## Run Docker container (Usage: make docker-run [CONFIG=path/to/conf
 	fi; \
 	docker run -e APP_PORT=$(PORT) -e APP_HOST=0.0.0.0 -p $(PORT):$(PORT) -e LOG_LEVEL=$(LOG_LEVEL) -e LOG_STYLE=$(LOG_STYLE) -v $(shell pwd):/app/data $$CONFIG_MOUNT bifrost
 
-docs: ## Prepare local docs
+docs: ## Prepare local docs (bundles OpenAPI spec then starts Mintlify dev server)
+	@$(ECHO) "$(GREEN)Bundling OpenAPI spec...$(NC)"
+	@cd docs/openapi && python3 bundle.py
 	@$(ECHO) "$(GREEN)Preparing local docs...$(NC)"
 	@cd docs && npx --yes mintlify@latest dev
 
@@ -412,6 +485,25 @@ clean-test-reports: ## Clean test reports only
 	@$(ECHO) "$(YELLOW)Cleaning test reports...$(NC)"
 	@rm -rf $(TEST_REPORTS_DIR)/
 	@$(ECHO) "$(GREEN)Test reports cleaned$(NC)"
+
+helm-index: ## Repackage helm chart, regenerate index.yaml digest, then remove the .tgz
+	@if ! which helm > /dev/null 2>&1; then \
+		$(ECHO) "$(RED)Error: helm not installed$(NC)"; \
+		exit 1; \
+	fi
+	@CHART_VERSION=$$(grep '^version:' helm-charts/bifrost/Chart.yaml | awk '{print $$2}'); \
+	$(ECHO) "$(YELLOW)Packaging helm chart v$$CHART_VERSION...$(NC)"; \
+	cd helm-charts && \
+	helm package bifrost && \
+	$(ECHO) "$(YELLOW)Regenerating index.yaml digest...$(NC)" && \
+	if [ -f index.yaml ]; then \
+		helm repo index . --url https://github.com/maximhq/bifrost/releases/download/helm-chart-v$$CHART_VERSION --merge index.yaml; \
+	else \
+		helm repo index . --url https://github.com/maximhq/bifrost/releases/download/helm-chart-v$$CHART_VERSION; \
+	fi && \
+	$(ECHO) "$(YELLOW)Removing bifrost-$$CHART_VERSION.tgz...$(NC)" && \
+	rm -f bifrost-$$CHART_VERSION.tgz && \
+	$(ECHO) "$(GREEN)Helm index updated$(NC)"
 
 generate-html-reports: ## Convert existing XML reports to HTML
 	@if ! which junit-viewer > /dev/null 2>&1; then \
@@ -488,7 +580,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
-		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/sgl/SGL/i'); \
+		PROVIDER_TEST_NAME=$$($(ECHO) "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/openrouter/OpenRouter/i; s/sgl/SGL/i; s/xai/XAI/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
 			CLEAN_TESTCASE="$(TESTCASE)"; \
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#Test$${PROVIDER_TEST_NAME}/}; \
@@ -656,6 +748,14 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			$(ECHO) ""; \
 		fi; \
 	fi; \
+	if [ -n "$$REPORT_FILE" ] && [ -f "$$REPORT_FILE" ]; then \
+		SUMMARY_PREFIX=$$(basename "$$REPORT_FILE" .xml | sed 's/-.*//'); \
+		SUMMARY_TITLE=$$($(ECHO) "$$SUMMARY_PREFIX" | awk '{print toupper(substr($$0,1,1)) substr($$0,2)}'); \
+		$(MAKE) --no-print-directory print-test-summary \
+			SUMMARY_LABEL="$$SUMMARY_TITLE" \
+			SUMMARY_STRIP="$$SUMMARY_PREFIX-" \
+			SUMMARY_FILES="$$REPORT_FILE"; \
+	fi; \
 	if [ $$TEST_FAILED -eq 1 ]; then \
 		exit 1; \
 	fi
@@ -714,23 +814,28 @@ test-plugins: install-gotestsum ## Run plugin tests
 	else \
 		$(ECHO) "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/plugin-*.xml$(NC)"; \
 	fi
+	@$(MAKE) --no-print-directory print-test-summary \
+		SUMMARY_LABEL="Plugin" \
+		SUMMARY_STRIP="plugin-" \
+		SUMMARY_FILES="$(TEST_REPORTS_DIR)/plugin-*.xml"
 
 test-framework: install-gotestsum ## Run framework tests
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running framework tests...$(NC)"; \
 	mkdir -p $(TEST_REPORTS_DIR); \
+	rm -f $(TEST_REPORTS_DIR)/.framework-failed; \
 	cd framework && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
 		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
 			pkg_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
 			$(ECHO) "Testing $$dir..."; \
-			cd $$dir && gotestsum \
+			( cd $$dir && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
-				-- -v ./... && cd - > /dev/null; \
+				--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
+				-- -v ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
-					junit-viewer --results=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml --save=../$(TEST_REPORTS_DIR)/framework-$$pkg_name.html 2>/dev/null || true; \
+					junit-viewer --results=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml --save=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.html 2>/dev/null || true; \
 				fi; \
 			fi; \
 		done || $(ECHO) "No framework tests found"
@@ -739,6 +844,54 @@ test-framework: install-gotestsum ## Run framework tests
 		$(ECHO) "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/framework-*.html$(NC)"; \
 	else \
 		$(ECHO) "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/framework-*.xml$(NC)"; \
+	fi
+	@$(MAKE) --no-print-directory print-test-summary \
+		SUMMARY_LABEL="Framework" \
+		SUMMARY_STRIP="framework-" \
+		SUMMARY_FILES="$(TEST_REPORTS_DIR)/framework-*.xml"
+	@if [ -f $(TEST_REPORTS_DIR)/.framework-failed ]; then \
+		rm -f $(TEST_REPORTS_DIR)/.framework-failed; \
+		exit 1; \
+	fi
+
+# Internal: render a table of test reports + a final pass/fail scenario.
+# Usage: $(MAKE) print-test-summary SUMMARY_LABEL="Framework" SUMMARY_STRIP="framework-" SUMMARY_FILES="<glob or files>"
+# Each report becomes one row: tests/failures/errors come from the <testsuites> aggregate,
+# while skipped is summed from the per-<testsuite> attrs (the aggregate omits skipped).
+SUMMARY_SEP := --------------------------------------------------
+print-test-summary:
+	@$(ECHO) ""; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	$(ECHO) "$(CYAN)$(SUMMARY_LABEL) Test Report Summary$(NC)"; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	total_tests=0; total_pass=0; total_fail=0; total_err=0; total_skip=0; reports=0; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "REPORT" "TESTS" "PASS" "FAIL" "ERR" "SKIP"; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "$(SUMMARY_SEP)" "-------" "-------" "-------" "-------" "-------"; \
+	for xml in $(SUMMARY_FILES); do \
+		[ -e "$$xml" ] || continue; \
+		line=$$(grep -o '<testsuites[^>]*>' "$$xml" | head -1); \
+		t=$$(printf '%s' "$$line" | sed -n 's/.*[^a-z]tests="\([0-9]*\)".*/\1/p'); \
+		f=$$(printf '%s' "$$line" | sed -n 's/.*failures="\([0-9]*\)".*/\1/p'); \
+		e=$$(printf '%s' "$$line" | sed -n 's/.*errors="\([0-9]*\)".*/\1/p'); \
+		s=$$(grep -o '<testsuite [^>]*>' "$$xml" | grep -o 'skipped="[0-9]*"' | grep -o '[0-9]*' | awk '{x+=$$1} END{print x+0}'); \
+		t=$${t:-0}; f=$${f:-0}; e=$${e:-0}; s=$${s:-0}; \
+		p=$$((t - f - e - s)); \
+		name=$$(basename "$$xml" .xml | sed 's/^$(SUMMARY_STRIP)//'); \
+		reports=$$((reports + 1)); \
+		total_tests=$$((total_tests + t)); total_pass=$$((total_pass + p)); \
+		total_fail=$$((total_fail + f)); total_err=$$((total_err + e)); total_skip=$$((total_skip + s)); \
+		if [ $$((f + e)) -gt 0 ]; then color="$(RED)"; else color="$(GREEN)"; fi; \
+		printf "%b%-50s %7s %7s %7s %7s %7s%b\n" "$$color" "$$name" "$$t" "$$p" "$$f" "$$e" "$$s" "$(NC)"; \
+	done; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "$(SUMMARY_SEP)" "-------" "-------" "-------" "-------" "-------"; \
+	printf "%-50s %7s %7s %7s %7s %7s\n" "TOTAL ($$reports reports)" "$$total_tests" "$$total_pass" "$$total_fail" "$$total_err" "$$total_skip"; \
+	$(ECHO) "$(CYAN)============================================================================$(NC)"; \
+	if [ "$$reports" -eq 0 ]; then \
+		$(ECHO) "$(YELLOW)No $(SUMMARY_LABEL) test reports found$(NC)"; \
+	elif [ $$((total_fail + total_err)) -eq 0 ]; then \
+		$(ECHO) "$(GREEN)✓ ALL $(SUMMARY_LABEL) TESTS PASSED ($$total_pass/$$total_tests passed, $$total_skip skipped)$(NC)"; \
+	else \
+		$(ECHO) "$(RED)✗ $(SUMMARY_LABEL) TESTS FAILED ($$total_fail failures, $$total_err errors out of $$total_tests tests)$(NC)"; \
 	fi
 
 test-http-transport: install-gotestsum ## Run HTTP transport tests
@@ -902,6 +1055,14 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 			$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"; \
 			$(ECHO) ""; \
 		fi; \
+	fi; \
+	if [ -n "$$REPORT_FILE" ] && [ -f "$$REPORT_FILE" ]; then \
+		SUMMARY_PREFIX=$$(basename "$$REPORT_FILE" .xml | sed 's/-.*//'); \
+		SUMMARY_TITLE=$$($(ECHO) "$$SUMMARY_PREFIX" | awk '{print toupper(substr($$0,1,1)) substr($$0,2)}'); \
+		$(MAKE) --no-print-directory print-test-summary \
+			SUMMARY_LABEL="$$SUMMARY_TITLE" \
+			SUMMARY_STRIP="$$SUMMARY_PREFIX-" \
+			SUMMARY_FILES="$$REPORT_FILE"; \
 	fi; \
 	if [ $$TEST_FAILED -eq 1 ]; then \
 		exit 1; \
@@ -1076,6 +1237,71 @@ test-all: test-core test-framework test-plugins test-http-transport test test-cl
 		ls -1 $(TEST_REPORTS_DIR)/*.xml 2>/dev/null | sed 's/^/  ✓ /' || $(ECHO) "  No reports found"; \
 		$(ECHO) ""; \
 	fi
+
+test-semantic-cache: ## Run semantic_cache e2e tests (Usage: [CACHE_TYPE=direct|semantic] [RUN_FORCE=0] make test-semantic-cache). RUN_FORCE defaults to 1. Auto-detects trail CLI and wraps the run when present.
+	@cd tests/semanticcache && \
+	case "$$CACHE_TYPE" in \
+		direct) \
+			filter='^(TestPreconditions|TestDirect|TestLifecycle)$$'; \
+			$(ECHO) "$(CYAN)CACHE_TYPE=direct → running preconditions + direct + lifecycle$(NC)"; \
+			;; \
+		semantic) \
+			filter='^(TestPreconditions|TestParaphraseFixtures|TestSemantic|TestLifecycle)$$'; \
+			$(ECHO) "$(CYAN)CACHE_TYPE=semantic → running preconditions + fixtures + semantic + lifecycle$(NC)"; \
+			;; \
+		'') \
+			filter=''; \
+			$(ECHO) "$(CYAN)CACHE_TYPE unset → running all phases$(NC)"; \
+			;; \
+		*) \
+			$(ECHO) "$(RED)CACHE_TYPE=$$CACHE_TYPE invalid; expected 'direct', 'semantic', or unset$(NC)"; \
+			exit 1; \
+			;; \
+	esac; \
+	if command -v trail >/dev/null 2>&1; then \
+		$(ECHO) "$(GREEN)trail detected — wrapping run in 'trail run' (session id will be printed by trail)$(NC)"; \
+		if [ -n "$$filter" ]; then \
+			exec trail run -- env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v -run "$$filter" ./...; \
+		else \
+			exec trail run -- env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...; \
+		fi; \
+	else \
+		$(ECHO) "$(YELLOW)trail not on PATH — falling back to direct go test (install 'trail' for capture-based debugging)$(NC)"; \
+		if [ -n "$$filter" ]; then \
+			exec env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v -run "$$filter" ./...; \
+		else \
+			exec env RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...; \
+		fi; \
+	fi
+
+test-semantic-cache-complete: ## Run BOTH plugin unit tests + e2e tests for semantic_cache. RUN_FORCE defaults to 1. Wraps everything in trail if available.
+	@if command -v trail >/dev/null 2>&1; then \
+		$(ECHO) "$(GREEN)trail detected — wrapping unit + e2e tests in a single trail session (id printed by trail)$(NC)"; \
+		exec trail run -- $(MAKE) _test-semantic-cache-complete-inner; \
+	else \
+		$(ECHO) "$(YELLOW)trail not on PATH — running tests directly (install 'trail' for capture-based debugging)$(NC)"; \
+		$(MAKE) _test-semantic-cache-complete-inner; \
+	fi
+
+_test-semantic-cache-complete-inner:
+	@$(ECHO) ""
+	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) "$(CYAN)  Running semantic_cache plugin UNIT tests                 $(NC)"
+	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
+	@cd plugins/semanticcache && go test -v ./...
+	@$(ECHO) ""
+	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) "$(GREEN)  Unit tests completed                                     $(NC)"
+	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) ""
+	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) "$(CYAN)  Running semantic_cache E2E tests                          $(NC)"
+	@$(ECHO) "$(CYAN)═══════════════════════════════════════════════════════════$(NC)"
+	@cd tests/semanticcache && RUN_FORCE=$${RUN_FORCE:-1} GOWORK=off go test -v ./...
+	@$(ECHO) ""
+	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
+	@$(ECHO) "$(GREEN)  E2E tests completed                                      $(NC)"
+	@$(ECHO) "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
 
 test-chatbot: ## Run interactive chatbot integration test (Usage: RUN_CHATBOT_TEST=1 make test-chatbot)
 	@$(EXPOSE_ENV); \
@@ -1381,6 +1607,28 @@ run-e2e-headed: install-playwright ## Run E2E tests in headed browser mode
 		cd tests/e2e && npx playwright test --headed; \
 	fi
 
+run-e2e-api: install-newman ## Run E2E API management tests (/api/* and /health)
+	@$(ECHO) "$(GREEN)Running E2E API management tests...$(NC)"
+	@BASH4="$${BIFROST_BASH:-}"; \
+	if [ -z "$$BASH4" ]; then \
+		for candidate in \
+			"$$(brew --prefix bash 2>/dev/null)/bin/bash" \
+			/opt/homebrew/bin/bash \
+			/usr/local/bin/bash \
+			"$$(command -v bash)"; do \
+			if [ -n "$$candidate" ] && [ -x "$$candidate" ] && "$$candidate" -c 'test "$${BASH_VERSINFO[0]}" -ge 4' >/dev/null 2>&1; then \
+				BASH4="$$candidate"; \
+				break; \
+			fi; \
+		done; \
+	fi; \
+	if [ -z "$$BASH4" ]; then \
+		$(ECHO) "$(RED)Error: run-e2e-api requires Bash 4.0+ for the API runner.$(NC)"; \
+		$(ECHO) "$(YELLOW)Install a newer Bash with 'brew install bash', or pass BIFROST_BASH=/path/to/bash.$(NC)"; \
+		exit 1; \
+	fi; \
+	cd tests/e2e/api && "$$BASH4" ./runners/run-newman-api-tests.sh --all-reports
+
 # Quick start with example config
 quick-start: ## Quick start with example config and maxim plugin
 	@$(ECHO) "$(GREEN)Quick starting Bifrost with example configuration...$(NC)"
@@ -1421,6 +1669,13 @@ setup-workspace: ## Set up Go workspace with all local modules for development
 			go work use "$$plugin_dir"; \
 		fi; \
 	done
+	@$(ECHO) "$(YELLOW)Adding test command modules...$(NC)"
+	@for cmd_dir in ./tests/cmd/*/; do \
+		if [ -d "$$cmd_dir" ] && [ -f "$$cmd_dir/go.mod" ]; then \
+			$(ECHO) "  Adding test cmd: $$(basename $$cmd_dir)"; \
+			go work use "$$cmd_dir"; \
+		fi; \
+	done
 	@$(ECHO) "$(YELLOW)Syncing workspace...$(NC)"
 	@go work sync
 	@$(ECHO) "$(GREEN)✓ Go workspace ready with all local modules$(NC)"
@@ -1441,10 +1696,10 @@ work-clean: ## Remove local go.work
 	@rm -f go.work go.work.sum || true
 	@$(ECHO) "$(GREEN)Removed local go.work files$(NC)"
 
-# Module parameter for mod-tidy (all/core/plugins/framework/transport)
+# Module parameter for mod-tidy (all/core/plugins/framework/transport/tests)
 MODULE ?= all
 
-mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|core|plugins|framework|transport])
+mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|core|plugins|framework|transport|tests])
 	@$(ECHO) "$(GREEN)Running go mod tidy...$(NC)"
 	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "cli" ]; then \
 		$(ECHO) "$(CYAN)Tidying cli...$(NC)"; \
@@ -1468,6 +1723,15 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|co
 			if [ -d "$$plugin_dir" ] && [ -f "$$plugin_dir/go.mod" ]; then \
 				plugin_name=$$(basename $$plugin_dir); \
 				cd $$plugin_dir && go mod tidy && cd ../.. && $(ECHO) "$(GREEN)  ✓ plugins/$$plugin_name$(NC)"; \
+			fi; \
+		done; \
+	fi
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "tests" ]; then \
+		$(ECHO) "$(CYAN)Tidying test command modules...$(NC)"; \
+		for cmd_dir in ./tests/cmd/*/; do \
+			if [ -d "$$cmd_dir" ] && [ -f "$$cmd_dir/go.mod" ]; then \
+				cmd_name=$$(basename $$cmd_dir); \
+				cd $$cmd_dir && go mod tidy && cd ../../.. && $(ECHO) "$(GREEN)  ✓ tests/cmd/$$cmd_name$(NC)"; \
 			fi; \
 		done; \
 	fi
@@ -1537,17 +1801,18 @@ install-newman: ## Install newman + htmlextra reporter if not already installed
 	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra...$(NC)" && npm install -g newman-reporter-htmlextra)
 	@$(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
-run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Per-provider parallelism is ON by default (~3-4× speedup); set PARALLEL=0 for sequential. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough, FEATURE="<keyword>" (matches request name/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. INCLUDE_SKIP=1 to run [SKIP]-tagged criss-cross cells for known-unsupported provider+modality pairs. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PARALLEL=0] [PROVIDER=anthropic] [FEATURE="web search"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [INCLUDE_SKIP=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
+run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
 	@if [ -n "$(HELP)" ]; then \
 		printf '\n%s\n' "$(CYAN)run-provider-harness-test - Bifrost provider harness runner$(NC)"; \
 		printf '%s\n\n' "Runs the Bifrost provider-harness Postman collection through newman, with optional filtering."; \
 		printf '%s\n\n' "Includes §8 Criss-Cross: endpoint-shape × model-provider × modality matrix (chat, streaming, embeddings, audio, image gen, tools, vision, JSON, reasoning)."; \
 		printf '%s\n' "$(YELLOW)PARAMETERS$(NC)"; \
 		printf '  %-18s %s\n' "HELP=1"          "Print this help and exit (no Bifrost or network activity)."; \
-		printf '  %-18s %s\n' "PROVIDER=<name>" "Filter requests by provider. One of: openai, anthropic, bedrock, gemini, vertex, azure, passthrough."; \
+		printf '  %-18s %s\n' "PROVIDER=<name>" "Filter requests by provider. One of: openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter."; \
 		printf '  %-18s %s\n' ""                "  Matches via PROVIDER_KEYWORDS in tests/e2e/api/runners/filter-collection.mjs (loose name/body substring)."; \
-		printf '  %-18s %s\n' "FEATURE=\"<kw>\""  "Filter by case-insensitive keyword against the full request JSON (name + URL + body)."; \
-		printf '  %-18s %s\n' ""                "  Examples: FEATURE=\"web search\", FEATURE=\"streaming\", FEATURE=\"prompt caching\"."; \
+		printf '  %-18s %s\n' "FEATURE=\"<kw>\""  "Filter by case-insensitive keyword(s) against the full request JSON (name + URL + body + ancestor folder names)."; \
+		printf '  %-18s %s\n' ""                "  Single: FEATURE=\"web search\". Multi-keyword AND (comma-separated): FEATURE=\"cross-cut,structured output\"."; \
+		printf '  %-18s %s\n' ""                "  \"cross-cut\" is a structural keyword - matches any row routed through unified /v1/chat/completions with a provider/model body, regardless of name."; \
 		printf '  %-18s %s\n' "RERUN_FAILED=1"  "Re-run only requests that failed in the prior run (reads tmp/newman-report.json)."; \
 		printf '  %-18s %s\n' ""                "  Composes with PROVIDER and FEATURE (predicates AND together)."; \
 		printf '  %-18s %s\n' "BASE_URL=<url>"  "Bifrost gateway URL (default: http://localhost:8080). Skips auto-start if /health responds."; \
@@ -1559,16 +1824,17 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
+		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
+		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
+		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
+		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
-		printf '  %s\n' "make run-provider-harness-test                       # full sweep, 6 providers concurrently (default ~3-4× speedup)"; \
-		printf '  %s\n' "make run-provider-harness-test PARALLEL=0            # sequential mode (ordered output, htmlextra report)"; \
-		printf '  %s\n' "make run-provider-harness-test FOLDER=\"8. Criss-Cross\"  # criss-cross matrix only (endpoint × provider × modality)"; \
-		printf '  %s\n' "make run-provider-harness-test FOLDER=\"8.2 Text Chat (streaming)\"  # criss-cross streaming sub-folder"; \
-		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only (includes bedrock-model cells across §8)"; \
-		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"  # all providers, web-search entries"; \
-		printf '  %s\n' "make run-provider-harness-test INCLUDE_SKIP=1        # also run [SKIP] cells (capability-gap matrix)"; \
+		printf '  %s\n' "make run-provider-harness-test                       # full provider sweep"; \
+		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only"; \
+		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"                       # all providers, web-search entries"; \
+		printf '  %s\n' "make run-provider-harness-test FEATURE=\"cross-cut,structured output\"      # AND of substrings"; \
 		printf '  %s\n' "make run-provider-harness-test RERUN_FAILED=1        # triage iteration loop"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=anthropic RERUN_FAILED=1   # anthropic failures only"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=passthrough  # passthrough sweep (incl. Bedrock SigV4)"; \
@@ -1578,22 +1844,65 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/newman-cli.log"          "Captured newman CLI output (stdout+stderr)."; \
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
 		printf '  %-30s %s\n' "tmp/newman-report-<p>.json" "Per-provider newman report (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/newman-cli-<p>.log"     "Per-provider newman stdout/stderr (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/parallel-status"        "Per-provider pass/fail summary (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/newman-report.html"     "htmlextra report (sequential mode only — PARALLEL=0)."; \
+		printf '  %-30s %s\n' "tmp/stream-cancel-report.json" "Server-side stream cancellation probe report."; \
 		printf '\n'; \
 		exit 0; \
 	fi
 	@if [ -n "$(HELP)" ]; then exit 0; fi; \
+	if [ "$(COMPAT)" = "both" ]; then \
+		mkdir -p tmp; \
+		$(ECHO) "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
+		for mode in off on; do \
+			$(ECHO) "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
+			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1; \
+			RC=$$?; \
+			mv -f tmp/newman-report.json "tmp/newman-report-compat-$$mode.json" 2>/dev/null || true; \
+			mv -f tmp/newman-report.html "tmp/newman-report-compat-$$mode.html" 2>/dev/null || true; \
+			mv -f tmp/harness-failures.md "tmp/harness-failures-compat-$$mode.md" 2>/dev/null || true; \
+			if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)compat $$mode run failed (exit $$RC)$(NC)"; BOTH_RC=$$RC; fi; \
+		done; \
+		$(ECHO) "$(GREEN)COMPAT=both complete. Reports: tmp/newman-report-compat-{off,on}.{json,html}, tmp/harness-failures-compat-{off,on}.md$(NC)"; \
+		exit $${BOTH_RC:-0}; \
+	fi; \
 	$(EXPOSE_ENV); \
 	mkdir -p tmp; \
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
 	APP_DIR_VAL="$(or $(APP_DIR),tests/integrations/python)"; \
 	VIEWER_PORT_VAL="$(or $(VIEWER_PORT),8090)"; \
+	DBVERIFY_REPORTER=""; DBVERIFY_ARGS=""; DBVERIFY_READY=0; \
+	if [ "$(DB_VERIFY)" != "0" ]; then \
+		if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
+			DBVERIFY_READY=1; \
+		else \
+			$(ECHO) "$(YELLOW)Installing dbverify reporter deps...$(NC)"; \
+			if (cd tests/e2e/api && npm install --silent); then \
+				DBVERIFY_READY=1; \
+			else \
+				$(ECHO) "$(YELLOW)dbverify dep install failed; cost checks disabled for this run (set DB_VERIFY=0 to silence)$(NC)"; \
+			fi; \
+		fi; \
+		if [ "$$DBVERIFY_READY" = "1" ]; then \
+			export NODE_PATH="$(CURDIR)/tests/e2e/api/node_modules$${NODE_PATH:+:$$NODE_PATH}"; \
+			DBVERIFY_REPORTER=",dbverify"; \
+			LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+			export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
+			DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
+			$(ECHO) "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+		fi; \
+	fi; \
 	STARTED_BY_US=0; \
 	cleanup() { \
+		if [ -f tmp/harness-monitor.pid ]; then \
+			MPID=$$(cat tmp/harness-monitor.pid); \
+			kill $$MPID 2>/dev/null; \
+			rm -f tmp/harness-monitor.pid; \
+		fi; \
 		if [ -f tmp/harness-viewer.pid ]; then \
 			VPID=$$(cat tmp/harness-viewer.pid); \
 			kill $$VPID 2>/dev/null; \
@@ -1624,6 +1933,25 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 	}; \
 	trap cleanup EXIT INT TERM HUP; \
+	PICKED_FEATURES=""; \
+	if [ -t 0 ] && [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ] \
+	   && [ -z "$(PROVIDER)" ] && [ -z "$(FEATURE)" ] && [ -z "$(FOLDER)" ] \
+	   && [ -z "$(RERUN_FAILED)" ]; then \
+		$(USE_NODE); \
+		PICKED_FEATURES=$$(node tests/e2e/api/runners/pick-features.mjs); \
+		PICK_RC=$$?; \
+		case $$PICK_RC in \
+			0) ;; \
+			1) $(ECHO) "$(YELLOW)Cancelled.$(NC)"; exit 1 ;; \
+			2) ;; \
+			*) exit $$PICK_RC ;; \
+		esac; \
+		if [ -n "$$PICKED_FEATURES" ]; then \
+			$(ECHO) "$(GREEN)Modalities: $$PICKED_FEATURES$(NC)"; \
+		else \
+			$(ECHO) "$(GREEN)Modalities: all (no filter)$(NC)"; \
+		fi; \
+	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
 		$(ECHO) "$(GREEN)Bifrost already running at $$BASE_URL_VAL$(NC)"; \
 	else \
@@ -1643,14 +1971,21 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			exit 1; \
 		fi; \
 	fi; \
-	COLLECTION_FILE="tests/e2e/api/collections/provider-harness.json"; \
-	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(RERUN_FAILED)" ]; then \
-		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), rerun-failed=$(RERUN_FAILED))...$(NC)"; \
+	$(ECHO) "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
+	$(USE_NODE); node tests/e2e/api/runners/augment-provider-harness.mjs \
+		--source tests/e2e/api/collections/provider-harness.json \
+		--out tmp/harness-augmented.json || { $(ECHO) "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
+	COLLECTION_FILE="tmp/harness-augmented.json"; \
+	FEATURE_ANY_FLAG=""; \
+	if [ -n "$$PICKED_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$PICKED_FEATURES"; fi; \
+	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ]; then \
+		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), feature-any=$$PICKED_FEATURES, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/filter-collection.mjs \
-			--source tests/e2e/api/collections/provider-harness.json \
+			--source "$$COLLECTION_FILE" \
 			--out tmp/harness-filtered.json \
 			$(if $(PROVIDER),--provider $(PROVIDER),) \
 			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			$$FEATURE_ANY_FLAG \
 			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { $(ECHO) "$(RED)Filter step failed$(NC)"; exit 1; }; \
 		COLLECTION_FILE="tmp/harness-filtered.json"; \
 	fi; \
@@ -1659,11 +1994,11 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	$(USE_NODE); \
 	PARALLEL_VAL="$(or $(PARALLEL),1)"; \
 	if [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
-		$(ECHO) "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough). Set PARALLEL=0 to disable.$(NC)"; \
+		$(ECHO) "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter). Set PARALLEL=0 to disable.$(NC)"; \
 		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status; \
 		: > tmp/parallel-pids; \
 		: > tmp/parallel-status; \
-		PROVIDERS="openai anthropic bedrock gemini vertex azure passthrough"; \
+		PROVIDERS="openai anthropic bedrock gemini vertex azure passthrough openrouter"; \
 		if [ -n "$(PROVIDER)" ]; then PROVIDERS="$(PROVIDER)"; fi; \
 		LAUNCHED=0; \
 		for p in $$PROVIDERS; do \
@@ -1678,11 +2013,16 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			( \
 				newman run "tmp/harness-filtered-$$p.json" \
 					--env-var "baseUrl=$$BASE_URL_VAL" \
+					$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+					$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+					$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
+					$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
+					$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
 					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 					$(if $(FOLDER),--folder "$(FOLDER)",) \
-					--reporters cli,json \
+					--reporters cli,json$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
 					--reporter-json-export "tmp/newman-report-$$p.json" 2>&1 | sed "s/^/[$$p] /" \
 			) > "tmp/newman-cli-$$p.log" 2>&1 & \
 			BG_PID=$$!; \
@@ -1694,23 +2034,39 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(ECHO) "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
 			exit 1; \
 		fi; \
+		if [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ]; then \
+			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
+				--mode parallel \
+				--providers "$$PROVIDERS" \
+				--tmp-dir tmp \
+				--status-file tmp/parallel-status \
+				--launched $$LAUNCHED \
+				< /dev/null > /dev/tty 2>&1 & \
+			echo $$! > tmp/harness-monitor.pid; \
+		fi; \
 		PFAILED=0; \
 		while read pidp; do \
 			pid="$${pidp%%:*}"; \
 			p="$${pidp#*:}"; \
 			if wait "$$pid"; then \
 				echo "$$p:pass" >> tmp/parallel-status; \
-				$(ECHO) "$(GREEN)[$$p] passed$(NC)"; \
+				if [ ! -f tmp/harness-monitor.pid ]; then $(ECHO) "$(GREEN)[$$p] passed$(NC)"; fi; \
 			else \
 				echo "$$p:fail" >> tmp/parallel-status; \
-				$(ECHO) "$(RED)[$$p] failed$(NC)"; \
+				if [ ! -f tmp/harness-monitor.pid ]; then $(ECHO) "$(RED)[$$p] failed$(NC)"; fi; \
 				PFAILED=$$((PFAILED+1)); \
 			fi; \
-			tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; \
+			if [ ! -f tmp/harness-monitor.pid ]; then tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; fi; \
 		done < tmp/parallel-pids; \
+		if [ -f tmp/harness-monitor.pid ]; then \
+			MPID=$$(cat tmp/harness-monitor.pid); \
+			kill -TERM $$MPID 2>/dev/null; \
+			wait $$MPID 2>/dev/null || true; \
+			rm -f tmp/harness-monitor.pid; \
+		fi; \
 		$(ECHO) "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
 		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
-			jq -s '{collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]?], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			jq -s 'def failed: (((.assertions // []) | any(.error?)) or ((.response.code // 0) == 0) or ((.response.code // 0) >= 400) or (.response | not)); def trimstream: if (.response.stream.type? == "Buffer" and ((.response.stream.data // []) | length) > 20000) then (.response.stream.data = .response.stream.data[:20000] | .response.stream.truncated = true) else . end; def sanitize: trimstream; {collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]? | sanitize], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
 			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
 			$(ECHO) "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
@@ -1727,20 +2083,72 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		done < tmp/parallel-status; \
 		NEWMAN_EXIT=$$PFAILED; \
 	else \
-		newman run "$$COLLECTION_FILE" \
-			--env-var "baseUrl=$$BASE_URL_VAL" \
-			$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
-			$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
-			$(if $(ENV_FILE),--environment $(ENV_FILE),) \
-			$(if $(FOLDER),--folder "$(FOLDER)",) \
-			--reporters cli,json,htmlextra \
-			--reporter-json-export tmp/newman-report.json \
-			--reporter-htmlextra-export tmp/newman-report.html \
-			--reporter-htmlextra-title "Bifrost Provider Harness" \
-			--reporter-htmlextra-darkTheme 2>&1 | tee tmp/newman-cli.log; \
-		NEWMAN_EXIT=$$?; \
+		SEQ_PROVIDERS="$(PROVIDER)"; \
+		if [ -z "$$SEQ_PROVIDERS" ]; then SEQ_PROVIDERS="openai anthropic bedrock gemini vertex azure passthrough openrouter"; fi; \
+		if [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ]; then \
+			: > tmp/newman-cli.log; \
+			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
+				--mode sequential \
+				--providers "$$SEQ_PROVIDERS" \
+				--tmp-dir tmp \
+				--log tmp/newman-cli.log \
+				< /dev/null > /dev/tty 2>&1 & \
+			echo $$! > tmp/harness-monitor.pid; \
+			newman run "$$COLLECTION_FILE" \
+				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
+				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
+				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
+				$(if $(FOLDER),--folder "$(FOLDER)",) \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
+				--reporter-json-export tmp/newman-report.json \
+				--reporter-htmlextra-export tmp/newman-report.html \
+				--reporter-htmlextra-title "Bifrost Provider Harness" \
+				--reporter-htmlextra-darkTheme > tmp/newman-cli.log 2>&1; \
+			NEWMAN_EXIT=$$?; \
+			if [ -f tmp/harness-monitor.pid ]; then \
+				MPID=$$(cat tmp/harness-monitor.pid); \
+				kill -TERM $$MPID 2>/dev/null; \
+				wait $$MPID 2>/dev/null || true; \
+				rm -f tmp/harness-monitor.pid; \
+			fi; \
+		else \
+			newman run "$$COLLECTION_FILE" \
+				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
+				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
+				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
+				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
+				$(if $(FOLDER),--folder "$(FOLDER)",) \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
+				--reporter-json-export tmp/newman-report.json \
+				--reporter-htmlextra-export tmp/newman-report.html \
+				--reporter-htmlextra-title "Bifrost Provider Harness" \
+				--reporter-htmlextra-darkTheme 2>&1 | tee tmp/newman-cli.log; \
+			NEWMAN_EXIT=$$?; \
+		fi; \
 	fi; \
 	$(ECHO) "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
+	STREAM_CANCEL_EXIT=0; \
+	if [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
+		$(ECHO) "$(CYAN)Running stream cancellation probes...$(NC)"; \
+		$(USE_NODE); node tests/e2e/api/runners/run-stream-cancellation.mjs \
+			--base-url "$$BASE_URL_VAL" \
+			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
+			--out tmp/stream-cancel-report.json 2>&1 | tee tmp/stream-cancel-cli.log; \
+		STREAM_CANCEL_EXIT=$$?; \
+	else \
+		$(ECHO) "$(YELLOW)Skipping stream cancellation probes (SKIP_STREAM_CANCEL/RERUN_FAILED/FOLDER filter).$(NC)"; \
+	fi; \
 	$(ECHO) "$(CYAN)Analyzing failures...$(NC)"; \
 	$(USE_NODE); node tests/e2e/api/runners/analyze-failures.mjs \
 		--report tmp/newman-report.json \
@@ -1764,4 +2172,5 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(ECHO) "$(GREEN)Viewer closed.$(NC)"; \
 		fi; \
 	fi; \
-	exit $$NEWMAN_EXIT
+	if [ "$$NEWMAN_EXIT" -ne 0 ]; then exit $$NEWMAN_EXIT; fi; \
+	exit $$STREAM_CANCEL_EXIT

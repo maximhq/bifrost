@@ -1,15 +1,16 @@
 import type { ModelHistogramResponse } from "@/lib/types/logs";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
 	CHART_COLORS,
+	computeDisplaySeries,
 	formatFullTimestamp,
 	formatTimestamp,
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
-	pickTopSeries,
 } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -46,15 +47,12 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 							return (
 								<div key={model} className="flex items-center justify-between gap-4">
 									<span className="flex items-center gap-1.5">
-										<span
-											className="h-2 w-2 rounded-full"
-											style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}
-										/>
-										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">
-											{isOther ? OTHER_SERIES_LABEL : model}
-										</span>
+										<span className="h-2 w-2 rounded-full" style={{ backgroundColor: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }} />
+										<span className="max-w-[120px] truncate text-zinc-600 dark:text-zinc-400">{isOther ? OTHER_SERIES_LABEL : model}</span>
 									</span>
-									<span className="font-medium">{total.toLocaleString()}</span>
+									<span className="font-medium" style={{ color: isOther ? OTHER_SERIES_COLOR : getModelColor(idx) }}>
+										{total.toLocaleString()}
+									</span>
 								</div>
 							);
 						})}
@@ -79,6 +77,15 @@ function CustomTooltip({ active, payload, selectedModel, displayModels }: any) {
 								{(data.by_model?.[selectedModel]?.error || 0).toLocaleString()}
 							</span>
 						</div>
+						<div className="flex items-center justify-between gap-4">
+							<span className="flex items-center gap-1.5">
+								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.cancelled }} />
+								<span className="text-zinc-600 dark:text-zinc-400">Cancelled</span>
+							</span>
+							<span className="font-medium text-zinc-600 dark:text-zinc-400">
+								{(data.by_model?.[selectedModel]?.cancelled || 0).toLocaleString()}
+							</span>
+						</div>
 					</>
 				)}
 			</div>
@@ -95,10 +102,9 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 		let displayList: string[];
 		let topSet: Set<string> | null = null;
 		if (selectedModel === "all") {
-			const top = pickTopSeries(data.buckets, data.models, (b, m) => b.by_model?.[m]?.total ?? 0);
-			const hasOther = top.length < data.models.length;
-			displayList = hasOther ? [...top, OTHER_SERIES_KEY] : top;
-			topSet = hasOther ? new Set(top) : null;
+			displayList = computeDisplaySeries(data.buckets, data.models, (b, m) => b.by_model?.[m]?.total ?? 0);
+			const hasOther = displayList[displayList.length - 1] === OTHER_SERIES_KEY;
+			topSet = hasOther ? new Set(displayList.slice(0, -1)) : null;
 		} else {
 			displayList = data.models;
 		}
@@ -126,10 +132,11 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 					}
 				});
 			} else {
-				// For specific model, show success/error breakdown
+				// For specific model, show success/error/cancelled breakdown
 				const stats = bucket.by_model?.[selectedModel];
 				item.success = stats?.success || 0;
 				item.error = stats?.error || 0;
+				item.cancelled = stats?.cancelled || 0;
 			}
 			return item;
 		});
@@ -166,12 +173,15 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />} />
+						<Tooltip
+							content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />}
+							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+						/>
 						{selectedModel === "all" ? (
 							displayModels.map((model, idx) => (
 								<Bar
@@ -202,6 +212,15 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 									stackId="status"
 									fill={CHART_COLORS.error}
 									fillOpacity={0.9}
+									radius={[0, 0, 0, 0]}
+									barSize={30}
+								/>
+								<Bar
+									isAnimationActive={false}
+									dataKey="cancelled"
+									stackId="status"
+									fill={CHART_COLORS.cancelled}
+									fillOpacity={0.9}
 									radius={[2, 2, 0, 0]}
 									barSize={30}
 								/>
@@ -225,12 +244,15 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 							tick={{ fontSize: 11, className: "fill-zinc-500" }}
 							tickLine={false}
 							axisLine={false}
-							width={40}
-							tickFormatter={(v) => v.toLocaleString()}
+							width={44}
+							tickFormatter={(v) => formatCompactNumber(v)}
 							domain={[0, (dataMax: number) => Math.max(dataMax, 1)]}
 							allowDataOverflow={false}
 						/>
-						<Tooltip content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />} />
+						<Tooltip
+							content={<CustomTooltip selectedModel={selectedModel} displayModels={displayModels} />}
+							cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+						/>
 						{selectedModel === "all" ? (
 							displayModels.map((model, idx) => {
 								const color = model === OTHER_SERIES_KEY ? OTHER_SERIES_COLOR : getModelColor(idx);
@@ -265,6 +287,15 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 									stackId="1"
 									stroke={CHART_COLORS.error}
 									fill={CHART_COLORS.error}
+									fillOpacity={0.7}
+								/>
+								<Area
+									isAnimationActive={false}
+									type="monotone"
+									dataKey="cancelled"
+									stackId="1"
+									stroke={CHART_COLORS.cancelled}
+									fill={CHART_COLORS.cancelled}
 									fillOpacity={0.7}
 								/>
 							</>

@@ -1,0 +1,139 @@
+# Paths for Circuit Breaker policy management.
+
+circuit-breaker-policies:
+  get:
+    operationId: listCircuitBreakerPolicies
+    summary: List circuit breaker policies
+    description: Returns all circuit breaker policies defined in this workspace.
+    tags:
+      - Circuit Breaker
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicyListResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createCircuitBreakerPolicy
+    summary: Create circuit breaker policy
+    description: |
+      Creates a new circuit breaker policy and immediately activates it in the running gateway.
+      Returns 409 if a policy with the same name already exists.
+    tags:
+      - Circuit Breaker
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicy'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '201':
+        description: Policy created
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicy'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: A policy with this name already exists.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+circuit-breaker-policy-by-name:
+  put:
+    operationId: updateCircuitBreakerPolicy
+    summary: Update circuit breaker policy
+    description: |
+      Replaces a circuit breaker policy by name. The `name` field in the request body must match the URL parameter or be omitted.
+      Changes take effect immediately in the running gateway.
+    tags:
+      - Circuit Breaker
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Name of the policy to update.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicy'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Policy updated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerPolicy'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Policy not found.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteCircuitBreakerPolicy
+    summary: Delete circuit breaker policy
+    description: |
+      Deletes a circuit breaker policy by name and removes it from the running gateway.
+      Any open circuits for this policy are discarded immediately.
+    tags:
+      - Circuit Breaker
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Name of the policy to delete.
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Policy deleted
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/circuitbreaker.yaml#/MessageResponse'
+      '404':
+        description: Policy not found.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+circuit-breaker-state:
+  get:
+    operationId: getCircuitBreakerState
+    summary: Get circuit breaker state
+    description: |
+      Returns a snapshot of all currently-open circuits.
+      Main circuits are keyed by policy name. Per-key sub-circuits are keyed by `"<policy_name>\x00<key_id>"`.
+      Circuits not present in the map are closed.
+    tags:
+      - Circuit Breaker
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/circuitbreaker.yaml#/CircuitBreakerStateResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

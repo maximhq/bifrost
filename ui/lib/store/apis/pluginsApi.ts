@@ -3,6 +3,22 @@ import { baseApi } from "./baseApi";
 
 export const pluginsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
+		// Get builtin plugin names
+		getBuiltinPlugins: builder.query<string[], void>({
+			query: () => "/plugins/builtins",
+			providesTags: ["Plugins"],
+			transformResponse: (response: { plugins: string[] }) => response.plugins || [],
+		}),
+
+		// Get the names of all currently loaded plugins (sanitized to match the names
+		// embedded in their trace span names). Used by the plugin tracing sheet so it
+		// lists every plugin that actually emits spans, including enterprise plugins.
+		getLoadedPlugins: builder.query<string[], void>({
+			query: () => "/plugins/loaded",
+			providesTags: ["Plugins"],
+			transformResponse: (response: { plugins: string[] }) => response.plugins || [],
+		}),
+
 		// Get all plugins
 		getPlugins: builder.query<Plugin[], void>({
 			query: () => "/plugins",
@@ -89,6 +105,8 @@ export const pluginsApi = baseApi.injectEndpoints({
 });
 
 export const {
+	useGetBuiltinPluginsQuery,
+	useGetLoadedPluginsQuery,
 	useGetPluginsQuery,
 	useGetPluginQuery,
 	useCreatePluginMutation,

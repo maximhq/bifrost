@@ -71,10 +71,19 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 
 	m.logger.Debug("%s GetToolPerClient: Total clients in manager: %d, Filter: %v", MCPLogPrefix, len(m.clientMap), includeClients)
 
-	tools := make(map[string][]schemas.ChatTool)
+	// Collect and sort client names for deterministic tool ordering
+	clientNames := make([]string, 0, len(m.clientMap))
+	clientsByName := make(map[string]*schemas.MCPClientState, len(m.clientMap))
 	for _, client := range m.clientMap {
-		// Use client name as the key (not ID)
-		clientName := client.ExecutionConfig.Name
+		name := client.ExecutionConfig.Name
+		clientNames = append(clientNames, name)
+		clientsByName[name] = client
+	}
+	slices.Sort(clientNames)
+
+	tools := make(map[string][]schemas.ChatTool)
+	for _, clientName := range clientNames {
+		client := clientsByName[clientName]
 		clientID := client.ExecutionConfig.ID
 
 		m.logger.Debug("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID)
@@ -91,12 +100,19 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 			continue
 		}
 
-		// Add all tools from this client
+		// Collect and sort tool names for deterministic ordering
+		toolNames := make([]string, 0, len(client.ToolMap))
+		for toolName := range client.ToolMap {
+			toolNames = append(toolNames, toolName)
+		}
+		slices.Sort(toolNames)
+
 		// FILTERING HIERARCHY (restrictive, not permissive):
 		// 1. Client-level configuration (ToolsToExecute) - Global allow-list, most restrictive
 		// 2. Request context (MCPContextKeyIncludeTools) - Can only further narrow, not expand
 		// Context filtering CANNOT override client configuration - it can only be more restrictive.
-		for toolName, tool := range client.ToolMap {
+		for _, toolName := range toolNames {
+			tool := client.ToolMap[toolName]
 			// First check: Client configuration is the global allow-list
 			// If client config blocks a tool, it CANNOT be overridden by context
 			if shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
@@ -518,6 +534,24 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		properties = schemas.NewOrderedMap()
 	}
 
+	// Preserve JSON Schema definitions ($defs). The MCP SDK already folds legacy
+	// "definitions" into Defs on unmarshal, so we only need to handle Defs here.
+	// Without this, any $ref pointing at #/$defs/... rides along inside Properties
+	// while the definitions it targets are dropped, leaving a dangling $ref that
+	// providers reject (e.g. Vertex Gemini returns INVALID_ARGUMENT).
+	var defs *schemas.OrderedMap
+	if len(mcpTool.InputSchema.Defs) > 0 {
+		// Normalize array schemas inside each definition, mirroring the fix applied
+		// to Properties above.
+		FixArraySchemas(mcpTool.InputSchema.Defs, logger)
+
+		orderedDefs := schemas.NewOrderedMapWithCapacity(len(mcpTool.InputSchema.Defs))
+		for k, v := range mcpTool.InputSchema.Defs {
+			orderedDefs.Set(k, v)
+		}
+		defs = orderedDefs
+	}
+
 	// Preserve MCP tool annotations if any are set.
 	// Clone bool pointers so Bifrost's copy is independent of the upstream mcp.Tool lifetime.
 	var annotations *schemas.MCPToolAnnotations
@@ -548,6 +582,7 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Type:       mcpTool.InputSchema.Type,
 				Properties: properties,
 				Required:   mcpTool.InputSchema.Required,
+				Defs:       defs,
 			},
 		},
 		Annotations: annotations,
@@ -635,6 +670,19 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		// InProcess can be provided programmatically or created automatically.
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
+	}
+	if config.AuthType == schemas.MCPAuthTypePerUserHeaders {
+		if len(config.PerUserHeaderKeys) == 0 {
+			return fmt.Errorf("per_user_header_keys is required (non-empty) for per_user_headers auth type in client '%s'", config.Name)
+		}
+		for i, key := range config.PerUserHeaderKeys {
+			if strings.TrimSpace(key) == "" {
+				return fmt.Errorf("per_user_header_keys[%d] is empty in client '%s'", i, config.Name)
+			}
+		}
+		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
+			return fmt.Errorf("oauth_config_id must not be set for per_user_headers auth type in client '%s'", config.Name)
+		}
 	}
 	return nil
 }
@@ -872,17 +920,17 @@ func stripClientPrefix(prefixedToolName, clientName string) string {
 //
 // Parameters:
 //   - sanitizedToolName: Sanitized tool name (e.g., "notion_search")
-//   - client: The MCP client state containing the name mapping
+//   - toolNameMapping: Map of sanitized tool names to original MCP tool names
 //
 // Returns:
 //   - string: Original MCP tool name (e.g., "notion-search"), or sanitizedToolName if not found in mapping
-func getOriginalToolName(sanitizedToolName string, client *schemas.MCPClientState) string {
-	if client == nil || client.ToolNameMapping == nil {
+func getOriginalToolName(sanitizedToolName string, toolNameMapping map[string]string) string {
+	if toolNameMapping == nil {
 		return sanitizedToolName
 	}
 
 	// Look up the original MCP name in the mapping
-	if originalName, exists := client.ToolNameMapping[sanitizedToolName]; exists {
+	if originalName, exists := toolNameMapping[sanitizedToolName]; exists {
 		return originalName
 	}
 

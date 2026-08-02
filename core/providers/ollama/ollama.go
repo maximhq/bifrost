@@ -34,7 +34,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
+		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
@@ -47,7 +47,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
@@ -134,7 +134,7 @@ func (provider *OllamaProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 		provider.client,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -158,8 +158,9 @@ func (provider *OllamaProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		provider.streamingClient,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
-		nil,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -183,11 +184,12 @@ func (provider *OllamaProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		provider.client,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -203,18 +205,19 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		nil,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Ollama,
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -260,7 +263,7 @@ func (provider *OllamaProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		provider.client,
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -412,6 +415,11 @@ func (provider *OllamaProvider) FileContent(_ *schemas.BifrostContext, _ []schem
 
 func (provider *OllamaProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// Compaction is not supported by the Ollama provider.
+func (provider *OllamaProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Ollama provider.

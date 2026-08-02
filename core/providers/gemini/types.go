@@ -42,7 +42,7 @@ var thinkingBudgetRanges = []struct {
 }
 
 // thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
-const thoughtSignatureSeparator = "_ts_"
+const thoughtSignatureSeparator = providerUtils.ThoughtSignatureSeparator
 
 type Role string
 
@@ -111,13 +111,15 @@ type GeminiGenerationRequest struct {
 	ToolConfig        *ToolConfig              `json:"toolConfig,omitempty"`
 	Labels            map[string]string        `json:"labels,omitempty"`
 	CachedContent     string                   `json:"cachedContent,omitempty"`
-	Stream            bool                     `json:"-"` // Internal field to track streaming requests
-	IsEmbedding       bool                     `json:"-"` // Internal field to track if this is an embedding request
-	IsTranscription   bool                     `json:"-"` // Internal field to track if this is a transcription request
-	IsSpeech          bool                     `json:"-"` // Internal field to track if this is a speech request
-	IsImageGeneration bool                     `json:"-"` // Internal field to track if this is an image generation request
-	IsImageEdit       bool                     `json:"-"` // Internal field to track if this is an image edit request
-	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
+	// Optional. The service tier to use for the request. For example, ServiceTier.FLEX.
+	ServiceTier       ServiceTier `json:"serviceTier,omitempty"`
+	Stream            bool        `json:"-"` // Internal field to track streaming requests
+	IsEmbedding       bool        `json:"-"` // Internal field to track if this is an embedding request
+	IsTranscription   bool        `json:"-"` // Internal field to track if this is a transcription request
+	IsSpeech          bool        `json:"-"` // Internal field to track if this is a speech request
+	IsImageGeneration bool        `json:"-"` // Internal field to track if this is an image generation request
+	IsImageEdit       bool        `json:"-"` // Internal field to track if this is an image edit request
+	IsCountTokens     bool        `json:"-"` // Internal field to track if this is a count tokens request
 
 	// Imagen-specific fields for :predict endpoint
 	Instances  []ImagenInstance        `json:"instances,omitempty"`
@@ -249,6 +251,40 @@ type ToolConfig struct {
 	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
 	// Optional. Retrieval config.
 	RetrievalConfig *RetrievalConfig `json:"retrievalConfig,omitempty"`
+	// Optional. Allows built-in server-side tools (e.g. Google Search) to run in the
+	// same turn as function declarations. Gemini 3+ rejects the combination without it.
+	IncludeServerSideToolInvocations *bool `json:"includeServerSideToolInvocations,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (t *ToolConfig) UnmarshalJSON(data []byte) error {
+	type Alias ToolConfig
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		FunctionCallingConfigSnake            *FunctionCallingConfig `json:"function_calling_config,omitempty"`
+		RetrievalConfigSnake                  *RetrievalConfig       `json:"retrieval_config,omitempty"`
+		IncludeServerSideToolInvocationsSnake *bool                  `json:"include_server_side_tool_invocations,omitempty"`
+	}{
+		Alias: (*Alias)(t),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Use snake_case if camelCase wasn't provided
+	if t.FunctionCallingConfig == nil && aux.FunctionCallingConfigSnake != nil {
+		t.FunctionCallingConfig = aux.FunctionCallingConfigSnake
+	}
+	if t.RetrievalConfig == nil && aux.RetrievalConfigSnake != nil {
+		t.RetrievalConfig = aux.RetrievalConfigSnake
+	}
+	if t.IncludeServerSideToolInvocations == nil && aux.IncludeServerSideToolInvocationsSnake != nil {
+		t.IncludeServerSideToolInvocations = aux.IncludeServerSideToolInvocationsSnake
+	}
+
+	return nil
 }
 
 // FunctionDeclaration defines a function that the model can generate JSON inputs for.
@@ -372,6 +408,48 @@ func (i *Interval) MarshalJSON() ([]byte, error) {
 	return providerUtils.MarshalSorted(aux)
 }
 
+// WebSearch enables standard web search for grounding. Text results only.
+type WebSearch struct{}
+
+// ImageSearch enables image search for grounding. Image bytes are returned.
+type ImageSearch struct{}
+
+// SearchTypes selects which search surfaces the Google Search tool may use.
+// When unset, web search is enabled by default.
+type SearchTypes struct {
+	// Optional. Enables web search.
+	WebSearch *WebSearch `json:"webSearch,omitempty"`
+	// Optional. Enables image search.
+	ImageSearch *ImageSearch `json:"imageSearch,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (s *SearchTypes) UnmarshalJSON(data []byte) error {
+	type Alias SearchTypes
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		WebSearchSnake   *WebSearch   `json:"web_search,omitempty"`
+		ImageSearchSnake *ImageSearch `json:"image_search,omitempty"`
+	}{
+		Alias: (*Alias)(s),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Use snake_case if camelCase wasn't provided
+	if s.WebSearch == nil && aux.WebSearchSnake != nil {
+		s.WebSearch = aux.WebSearchSnake
+	}
+	if s.ImageSearch == nil && aux.ImageSearchSnake != nil {
+		s.ImageSearch = aux.ImageSearchSnake
+	}
+
+	return nil
+}
+
 // GoogleSearch is a tool to support Google Search in Model. Powered by Google.
 type GoogleSearch struct {
 	// Optional. Filter search results to a specific time range.
@@ -380,6 +458,8 @@ type GoogleSearch struct {
 	// Optional. List of domains to be excluded from the search results.
 	// The default limit is 2000 domains.
 	ExcludeDomains []string `json:"excludeDomains,omitempty"`
+	// Optional. The set of search types to enable. Web search when unset.
+	SearchTypes *SearchTypes `json:"searchTypes,omitempty"`
 }
 
 // UnmarshalJSON handles both camelCase and snake_case
@@ -388,8 +468,9 @@ func (g *GoogleSearch) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		*Alias
 		// snake_case alternatives
-		TimeRangeFilterSnake *Interval `json:"time_range_filter,omitempty"`
-		ExcludeDomainsSnake  []string  `json:"exclude_domains,omitempty"`
+		TimeRangeFilterSnake *Interval    `json:"time_range_filter,omitempty"`
+		ExcludeDomainsSnake  []string     `json:"exclude_domains,omitempty"`
+		SearchTypesSnake     *SearchTypes `json:"search_types,omitempty"`
 	}{
 		Alias: (*Alias)(g),
 	}
@@ -404,6 +485,9 @@ func (g *GoogleSearch) UnmarshalJSON(data []byte) error {
 	}
 	if len(g.ExcludeDomains) == 0 && len(aux.ExcludeDomainsSnake) > 0 {
 		g.ExcludeDomains = aux.ExcludeDomainsSnake
+	}
+	if g.SearchTypes == nil && aux.SearchTypesSnake != nil {
+		g.SearchTypes = aux.SearchTypesSnake
 	}
 
 	return nil
@@ -811,6 +895,30 @@ func (t *Tool) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Pricing and performance service tier.
+type ServiceTier string
+
+const (
+	// Default service tier, which is standard.
+	ServiceTierUnspecified ServiceTier = "unspecified"
+	// Flex service tier.
+	ServiceTierFlex ServiceTier = "flex"
+	// Standard service tier.
+	ServiceTierStandard ServiceTier = "standard"
+	// Priority service tier.
+	ServiceTierPriority ServiceTier = "priority"
+)
+
+type TrafficType string
+
+const (
+	TrafficTypeUnspecified           TrafficType = "TRAFFIC_TYPE_UNSPECIFIED"
+	TrafficTypeOnDemand              TrafficType = "ON_DEMAND"
+	TrafficTypeOnDemandPriority      TrafficType = "ON_DEMAND_PRIORITY"
+	TrafficTypeOnDemandFlex          TrafficType = "ON_DEMAND_FLEX"
+	TrafficTypeProvisionedThroughput TrafficType = "PROVISIONED_THROUGHPUT"
+)
+
 // GenerationConfig represents generation configuration. You can find API default values and more details at https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#generationconfig
 // and https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/content-generation-parameters.
 type GenerationConfig struct {
@@ -938,20 +1046,22 @@ type Schema struct {
 	Format string `json:"format,omitempty"`
 	// Optional. SCHEMA FIELDS FOR TYPE ARRAY Schema of the elements of Type.ARRAY.
 	Items *Schema `json:"items,omitempty"`
+	// Integer constraints below marshal as JSON numbers (not the Go SDK's proto-quoted
+	// `,string` form) so they stay valid JSON Schema inside parametersJsonSchema.
 	// Optional. Maximum number of the elements for Type.ARRAY.
-	MaxItems *int64 `json:"maxItems,omitempty,string"`
+	MaxItems *int64 `json:"maxItems,omitempty"`
 	// Optional. Maximum length of the Type.STRING
-	MaxLength *int64 `json:"maxLength,omitempty,string"`
+	MaxLength *int64 `json:"maxLength,omitempty"`
 	// Optional. Maximum number of the properties for Type.OBJECT.
-	MaxProperties *int64 `json:"maxProperties,omitempty,string"`
+	MaxProperties *int64 `json:"maxProperties,omitempty"`
 	// Optional. Maximum value of the Type.INTEGER and Type.NUMBER
 	Maximum *float64 `json:"maximum,omitempty"`
 	// Optional. Minimum number of the elements for Type.ARRAY.
-	MinItems *int64 `json:"minItems,omitempty,string"`
+	MinItems *int64 `json:"minItems,omitempty"`
 	// Optional. SCHEMA FIELDS FOR TYPE STRING Minimum length of the Type.STRING
-	MinLength *int64 `json:"minLength,omitempty,string"`
+	MinLength *int64 `json:"minLength,omitempty"`
 	// Optional. Minimum number of the properties for Type.OBJECT.
-	MinProperties *int64 `json:"minProperties,omitempty,string"`
+	MinProperties *int64 `json:"minProperties,omitempty"`
 	// Optional. Minimum value of the Type.INTEGER and Type.NUMBER.
 	Minimum *float64 `json:"minimum,omitempty"`
 	// Optional. Indicates if the value may be null.
@@ -969,6 +1079,73 @@ type Schema struct {
 	Title string `json:"title,omitempty"`
 	// Optional. The type of the data.
 	Type Type `json:"type,omitempty"`
+}
+
+type flexibleSchemaInt64 int64
+
+var schemaIntegerJSON = sonic.Config{UseInt64: true}.Froze()
+
+func (i *flexibleSchemaInt64) UnmarshalJSON(data []byte) error {
+	var value any
+	if err := schemaIntegerJSON.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("invalid schema integer constraint: %w", err)
+	}
+
+	switch typedValue := value.(type) {
+	case nil:
+		return nil
+	case int64:
+		*i = flexibleSchemaInt64(typedValue)
+		return nil
+	case string:
+		parsed, err := strconv.ParseInt(typedValue, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid schema integer constraint %q: %w", typedValue, err)
+		}
+		*i = flexibleSchemaInt64(parsed)
+		return nil
+	default:
+		return fmt.Errorf("invalid schema integer constraint %v", typedValue)
+	}
+}
+
+func schemaInt64Ptr(value *flexibleSchemaInt64) *int64 {
+	if value == nil {
+		return nil
+	}
+	out := int64(*value)
+	return &out
+}
+
+// UnmarshalJSON accepts both the quoted integer format emitted by this struct's
+// JSON tags and standard numeric JSON Schema constraints used by SDKs.
+func (s *Schema) UnmarshalJSON(data []byte) error {
+	type schemaAlias Schema
+	type schemaWithFlexibleConstraints struct {
+		*schemaAlias
+		MaxItems      *flexibleSchemaInt64 `json:"maxItems,omitempty"`
+		MaxLength     *flexibleSchemaInt64 `json:"maxLength,omitempty"`
+		MaxProperties *flexibleSchemaInt64 `json:"maxProperties,omitempty"`
+		MinItems      *flexibleSchemaInt64 `json:"minItems,omitempty"`
+		MinLength     *flexibleSchemaInt64 `json:"minLength,omitempty"`
+		MinProperties *flexibleSchemaInt64 `json:"minProperties,omitempty"`
+	}
+
+	var aux schemaAlias
+	withConstraints := schemaWithFlexibleConstraints{schemaAlias: &aux}
+	if err := sonic.Unmarshal(data, &withConstraints); err != nil {
+		return err
+	}
+
+	*s = Schema(aux)
+	s.MaxItems = schemaInt64Ptr(withConstraints.MaxItems)
+	s.MaxLength = schemaInt64Ptr(withConstraints.MaxLength)
+	s.MaxProperties = schemaInt64Ptr(withConstraints.MaxProperties)
+	s.MinItems = schemaInt64Ptr(withConstraints.MinItems)
+	s.MinLength = schemaInt64Ptr(withConstraints.MinLength)
+	s.MinProperties = schemaInt64Ptr(withConstraints.MinProperties)
+
+	return nil
 }
 
 // Type represents the type of the data.
@@ -1270,6 +1447,10 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
 		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
 		Text                string               `json:"text,omitempty"`
+		// snake_case fallbacks: the google-genai SDK serializes FunctionResponsePart
+		// (nested inside functionResponse.parts) with snake_case keys, unlike top-level parts.
+		InlineDataSnake *Blob     `json:"inline_data,omitempty"`
+		FileDataSnake   *FileData `json:"file_data,omitempty"`
 	}
 
 	var aux PartAlias
@@ -1280,7 +1461,13 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	p.VideoMetadata = aux.VideoMetadata
 	p.Thought = aux.Thought
 	p.InlineData = aux.InlineData
+	if p.InlineData == nil {
+		p.InlineData = aux.InlineDataSnake
+	}
 	p.FileData = aux.FileData
+	if p.FileData == nil {
+		p.FileData = aux.FileDataSnake
+	}
 	p.CodeExecutionResult = aux.CodeExecutionResult
 	p.ExecutableCode = aux.ExecutableCode
 	p.FunctionCall = aux.FunctionCall
@@ -1322,12 +1509,16 @@ type Blob struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
-// UnmarshalJSON custom unmarshaler for Blob to handle URL-safe base64
+// UnmarshalJSON custom unmarshaler for Blob to handle URL-safe base64.
+// Also accepts the snake_case keys (mime_type, display_name) the google-genai SDK
+// emits inside functionResponse.parts (FunctionResponseBlob), preferring camelCase.
 func (b *Blob) UnmarshalJSON(data []byte) error {
 	type BlobAlias struct {
-		DisplayName string `json:"displayName,omitempty"`
-		Data        string `json:"data,omitempty"`
-		MIMEType    string `json:"mimeType,omitempty"`
+		DisplayName      string `json:"displayName,omitempty"`
+		DisplayNameSnake string `json:"display_name,omitempty"`
+		Data             string `json:"data,omitempty"`
+		MIMEType         string `json:"mimeType,omitempty"`
+		MIMETypeSnake    string `json:"mime_type,omitempty"`
 	}
 
 	var aux BlobAlias
@@ -1336,7 +1527,13 @@ func (b *Blob) UnmarshalJSON(data []byte) error {
 	}
 
 	b.DisplayName = aux.DisplayName
+	if b.DisplayName == "" {
+		b.DisplayName = aux.DisplayNameSnake
+	}
 	b.MIMEType = aux.MIMEType
+	if b.MIMEType == "" {
+		b.MIMEType = aux.MIMETypeSnake
+	}
 
 	if aux.Data != "" {
 		// Convert URL-safe base64 to standard base64
@@ -1414,6 +1611,40 @@ type FileData struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
+// UnmarshalJSON custom unmarshaler for FileData. Also accepts the snake_case keys
+// (mime_type, file_uri, display_name) the google-genai SDK emits inside
+// functionResponse.parts (FunctionResponseFileData), preferring camelCase.
+func (f *FileData) UnmarshalJSON(data []byte) error {
+	type FileDataAlias struct {
+		DisplayName      string `json:"displayName,omitempty"`
+		DisplayNameSnake string `json:"display_name,omitempty"`
+		FileURI          string `json:"fileUri,omitempty"`
+		FileURISnake     string `json:"file_uri,omitempty"`
+		MIMEType         string `json:"mimeType,omitempty"`
+		MIMETypeSnake    string `json:"mime_type,omitempty"`
+	}
+
+	var aux FileDataAlias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	f.DisplayName = aux.DisplayName
+	if f.DisplayName == "" {
+		f.DisplayName = aux.DisplayNameSnake
+	}
+	f.FileURI = aux.FileURI
+	if f.FileURI == "" {
+		f.FileURI = aux.FileURISnake
+	}
+	f.MIMEType = aux.MIMEType
+	if f.MIMEType == "" {
+		f.MIMEType = aux.MIMETypeSnake
+	}
+
+	return nil
+}
+
 // FunctionCall represents a function call.
 type FunctionCall struct {
 	// Optional. The unique ID of the function call. If populated, the client to execute
@@ -1450,6 +1681,10 @@ type FunctionResponse struct {
 	// function output and "error" key to specify error details (if any). If "output" and
 	// "error" keys are not specified, then whole "response" is treated as function output.
 	Response json.RawMessage `json:"response,omitempty"`
+	// Optional. Multimodal content (images, files) returned by the function. Each part must
+	// contain inlineData or fileData with a displayName, referenced from `response` via
+	// {"$ref": "<displayName>"}. Supported on Gemini 3 series models.
+	Parts []*Part `json:"parts,omitempty"`
 }
 
 // ==================== RESPONSE TYPES ====================
@@ -1458,6 +1693,11 @@ type FunctionResponse struct {
 type GeminiEmbeddingResponse struct {
 	Embeddings []GeminiEmbedding     `json:"embeddings"`
 	Metadata   *EmbedContentMetadata `json:"metadata,omitempty"`
+}
+
+// GeminiEmbedContentResponse is the wire format for a single :embedContent response.
+type GeminiEmbedContentResponse struct {
+	Embedding GeminiEmbedding `json:"embedding"`
 }
 
 // GeminiEmbedding represents a single embedding in the response
@@ -1737,10 +1977,24 @@ type GroundingChunkWeb struct {
 	URI string `json:"uri,omitempty"`
 }
 
+// Chunk from image search.
+type GroundingChunkImage struct {
+	// The web page URI for attribution.
+	SourceURI string `json:"sourceUri,omitempty"`
+	// The image asset URL.
+	ImageURI string `json:"imageUri,omitempty"`
+	// The title of the web page that the image is from.
+	Title string `json:"title,omitempty"`
+	// The root domain of the web page that the image is from.
+	Domain string `json:"domain,omitempty"`
+}
+
 // Grounding chunk.
 type GroundingChunk struct {
 	// Grounding chunk from Google Maps. This field is not supported in Gemini API.
 	Maps *GroundingChunkMaps `json:"maps,omitempty"`
+	// Grounding chunk from image search.
+	Image *GroundingChunkImage `json:"image,omitempty"`
 	// Grounding chunk from context retrieved by the retrieval tools. This field is not
 	// supported in Gemini API.
 	RetrievedContext *GroundingChunkRetrievedContext `json:"retrievedContext,omitempty"`
@@ -1825,6 +2079,8 @@ type GroundingMetadata struct {
 	SourceFlaggingUris []*GroundingMetadataSourceFlaggingURI `json:"sourceFlaggingUris,omitempty"`
 	// Optional. Web search queries for the following-up web search.
 	WebSearchQueries []string `json:"webSearchQueries,omitempty"`
+	// Optional. Image search queries used for grounding.
+	ImageSearchQueries []string `json:"imageSearchQueries,omitempty"`
 }
 
 // Candidate represents a response candidate generated from the model.
@@ -1899,7 +2155,9 @@ type GenerateContentResponseUsageMetadata struct {
 	TotalTokenCount int32 `json:"totalTokenCount,omitempty"`
 	// Output only. Traffic type. This shows whether a request consumes Pay-As-You-Go or
 	// Provisioned Throughput quota.
-	TrafficType string `json:"trafficType,omitempty"`
+	TrafficType TrafficType `json:"trafficType,omitempty"`
+	// Output only. The service tier used to serve the request.
+	ServiceTier ServiceTier `json:"serviceTier,omitempty"`
 }
 
 // GenerateContentResponse represents response message for PredictionService.GenerateContent.
@@ -2103,7 +2361,8 @@ type GeminiBatchMetadataInputConfig struct {
 
 // GeminiBatchMetadataOutputConfig represents the output config in batch job metadata.
 type GeminiBatchMetadataOutputConfig struct {
-	ResponsesFile string `json:"responsesFile,omitempty"`
+	ResponsesFile    string                  `json:"responsesFile,omitempty"`
+	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
 }
 
 // GeminiBatchMetadata contains metadata for tracking batch requests.
@@ -2132,18 +2391,26 @@ type GeminiBatchJobResponse struct {
 	Response *GeminiBatchOutput    `json:"response,omitempty"`
 }
 
-// GeminiBatchOutput represents the output of a successful batch job.
+// GeminiBatchOutput represents the output of a successful batch job. It mirrors the
+// GenerateContentBatchOutput union returned under the Operation's response field
+// (and metadata.output): either a responses file or a set of inline responses.
 type GeminiBatchOutput struct {
-	Type          string `json:"@type,omitempty"`
-	ResponsesFile string `json:"responsesFile,omitempty"`
+	Type             string                  `json:"@type,omitempty"`
+	ResponsesFile    string                  `json:"responsesFile,omitempty"`
+	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
 }
 
-// GeminiBatchDest contains the destination/output of a batch job.
-// For inline requests, results are in InlinedResponses.
-// For file-based input, results are in a file referenced by FileName.
+// GeminiBatchDest is the client-SDK-facing output shape (dest.fileName) emitted when
+// converting a Bifrost batch response back to Gemini format. The raw REST API reports
+// output under the Operation's response / metadata.output fields, not dest.
 type GeminiBatchDest struct {
+	FileName string `json:"fileName,omitempty"`
+}
+
+// GeminiInlinedResponses wraps the array of inline batch responses. The REST API nests
+// the array one level deep: response.inlinedResponses.inlinedResponses[].
+type GeminiInlinedResponses struct {
 	InlinedResponses []GeminiInlinedResponse `json:"inlinedResponses,omitempty"`
-	FileName         string                  `json:"fileName,omitempty"`
 }
 
 // GeminiInlinedResponse represents a single response in the batch output.
@@ -2211,6 +2478,16 @@ type GeminiFileRetrieveRequest struct {
 // GeminiFileDeleteRequest request represents the request for deleting a file.
 type GeminiFileDeleteRequest struct {
 	FileID string `json:"file_id"`
+}
+
+// GeminiCountTokensRequest represents the request body for Google Gemini's count tokens API.
+// Two shapes reach this endpoint: the generateContentRequest envelope the Gemini API requires,
+// and the flat generateContent body Vertex accepts. The embedded request parses the flat shape,
+// so every field it already understands — systemInstruction, tools, fallbacks — survives ingress
+// without this type having to re-declare them and drift as fields are added.
+type GeminiCountTokensRequest struct {
+	GeminiGenerationRequest
+	GenerateContentRequest *GeminiGenerationRequest `json:"generateContentRequest,omitempty"`
 }
 
 // GeminiCountTokensResponse represents the response from Google Gemini's count tokens API.
@@ -2705,6 +2982,7 @@ type GeminiResumableUploadSession struct {
 	DisplayName string
 	MimeType    string
 	Provider    schemas.ModelProvider
+	VirtualKey  string
 }
 
 // GeminiFileUploadHandlerReqFile represents the file metadata in a Gemini file upload request.

@@ -51,55 +51,62 @@ echo "transports: $(cat transports/version)"
 for d in plugins/*/; do echo "$(basename $d): $(cat ${d}version)"; done
 ```
 
-Read the latest changelog file to understand the previous release state:
+To understand the previous release state, use the latest released tags (do NOT use docs/changelogs file mtimes — that directory also holds helm-, cli-, edge-, ent-, and prerelease files):
 
 ```bash
-# Find the latest docs changelog to determine the last released version
-ls -1t docs/changelogs/*.mdx | head -1
+for prefix in core framework transports; do
+  git tag -l "$prefix/v*" --sort=-v:refname | head -1
+done
 ```
 
-Then read that file to know the previous versions of all modules.
+If a docs changelog for that transport version exists (`docs/changelogs/v<version>.mdx`), read it to know the previous versions of all modules.
 
 ### Step 2: Identify Changes Since Last Release
 
-Use git log to find commits since the last release tag or since the last changelog was written:
+**The base for change detection is always determined per module from git — never from docs/changelogs filenames or file mtimes.** (docs/changelogs contains helm-, cli-, edge-, ent-, and prerelease mdx files, so "newest mdx" does not identify the last release.)
+
+For each module, resolve the base commit in this priority order:
 
 ```bash
-# Get the transport version from the latest changelog (it matches the release version)
-LAST_VERSION=$(ls -1t docs/changelogs/*.mdx | head -1 | sed 's/.*\/v/v/' | sed 's/.mdx//')
-echo "Last release: $LAST_VERSION"
+# 1. Latest released tag for the module, by version sort (NOT mtime, NOT alphabetical):
+TAG=$(git tag -l "core/v*" --sort=-v:refname | head -1)   # framework/v*, transports/v*, plugins tags likewise
 
-# Check if a git tag exists
-git tag -l "$LAST_VERSION" "v*"
-
-# Get commits since last release
-# If tag exists:
-git log ${LAST_VERSION}..HEAD --oneline --no-merges
-
-# If no tag, use date-based or commit-based approach:
-# Find the commit that added the last changelog
-git log --oneline --all -- "docs/changelogs/$(ls -1t docs/changelogs/*.mdx | head -1 | xargs basename)" | head -1
+# 2. Module tags may be cut on release branches. If the tag is not an ancestor
+#    of HEAD, fall back to the last commit that modified the module's version
+#    file on the current branch:
+if git merge-base --is-ancestor "$TAG" HEAD; then
+  BASE=$TAG
+else
+  BASE=$(git log -1 --format=%H -- core/version)
+fi
+echo "core base: $BASE"
 ```
 
-For each module, identify which files changed:
+Then apply the hard rule: **if `git diff ${BASE}..HEAD -- <module>/` is non-empty (ignoring only the module's own `changelog.md` and `version` files), that module MUST get a version bump.** No exceptions, no heuristics.
 
 ```bash
 # Changes in core
-git diff --name-only ${BASE}..HEAD -- core/
+git diff --name-only ${BASE}..HEAD -- core/ ':(exclude)core/changelog.md' ':(exclude)core/version'
 
 # Changes in framework
-git diff --name-only ${BASE}..HEAD -- framework/
+git diff --name-only ${BASE}..HEAD -- framework/ ':(exclude)framework/changelog.md' ':(exclude)framework/version'
 
 # Changes in each plugin
 for d in plugins/*/; do
-  CHANGES=$(git diff --name-only ${BASE}..HEAD -- "$d" | wc -l)
+  CHANGES=$(git diff --name-only ${BASE}..HEAD -- "$d" ":(exclude)${d}changelog.md" ":(exclude)${d}version" | wc -l)
   if [ "$CHANGES" -gt 0 ]; then
     echo "$(basename $d): $CHANGES files changed"
   fi
 done
 
 # Changes in transports
-git diff --name-only ${BASE}..HEAD -- transports/
+git diff --name-only ${BASE}..HEAD -- transports/ ':(exclude)transports/changelog.md' ':(exclude)transports/version'
+```
+
+List the commits in the window for changelog writing:
+
+```bash
+git log ${BASE}..HEAD --oneline --no-merges -- <module>/
 ```
 
 ### Step 3: Classify Changes and Determine Bump Types
@@ -194,6 +201,40 @@ Use a markdown link to the contributor's GitHub profile: `[@username](https://gi
 
 If multiple PRs from the same outside contributor are grouped into one entry, credit them once.
 
+#### Collect Closed GitHub Issues
+
+Gather **every** GitHub issue closed in this release so they can be listed in the `## 🐙 Closed GitHub Issues` section of `transports/changelog.md`. Each issue MUST be rendered as a markdown link.
+
+For each PR in the release window, query its linked closing issues (this catches `Closes #N` / `Fixes #N` links even when the commit subject doesn't mention them):
+
+```bash
+# For each PR number in the release window:
+gh api graphql -f query="query{repository(owner:\"maximhq\",name:\"bifrost\"){pullRequest(number:PR_NUMBER){closingIssuesReferences(first:100){nodes{number title}}}}}" \
+  --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[]? | "#\(.number)\t\(.title)"'
+```
+
+Also grep commit bodies for closing keywords as a fallback (some issues are linked only in the message text):
+
+```bash
+git log ${BASE}..HEAD --no-merges --pretty=format:"%B" | grep -ioE "(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+" | sort -u
+```
+
+Merge both sources and **deduplicate by issue number** before confirming/rendering (e.g. collect all `#N` values and `sort -un`), so an issue linked via both `closingIssuesReferences` and a commit-body keyword appears only once.
+
+Confirm each issue's state and final title before listing it:
+
+```bash
+gh api repos/maximhq/bifrost/issues/<ISSUE_NUMBER> --jq '"#\(.number) [\(.state)] \(.title)"'
+```
+
+Render every closed issue as a markdown link in ascending issue-number order:
+
+```markdown
+- [#3795](https://github.com/maximhq/bifrost/issues/3795) — MCP tools fail with Bedrock provider in v1.5.0
+```
+
+If an issue's title is generic or unhelpful (e.g. just `[Bug Report]`), read the issue body and write a short, specific description instead.
+
 **Present the draft entries to the user for review before writing files.**
 
 #### Per-Module changelog.md (core, framework, plugins)
@@ -234,6 +275,11 @@ The transports changelog uses a categorized format with bold names. Write it usi
 
 - **Bug Name** — Description of what was fixed
 - **Bug Name** — Description of what was fixed
+
+## 🐙 Closed GitHub Issues
+
+- [#1234](https://github.com/maximhq/bifrost/issues/1234) — Issue title
+- [#1235](https://github.com/maximhq/bifrost/issues/1235) — Issue title
 ```
 
 **Formatting rules for transports/changelog.md:**
@@ -245,6 +291,7 @@ The transports changelog uses a categorized format with bold names. Write it usi
 - Breaking changes get a `<Warning>` or `<Note>` block indented under the entry
 - Omit sections that have no entries (e.g., if there are no features, skip the Features section)
 - If the release has only cascading bumps and no meaningful features or fixes, add a `## 🔧 Maintenance` section with an entry like: `- **Dependency Upgrades** — Bumped core to v1.5.0 and framework to v1.3.0 across all modules`
+- Add a `## 🐙 Closed GitHub Issues` section listing **every** issue closed in this release (see "Collect Closed GitHub Issues" below). Each entry MUST be a markdown link to the issue: `- [#NUMBER](https://github.com/maximhq/bifrost/issues/NUMBER) — Issue title`. Omit the section only if no issues were closed.
 
 ### Step 6: Update Version Files
 
@@ -339,7 +386,7 @@ bifrost/
 │   └── telemetry/version
 ├── transports/
 │   ├── version              # Plain text: "1.5.0"
-│   ├── changelog.md         # Enterprise-style format (✨ Features / 🐞 Fixed)
+│   ├── changelog.md         # Enterprise-style format (✨ Features / 🐞 Fixed / 🐙 Closed GitHub Issues)
 │   └── go.mod
 └── docs/
     ├── changelogs/          # ⚠️ DO NOT TOUCH — MDX files managed separately

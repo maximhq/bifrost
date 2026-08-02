@@ -8,8 +8,11 @@ import (
 	"sync"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/routing"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 // DefaultRoutingChainMaxDepth is the default maximum depth for routing rule chain evaluation.
@@ -35,14 +38,16 @@ type RoutingDecision struct {
 // RoutingContext holds all data needed for routing rule evaluation
 // Reuses existing configstore table types for VirtualKey, Team, Customer
 type RoutingContext struct {
-	VirtualKey               *configstoreTables.TableVirtualKey // nil if no VK
-	Provider                 schemas.ModelProvider              // Current provider
-	Model                    string                             // Current model
-	RequestType              string                             // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
-	Fallbacks                []string                           // Fallback chain: ["provider/model", ...]
-	Headers                  map[string]string                  // Request headers for dynamic routing
-	QueryParams              map[string]string                  // Query parameters for dynamic routing
-	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus          // Budget and rate limit status by provider/model
+	VirtualKey               *configstoreTables.TableVirtualKey  // nil if no VK
+	UserID                   string                              // Resolved calling user id; empty when the request carries no user identity
+	Provider                 schemas.ModelProvider               // Current provider
+	Model                    string                              // Current model
+	RequestType              string                              // Request type (e.g., "chat_completion", "embedding"); streaming requests carry a distinct "_stream" suffix (e.g., "chat_completion_stream")
+	Fallbacks                []string                            // Fallback chain: ["provider/model", ...]
+	Headers                  map[string]string                   // Request headers for dynamic routing
+	QueryParams              map[string]string                   // Query parameters for dynamic routing
+	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus           // Budget and rate limit status by provider/model
+	computeComplexity        func() *complexity.ComplexityResult // Lazy complexity computation; called at most once when a rule references "complexity_tier"
 }
 
 type RoutingEngine struct {
@@ -97,8 +102,9 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// rules in the chain run, rather than halting with a cycle error.
 	visitedRuleIDs := map[string]struct{}{}
 
-	// Build scope chain once — it's based on the immutable VirtualKey and won't change across chain steps.
-	scopeChain := buildScopeChain(routingCtx.VirtualKey)
+	// Build scope chain once — it's based on the immutable VirtualKey and user
+	// identity and won't change across chain steps.
+	scopeChain := buildScopeChain(routingCtx.VirtualKey, routingCtx.UserID)
 
 	// Cache rules per scope upfront to avoid redundant store lookups when rules chain
 	// and we re-evaluate the scope hierarchy on subsequent steps.
@@ -122,6 +128,8 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
 
 	var finalDecision *RoutingDecision
+	var complexityResult *complexity.ComplexityResult
+	computeComplexity := routingCtx.computeComplexity
 
 	for chainStep := 0; ; chainStep++ {
 		// TERMINATION 4: Chain exceeded configured max depth.
@@ -149,6 +157,9 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			re.logger.Error("[RoutingEngine] Failed to extract routing variables: %v", err)
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Failed to extract routing variables: %v", err))
 			return nil, fmt.Errorf("failed to extract routing variables: %w", err)
+		}
+		if complexityResult != nil {
+			variables["complexity_tier"] = complexityResult.Tier
 		}
 
 		re.logger.Debug("[RoutingEngine] Chain Step: %d", chainStep)
@@ -180,6 +191,17 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				}
 				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
+				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
+
+				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
+				if complexityResult == nil && computeComplexity != nil && referencesComplexity {
+					complexityResult = computeComplexity()
+					computeComplexity = nil // compute at most once
+					if complexityResult != nil {
+						variables["complexity_tier"] = complexityResult.Tier
+					}
+				}
+
 				program, err := re.store.GetRoutingProgram(ctx, rule)
 				if err != nil {
 					re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
@@ -187,7 +209,12 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					continue
 				}
 
-				matched, err := evaluateCELExpression(program, variables)
+				var unknowns []*cel.AttributePatternType
+				if referencesComplexity && complexityResult == nil {
+					unknowns = append(unknowns, cel.AttributePattern("complexity_tier"))
+				}
+
+				matched, err := evaluateCELExpression(program, variables, unknowns...)
 				if err != nil {
 					re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
@@ -325,8 +352,8 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy
 // Returns scope levels in precedence order (highest to lowest)
-// VirtualKey > Team > Customer > Global
-func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel {
+// VirtualKey > User > Team > Customer > Global
+func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey, userID string) []ScopeLevel {
 	var chain []ScopeLevel
 
 	// VirtualKey level (highest precedence)
@@ -335,7 +362,19 @@ func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel
 			ScopeName: "virtual_key",
 			ScopeID:   virtualKey.ID,
 		})
+	}
 
+	// User level: the resolved calling user. Independent of VK presence so
+	// session-authenticated requests without a virtual key still match
+	// user-scoped rules.
+	if userID != "" {
+		chain = append(chain, ScopeLevel{
+			ScopeName: "user",
+			ScopeID:   userID,
+		})
+	}
+
+	if virtualKey != nil {
 		// Team level
 		if virtualKey.Team != nil {
 			chain = append(chain, ScopeLevel{
@@ -369,19 +408,35 @@ func buildScopeChain(virtualKey *configstoreTables.TableVirtualKey) []ScopeLevel
 }
 
 // evaluateCELExpression evaluates a compiled CEL program with given variables
-func evaluateCELExpression(program cel.Program, variables map[string]any) (bool, error) {
+func evaluateCELExpression(program cel.Program, variables map[string]any, unknowns ...*cel.AttributePatternType) (bool, error) {
 	if program == nil {
 		return false, fmt.Errorf("CEL program is nil")
 	}
 
+	activation := any(variables)
+	if len(unknowns) > 0 {
+		partial, err := cel.PartialVars(variables, unknowns...)
+		if err != nil {
+			return false, fmt.Errorf("CEL partial activation error: %w", err)
+		}
+		activation = partial
+	}
+
 	// Evaluate the program
-	out, _, err := program.Eval(variables)
+	out, _, err := program.Eval(activation)
 	if err != nil {
 		// Gracefully handle "no such key" errors - when a header/param is missing, treat as non-match
 		if strings.Contains(err.Error(), "no such key") {
 			return false, nil
 		}
 		return false, fmt.Errorf("CEL evaluation error: %w", err)
+	}
+
+	// Unknown means the expression depends on a value that is unavailable for
+	// this request. For routing safety, treat it as a no-match rather than
+	// allowing sentinels like complexity_tier == "" to leak into product logic.
+	if types.IsUnknown(out) {
+		return false, nil
 	}
 
 	// Convert result to boolean
@@ -405,7 +460,7 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 	// Basic request context
 	variables["model"] = ctx.Model
 	variables["provider"] = string(ctx.Provider)
-	variables["request_type"] = ctx.RequestType // Normalized request type (e.g., "chat_completion", "embedding")
+	variables["request_type"] = ctx.RequestType // Request type as-is; streaming variants keep their "_stream" suffix (e.g., "chat_completion_stream")
 
 	// Headers and params - normalize headers to lowercase keys for case-insensitive CEL matching
 	// This allows CEL expressions like headers["content-type"] to work regardless of how the header was sent
@@ -435,6 +490,9 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 		variables["virtual_key_id"] = ""
 		variables["virtual_key_name"] = ""
 	}
+
+	// Resolved calling user id; empty when the request carries no user identity
+	variables["user_id"] = ctx.UserID
 
 	// Extract Team context if available (from VirtualKey)
 	if ctx.VirtualKey != nil && ctx.VirtualKey.Team != nil {
@@ -473,6 +531,11 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 		variables["tokens_used"] = 0.0
 		variables["request"] = 0.0
 	}
+
+	// Placeholder only: EvaluateRoutingRules fills this lazily when a rule
+	// actually references complexity_tier. If complexity is unavailable, it is
+	// evaluated as a CEL unknown so negative predicates do not accidentally match.
+	variables["complexity_tier"] = ""
 
 	return variables, nil
 }
@@ -552,13 +615,50 @@ func extractMapKeysFromCEL(expr, mapName string) []string {
 	return keys
 }
 
+var (
+	routingValidationEnv     *cel.Env
+	routingValidationEnvErr  error
+	routingValidationEnvOnce sync.Once
+)
+
+// ValidateRoutingCELExpression compiles a routing CEL expression against the routing
+// environment and returns an error describing any syntax or type problem. An empty (or
+// whitespace-only) expression is treated as match-all ("true") and is considered valid.
+//
+// This mirrors the compilation performed lazily in GetRoutingProgram so that HTTP handlers
+// can reject a malformed expression at write time instead of it silently failing at first
+// evaluation. The environment is built once and reused across calls.
+func ValidateRoutingCELExpression(expr string) error {
+	if strings.TrimSpace(expr) == "" {
+		return nil
+	}
+
+	routingValidationEnvOnce.Do(func() {
+		routingValidationEnv, routingValidationEnvErr = createCELEnvironment()
+	})
+	if routingValidationEnvErr != nil {
+		return fmt.Errorf("failed to initialize CEL environment: %w", routingValidationEnvErr)
+	}
+
+	// Match the normalization and format check applied at evaluation time.
+	normalized := routing.NormalizeMapKeysInCEL(expr)
+	if err := routing.ValidateCELExpression(normalized); err != nil {
+		return err
+	}
+
+	if _, issues := routingValidationEnv.Compile(normalized); issues != nil && issues.Err() != nil {
+		return fmt.Errorf("CEL compile error: %s", issues.Err().Error())
+	}
+	return nil
+}
+
 // createCELEnvironment creates a new CEL environment for routing rules
 func createCELEnvironment() (*cel.Env, error) {
 	return cel.NewEnv(
 		// Basic request context
 		cel.Variable("model", cel.StringType),
 		cel.Variable("provider", cel.StringType),
-		cel.Variable("request_type", cel.StringType), // Normalized request type (e.g., "chat_completion", "embedding", "text_completion")
+		cel.Variable("request_type", cel.StringType), // Request type (e.g., "chat_completion", "embedding"); streaming variants are distinct values with a "_stream" suffix
 
 		// Headers and params (dynamic from request)
 		cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)),
@@ -567,6 +667,7 @@ func createCELEnvironment() (*cel.Env, error) {
 		// VirtualKey/Team/Customer context
 		cel.Variable("virtual_key_id", cel.StringType),
 		cel.Variable("virtual_key_name", cel.StringType),
+		cel.Variable("user_id", cel.StringType),
 		cel.Variable("team_id", cel.StringType),
 		cel.Variable("team_name", cel.StringType),
 		cel.Variable("customer_id", cel.StringType),
@@ -576,5 +677,9 @@ func createCELEnvironment() (*cel.Env, error) {
 		cel.Variable("tokens_used", cel.DoubleType),
 		cel.Variable("request", cel.DoubleType),
 		cel.Variable("budget_used", cel.DoubleType),
+
+		// Complexity tier. When analysis is unavailable, evaluation marks this
+		// variable as CEL unknown so complexity-dependent predicates do not match.
+		cel.Variable("complexity_tier", cel.StringType),
 	)
 }

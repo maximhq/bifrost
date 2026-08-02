@@ -10,7 +10,7 @@ export default function AccessProfilesPage() {
 	}
 
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="no-padding-parent mx-auto flex h-[calc(100dvh-1rem)] w-full flex-col p-4">
 			<AccessProfilesIndexView />
 		</div>
 	);

@@ -11,7 +11,14 @@ function PopoverTrigger({ ...props }: React.ComponentProps<typeof PopoverPrimiti
 	return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />;
 }
 
-function PopoverContent({ className, align = "center", sideOffset = 4, noPortal, onWheel, ...props }: React.ComponentProps<typeof PopoverPrimitive.Content> & { noPortal?: boolean }) {
+function PopoverContent({
+	className,
+	align = "center",
+	sideOffset = 4,
+	noPortal,
+	onWheel,
+	...props
+}: React.ComponentProps<typeof PopoverPrimitive.Content> & { noPortal?: boolean }) {
 	// react-remove-scroll (used by Sheet/Dialog) intercepts wheel events on elements outside
 	// the modal's DOM subtree. Portaled popovers render into document.body, so their wheel
 	// events get cancelled before the scroll container can act on them — the scrollbar appears

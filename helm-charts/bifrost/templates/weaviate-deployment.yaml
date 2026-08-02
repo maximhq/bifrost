@@ -33,7 +33,8 @@ spec:
               containerPort: 50051
               protocol: TCP
           env:
-            {{- range $key, $value := .Values.vectorStore.weaviate.env }}
+            {{- range $key := (.Values.vectorStore.weaviate.env | keys | sortAlpha) }}
+            {{- $value := index $.Values.vectorStore.weaviate.env $key }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}

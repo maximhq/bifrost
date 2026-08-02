@@ -73,7 +73,7 @@ export default function ObservabilityView() {
 			<div className="space-y-4">
 				{/* Prometheus Labels */}
 				<div>
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<label htmlFor="prometheus-labels" className="text-sm font-medium">
 								Prometheus Labels

@@ -10,7 +10,7 @@ Enterprise overlays in this folder are designed to be layered on top of your cur
 - `values-customers-budgets.yaml` - Enterprise customer budgets setup (customers with budget/rate-limit bindings)
 - `values-users-teams.yaml` - Enterprise teams setup (multiple teams + business units + team budgets + virtual keys)
 - `values-governance-multi-customer.yaml` - Consolidated governance example with 2 customers, customer/team budgets, team rate limits, business units, and VK-budget mapping
-- `values-scim.yaml` - Enterprise SCIM/SSO setup (safe-by-default; enable only with real IdP credentials)
+- `values-scim.yaml` - Enterprise OIDC/SSO setup (safe-by-default; enable only with real IdP credentials)
 
 ## Base command (as deployed)
 
@@ -157,7 +157,7 @@ helm upgrade --install "${RELEASE_NAME}" ./helm-charts/bifrost \
   --wait --timeout 5m
 ```
 
-## Add enterprise SCIM overlay
+## Add enterprise OIDC overlay
 
 ```bash
 NAMESPACE="bifrost-examples"

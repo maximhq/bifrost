@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -507,7 +508,7 @@ func TestAgent_FilteringWithMultipleClients(t *testing.T) {
 	tempConfig := GetTemperatureMCPClientConfig("")
 	tempConfig.ToolsToAutoExecute = []string{} // Not auto-executed
 
-	err = manager.AddClient(&tempConfig)
+	err = manager.AddClient(context.Background(), &tempConfig)
 	if err != nil {
 		t.Skipf("Skipping test - temperature server not available: %v", err)
 		return
@@ -528,7 +529,7 @@ func TestAgent_FilteringWithMultipleClients(t *testing.T) {
 					ID:   schemas.Ptr("call-2"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-get_temperature"),
+						Name:      schemas.Ptr("bifrostInternal-get_temperature"),
 						Arguments: `{"location": "New York"}`,
 					},
 				},
@@ -593,7 +594,7 @@ func TestAgent_ToolConflictInAgentMode(t *testing.T) {
 	tempConfig := GetTemperatureMCPClientConfig("")
 	tempConfig.ToolsToAutoExecute = []string{} // Not auto
 
-	err = manager.AddClient(&tempConfig)
+	err = manager.AddClient(context.Background(), &tempConfig)
 	if err != nil {
 		t.Skipf("Skipping test - temperature server not available: %v", err)
 		return
@@ -611,7 +612,7 @@ func TestAgent_ToolConflictInAgentMode(t *testing.T) {
 					ID:   schemas.Ptr("call-1"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-get_temperature"),
+						Name:      schemas.Ptr("bifrostInternal-get_temperature"),
 						Arguments: `{"location": "New York"}`,
 					},
 				},
@@ -823,7 +824,7 @@ func TestAgent_Filtering_ResponsesFormat(t *testing.T) {
 			CreateResponsesResponseWithToolCalls([]schemas.ResponsesToolMessage{
 				{
 					CallID:    schemas.Ptr("call-1"),
-					Name: schemas.Ptr("bifrostInternal-echo"),
+					Name:      schemas.Ptr("bifrostInternal-echo"),
 					Arguments: schemas.Ptr(`{"message": "responses format"}`),
 				},
 			}),

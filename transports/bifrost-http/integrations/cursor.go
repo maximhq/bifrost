@@ -812,6 +812,10 @@ func isEffectivelyEmptyContent(content *schemas.ResponsesMessageContent) bool {
 			if block.ResponsesInputMessageContentBlockFile != nil {
 				return false
 			}
+		case schemas.ResponsesInputMessageContentBlockTypeContainer:
+			if block.FileID != nil {
+				return false
+			}
 		case schemas.ResponsesInputMessageContentBlockTypeAudio:
 			if block.Audio != nil {
 				return false

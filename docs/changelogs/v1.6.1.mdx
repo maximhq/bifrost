@@ -1,0 +1,89 @@
+---
+title: "v1.6.1"
+description: "v1.6.1 changelog - 2026-06-29"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.6.1
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.6.1
+    docker run -p 8080:8080 maximhq/bifrost:v1.6.1
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.6.1">
+## ✨ Features
+
+- **Truncated Label Tooltips** — Long labels in the dashboard now truncate with a hover tooltip showing the full value, applied across the logs and providers pages.
+
+## 🐞 Fixed
+
+- **Logs Page URL Parsing** — Array query parameters on the logs page now use `parseAsSafeArrayOf`, correctly handling special characters in URLs.
+- **Bedrock Usage Calculation** — Fixed token usage calculation for the Bedrock provider.
+- **Hybrid Log Token Usage** — Token usage is now rebuilt from denormalized columns in the hybrid log list (thanks [@G-XD](https://github.com/G-XD)!).
+
+## 🔧 Maintenance
+
+- **Governance Config Import** — Replaced `createGovernanceConfigInStore` with an empty-snapshot `mergeGovernanceConfig` path for the first config-file import.
+- **Dependency Upgrades** — Bumped core to v1.6.1 and framework to v1.4.1 across all modules.
+
+</Update>
+<Update label="Core" description="1.6.1">
+- feat: added Anthropic code execution tool support
+- fix: corrected Bedrock usage calculation
+
+</Update>
+<Update label="Framework" description="1.4.1">
+- fix: rebuild token_usage from denormalized columns in hybrid log list (thanks [@G-XD](https://github.com/G-XD)!)
+- chore: upgraded core to v1.6.1
+
+</Update>
+<Update label="compat" description="0.1.23">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="governance" description="1.6.1">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="jsonparser" description="1.5.24">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="logging" description="1.5.24">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="maxim" description="1.6.24">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="mocker" description="1.5.24">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.5">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="otel" description="1.3.1">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="prompts" description="1.0.24">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="semanticcache" description="1.5.24">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>
+<Update label="telemetry" description="1.5.24">
+- chore: upgraded core to v1.6.1 and framework to v1.4.1
+
+</Update>

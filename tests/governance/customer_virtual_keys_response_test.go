@@ -39,8 +39,9 @@ func TestCustomerResponsesIncludeAssignedVirtualKeys(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:       vkName,
-			CustomerID: &customerID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			CustomerID:      &customerID,
 		},
 	})
 
@@ -119,8 +120,9 @@ func TestVirtualKeyResponsesEmbedConsistentCustomerRelations(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:       vkName,
-			CustomerID: &customerID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			CustomerID:      &customerID,
 		},
 	})
 
@@ -264,8 +266,9 @@ func TestCustomerResponsesExcludeTeamScopedVirtualKeys(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   vkName,
-			TeamID: &teamID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			TeamID:          &teamID,
 		},
 	})
 
@@ -346,8 +349,9 @@ func createCustomerVirtualKeyForTest(t *testing.T, testData *GlobalTestData, cus
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:       vkName,
-			CustomerID: &customerID,
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			CustomerID:      &customerID,
 		},
 	})
 
@@ -378,12 +382,6 @@ func extractCustomerFromResponse(body map[string]interface{}, customerID string)
 			if id == customerID {
 				return customer
 			}
-		}
-	}
-
-	if customers, ok := body["customers"].(map[string]interface{}); ok {
-		if customer, ok := customers[customerID].(map[string]interface{}); ok {
-			return customer
 		}
 	}
 

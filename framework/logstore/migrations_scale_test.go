@@ -67,7 +67,7 @@ func TestScalePostgresLogstoreMigrations(t *testing.T) {
 	defer stopMonitor()
 
 	start := time.Now()
-	require.NoError(t, triggerMigrations(ctx, db), "logstore migrations should complete at scale")
+	require.NoError(t, triggerMigrations(ctx, db, testLogger{}), "logstore migrations should complete at scale")
 	migrationElapsed := time.Since(start)
 
 	conn := acquireScaleMigrationConn(t, ctx, sqlDB)
@@ -76,7 +76,7 @@ func TestScalePostgresLogstoreMigrations(t *testing.T) {
 	start = time.Now()
 	require.NoError(t, ensureMetadataGINIndex(ctx, conn), "metadata GIN index should be maintained at scale")
 	require.NoError(t, ensureDashboardEnhancements(ctx, conn), "dashboard enhancements should be maintained at scale")
-	require.NoError(t, ensurePerformanceIndexes(ctx, conn), "performance indexes should be maintained at scale")
+	require.NoError(t, ensurePerformanceIndexes(ctx, conn, testLogger{}), "performance indexes should be maintained at scale")
 	indexElapsed := time.Since(start)
 
 	start = time.Now()

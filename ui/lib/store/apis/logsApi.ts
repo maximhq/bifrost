@@ -1,6 +1,7 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
 import {
 	CostHistogramResponse,
+	DimensionRankingsResponse,
 	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
@@ -13,8 +14,12 @@ import {
 	Pagination,
 	ProviderCostHistogramResponse,
 	ProviderLatencyHistogramResponse,
+	ProviderThroughputHistogramResponse,
 	ProviderTokenHistogramResponse,
+	RankingDimension,
+	RecalcJobStatus,
 	RecalculateCostResponse,
+	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
@@ -68,6 +73,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
 	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
+	if (filters.cache_hit_types && filters.cache_hit_types.length > 0) {
+		params.cache_hit_types = filters.cache_hit_types.join(",");
+	}
 	if (filters.content_search) params.content_search = filters.content_search;
 	if (filters.user_ids && filters.user_ids.length > 0) {
 		params.user_ids = filters.user_ids.join(",");
@@ -88,6 +96,16 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 
 	return params;
+}
+
+/**
+ * Row-cap params shared by the ranking endpoints. `all` wins over `limit`: the
+ * backend ignores a limit when all=true so exports are never truncated.
+ */
+function buildRankingLimitParams(limit?: number, all?: boolean): Record<string, string | number> {
+	if (all) return { all: "true" };
+	if (limit !== undefined) return { limit };
+	return {};
 }
 
 export const logsApi = baseApi.injectEndpoints({
@@ -227,6 +245,34 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		// Get throughput (tokens/sec) histogram
+		getLogsThroughputHistogram: builder.query<
+			ThroughputHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/throughput",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get provider throughput (tokens/sec) histogram with provider breakdown
+		getLogsProviderThroughputHistogram: builder.query<
+			ProviderThroughputHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/throughput/by-provider",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get provider cost histogram with provider breakdown
 		getLogsProviderCostHistogram: builder.query<
 			ProviderCostHistogramResponse,
@@ -269,16 +315,36 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
-		// Get model rankings with trends
+		// Get model rankings with trends.
+		// `limit` caps the number of ranked rows (backend default: 100); `all`
+		// returns every ranked entity and is what the dashboard export uses.
 		getModelRankings: builder.query<
 			ModelRankingsResponse,
 			{
 				filters: LogFilters;
+				limit?: number;
+				all?: boolean;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, limit, all }) => ({
 				url: "/logs/rankings",
-				params: buildFilterParams(filters),
+				params: { ...buildFilterParams(filters), ...buildRankingLimitParams(limit, all) },
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		getDimensionRankings: builder.query<
+			DimensionRankingsResponse,
+			{
+				filters: LogFilters;
+				dimension: RankingDimension;
+				limit?: number;
+				all?: boolean;
+			}
+		>({
+			query: ({ filters, dimension, limit, all }) => ({
+				url: "/logs/rankings/by-dimension",
+				params: { ...buildFilterParams(filters), dimension, ...buildRankingLimitParams(limit, all) },
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -308,14 +374,20 @@ export const logsApi = baseApi.injectEndpoints({
 				business_units?: { id: string; name: string }[];
 				metadata_keys?: Record<string, string[]>;
 			},
-			{ dimensions?: string[] } | void
+			{ dimensions?: string[]; q?: string } | void
 		>({
 			query: (arg) => {
 				const dims = arg && "dimensions" in arg ? arg.dimensions : undefined;
-				if (!dims || dims.length === 0) return "/logs/filterdata";
-				// Sort to keep the cache key stable regardless of caller-side ordering.
-				const sorted = [...dims].sort().join(",");
-				return `/logs/filterdata?dimensions=${encodeURIComponent(sorted)}`;
+				const q = arg && "q" in arg ? arg.q : undefined;
+				const params = new URLSearchParams();
+				if (dims && dims.length > 0) {
+					params.set("dimensions", [...dims].sort().join(","));
+				}
+				if (q) {
+					params.set("q", q);
+				}
+				const qs = params.toString();
+				return qs ? `/logs/filterdata?${qs}` : "/logs/filterdata";
 			},
 			providesTags: ["Logs"],
 		}),
@@ -339,6 +411,15 @@ export const logsApi = baseApi.injectEndpoints({
 			invalidatesTags: ["Logs"],
 		}),
 
+		// Status of a background cost-recalculation job. Intended to be polled with a
+		// pollingInterval while a job is active; omit id to get the latest in-flight job.
+		getRecalculateCostStatus: builder.query<RecalcJobStatus, { id?: string } | void>({
+			query: (arg) => ({
+				url: "/logs/recalculate-cost/status",
+				params: arg?.id ? { id: arg.id } : {},
+			}),
+		}),
+
 		// Get a single log entry by ID (includes raw_request and raw_response)
 		getLogById: builder.query<LogEntry, string>({
 			query: (id) => `/logs/${encodeURIComponent(id)}`,
@@ -358,6 +439,8 @@ export const {
 	useGetLogsProviderCostHistogramQuery,
 	useGetLogsProviderTokenHistogramQuery,
 	useGetLogsProviderLatencyHistogramQuery,
+	useGetLogsThroughputHistogramQuery,
+	useGetLogsProviderThroughputHistogramQuery,
 	useGetLogSessionSummaryByIdQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
@@ -372,11 +455,17 @@ export const {
 	useLazyGetLogsProviderCostHistogramQuery,
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
+	useLazyGetLogsThroughputHistogramQuery,
+	useLazyGetLogsProviderThroughputHistogramQuery,
+	useGetModelRankingsQuery,
+	useGetDimensionRankingsQuery,
 	useLazyGetModelRankingsQuery,
+	useLazyGetDimensionRankingsQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
+	useGetRecalculateCostStatusQuery,
 	useLazyGetLogByIdQuery,
 	useGetLogByIdQuery,
 } = logsApi;

@@ -1,82 +1,33 @@
 ---
 title: "Audit Logs"
-description: "Comprehensive security and compliance audit logging with detailed tracking of authentication, authorization, configuration changes, and data access for enterprise governance and regulatory requirements."
+description: "Track administrative activity in Bifrost Enterprise with signed audit events, filtering, and export support."
 icon: "scroll"
 ---
 
 ## Overview
 
-**Audit Logs** in Bifrost provide complete visibility into security-critical events, user activities, configuration changes, and data access patterns. Enterprise audit logging ensures compliance with regulatory requirements including SOC 2, GDPR, HIPAA, and ISO 27001 through comprehensive, immutable audit trails.
+**Audit Logs** in Bifrost Enterprise record administrative activity so operators can review who changed what, when it happened, and which resource was affected.
 
+Audit log entries can be signed with an HMAC key, retained for a configurable number of days, viewed in the dashboard, and exported for downstream review.
+
+<Frame>
+  <img src="/media/enterprise-audit-logs.png" alt="Audit logs screen" />
+</Frame>
 
 ### Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **Immutable Logs** | Tamper-proof audit trails with cryptographic verification |
-| **Real-Time Capture** | Instant logging of all security-relevant events |
-| **Granular Filtering** | Query by user, action, resource, or time range |
-| **Long-Term Retention** | Configurable retention policies for compliance |
-| **SIEM Integration** | Export to Splunk, Datadog, Elastic, and more |
-| **Alert Triggers** | Automated alerts on suspicious activities |
-
----
-
-## What Gets Logged
-
-### Authentication Events
-- User login (successful/failed)
-- User logout
-- Session creation/expiration
-- MFA verification
-- Password changes
-- Failed authentication attempts
-- Account lockouts
-- SSO redirects
-
-### Authorization Events
-- Model access attempts
-- Provider access checks
-- Virtual key usage
-- Budget limit checks
-- Rate limit violations
-- Permission denials
-
-### Configuration Changes
-- Virtual key creation/modification/deletion
-- Team/customer creation/updates
-- User provisioning/deprovisioning
-- Budget adjustments
-- Rate limit changes
-- Provider key updates
-- Guardrail configuration changes
-- SCIM/OIDC settings updates
-
-### Data Access Events
-- PII detection and handling
-- Data export operations
-- Log access and queries
-- Sensitive configuration access
-- API key exposure attempts
-
-### Security Events
-- Prompt injection attempts
-- Jailbreak attempts
-- Unusual access patterns
-- Multiple failed authentication attempts
-- API key abuse
-- Rate limit violations
-- Suspicious IP addresses
-- Guardrail violations
+| Feature              | Description                                                                                   |
+| -------------------- | --------------------------------------------------------------------------------------------- |
+| **Signed events**    | Configure an HMAC key so audit entries can be verified.                                       |
+| **Dashboard review** | View audit entries from the **Audit Logs** workspace page.                                    |
+| **Filtering**        | Filter by search text, action, outcome, and date range.                                       |
+| **Export**           | Export matching entries as JSON, JSON Lines, or Syslog when the user has download permission. |
+| **Retention**        | Configure how long audit log entries are kept.                                                |
+| **Object storage archival** | Periodically archive audit events to S3/GCS in time-windowed, size-bounded JSONL objects for long-term, off-box, compliance-grade retention. |
 
 ---
 
 ## Configuration
-
-### Basic Audit Logging Setup
-
-<Tabs group="audit-config">
-<Tab title="config.json">
 
 ```json
 {
@@ -88,255 +39,245 @@ icon: "scroll"
 }
 ```
 
+### Configuration Fields
+
+| Field            | Type    | Description                                                                                                                                |
+| ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `disabled`       | boolean | When `true`, audit logging is turned off. Default: `false`.                                                                                |
+| `hmac_key`       | string  | HMAC secret key used to sign audit events. Minimum 32 bytes. Supports `env.` prefix for environment variables (e.g. `env.AUDIT_HMAC_KEY`). |
+| `retention_days` | integer | Days to retain audit log entries **in the database**. `0` disables retention-based cleanup. Does not affect archived objects (see [Archiving to Object Storage](#archiving-to-object-storage)). |
+| `object_storage` | object  | Optional. When set, archives audit events to S3/GCS in addition to the database. Setting it is what enables archival — there is no separate on/off flag. See [Archiving to Object Storage](#archiving-to-object-storage). |
+| `archive_interval` | string | Archival window size, as a Go duration string (e.g. `"6h"`). Also the nominal period of the archival job. Default: `"24h"`. Minimum: `"5m"` (lower values are clamped up). |
+| `archive_grace_period` | string | How long a window is held open past its end before it may be archived, absorbing clock skew and late inserts. Must be **strictly less than** `archive_interval`. Default: `"15m"`. |
+| `archive_max_object_bytes` | integer | Uncompressed JSONL size at which a new part object is started. Default: `134217728` (128 MiB). Minimum 1 MiB, maximum 4 GiB. |
+
+<Note>
+The three `archive_*` fields only take effect when `object_storage` is configured.
+
+`config.schema.json` constrains these fields, so an editor wired to it (via `$schema`) will flag a malformed duration like `"6 hours"` or an out-of-range `archive_max_object_bytes` as you type. The gateway itself does **not** reject such values at startup: each field is normalized independently at runtime, so a value that gets past the schema **falls back to its default or is clamped into range rather than failing startup**. A typo like `"6 hours"` silently yields the 24h default, and `archive_interval: "10s"` is quietly raised to the 5m floor.
+
+Because a bad value fails quietly rather than loudly, confirm what actually took effect from the startup log line, which reports all three:
+
+```
+audit log archive routine started (interval: 24h0m0s, grace: 15m0s, max part size: 134217728 bytes)
+```
+</Note>
+
+## Viewing Audit Logs
+
+Open **Governance > Audit Logs** in the Bifrost dashboard.
+
+The table shows:
+
+| Column        | Description                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------- |
+| **Time**      | When the event occurred.                                                                             |
+| **Action**    | The operation performed, such as create, update, delete, authenticate, authorize, export, or import. |
+| **Outcome**   | The result of the operation: success, failure, or pending.                                           |
+| **Initiator** | The user, API key, or system actor that initiated the action.                                        |
+| **Target**    | The resource affected by the action.                                                                 |
+| **Path**      | The request method and path, when available.                                                         |
+| **IP**        | The request IP address, when available.                                                              |
+| **Duration**  | Request duration in milliseconds, when available.                                                    |
+
+You can search by initiator, target, IP, or path, and filter by action, outcome, start date, and end date.
+
+## Exporting Audit Logs
+
+Users with `AuditLogs:Download` permission can export the currently filtered audit log results from the dashboard.
+
+Supported export formats:
+
+| Format            | Use Case                                                     |
+| ----------------- | ------------------------------------------------------------ |
+| JSON              | Structured review or ad hoc processing.                      |
+| JSON Lines        | Line-delimited ingestion pipelines.                          |
+| Syslog (RFC 5424) | SIEM or log-forwarding pipelines that accept syslog records. |
+
+## Archiving to Object Storage
+
+By default, audit events live only in the database, which is the source of truth for everything you see in the dashboard (viewing, filtering, HMAC verification, and export). Databases, however, are not ideal for multi-year compliance retention or off-box durability.
+
+When you configure `object_storage`, a background job **additionally** copies every audit event to an S3-compatible bucket (S3, GCS, MinIO, R2), one time window at a time. This is a copy, not an offload: the full event ends up in **both** the database and object storage, so each store holds a complete, independent copy.
+
+<Note>
+This differs from [Log Exports](/enterprise/log-exports), where object storage *offloads* the heavy request/response payload out of the database. For audit logs, object storage is a complete **mirror** — the database is never trimmed of data by enabling it.
+</Note>
+
+### Database vs. Object Storage
+
+| Concern | Database | Object Storage |
+| ------- | -------- | -------------- |
+| Role | Source of truth | Durable archive |
+| Used by dashboard / API / export / HMAC verify | Yes | No |
+| Contents | Full event | Full event (identical copy) |
+| Retention | Governed by `retention_days` | Governed by your bucket's lifecycle rules |
+| When populated | Immediately (buffered, sub-second) | Only when `object_storage` is configured, **going forward** (no backfill), and only once a window closes — so the archive trails the database by at least `archive_interval + archive_grace_period` |
+
+Because the two are decoupled, the archive can outlive the database: once `retention_days` deletes an old row, its object in the bucket is left untouched. Use S3 Object Lock / WORM and bucket lifecycle rules to govern how long the archive is kept.
+
+<Warning>
+Retention and archival are **independent** loops — the cleaner deletes by age and does not wait for a window to be archived. Keep `retention_days` comfortably larger than `archive_interval + archive_grace_period`, or rows may be deleted from the database before they are ever copied to the bucket. With the defaults (24h window, 15m grace) the shortest safe setting is `retention_days: 2`; `retention_days: 1` races the archiver.
+</Warning>
+
+### How Archival Works
+
+Archival runs as a **periodic background job**, not as part of the request path. Time is divided into fixed windows of `archive_interval`, and each closed window is archived as a unit, in order:
+
+1. **A window closes.** The window `[start, end)` becomes eligible only once `end` is further in the past than `archive_grace_period`. The grace period absorbs clock skew and rows that land slightly late, so a window is not archived while events may still be arriving for it.
+2. **A job is enqueued.** One job archives one window. Job IDs derive from the window bounds, so in a multi-node cluster every node can tick while exactly one job row is created and exactly one node runs it — no leader election or lock is involved.
+3. **Rows are streamed into part objects.** Committed rows in the window are streamed from the database and encoded as JSON Lines. A new part is rolled each time the accumulated uncompressed JSONL crosses `archive_max_object_bytes`; a part boundary never splits a JSON line.
+4. **A manifest commits the window.** After every part has been durably stored, a `manifest.json` listing exactly those parts is written. The manifest is the **commit point** — only once it lands does the archival watermark advance to `end`, making the next window eligible.
+
+Objects for a window live under a single window prefix:
+
+```
+{prefix}/audit-logs/{YYYY}/{MM}/{DD}/{start}-{end}/part-00000.jsonl[.gz]
+{prefix}/audit-logs/{YYYY}/{MM}/{DD}/{start}-{end}/manifest.json[.gz]
+```
+
+For example, with `"prefix": "acme-prod"`, `"compress": true`, and a 24h interval:
+
+```
+acme-prod/audit-logs/2026/07/14/20260714T000000Z-20260715T000000Z/part-00000.jsonl.gz
+acme-prod/audit-logs/2026/07/14/20260714T000000Z-20260715T000000Z/part-00001.jsonl.gz
+acme-prod/audit-logs/2026/07/14/20260714T000000Z-20260715T000000Z/manifest.json.gz
+```
+
+| Key segment | Meaning |
+| ----------- | ------- |
+| `{prefix}` | The configurable base path from `object_storage.prefix` (default `bifrost`). |
+| `audit-logs` | Fixed segment so audit objects never collide with request logs (`logs/`, `mcp-logs/`). |
+| `{YYYY}/{MM}/{DD}` | UTC date of the window's **start** — enables lifecycle rules and prefix-scoped queries (Athena, SIEM ingestion). |
+| `{start}-{end}` | The window's UTC bounds in compact ISO-8601 (`20060102T150405Z`), so windows sort chronologically in a bucket listing. |
+| `part-00000` | Zero-padded part index, ordered. A window has as many parts as `archive_max_object_bytes` requires. |
+| `manifest.json` | The window's commit record. Written last; see below. |
+| `.gz` | Present only when `compress` is enabled. |
+
+Every object also carries tags (`type`, `window_start`, `window_end`, `count`, and `part`/`parts`) so lifecycle rules and consumers can select objects without listing and pattern-matching keys. Manifests are tagged `type=audit-logs-manifest`, parts `type=audit-logs`.
+
+#### Reading the Archive
+
+**Always read a window through its manifest, and ignore any object the manifest does not list.** A retried window can leave behind an orphaned part from an earlier attempt; the manifest lists exactly the parts that belong to the window, which is what makes it authoritative.
+
+```json
+{
+  "version": 1,
+  "window_start": "2026-07-14T00:00:00Z",
+  "window_end": "2026-07-15T00:00:00Z",
+  "event_count": 128402,
+  "compressed": true,
+  "completed_at": "2026-07-15T00:15:04Z",
+  "parts": [
+    { "key": "acme-prod/audit-logs/2026/07/14/.../part-00000.jsonl.gz", "event_count": 96311, "bytes": 134217508 },
+    { "key": "acme-prod/audit-logs/2026/07/14/.../part-00001.jsonl.gz", "event_count": 32091, "bytes": 44821904 }
+  ]
+}
+```
+
+A window that contained no events still gets a manifest, with an empty `parts` array — a positive record that the window was examined and held nothing. The absence of a manifest means the window is **not** yet committed, not that it was empty.
+
+#### Delivery Guarantees
+
+| Property | Behavior |
+| -------- | -------- |
+| **Archive-only** | The job never deletes database rows. Retention stays governed by `retention_days`. |
+| **At-least-once** | A window commits only after its manifest is durably written, so a crash re-runs the window. Object uploads are retried (3 attempts, exponential backoff), and a window that fails outright is retried on the next pass with the watermark left untouched — archival does not skip ahead past a failure. |
+| **Contiguous** | Exactly one window is in flight at a time, so committed windows never skip a gap. |
+| **First complete write wins** | Once a window has a manifest, a retry keeps the committed archive as-is. Fields enriched *after* a window was committed are deliberately not re-archived. |
+| **No backfill** | On first run a marker records the starting watermark. Audit events written **before** you enabled `object_storage` are never copied to the bucket. |
+
+<Info>
+Unlike the earlier per-flush implementation, archival is **no longer best-effort** — a failed upload is retried rather than logged and dropped, and the watermark will not advance past a window that did not commit. The database nevertheless remains the source of truth: it is what the dashboard, API, export, and HMAC verification read, and it is written independently of whether the bucket is reachable. Object-storage problems delay the archive; they never block audit logging or request handling.
+</Info>
+
+#### Tuning
+
+- **`archive_interval`** trades archive freshness against object count. Longer windows mean fewer, larger objects and a longer lag before events reach the bucket; shorter windows mean fresher data and more objects. The job wakes at least hourly regardless, so a window that closes shortly after a tick is not left waiting a full 24h.
+- **`archive_max_object_bytes`** bounds peak memory: a part is buffered in memory before upload, so expect roughly **2× this value** per archiving node when `compress` is enabled (compression allocates a second buffer). The 128 MiB default implies a ~256 MiB peak. Raise it for fewer, larger objects on nodes with headroom; lower it on memory-constrained nodes.
+- **`archive_grace_period`** rarely needs changing. Raise it if you run with meaningful clock skew across nodes.
+
+### Configuration
+
+<Tabs group="storage-backend">
+<Tab title="S3 / MinIO / R2">
+
+```json
+{
+  "audit_logs": {
+    "hmac_key": "env.AUDIT_HMAC_KEY",
+    "retention_days": 365,
+    "archive_interval": "24h",
+    "archive_grace_period": "15m",
+    "archive_max_object_bytes": 134217728,
+    "object_storage": {
+      "type": "s3",
+      "bucket": "acme-audit-archive",
+      "prefix": "acme-prod",
+      "compress": true,
+      "region": "us-east-1",
+      "access_key_id": "env.AUDIT_S3_KEY",
+      "secret_access_key": "env.AUDIT_S3_SECRET"
+    }
+  }
+}
+```
+
 </Tab>
-<Tab title="Environment Variables">
+<Tab title="GCS">
 
-```bash
-# Enable audit logging
-BIFROST_AUDIT_LOGS_ENABLED=true
-
-# Retention settings
-BIFROST_AUDIT_RETENTION_DAYS=365
-BIFROST_AUDIT_ARCHIVE_DAYS=90
-
-# Event capture
-BIFROST_AUDIT_AUTH_EVENTS=true
-BIFROST_AUDIT_CONFIG_CHANGES=true
-BIFROST_AUDIT_SECURITY_EVENTS=true
-
-# Immutability
-BIFROST_AUDIT_IMMUTABLE=true
+```json
+{
+  "audit_logs": {
+    "hmac_key": "env.AUDIT_HMAC_KEY",
+    "retention_days": 365,
+    "archive_interval": "24h",
+    "archive_grace_period": "15m",
+    "archive_max_object_bytes": 134217728,
+    "object_storage": {
+      "type": "gcs",
+      "bucket": "acme-audit-archive",
+      "prefix": "acme-prod",
+      "compress": true,
+      "credentials_json": "env.AUDIT_GCS_CREDENTIALS"
+    }
+  }
+}
 ```
 
 </Tab>
 </Tabs>
 
-### Configuration Fields
+#### Object Storage Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `disabled` | boolean | When `true`, audit logging is turned off. Default: `false`. |
-| `hmac_key` | string | HMAC secret key used to sign audit events. Minimum 32 bytes. Supports `env.` prefix for environment variables (e.g. `env.AUDIT_HMAC_KEY`). |
-| `retention_days` | integer | Days to retain audit log entries. `0` disables retention-based cleanup. |
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `type` | string | Yes | Backend type: `s3` or `gcs`. |
+| `bucket` | string | Yes | Bucket name. Supports `env.` references. |
+| `prefix` | string | No | Configurable base key path; `audit-logs/` is appended under it. Default: `bifrost`. |
+| `compress` | boolean | No | Gzip stored objects (objects use a `.jsonl.gz` extension). Default: `false`. |
+| `region` | string | No | AWS region (S3). Supports `env.` references. |
+| `endpoint` | string | No | Custom S3-compatible endpoint for MinIO/R2. Supports `env.` references. |
+| `access_key_id` | string | No | AWS access key ID. Omit to use the default credential chain (instance role, env vars). Requires `secret_access_key`. |
+| `secret_access_key` | string | No | AWS secret access key. Supports `env.` references. |
+| `session_token` | string | No | STS temporary session token. |
+| `role_arn` | string | No | IAM role ARN for STS AssumeRole. |
+| `force_path_style` | boolean | No | Path-style URLs (required for MinIO). Default: `false`. |
+| `credentials_json` | string | No | GCS service account JSON or file path. Omit to use Application Default Credentials. |
+| `project_id` | string | No | GCP project ID override (GCS). |
 
----
+<Note>
+You can point audit archival at its own dedicated (ideally write-once/locked) bucket, or reuse the same bucket as request `logs_store` with a distinct `prefix`. The `audit-logs/` path segment keeps the two from overlapping.
+</Note>
 
-## Querying Audit Logs
+If the object store cannot be reached at startup, Bifrost logs the error and continues **without** archival — audit logging to the database is never blocked by object-storage problems.
 
-### API-Based Queries
+The watermark is persisted, not held in memory, so archival **resumes where it left off** after a restart or an outage: windows that closed while the archiver was down are archived on subsequent passes until it catches up. Nothing is skipped — provided the rows are still in the database, which is what the `retention_days` guidance above protects.
 
-**Query Authentication Events:**
-```bash
-curl -X GET "http://localhost:8080/api/audit-logs?event_type=authentication&start_date=2024-01-01&end_date=2024-01-31" \
-  -H "Authorization: Bearer admin-token"
-```
+Catch-up is paced, though: each pass enqueues **one** window, and passes run every `archive_interval` (capped at hourly). After a long outage, expect a backlog of *N* windows to take roughly *N* passes to drain — so a multi-day outage with a 24h interval clears at about one window per hour, not all at once.
 
-**Query by User:**
-```bash
-curl -X GET "http://localhost:8080/api/audit-logs?user_id=user-alice-001&limit=100" \
-  -H "Authorization: Bearer admin-token"
-```
+On shutdown the archiver stops before the object store is released, and an in-flight window is allowed to finish rather than being cancelled, so parts are never left behind without a manifest.
 
-**Query Failed Access Attempts:**
-```bash
-curl -X GET "http://localhost:8080/api/audit-logs?action=access_denied&severity=high" \
-  -H "Authorization: Bearer admin-token"
-```
+## API Reference
 
-**Query Configuration Changes:**
-```bash
-curl -X GET "http://localhost:8080/api/audit-logs?event_type=configuration_change&resource_type=virtual_key" \
-  -H "Authorization: Bearer admin-token"
-```
-
-### Advanced Filtering
-
-```bash
-curl -X POST http://localhost:8080/api/audit-logs/query \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer admin-token" \
-  -d '{
-    "filters": {
-      "event_types": ["authentication", "authorization"],
-      "date_range": {
-        "start": "2024-01-01T00:00:00Z",
-        "end": "2024-01-31T23:59:59Z"
-      },
-      "actors": {
-        "user_ids": ["user-alice-001", "user-bob-002"],
-        "ip_addresses": ["203.0.113.0/24"]
-      },
-      "status": ["failed", "blocked"],
-      "severity": ["medium", "high", "critical"]
-    },
-    "sort": {
-      "field": "timestamp",
-      "order": "desc"
-    },
-    "limit": 1000,
-    "include_details": true
-  }'
-```
-
-### Response Format
-
-```json
-{
-  "total_count": 347,
-  "returned_count": 100,
-  "page": 1,
-  "audit_logs": [
-    {
-      "event_id": "evt_001",
-      "timestamp": "2024-01-15T10:30:00.123Z",
-      "event_type": "authentication",
-      "action": "user_login",
-      "status": "failed",
-      "severity": "medium",
-      "actor": {
-        "user_id": "user-alice-001",
-        "email": "alice@company.com",
-        "ip_address": "203.0.113.42"
-      },
-      "details": {
-        "auth_method": "password",
-        "failure_reason": "invalid_password",
-        "attempts_count": 3
-      },
-      "verification": {
-        "hash": "sha256:abc123...",
-        "verified": true
-      }
-    }
-  ],
-  "next_page": "/api/enterprise/audit-logs?page=2"
-}
-```
-
----
-
-## SIEM Integration
-
-### Splunk Integration
-
-```json
-{
-    "audit_logs": {
-      "siem_integration": {
-        "splunk": {
-          "enabled": true,
-          "hec_endpoint": "https://splunk.company.com:8088/services/collector",
-          "hec_token": "env.SPLUNK_HEC_TOKEN",
-          "source_type": "bifrost:audit",
-          "index": "security",
-          "batch_size": 100,
-          "flush_interval": "10s"
-        }
-      }
-    }
-}
-```
-
-### Datadog Integration
-
-```json
-{  
-    "audit_logs": {
-        "siem_integration": {
-        "datadog": {
-                "enabled": true,
-                "api_key": "env.DATADOG_API_KEY",
-                "site": "datadoghq.com",
-                "service": "bifrost",
-                "tags": ["env:production", "team:security"]
-            }
-        }
-    }  
-}
-```
-
-### Elastic Security Integration
-
-```json
-{  
-    "audit_logs": {
-      "siem_integration": {
-        "elastic": {
-          "enabled": true,
-          "endpoint": "https://elastic.company.com:9200",
-          "api_key": "env.ELASTIC_API_KEY",
-          "index": "bifrost-audit-logs",
-          "pipeline": "security-enrichment"
-        }
-      }
-    }
-}
-```
-
-### Webhook Integration
-
-```json
-{
-    "audit_logs": {
-      "webhooks": {
-        "enabled": true,
-        "endpoints": [
-          {
-            "name": "security_incidents",
-            "url": "https://security.company.com/webhooks/audit",
-            "auth": {
-              "type": "bearer",
-              "token": "env.WEBHOOK_AUTH_TOKEN"
-            },
-            "filters": {
-              "event_types": ["security_incident"],
-              "severity": ["high", "critical"]
-            },
-            "retry": {
-              "max_attempts": 3,
-              "backoff": "exponential"
-            }
-          }
-        ]
-      }
-    }
-}
-```
-
----
-
-## Compliance Reporting
-
-### Generate Audit Reports
-
-```bash
-curl -X POST http://localhost:8080/api/enterprise/audit-logs/reports \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer admin-token" \
-  -d '{
-    "report_type": "compliance_audit",
-    "compliance_framework": "soc2_type2",
-    "date_range": {
-      "start_date": "2024-01-01T00:00:00Z",
-      "end_date": "2024-03-31T23:59:59Z"
-    },
-    "include_sections": [
-      "authentication_events",
-      "authorization_events",
-      "configuration_changes",
-      "security_incidents"
-    ],
-    "format": "pdf",
-    "include_evidence": true
-  }'
-```
-
-### Report Types
-
-| Report Type | Description | Use Case |
-|------------|-------------|----------|
-| **Access Audit** | All user authentication and access events | SOC 2, ISO 27001 |
-| **Change Audit** | Configuration and permission changes | Change management |
-| **Security Audit** | Security incidents and violations | Security reviews |
-| **Compliance Report** | Framework-specific compliance evidence | Regulatory audits |
-| **User Activity** | Individual user activity summary | HR investigations |
+For the exact request and response contract, see the [API Reference](/api-reference).

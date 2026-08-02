@@ -39,7 +39,10 @@ type BifrostChatResponse struct {
 	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier       *string                    `json:"service_tier,omitempty"`
+	ServiceTier       *BifrostServiceTier        `json:"service_tier,omitempty"`
+	Speed             *string                    `json:"speed,omitempty"`         // "fast" | "standard" — speed actually served (Anthropic fast mode); drives fast-mode billing
+	InferenceGeo      *string                    `json:"inference_geo,omitempty"` // "us" | "global" — inference geography served (Anthropic data residency); drives the 1.1x US multiplier
+	Diagnostics       *CacheDiagnostics          `json:"diagnostics,omitempty"`   // Anthropic cache diagnostics (cache-diagnosis-2026-04-07); first prompt-cache prefix divergence point
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
@@ -200,12 +203,13 @@ type ChatParameters struct {
 	Prediction           *ChatPrediction       `json:"prediction,omitempty"`             // Predicted output content (OpenAI only)
 	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`       // Penalizes repeated tokens
 	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`       // Prompt cache key
-	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in-memory" or "24h")
+	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in_memory" or "24h")
+	PromptCacheOptions   *PromptCacheOptions   `json:"prompt_cache_options,omitempty"`   // Request-wide prompt cache options (OpenAI gpt-5.6+)
 	Reasoning            *ChatReasoning        `json:"reasoning,omitempty"`              // Reasoning parameters
 	ResponseFormat       *interface{}          `json:"response_format,omitempty"`        // Format for the response
 	SafetyIdentifier     *string               `json:"safety_identifier,omitempty"`      // Safety identifier
 	Seed                 *int                  `json:"seed,omitempty"`
-	ServiceTier          *string               `json:"service_tier,omitempty"`
+	ServiceTier          *BifrostServiceTier   `json:"service_tier,omitempty"`
 	StreamOptions        *ChatStreamOptions    `json:"stream_options,omitempty"`
 	Stop                 []string              `json:"stop,omitempty"`
 	Store                *bool                 `json:"store,omitempty"`
@@ -216,7 +220,7 @@ type ChatParameters struct {
 	Tools                []ChatTool            `json:"tools,omitempty"`              // Tools to use
 	User                 *string               `json:"user,omitempty"`               // User identifier for tracking
 	Verbosity            *string               `json:"verbosity,omitempty"`          // "low" | "medium" | "high"
-	WebSearchOptions     *ChatWebSearchOptions `json:"web_search_options,omitempty"` // Web search options (OpenAI only)
+	WebSearchOptions     *ChatWebSearchOptions `json:"web_search_options,omitempty"` // Web search options (OpenAI; mapped to Google Search grounding on Gemini)
 
 	// Anthropic-native knobs promoted to the neutral layer. These pass through
 	// typed to Anthropic-family providers (honored/stripped per ProviderFeatures
@@ -230,6 +234,11 @@ type ChatParameters struct {
 	CacheControl      *CacheControl   `json:"cache_control,omitempty"`      // Top-level request cache control (Anthropic family)
 	TaskBudget        *ChatTaskBudget `json:"task_budget,omitempty"`        // Anthropic output_config.task_budget (task-budgets-2026-03-13 beta)
 	ContextManagement json.RawMessage `json:"context_management,omitempty"` // Anthropic context_management — complex union, passed as raw JSON to the provider layer
+
+	// Opts into running built-in server-side tools (e.g. Google Search) in the same
+	// turn as function declarations. Required by Gemini 3+, which otherwise rejects
+	// the combination; providers without the concept ignore it.
+	IncludeServerSideToolInvocations *bool `json:"include_server_side_tool_invocations,omitempty"`
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
@@ -309,10 +318,22 @@ type ChatPrediction struct {
 	Content interface{} `json:"content"` // String or array of content parts
 }
 
-// ChatWebSearchOptions represents web search options for chat completions (OpenAI only).
+// ChatWebSearchOptions represents web search options for chat completions.
 type ChatWebSearchOptions struct {
 	SearchContextSize *string                           `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
 	UserLocation      *ChatWebSearchOptionsUserLocation `json:"user_location,omitempty"`
+	Filters           *ChatWebSearchOptionsFilters      `json:"filters,omitempty"` // Bifrost extension; stripped on the OpenAI wire
+}
+
+// ChatWebSearchOptionsFilters represents search filters; mirrors ResponsesToolWebSearchFilters.
+type ChatWebSearchOptionsFilters struct {
+	AllowedDomains []string `json:"allowed_domains,omitempty"`
+	BlockedDomains []string `json:"blocked_domains,omitempty"`
+
+	// Gemini only
+	// Filter search results to a specific time range.
+	// If users set a start time, they must set an end time (and vice versa).
+	TimeRangeFilter *Interval `json:"time_range_filter,omitempty"`
 }
 
 // ChatWebSearchOptionsUserLocation represents user location for web search.
@@ -1121,6 +1142,9 @@ type ChatContentBlock struct {
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 	Citations    *Citations    `json:"citations,omitempty"`
 
+	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
+	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
+
 	// CachePoint is a Bedrock-specific field for standalone cache point blocks
 	// When present without other content, this indicates a cache point marker
 	CachePoint *CachePoint `json:"cachePoint,omitempty"`
@@ -1224,7 +1248,8 @@ func rewriteDocumentBlock(data []byte) ([]byte, error) {
 
 // CachePoint represents a cache point marker (Bedrock-specific)
 type CachePoint struct {
-	Type string `json:"type"` // "default"
+	Type string  `json:"type"`          // "default"
+	TTL  *string `json:"ttl,omitempty"` // "5m" | "1h"
 }
 
 type CacheControlType string
@@ -1338,7 +1363,8 @@ type ChatMCPServer struct {
 
 // ChatInputImage represents image data in a message.
 type ChatInputImage struct {
-	URL    string  `json:"url"`
+	URL    string  `json:"url,omitempty"`
+	FileID *string `json:"file_id,omitempty"` // Reference to an uploaded file (in place of URL)
 	Detail *string `json:"detail,omitempty"`
 }
 
@@ -1433,16 +1459,22 @@ type ChatAssistantMessageAnnotationCitation struct {
 	EndIndex   int          `json:"end_index"`
 	Title      string       `json:"title"`
 	URL        *string      `json:"url,omitempty"`
+	Text       *string      `json:"text,omitempty"` // Cited text snippet (Bifrost extension; stripped on the OpenAI wire)
 	Sources    *interface{} `json:"sources,omitempty"`
 	Type       *string      `json:"type,omitempty"`
 }
 
-// ChatAssistantMessageToolCall represents a tool call in a message
+// ChatAssistantMessageToolCall represents a tool call in a message.
+// ExtraContent preserves provider-specific metadata (e.g. Gemini's
+// thought_signature for multi-turn continuation when extended thinking
+// is active). Stored as json.RawMessage so unknown nested fields are
+// forwarded verbatim through any proxy/gateway layer without loss.
 type ChatAssistantMessageToolCall struct {
-	Index    uint16                               `json:"index"`
-	Type     *string                              `json:"type,omitempty"`
-	ID       *string                              `json:"id,omitempty"`
-	Function ChatAssistantMessageToolCallFunction `json:"function"`
+	Index        uint16                               `json:"index"`
+	Type         *string                              `json:"type,omitempty"`
+	ID           *string                              `json:"id,omitempty"`
+	Function     ChatAssistantMessageToolCallFunction `json:"function"`
+	ExtraContent json.RawMessage                      `json:"extra_content,omitempty"`
 }
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.
@@ -1481,6 +1513,18 @@ const (
 	BifrostFinishReasonStop      BifrostFinishReason = "stop"
 	BifrostFinishReasonLength    BifrostFinishReason = "length"
 	BifrostFinishReasonToolCalls BifrostFinishReason = "tool_calls"
+)
+
+// BifrostServiceTier represents the service tier for a request/response.
+type BifrostServiceTier string
+
+// BifrostServiceTier values
+const (
+	BifrostServiceTierAuto        BifrostServiceTier = "auto"
+	BifrostServiceTierDefault     BifrostServiceTier = "default"
+	BifrostServiceTierFlex        BifrostServiceTier = "flex"
+	BifrostServiceTierPriority    BifrostServiceTier = "priority"
+	BifrostServiceTierProvisioned BifrostServiceTier = "provisioned"
 )
 
 type BifrostReasoningDetailsType string
@@ -1528,13 +1572,15 @@ type ChatStreamResponseChoice struct {
 
 // ChatStreamResponseChoiceDelta represents a delta in the stream response
 type ChatStreamResponseChoiceDelta struct {
-	Role             *string                        `json:"role,omitempty"`      // Only in the first chunk
-	Content          *string                        `json:"content,omitempty"`   // May be empty string or null
-	Refusal          *string                        `json:"refusal,omitempty"`   // Refusal content if any
-	Audio            *ChatAudioMessageAudio         `json:"audio,omitempty"`     // Audio data if any
-	Reasoning        *string                        `json:"reasoning,omitempty"` // May be empty string or null
-	ReasoningDetails []ChatReasoningDetails         `json:"reasoning_details,omitempty"`
-	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+	Role             *string                          `json:"role,omitempty"`      // Only in the first chunk
+	Content          *string                          `json:"content,omitempty"`   // May be empty string or null
+	Refusal          *string                          `json:"refusal,omitempty"`   // Refusal content if any
+	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`     // Audio data if any
+	Reasoning        *string                          `json:"reasoning,omitempty"` // May be empty string or null
+	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
+	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`   // URL citations from web search
+	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`    // If tool calls used (supports incremental updates)
+	ExtraContent     json.RawMessage                  `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
 }
 
 // UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.
@@ -1602,6 +1648,16 @@ type BifrostLLMUsage struct {
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens"`
 	Cost                    *BifrostCost                 `json:"cost,omitempty"` // Only for the providers which support cost calculation
+	// Served Anthropic tier (fast mode / data residency), carried internally so
+	// cancel/timeout billing (which reads a bare usage via BilledUsage) can apply
+	// the tier multiplier. json:"-" keeps them out of every serialized usage payload.
+	Speed        *string `json:"-"`
+	InferenceGeo *string `json:"-"`
+	// Model that actually served the turn after a server-side fallback handoff.
+	// Carried here for the same reason as the two above: the bare-usage billing path
+	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
+	// turn is priced at the requested model's rates.
+	ServerSideFallbackModel *string `json:"-"`
 }
 
 type ChatPromptTokensDetails struct {
@@ -1630,6 +1686,7 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 		CachedWriteTokens       int                          `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
 		CachedTokens            *int                         `json:"cached_tokens"`
+		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -1644,10 +1701,16 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
 		d.CachedReadTokens = *raw.CachedTokens
 	}
+	// OpenAI's Responses API reports cache writes under cache_write_tokens (distinct from Bifrost's cached_write_tokens).
+	if raw.CacheWriteTokens != nil && d.CachedWriteTokens == 0 {
+		d.CachedWriteTokens = *raw.CacheWriteTokens
+	}
 	return nil
 }
 
-// MarshalJSON emits cached_tokens (read+write) alongside the individual fields for OpenAI spec compatibility.
+// MarshalJSON emits cached_tokens (reads only, per the OpenAI spec and mirroring UnmarshalJSON above) alongside the individual fields.
+// Cache writes are reported separately via cached_write_tokens and are excluded from cached_tokens so that
+// OpenAI-spec consumers do not price cache writes as cache reads.
 func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 	type raw struct {
 		TextTokens              int                          `json:"text_tokens,omitempty"`
@@ -1657,6 +1720,9 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedWriteTokens       int                          `json:"cached_write_tokens,omitempty"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 		CachedTokens            int                          `json:"cached_tokens"`
+		// OpenAI's field name for cache writes (mirrors cached_tokens for reads) so the
+		// OpenAI SDK — which reads cache_write_tokens, not cached_write_tokens — finds it.
+		CacheWriteTokens int `json:"cache_write_tokens"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -1665,7 +1731,8 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedReadTokens:        d.CachedReadTokens,
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
-		CachedTokens:            d.CachedReadTokens + d.CachedWriteTokens,
+		CachedTokens:            d.CachedReadTokens,
+		CacheWriteTokens:        d.CachedWriteTokens,
 	})
 }
 

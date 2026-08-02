@@ -30,6 +30,32 @@ type ModelsManager interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
+	UpsertModelPricingAttributes(ctx context.Context, entries []ModelPricingAttributesEntry) error
+	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
+	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForKey re-fetches list-models for a single key on
+	// demand. Returns ErrRefreshInProgress when the provider is already being
+	// refreshed.
+	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	// RefreshLiveModelsForAllKeys re-fetches list-models across every enabled
+	// key of the provider on demand. Returns ErrRefreshInProgress when the
+	// provider is already being refreshed.
+	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
+}
+
+// ErrRefreshInProgress is returned by the on-demand model refresh entrypoints
+// when a refresh for the same provider is already running. Repeated presses of
+// the UI refresh button collapse into the in-flight pass rather than each
+// spawning their own (enabled keys x 2) burst of upstream calls.
+var ErrRefreshInProgress = errors.New("model refresh already in progress for this provider")
+
+// ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
+// (model, provider) is the natural key on governance_model_pricing.
+type ModelPricingAttributesEntry struct {
+	Model                string            `json:"model"`
+	Provider             string            `json:"provider"`
+	AdditionalAttributes map[string]string `json:"additional_attributes,omitempty"`
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -123,11 +149,17 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.PUT("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.updateProviderKey, middlewares...))
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.DELETE("/api/providers/{provider}/keys/{key_id}", lib.ChainMiddlewares(h.deleteProviderKey, middlewares...))
+	// On-demand model discovery. The catalog otherwise refreshes on the
+	// configured live_models_sync_interval, so these let an operator pick up a
+	// newly served model (or re-check a failing key) without waiting.
+	r.POST("/api/providers/{provider}/refresh-models", lib.ChainMiddlewares(h.refreshProviderModels, middlewares...))
+	r.POST("/api/providers/{provider}/keys/{key_id}/refresh-models", lib.ChainMiddlewares(h.refreshProviderKeyModels, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
+	r.PUT("/api/models/catalog", lib.ChainMiddlewares(h.upsertModelCatalogEntries, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -227,7 +259,7 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	var payload providerCreatePayload
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 	// Validate provider
@@ -270,6 +302,12 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		if err := validateRetryBackoff(payload.NetworkConfig); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 			return
+		}
+		if payload.NetworkConfig.BaseURL != "" {
+			if err := bifrost.ValidateExternalURL(payload.NetworkConfig.BaseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
+				return
+			}
 		}
 	}
 	// Check if provider already exists
@@ -366,7 +404,22 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}{}
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+
+	// Reject `keys` in the request body. This endpoint manages provider-level
+	// configuration only; keys are managed via the dedicated /keys endpoints
+	// (POST/PUT/DELETE /api/providers/{provider}/keys[/{key_id}]). Accepting
+	// the field silently would discard the caller's intent — the construction
+	// below ignores `payload.Keys` and reuses `oldConfigRaw.Keys`. Failing
+	// fast keeps the API contract honest.
+	if len(payload.Keys) > 0 {
+		SendError(
+			ctx,
+			fasthttp.StatusBadRequest,
+			"keys are not accepted on this endpoint; use POST/PUT /api/providers/{provider}/keys[/{key_id}] to manage keys",
+		)
 		return
 	}
 
@@ -438,6 +491,12 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if err := validateRetryBackoff(&nc); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 		return
+	}
+	if nc.BaseURL != "" {
+		if err := bifrost.ValidateExternalURL(nc.BaseURL, nc.AllowPrivateNetwork); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
+			return
+		}
 	}
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
@@ -584,6 +643,7 @@ func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
 type ModelResponse struct {
 	Name             string   `json:"name"`
 	Provider         string   `json:"provider"`
+	IsDeprecated     bool     `json:"is_deprecated,omitempty"`
 	AccessibleByKeys []string `json:"accessible_by_keys,omitempty"`
 }
 
@@ -595,13 +655,19 @@ type ListModelsResponse struct {
 
 // ModelDetailsResponse represents a model with capability metadata.
 type ModelDetailsResponse struct {
-	Name             string                `json:"name"`
-	Provider         string                `json:"provider"`
-	ContextLength    *int                  `json:"context_length,omitempty"`
-	MaxInputTokens   *int                  `json:"max_input_tokens,omitempty"`
-	MaxOutputTokens  *int                  `json:"max_output_tokens,omitempty"`
-	Architecture     *schemas.Architecture `json:"architecture,omitempty"`
-	AccessibleByKeys []string              `json:"accessible_by_keys,omitempty"`
+	Name                 string                `json:"name"`
+	Provider             string                `json:"provider"`
+	ContextLength        *int                  `json:"context_length,omitempty"`
+	MaxInputTokens       *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens      *int                  `json:"max_output_tokens,omitempty"`
+	InputCostPerToken    *float64              `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken   *float64              `json:"output_cost_per_token,omitempty"`
+	CacheWriteCost       *float64              `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadCost        *float64              `json:"cache_read_input_token_cost,omitempty"`
+	Architecture         *schemas.Architecture `json:"architecture,omitempty"`
+	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
+	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
+	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
 }
 
 // ListModelDetailsResponse represents the response for listing detailed models.
@@ -615,6 +681,7 @@ type modelListQuery struct {
 	Query      string
 	KeyIDs     []string
 	Limit      int
+	Offset     int
 	Unfiltered bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
@@ -652,8 +719,9 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	responseModels := make([]ModelResponse, 0, len(allModels))
 	for _, model := range allModels {
 		entry := ModelResponse{
-			Name:     model.Name,
-			Provider: string(model.Provider),
+			Name:         model.Name,
+			Provider:     string(model.Provider),
+			IsDeprecated: h.isModelDeprecated(model.Name, model.Provider),
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			entry.AccessibleByKeys = model.AccessibleByKeys
@@ -676,6 +744,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 //   - keys: Comma-separated list of key IDs to filter models accessible by those keys
 //   - unfiltered: If true, bypass provider-level model pool restrictions only
 //   - limit: Maximum number of results to return (default: 20)
+//   - offset: Number of results to skip (for pagination)
 //
 // Request headers:
 //   - x-bf-vk / Authorization: Bearer / x-api-key / x-goog-api-key: Virtual key (sk-bf-…) to scope
@@ -711,7 +780,13 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			details.ContextLength = capabilities.ContextLength
 			details.MaxInputTokens = capabilities.MaxInputTokens
 			details.MaxOutputTokens = capabilities.MaxOutputTokens
+			details.InputCostPerToken = capabilities.InputCostPerToken
+			details.OutputCostPerToken = capabilities.OutputCostPerToken
+			details.CacheWriteCost = capabilities.CacheCreationInputTokenCost
+			details.CacheReadCost = capabilities.CacheReadInputTokenCost
 			details.Architecture = capabilities.Architecture
+			details.IsDeprecated = capabilities.IsDeprecated
+			details.AdditionalAttributes = capabilities.AdditionalAttributes
 		}
 		responseModels = append(responseModels, details)
 	}
@@ -720,6 +795,15 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		Models: responseModels,
 		Total:  total,
 	})
+}
+
+func (h *ProviderHandler) isModelDeprecated(model string, provider schemas.ModelProvider) bool {
+	modelCatalog := h.inMemoryStore.ModelCatalog
+	if modelCatalog == nil {
+		return false
+	}
+	capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
+	return capabilities != nil && capabilities.IsDeprecated
 }
 
 // parseModelListQuery normalizes the management model-list query string and resolves
@@ -748,6 +832,11 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, defaultL
 	if len(queryArgs.Peek("limit")) > 0 {
 		if limit, err := queryArgs.GetUint("limit"); err == nil {
 			query.Limit = limit
+		}
+	}
+	if len(queryArgs.Peek("offset")) > 0 {
+		if offset, err := queryArgs.GetUint("offset"); err == nil {
+			query.Offset = offset
 		}
 	}
 
@@ -801,12 +890,21 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 		})
 	}
 
+	slices.Sort(providers)
+
 	models := make([]listedModel, 0)
 	for _, provider := range providers {
 		models = append(models, h.listManagementModelsForProvider(provider, query)...)
 	}
 
 	total := len(models)
+	if query.Offset > 0 {
+		if query.Offset >= len(models) {
+			models = models[:0]
+		} else {
+			models = models[query.Offset:]
+		}
+	}
 	if query.Limit > 0 && query.Limit < len(models) {
 		models = models[:query.Limit]
 	}
@@ -905,7 +1003,20 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	params, err := h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	// Prefer catalog-aware resolution so provider-qualified IDs from
+	// /v1/models ("openai/gpt-5.5", "openrouter/openai/gpt-5.5") and bare
+	// aliases resolve to the datasheet's stored key instead of 404ing on an
+	// exact-match miss.
+	var params *tables.TableModelParameters
+	var err error
+	if h.inMemoryStore != nil && h.inMemoryStore.ModelCatalog != nil {
+		params, err = h.inMemoryStore.ModelCatalog.ResolveModelParameters(ctx, modelParam)
+	} else {
+		params, err = h.dbStore.GetModelParametersByModel(ctx, modelParam)
+	}
+	if err == nil && params == nil {
+		err = configstore.ErrNotFound
+	}
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
@@ -1192,4 +1303,32 @@ func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
 		}
 	}
 	return nil
+}
+
+// upsertModelCatalogEntries handles PUT /api/models/catalog — batch-upserts
+// the additional_attributes JSON on the pricing rows keyed by
+// (model, provider). Every requested (model, provider) must already exist in
+// governance_model_pricing; the whole batch is rejected atomically if any
+// entry is missing. An entry with an empty AdditionalAttributes map clears
+// the column for that (model, provider).
+func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
+	var payload []ModelPricingAttributesEntry
+	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	for i := range payload {
+		payload[i].Model = strings.TrimSpace(payload[i].Model)
+		payload[i].Provider = strings.TrimSpace(payload[i].Provider)
+		if payload[i].Model == "" || payload[i].Provider == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "model and provider are required for every catalog entry")
+			return
+		}
+	}
+
+	if err := h.modelsManager.UpsertModelPricingAttributes(ctx, payload); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }

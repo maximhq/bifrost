@@ -56,7 +56,7 @@ export function MCPLogsDataTable({
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 
-	const fixedColumnIds = useMemo(() => new Set<string>([]), []);
+	const fixedColumnIds = useMemo(() => new Set<string>(["actions"]), []);
 
 	// Measure actual header cell widths for pixel-perfect pin offsets
 	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
@@ -188,7 +188,7 @@ export function MCPLogsDataTable({
 													key={cell.id}
 													style={{ width: size, minWidth: size, maxWidth: size, ...buildPinStyle(cell.column, pinOffsets) }}
 													className={cn(
-														"overflow-hidden",
+														!pinned && "overflow-hidden",
 														pinned && "bg-card",
 														cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
 														cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,

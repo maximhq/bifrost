@@ -1,0 +1,18 @@
+---
+title: "v2.1.17"
+description: "Helm v2.1.17 changelog - 2026-05-17"
+---
+
+<Update label="Bifrost Helm" description="v2.1.17">
+
+## Changelog
+
+- Added `max_turns_to_send` to guardrail rules. The integer caps how many historical conversation turns are sent to the guardrail provider on apply; the latest message is always included on top, and `0` (default) sends all turns. Wired into `values.schema.json`, `config.schema.json`, and `templates/_helpers.tpl` so it renders into `guardrails_config.guardrail_rules[].max_turns_to_send`.
+- Extended SCIM/SSO support so attribute mappings work for every supported provider, not just Keycloak:
+  - Added `attributeRoleMappings`, `attributeTeamMappings`, and `attributeBusinessUnitMappings` to `bifrost.scim.config` for the Okta and Entra (Azure AD) provider branches. Previously these fields were rejected by `additionalProperties: false` even though the enterprise runtime renders them into `config.json`.
+  - Tightened the existing Keycloak mapping items from the placeholder `{type: object}` to a strict shape (`attribute`, `value`, plus `role`/`team`/`business_unit`, `additionalProperties: false`) so typos surface at `helm template` time. The same strict item shape is applied to Okta, Entra, Zitadel, and Google.
+  - Added two more SCIM providers to the schema enum and provided full config blocks for them: `zitadel` (`domain`, `clientId`, optional `clientSecret`/`projectId`/`audience`, plus service-account fields for Management API access) and `google` (Google Workspace OIDC with `domain`, `clientId`, `credentialMode`, service-account sources, and `adminEmail` for domain-wide delegation).
+  - Added matching `helm template`-time validation in `_helpers.tpl` for Zitadel (requires `domain`, `clientId`) and Google Workspace (requires `domain`, `clientId`).
+  - Documented every new field as commented examples under `bifrost.scim.config` in `values.yaml`.
+
+</Update>

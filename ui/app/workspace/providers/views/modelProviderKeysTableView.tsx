@@ -15,11 +15,17 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage } from "@/lib/store";
-import { useDeleteProviderKeyMutation, useGetProviderKeysQuery, useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
+import {
+	useDeleteProviderKeyMutation,
+	useGetProviderKeysQuery,
+	useRefreshProviderKeyModelsMutation,
+	useRefreshProviderModelsMutation,
+	useUpdateProviderKeyMutation,
+} from "@/lib/store/apis/providersApi";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
+import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, RefreshCwIcon, TrashIcon } from "lucide-react";
 import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
@@ -29,6 +35,57 @@ interface Props {
 	provider: ModelProvider;
 	headerActions?: ReactNode;
 	isKeyless?: boolean;
+}
+
+function ProviderKeyActionsMenu({
+	keyId,
+	hasUpdateAccess,
+	hasDeleteAccess,
+	onEdit,
+	onDelete,
+}: {
+	keyId: string;
+	hasUpdateAccess: boolean;
+	hasDeleteAccess: boolean;
+	onEdit: (keyId: string) => void;
+	onDelete: (keyId: string) => void;
+}) {
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
+			<DropdownMenuTrigger asChild>
+				<Button onClick={(e) => e.stopPropagation()} variant="ghost">
+					<EllipsisIcon className="h-5 w-5" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end">
+				<DropdownMenuItem
+					onSelect={(e) => {
+						e.preventDefault();
+						onEdit(keyId);
+						setIsOpen(false);
+					}}
+					disabled={!hasUpdateAccess}
+				>
+					<PencilIcon className="mr-1 h-4 w-4" />
+					Edit
+				</DropdownMenuItem>
+				<DropdownMenuItem
+					variant="destructive"
+					onSelect={(e) => {
+						e.preventDefault();
+						onDelete(keyId);
+						setIsOpen(false);
+					}}
+					disabled={!hasDeleteAccess}
+				>
+					<TrashIcon className="mr-1 h-4 w-4" />
+					Delete
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
 }
 
 export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless }: Props) {
@@ -42,14 +99,49 @@ export default function ModelProviderKeysTableView({ provider, className, header
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const [updateProviderKey, { isLoading: isUpdatingProviderKey }] = useUpdateProviderKeyMutation();
 	const [deleteProviderKey, { isLoading: isDeletingProviderKey }] = useDeleteProviderKeyMutation();
+	const [refreshProviderModels, { isLoading: isRefreshingProvider }] = useRefreshProviderModelsMutation();
+	const [refreshProviderKeyModels] = useRefreshProviderKeyModelsMutation();
 	const { data: keys = [] } = useGetProviderKeysQuery(provider.name);
 	const isMutatingProviderKey = isUpdatingProviderKey || isDeletingProviderKey;
 	const [togglingKeyIds, setTogglingKeyIds] = useState<Set<string>>(new Set());
+	const [refreshingKeyIds, setRefreshingKeyIds] = useState<Set<string>>(new Set());
 	const [showAddNewKeyDialog, setShowAddNewKeyDialog] = useState<{ show: boolean; keyId: string | null } | undefined>(undefined);
 	const [showDeleteKeyDialog, setShowDeleteKeyDialog] = useState<{ show: boolean; keyId: string } | undefined>(undefined);
 
 	function handleAddKey() {
 		setShowAddNewKeyDialog({ show: true, keyId: null });
+	}
+
+	// The server serialises refreshes per provider and answers 409 while one is
+	// running, so the whole group is disabled during either kind of refresh
+	// rather than letting a second click bounce off the backend.
+	const isRefreshing = isRefreshingProvider || refreshingKeyIds.size > 0;
+
+	async function handleRefreshProviderModels() {
+		try {
+			await refreshProviderModels(provider.name).unwrap();
+			toast.success("Model list refreshed", {
+				description: `Re-checked every enabled ${entityLabel} for ${provider.name}.`,
+			});
+		} catch (err) {
+			toast.error("Failed to refresh model list", { description: getErrorMessage(err) });
+		}
+	}
+
+	async function handleRefreshKeyModels(keyId: string, keyName: string) {
+		setRefreshingKeyIds((prev) => new Set(prev).add(keyId));
+		try {
+			await refreshProviderKeyModels({ provider: provider.name, keyId }).unwrap();
+			toast.success("Model list refreshed", { description: `Re-checked ${keyName}.` });
+		} catch (err) {
+			toast.error("Failed to refresh model list", { description: getErrorMessage(err) });
+		} finally {
+			setRefreshingKeyIds((prev) => {
+				const next = new Set(prev);
+				next.delete(keyId);
+				return next;
+			});
+		}
 	}
 
 	return (
@@ -106,6 +198,24 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					<div className="flex items-center gap-2">Configured {entityLabelPlural}</div>
 					<div className="flex items-center gap-2">
 						{headerActions}
+						{hasUpdateProviderAccess ? (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										variant="outline"
+										disabled={isRefreshing}
+										data-testid="provider-refresh-models"
+										onClick={handleRefreshProviderModels}
+									>
+										<RefreshCwIcon className={cn("h-4 w-4", isRefreshingProvider && "animate-spin")} />
+										{isRefreshingProvider ? "Refreshing..." : "Refresh model list"}
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent className="max-w-xs">
+									Re-check what models this provider serves. Otherwise this runs on the interval set in Model Settings.
+								</TooltipContent>
+							</Tooltip>
+						) : null}
 						{!isKeyless && hasUpdateProviderAccess ? (
 							<Button
 								disabled={!hasUpdateProviderAccess}
@@ -128,7 +238,13 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				</div>
 			) : (
 				<div className="flex w-full flex-col gap-2 rounded-sm border">
-					<Table className="w-full" data-testid="keys-table">
+					<Table className="w-full table-fixed" data-testid="keys-table">
+						<colgroup>
+							<col className="w-[64%]" />
+							<col className="w-[12%]" />
+							<col className="w-[12%]" />
+							<col className="w-[12%]" />
+						</colgroup>
 						<TableHeader className="w-full">
 							<TableRow>
 								<TableHead>{isVLLM ? "Model" : isOllamaOrSGL ? "Server" : "API Key"}</TableHead>
@@ -152,10 +268,10 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										key={key.id}
 										data-testid={`key-row-${key.name}`}
 										className="text-sm transition-colors hover:bg-white"
-										onClick={() => { }}
+										onClick={() => {}}
 									>
-										<TableCell>
-											<div className="flex items-center space-x-2">
+										<TableCell className="overflow-hidden">
+											<div className="flex min-w-0 items-center space-x-2">
 												{key.status === "success" && (
 													<Tooltip>
 														<TooltipTrigger asChild>
@@ -174,22 +290,23 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												{key.status === "list_models_failed" &&
 													(() => {
 														// Check if the failure might be due to an env var that the server couldn't resolve
-														const hasEnvVarConfig =
-															key.azure_key_config?.endpoint?.from_env ||
-															key.vertex_key_config?.project_id?.from_env ||
-															key.vertex_key_config?.region?.from_env ||
-															key.bedrock_key_config?.region?.from_env ||
-															key.vllm_key_config?.url?.from_env ||
-															key.value?.from_env;
+														const hasSecretVarConfig =
+															(key.azure_key_config?.endpoint?.type && key.azure_key_config.endpoint.type !== "plain_text") ||
+															(key.vertex_key_config?.project_id?.type && key.vertex_key_config.project_id.type !== "plain_text") ||
+															(key.vertex_key_config?.region?.type && key.vertex_key_config.region.type !== "plain_text") ||
+															(key.bedrock_key_config?.region?.type && key.bedrock_key_config.region.type !== "plain_text") ||
+															(key.bedrock_mantle_key_config?.region?.type && key.bedrock_mantle_key_config.region.type !== "plain_text") ||
+															(key.vllm_key_config?.url?.type && key.vllm_key_config.url.type !== "plain_text") ||
+															(key.value?.type && key.value.type !== "plain_text");
 														const isEnvResolutionError =
-															hasEnvVarConfig && key.description && /not set|empty|missing/i.test(key.description);
+															hasSecretVarConfig && key.description && /not set|empty|missing/i.test(key.description);
 
 														return isEnvResolutionError ? (
 															<Tooltip>
 																<TooltipTrigger asChild>
 																	<button
 																		type="button"
-																		aria-label="Key status: env var may not be resolved"
+																		aria-label="Key status: secret reference may not be resolved"
 																		data-testid={`key-status-warning-${key.name}`}
 																		className="inline-flex"
 																	>
@@ -197,7 +314,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 																	</button>
 																</TooltipTrigger>
 																<TooltipContent className="max-w-xs break-words">
-																	{key.description} — verify the environment variable is set on the server
+																	{key.description}; verify the secret reference is configured on the server
 																</TooltipContent>
 															</Tooltip>
 														) : (
@@ -218,7 +335,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 															</Tooltip>
 														);
 													})()}
-												<span className="font-mono text-sm">{key.name}</span>
+												<span className="truncate font-mono text-sm">{key.name}</span>
 											</div>
 										</TableCell>
 										<TableCell data-testid="key-weight-value">
@@ -258,36 +375,45 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										</TableCell>
 										<TableCell className="text-right">
 											<div className="flex items-center justify-end space-x-2">
-												{hasUpdateProviderAccess || hasDeleteProviderAccess ?
-													<DropdownMenu>
-														<DropdownMenuTrigger asChild>
-															<Button onClick={(e) => e.stopPropagation()} variant="ghost">
-																<EllipsisIcon className="h-5 w-5" />
-															</Button>
-														</DropdownMenuTrigger>
-														<DropdownMenuContent align="end">
-															<DropdownMenuItem
-																onClick={() => {
-																	setShowAddNewKeyDialog({ show: true, keyId: key.id });
-																}}
-																disabled={!hasUpdateProviderAccess}
-															>
-																<PencilIcon className="mr-1 h-4 w-4" />
-																Edit
-															</DropdownMenuItem>
-															<DropdownMenuItem
-																variant="destructive"
-																onClick={() => {
-																	setShowDeleteKeyDialog({ show: true, keyId: key.id });
-																}}
-																disabled={!hasDeleteProviderAccess}
-															>
-																<TrashIcon className="mr-1 h-4 w-4" />
-																Delete
-															</DropdownMenuItem>
-														</DropdownMenuContent>
-													</DropdownMenu> : null
-												}
+												{hasUpdateProviderAccess ? (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															{/* A disabled button receives no hover or focus events, so the
+															    tooltip is triggered from a focusable wrapper instead. */}
+															<span tabIndex={!isKeyEnabled ? 0 : undefined}>
+																<Button
+																	variant="ghost"
+																	size="icon"
+																	// A disabled key is never fetched, so refreshing it
+																	// would report a failure the user cannot act on.
+																	disabled={isRefreshing || !isKeyEnabled}
+																	data-testid={`key-refresh-models-${key.name}`}
+																	aria-label={`Refresh model list for ${key.name}`}
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		handleRefreshKeyModels(key.id, key.name);
+																	}}
+																>
+																	<RefreshCwIcon className={cn("h-4 w-4", refreshingKeyIds.has(key.id) && "animate-spin")} />
+																</Button>
+															</span>
+														</TooltipTrigger>
+														<TooltipContent>
+															{isKeyEnabled
+																? `Refresh model list for this ${entityLabel}`
+																: `Enable this ${entityLabel} to refresh its model list`}
+														</TooltipContent>
+													</Tooltip>
+												) : null}
+												{hasUpdateProviderAccess || hasDeleteProviderAccess ? (
+													<ProviderKeyActionsMenu
+														keyId={key.id}
+														hasUpdateAccess={hasUpdateProviderAccess}
+														hasDeleteAccess={hasDeleteProviderAccess}
+														onEdit={(keyId) => setShowAddNewKeyDialog({ show: true, keyId })}
+														onDelete={(keyId) => setShowDeleteKeyDialog({ show: true, keyId })}
+													/>
+												) : null}
 											</div>
 										</TableCell>
 									</TableRow>

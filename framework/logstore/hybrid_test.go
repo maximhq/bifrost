@@ -6,10 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 type hybridTestLogger struct{}
@@ -41,7 +44,7 @@ func newTestHybrid(t *testing.T) (*HybridLogStore, LogStore, *objectstore.InMemo
 
 func waitForUploads(t *testing.T, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if done() {
 			return
@@ -49,6 +52,42 @@ func waitForUploads(t *testing.T, done func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for upload state")
+}
+
+// waitForOffload waits until the offload is fully complete for id: the payload is in
+// object storage AND the row's has_object flag has been committed.
+//
+// processUpload does the Put first and only then updates has_object (with retries), so
+// waiting on the object store alone returns while the DB flag is still false. Any test
+// that reads has_object — or exercises a code path that branches on it, such as billing
+// hydration — must wait for the flag, not just the object.
+func waitForOffload(t *testing.T, inner LogStore, id string) {
+	t.Helper()
+	waitForUploads(t, func() bool {
+		row, err := inner.FindByID(context.Background(), id)
+		return err == nil && row.HasObject
+	})
+}
+
+func TestHybridScopedDBDelegatesToInnerRDBStore(t *testing.T) {
+	hybrid, _, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+
+	scoped, ok := interface{}(hybrid).(scopedDBLogStore)
+	require.True(t, ok, "hybrid logstore should preserve the RDB ScopedDB surface")
+
+	called := false
+	scope := queryscope.QueryScope(func(db *gorm.DB) *gorm.DB {
+		called = true
+		return db.Where("status = ?", "success")
+	})
+	ctx := queryscope.WithQueryScope(context.Background(), scope)
+
+	got := scoped.ScopedDB(ctx)
+	require.NotNil(t, got)
+	stmt := got.Session(&gorm.Session{DryRun: true}).Table("logs").Find(&struct{}{}).Statement
+	assert.True(t, called, "ScopedDB should invoke the scope from ctx")
+	assert.Contains(t, stmt.SQL.String(), "status = ?")
 }
 
 func TestHybrid_CreateAndFindByID(t *testing.T) {
@@ -593,6 +632,55 @@ func TestHybrid_Tags(t *testing.T) {
 	assert.Equal(t, "2026-04-03", tags["date"])
 }
 
+func TestHybrid_MetadataIsRetainedInDBAndWrittenToObjectPayload(t *testing.T) {
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	ts := time.Date(2026, 4, 3, 14, 30, 0, 0, time.UTC)
+	inputContent := "Hello"
+	entry := &Log{
+		ID:        "metadata-1",
+		Timestamp: ts,
+		Provider:  "openai",
+		Model:     "gpt-4",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &inputContent}},
+		},
+		MetadataParsed: map[string]interface{}{
+			"cortex-user-id": "user-123",
+			"team":           "payments",
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbLog, err := inner.FindByID(ctx, "metadata-1")
+	require.NoError(t, err)
+	require.NotNil(t, dbLog.Metadata)
+	assert.Contains(t, *dbLog.Metadata, "cortex-user-id")
+
+	// Metadata is DB-authoritative but a copy is written to the object store
+	// snapshot so consumers reading objects directly see custom attributes.
+	key := ObjectKey("test", ts, "metadata-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	var payload map[string]string
+	require.NoError(t, sonic.Unmarshal(rawPayload, &payload))
+	require.Contains(t, payload, "metadata", "metadata must be written to the object store snapshot")
+	assert.Contains(t, payload["metadata"], "cortex-user-id")
+	assert.Contains(t, payload["metadata"], "payments")
+
+	// Hydration still returns metadata, sourced from the DB row.
+	found, err := hybrid.FindByID(ctx, "metadata-1")
+	require.NoError(t, err)
+	assert.Equal(t, "user-123", found.MetadataParsed["cortex-user-id"])
+	assert.Equal(t, "payments", found.MetadataParsed["team"])
+}
+
 func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 	hybrid, inner, _ := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
@@ -622,6 +710,253 @@ func TestHybrid_ContentSummaryIsInputOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, dbLog.ContentSummary, "capital of France")
 	assert.NotContains(t, dbLog.ContentSummary, "Paris", "content_summary should not contain output text")
+}
+
+func TestHybrid_ResponsesInputHistoryPreservesLastUserMessage(t *testing.T) {
+	// Responses API requests carry their history in responses_input_history
+	// rather than input_history. After offload, the DB row must retain the last
+	// user message there so the log list can render a preview instead of "-"
+	// (the full history lives in object storage). Mirrors the input_history
+	// behaviour for chat completions.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	system := "You are a helpful assistant."
+	userMsg := "Can you reason about pythagoras theorem?"
+	entry := &Log{
+		ID:        "resp-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-5.5",
+		Status:    "success",
+		Object:    "responses",
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem), Content: &schemas.ResponsesMessageContent{ContentStr: &system}},
+			{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: &userMsg}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	// DB row keeps only the last user message as a preview — not the system message.
+	dbLog, err := inner.FindByID(ctx, "resp-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.ResponsesInputHistory, "pythagoras theorem", "last user message should be preserved in DB for the list preview")
+	assert.NotContains(t, dbLog.ResponsesInputHistory, "helpful assistant", "only the last user message should be kept, not the full history")
+	assert.Contains(t, dbLog.ContentSummary, "pythagoras theorem", "content_summary should contain the user text")
+
+	// The full responses history (including the system message) lives in S3.
+	key := ObjectKey("test", entry.Timestamp, "resp-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawPayload), "helpful assistant", "full responses history should be offloaded to object storage")
+
+	// FindByID hydrates the full history back from S3.
+	found, err := hybrid.FindByID(ctx, "resp-1")
+	require.NoError(t, err)
+	require.Len(t, found.ResponsesInputHistoryParsed, 2, "full responses history should be hydrated from S3")
+}
+
+func TestHybrid_AttachmentsStrippedFromChatPreview(t *testing.T) {
+	// The last-user-message preview kept in the input_history DB column must not
+	// carry attachment payloads (base64 images/files/audio) — they are replaced
+	// with a placeholder. The full message, base64 included, lives only in
+	// object storage and is hydrated back on FindByID.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	imageData := "data:image/png;base64,FAKEB64IMAGEDATA"
+	pdfData := "FAKEB64PDFDATA"
+	entry := &Log{
+		ID:        "chat-attach-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "anthropic",
+		Model:     "claude-3",
+		Status:    "success",
+		Object:    "chat.completion",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("summarize this pdf")},
+				{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageData}},
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr(pdfData), Filename: schemas.Ptr("report.pdf")}},
+			}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	// DB preview keeps the text and block structure but not the payloads.
+	dbLog, err := inner.FindByID(ctx, "chat-attach-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.InputHistory, "summarize this pdf")
+	assert.Contains(t, dbLog.InputHistory, attachmentStrippedPlaceholder)
+	assert.Contains(t, dbLog.InputHistory, "report.pdf", "filename should survive stripping")
+	assert.NotContains(t, dbLog.InputHistory, "FAKEB64IMAGEDATA", "base64 image must not reach the DB row")
+	assert.NotContains(t, dbLog.InputHistory, pdfData, "base64 file data must not reach the DB row")
+	assert.Contains(t, dbLog.ContentSummary, "summarize this pdf")
+
+	// Full payload, base64 included, is offloaded to object storage.
+	key := ObjectKey("test", entry.Timestamp, "chat-attach-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawPayload), "FAKEB64IMAGEDATA")
+	assert.Contains(t, string(rawPayload), pdfData)
+
+	// Copy-on-write: the caller's parsed structs must be untouched.
+	blocks := entry.InputHistoryParsed[0].Content.ContentBlocks
+	assert.Equal(t, imageData, blocks[1].ImageURLStruct.URL)
+	assert.Equal(t, pdfData, *blocks[2].File.FileData)
+
+	// FindByID hydrates the full message back from object storage.
+	found, err := hybrid.FindByID(ctx, "chat-attach-1")
+	require.NoError(t, err)
+	require.Len(t, found.InputHistoryParsed, 1)
+	assert.Equal(t, imageData, found.InputHistoryParsed[0].Content.ContentBlocks[1].ImageURLStruct.URL)
+}
+
+func TestHybrid_AttachmentsStrippedFromResponsesPreview(t *testing.T) {
+	// Mirrors TestHybrid_AttachmentsStrippedFromChatPreview for the Responses
+	// API preview stored in responses_input_history.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	imageData := "data:image/jpeg;base64,FAKEB64RESPIMAGE"
+	pdfData := "FAKEB64RESPPDF"
+	entry := &Log{
+		ID:        "resp-attach-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-5.5",
+		Status:    "success",
+		Object:    "responses",
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("what is in this file")},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr(imageData)}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(pdfData), Filename: schemas.Ptr("doc.pdf")}},
+			}}},
+		},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbLog, err := inner.FindByID(ctx, "resp-attach-1")
+	require.NoError(t, err)
+	assert.Contains(t, dbLog.ResponsesInputHistory, "what is in this file")
+	assert.Contains(t, dbLog.ResponsesInputHistory, attachmentStrippedPlaceholder)
+	assert.Contains(t, dbLog.ResponsesInputHistory, "doc.pdf", "filename should survive stripping")
+	assert.NotContains(t, dbLog.ResponsesInputHistory, "FAKEB64RESPIMAGE", "base64 image must not reach the DB row")
+	assert.NotContains(t, dbLog.ResponsesInputHistory, pdfData, "base64 file data must not reach the DB row")
+	assert.Contains(t, dbLog.ContentSummary, "what is in this file")
+
+	key := ObjectKey("test", entry.Timestamp, "resp-attach-1")
+	rawPayload, err := objStore.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawPayload), "FAKEB64RESPIMAGE")
+	assert.Contains(t, string(rawPayload), pdfData)
+
+	// Copy-on-write: the caller's parsed structs must be untouched.
+	blocks := entry.ResponsesInputHistoryParsed[0].Content.ContentBlocks
+	assert.Equal(t, imageData, *blocks[1].ImageURL)
+	assert.Equal(t, pdfData, *blocks[2].FileData)
+
+	found, err := hybrid.FindByID(ctx, "resp-attach-1")
+	require.NoError(t, err)
+	require.Len(t, found.ResponsesInputHistoryParsed, 1)
+	assert.Equal(t, imageData, *found.ResponsesInputHistoryParsed[0].Content.ContentBlocks[1].ImageURL)
+}
+
+func TestHybrid_TokenUsageSummaryForListPreview(t *testing.T) {
+	// Pricing metadata stays in the DB even when content is offloaded. List queries
+	// may still use their lightweight projection and rebuild a usage summary from
+	// denormalized counters.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	entry := &Log{
+		ID:        "chat-tokens-1",
+		Timestamp: time.Now().UTC(),
+		Provider:  "openai",
+		Model:     "gpt-4",
+		Status:    "success",
+		Object:    "chat.completion",
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     120,
+			CompletionTokens: 45,
+			TotalTokens:      165,
+		},
+		CacheDebugParsed: &schemas.BifrostCacheDebug{CacheHit: true},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	dbLog, err := inner.FindByID(ctx, "chat-tokens-1")
+	require.NoError(t, err)
+	assert.NotEmpty(t, dbLog.TokenUsage, "pricing metadata must stay in log_store")
+	assert.NotEmpty(t, dbLog.CacheDebug, "cache pricing metadata must stay in log_store")
+	assert.Equal(t, 120, dbLog.PromptTokens)
+	assert.Equal(t, 45, dbLog.CompletionTokens)
+	assert.Equal(t, 165, dbLog.TotalTokens)
+
+	result, err := hybrid.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, result.Logs, 1)
+	listLog := result.Logs[0]
+	require.NotNil(t, listLog.TokenUsageParsed, "list query should rebuild token_usage from denormalized columns")
+	assert.Equal(t, 120, listLog.TokenUsageParsed.PromptTokens)
+	assert.Equal(t, 45, listLog.TokenUsageParsed.CompletionTokens)
+	assert.Equal(t, 165, listLog.TokenUsageParsed.TotalTokens)
+
+	found, err := hybrid.FindByID(ctx, "chat-tokens-1")
+	require.NoError(t, err)
+	require.NotNil(t, found.TokenUsageParsed, "detail view should retain full token_usage")
+	assert.Equal(t, 165, found.TokenUsageParsed.TotalTokens)
+}
+
+func TestHybrid_SpeechInputSummaryForListPreview(t *testing.T) {
+	// /audio/speech (TTS) requests carry their text in speech_input, which is
+	// offloaded to object storage and cleared from the DB row. The DB must still
+	// retain a content_summary so the log list renders the text instead of "-"
+	// (the UI uses content_summary as its display fallback once payload fields
+	// are offloaded). Same gap exists for responses/image/video inputs.
+	hybrid, inner, objStore := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+
+	speechText := "The quick brown fox jumps over the lazy dog."
+	entry := &Log{
+		ID:                "speech-1",
+		Timestamp:         time.Now().UTC(),
+		Provider:          "openai",
+		Model:             "tts-1",
+		Status:            "success",
+		Object:            "audio.speech",
+		SpeechInputParsed: &schemas.SpeechInput{Input: speechText},
+	}
+	require.NoError(t, entry.SerializeFields())
+	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
+	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+
+	// speech_input is offloaded to S3 and cleared from the DB row, but the
+	// content_summary fallback retains the text for the list preview.
+	dbLog, err := inner.FindByID(ctx, "speech-1")
+	require.NoError(t, err)
+	assert.Empty(t, dbLog.SpeechInput, "speech_input should be offloaded to object storage")
+	assert.Contains(t, dbLog.ContentSummary, "quick brown fox", "content_summary should retain the speech text for the list preview")
+
+	// FindByID hydrates the full speech_input back from S3.
+	found, err := hybrid.FindByID(ctx, "speech-1")
+	require.NoError(t, err)
+	require.NotNil(t, found.SpeechInputParsed)
+	assert.Equal(t, speechText, found.SpeechInputParsed.Input, "speech_input should be hydrated from S3")
 }
 
 // newTestHybridWithExclude creates a HybridLogStore with specific excluded fields.

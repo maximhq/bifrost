@@ -1,3 +1,30 @@
+plugins-builtins:
+  get:
+    operationId: listBuiltinPlugins
+    summary: List built-in plugin names
+    description: |
+      Returns the canonical list of built-in plugin names available in this Bifrost build.
+      Use this to discover which plugins can be enabled without supplying a custom binary.
+    tags:
+      - Plugins
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Built-in plugin names retrieved successfully
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                plugins:
+                  type: array
+                  description: Canonical names of built-in plugins
+                  items:
+                    type: string
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 plugins:
   get:
     operationId: listPlugins
@@ -9,6 +36,8 @@ plugins:
       The `types` array in the status shows which interfaces the plugin implements (llm, mcp, http).
     tags:
       - Plugins
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -31,6 +60,8 @@ plugins:
         application/json:
           schema:
             $ref: '../../schemas/management/plugins.yaml#/CreatePluginRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '201':
         description: Plugin created successfully
@@ -67,6 +98,8 @@ plugins:
         description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Successful response
@@ -107,6 +140,8 @@ plugins:
         application/json:
           schema:
             $ref: '../../schemas/management/plugins.yaml#/UpdatePluginRequest'
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Plugin updated successfully
@@ -138,6 +173,8 @@ plugins:
         description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
+    security:
+      - ManagementBearerAuth: []
     responses:
       '200':
         description: Plugin deleted successfully

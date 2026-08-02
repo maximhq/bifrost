@@ -1,5 +1,6 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { TokenHistogramResponse } from "@/lib/types/logs";
+import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Info } from "lucide-react";
 import { memo, useMemo } from "react";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
@@ -11,12 +12,6 @@ interface ExternalCacheTokenMeterChartProps {
 }
 
 const METER_COLORS = { cached: "#06b6d4", input: "#3b82f6" };
-
-const formatTokenCount = (count: number): string => {
-	if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
-	if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
-	return count.toLocaleString();
-};
 
 function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChartProps) {
 	const { ref, width, height } = useGaugeSize();
@@ -47,7 +42,7 @@ function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChart
 	return (
 		<ChartErrorBoundary resetKey={`${data?.buckets?.length ?? 0}-${totalCachedRead}-${totalPromptTokens}`}>
 			<div className="grid h-full grid-rows-[104px_auto] items-start overflow-hidden pt-8">
-				<div ref={ref} className="relative grow h-full w-full">
+				<div ref={ref} className="relative h-full w-full grow">
 					{!hasData && <div className="text-muted-foreground flex h-full items-center justify-center text-sm">No data available</div>}
 					{hasData && gaugeGeometry && (
 						<>
@@ -79,7 +74,7 @@ function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChart
 
 				{hasData && (
 					<div>
-						<div className="flex flex-col items-center pt-1 leading-none shrink-0">
+						<div className="flex shrink-0 flex-col items-center pt-1 leading-none">
 							<div className="text-muted-foreground text-3xl font-semibold tracking-tight">{percentage.toFixed(1)}%</div>
 							<div className="mt-1 flex items-center gap-1 text-[11px] text-zinc-400">
 								<span>of input tokens cached by provider</span>
@@ -98,14 +93,14 @@ function ExternalCacheTokenMeterChartImpl({ data }: ExternalCacheTokenMeterChart
 								</Tooltip>
 							</div>
 						</div>
-						<div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none shrink-0">
+						<div className="flex shrink-0 flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-2 text-[11px] leading-none">
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.cached }} />
-								<span className="text-primary">Cached: {formatTokenCount(totalCachedRead)}</span>
+								<span className="text-primary">Cached: {formatCompactNumber(totalCachedRead)}</span>
 							</span>
 							<span className="flex items-center gap-1.5">
 								<span className="h-2 w-2 rounded-full" style={{ backgroundColor: METER_COLORS.input }} />
-								<span className="text-muted-foreground">Input: {formatTokenCount(totalPromptTokens)}</span>
+								<span className="text-muted-foreground">Input: {formatCompactNumber(totalPromptTokens)}</span>
 							</span>
 						</div>
 					</div>

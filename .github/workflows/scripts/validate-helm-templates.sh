@@ -54,7 +54,7 @@ test_template() {
 
 # 1. Storage Combinations (9 tests)
 echo ""
-echo -e "${CYAN}📦 1/6 - Testing Storage Combinations (9 tests)...${NC}"
+echo -e "${CYAN}📦 1/7 - Testing Storage Combinations (9 tests)...${NC}"
 echo "---------------------------------------------------"
 
 # config=no, logs=no
@@ -126,7 +126,7 @@ test_template "config=postgres, logs=postgres" \
 
 # 2. Vector Store Combinations (6 tests)
 echo ""
-echo -e "${CYAN}🗄️  2/6 - Testing Vector Store Combinations (6 tests)...${NC}"
+echo -e "${CYAN}🗄️  2/7 - Testing Vector Store Combinations (6 tests)...${NC}"
 echo "--------------------------------------------------------"
 
 # Weaviate
@@ -175,7 +175,7 @@ test_template "sqlite + qdrant" \
 
 # 3. Special Configurations (7 tests)
 echo ""
-echo -e "${CYAN}⚙️  3/6 - Testing Special Configurations (7 tests)...${NC}"
+echo -e "${CYAN}⚙️  3/7 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
 
 # semantic cache: direct mode (dimension: 1, no provider/keys)
@@ -251,7 +251,7 @@ test_template "production-like config" \
 
 # 4. New Property Rendering (Gap 1-8 tests)
 echo ""
-echo -e "${CYAN}🆕 4/6 - Testing New Property Rendering (Gap 1-8)...${NC}"
+echo -e "${CYAN}🆕 4/7 - Testing New Property Rendering (Gap 1-8)...${NC}"
 echo "-----------------------------------------------------"
 
 # Gap 1+2: Client new properties
@@ -310,8 +310,12 @@ test_template "cluster: region (Gap 7)" \
   --set bifrost.cluster.gossip.config.failureThreshold=3 \
   --set bifrost.cluster.region=us-east-1
 
+# Gap 9: Server config
+test_template "server: readBufferSize (Gap 9)" \
+  --set bifrost.server.readBufferSize=131072
+
 # Gap 8: Combined production-like with all new fields
-test_template "combined: all new Gap 1-8 fields" \
+test_template "combined: all new Gap 1-9 fields" \
   --set bifrost.client.asyncJobResultTTL=300 \
   --set bifrost.client.mcpAgentDepth=5 \
   --set bifrost.client.hideDeletedVirtualKeysInFilters=true \
@@ -328,11 +332,12 @@ test_template "combined: all new Gap 1-8 fields" \
   --set bifrost.cluster.gossip.config.timeoutSeconds=10 \
   --set bifrost.cluster.gossip.config.successThreshold=3 \
   --set bifrost.cluster.gossip.config.failureThreshold=3 \
-  --set bifrost.cluster.region=us-west-2
+  --set bifrost.cluster.region=us-west-2 \
+  --set bifrost.server.readBufferSize=131072
 
 # 5. Plugin Name Validation
 echo ""
-echo -e "${CYAN}🔌 5/6 - Validating Plugin Names Match Go Registry...${NC}"
+echo -e "${CYAN}🔌 5/7 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
 # Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")
@@ -361,7 +366,7 @@ fi
 
 # 6. Custom Plugin Placement and Order Rendering
 echo ""
-echo -e "${CYAN}🔧 6/6 - Validating Custom Plugin placement and order Rendering...${NC}"
+echo -e "${CYAN}🔧 6/7 - Validating Custom Plugin placement and order Rendering...${NC}"
 echo "-------------------------------------------------------------------"
 
 # Test custom plugin renders successfully with placement and order
@@ -409,6 +414,75 @@ if helm template bifrost ./helm-charts/bifrost \
   else
     report_result "$test_name" 1
     echo -e "${YELLOW}  order field not found in rendered output${NC}"
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
+
+# 7. Security Context Rendering
+echo ""
+echo -e "${CYAN}🔒 7/7 - Validating OpenShift-compatible Security Contexts...${NC}"
+echo "----------------------------------------------------------------"
+
+# Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet can only
+# verify runAsNonRoot when the chart pins runAsUser. The default render must
+# carry runAsUser: 1000; OpenShift users unset it with explicit nulls (tested
+# below).
+test_name="default Bifrost pod sets runAsUser: 1000 (kubelet runAsNonRoot verification)"
+if helm template bifrost ./helm-charts/bifrost \
+  --set image.tag=v1.0.0 \
+  -s templates/stateful.yaml \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -Eq '^[[:space:]]*runAsUser:[[:space:]]*1000$' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  runAsUser: 1000 missing from default render (pre-v1.6.4 images have non-numeric USER, so runAsNonRoot fails without it)${NC}"
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
+
+# Postgres mode renders a Deployment (not the sqlite StatefulSet); assert the
+# UID pin holds on that code path too.
+test_name="postgres-mode Bifrost pod sets runAsUser: 1000 (kubelet runAsNonRoot verification)"
+if helm template bifrost ./helm-charts/bifrost \
+  --set image.tag=v1.0.0 \
+  --set storage.mode=postgres \
+  --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass \
+  -s templates/deployment.yaml \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -Eq '^[[:space:]]*runAsUser:[[:space:]]*1000$' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  runAsUser: 1000 missing from postgres render (pre-v1.6.4 images have non-numeric USER, so runAsNonRoot fails without it)${NC}"
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
+
+# OpenShift path: explicit nulls must unset the UID pins so the SCC can
+# assign an arbitrary UID.
+test_name="OpenShift override (runAsUser/fsGroup null) removes UID pins"
+if helm template bifrost ./helm-charts/bifrost \
+  --set image.tag=v1.0.0 \
+  --set podSecurityContext.runAsUser=null \
+  --set podSecurityContext.fsGroup=null \
+  --set securityContext.runAsUser=null \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -Eq '^[[:space:]]*(runAsUser|fsGroup):' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  runAsUser/fsGroup still rendered with null overrides (OpenShift SCC cannot assign a UID)${NC}"
+  else
+    report_result "$test_name" 0
   fi
 else
   report_result "$test_name" 1

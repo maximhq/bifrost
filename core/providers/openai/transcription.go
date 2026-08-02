@@ -3,6 +3,7 @@ package openai
 import (
 	"fmt"
 	"mime/multipart"
+	"sort"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -10,7 +11,7 @@ import (
 
 // ToBifrostTranscriptionRequest converts an OpenAI transcription request to Bifrost format
 func (request *OpenAITranscriptionRequest) ToBifrostTranscriptionRequest(ctx *schemas.BifrostContext) *schemas.BifrostTranscriptionRequest {
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	provider, model := schemas.ParseModelString(request.Model, "")
 
 	return &schemas.BifrostTranscriptionRequest{
 		Provider: provider,
@@ -40,6 +41,7 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 	if params != nil {
 		openaiReq.TranscriptionParameters = *params
+		openaiReq.ExtraParams = params.ExtraParams
 	}
 
 	return openaiReq
@@ -92,6 +94,35 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	if openaiReq.Stream != nil && *openaiReq.Stream {
 		if err := writer.WriteField("stream", "true"); err != nil {
 			return utils.NewBifrostOperationError("failed to write stream field", err)
+		}
+	}
+
+	// Forward provider-specific passthrough params (e.g. chunking_strategy, required by
+	// OpenAI diarization models). String values are written verbatim; object values are
+	// encoded as JSON since multipart form fields are strings. Keys are sorted so the
+	// emitted form is deterministic.
+	if len(openaiReq.ExtraParams) > 0 {
+		extraKeys := make([]string, 0, len(openaiReq.ExtraParams))
+		for key := range openaiReq.ExtraParams {
+			extraKeys = append(extraKeys, key)
+		}
+		sort.Strings(extraKeys)
+		for _, key := range extraKeys {
+			value := openaiReq.ExtraParams[key]
+			var fieldValue string
+			switch v := value.(type) {
+			case string:
+				fieldValue = v
+			default:
+				encoded, err := schemas.MarshalSorted(v)
+				if err != nil {
+					return utils.NewBifrostOperationError(fmt.Sprintf("failed to encode %s field", key), err)
+				}
+				fieldValue = string(encoded)
+			}
+			if err := writer.WriteField(key, fieldValue); err != nil {
+				return utils.NewBifrostOperationError(fmt.Sprintf("failed to write %s field", key), err)
+			}
 		}
 	}
 

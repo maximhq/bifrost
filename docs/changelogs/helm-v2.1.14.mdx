@@ -1,0 +1,13 @@
+---
+title: "v2.1.14"
+description: "Helm v2.1.14 changelog - 2026-05-07"
+---
+
+<Update label="Bifrost Helm" description="v2.1.14">
+
+## Changelog
+
+- Removed the obsolete `bifrost.client.allowDirectKeys` assertion from `validate-helm-config-fields.sh`. The field was deleted from the chart schema and codebase in a prior release, so the test was rendering an invalid values file and helm was rejecting it via `additionalProperties: false`.
+- Hardened `render_config()` in `validate-helm-config-fields.sh` so a failing `helm template` actually surfaces its stderr instead of being swallowed by the script's `set -e` (the previous post-hoc `$?` check was unreachable).
+
+</Update>

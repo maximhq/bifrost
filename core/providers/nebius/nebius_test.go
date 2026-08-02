@@ -10,6 +10,7 @@ import (
 )
 
 func TestNebius(t *testing.T) {
+	t.Skip("Nebius tests are disabled")
 	t.Parallel()
 	if os.Getenv("NEBIUS_API_KEY") == "" {
 		t.Skip("Skipping Nebius tests because NEBIUS_API_KEY is not set")

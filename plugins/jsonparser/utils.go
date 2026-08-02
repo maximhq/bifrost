@@ -11,9 +11,16 @@ import (
 // getRequestID extracts a unique identifier for the request to maintain state
 func (p *JsonParserPlugin) getRequestID(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) string {
 
-	// Try to get from result
+	// Try to get from chat result
 	if result != nil && result.ChatResponse != nil && result.ChatResponse.ID != "" {
 		return result.ChatResponse.ID
+	}
+
+	// Try to get from responses stream result
+	if result != nil && result.ResponsesStreamResponse != nil {
+		if result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.ID != nil && *result.ResponsesStreamResponse.Response.ID != "" {
+			return *result.ResponsesStreamResponse.Response.ID
+		}
 	}
 
 	// Try to get from context if not available in result
@@ -28,8 +35,8 @@ func (p *JsonParserPlugin) getRequestID(ctx *schemas.BifrostContext, result *sch
 
 // shouldRun determines if the plugin should process the request based on usage type
 func (p *JsonParserPlugin) shouldRun(ctx *schemas.BifrostContext, requestType schemas.RequestType) bool {
-	// Run only for chat completion stream requests
-	if requestType != schemas.ChatCompletionStreamRequest {
+	// Run only for streaming requests
+	if requestType != schemas.ChatCompletionStreamRequest && requestType != schemas.ResponsesStreamRequest {
 		return false
 	}
 
@@ -223,10 +230,14 @@ func (p *JsonParserPlugin) deepCopyBifrostResponse(original *schemas.BifrostResp
 		result.ChatResponse = p.deepCopyBifrostChatResponse(original.ChatResponse)
 	}
 
+	// Deep copy ResponsesStreamResponse since we modify its Delta field
+	if original.ResponsesStreamResponse != nil {
+		result.ResponsesStreamResponse = p.deepCopyResponsesStreamResponse(original.ResponsesStreamResponse)
+	}
+
 	// Copy other response types if they exist (shallow copy since we don't modify them)
 	result.TextCompletionResponse = original.TextCompletionResponse
 	result.ResponsesResponse = original.ResponsesResponse
-	result.ResponsesStreamResponse = original.ResponsesStreamResponse
 	result.EmbeddingResponse = original.EmbeddingResponse
 	result.SpeechResponse = original.SpeechResponse
 	result.SpeechStreamResponse = original.SpeechStreamResponse
@@ -234,6 +245,19 @@ func (p *JsonParserPlugin) deepCopyBifrostResponse(original *schemas.BifrostResp
 	result.TranscriptionStreamResponse = original.TranscriptionStreamResponse
 
 	return result
+}
+
+// deepCopyResponsesStreamResponse returns a shallow copy of BifrostResponsesStreamResponse.
+// Delta is the only field this plugin reassigns, and it is a top-level pointer slot, so a
+// struct value copy is sufficient — writing result.Delta = &x does not affect original.Delta.
+// Pointer fields such as Response, Item, and Part share the same underlying data as the
+// original; do not mutate them through this copy.
+func (p *JsonParserPlugin) deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse {
+	if original == nil {
+		return nil
+	}
+	result := *original
+	return &result
 }
 
 // deepCopyBifrostChatResponse creates a deep copy of BifrostChatResponse

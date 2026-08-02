@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,14 @@ type Session struct {
 	// attached to a persisted turn, so late transcript updates do not pollute later turns.
 	realtimeConsumedTurnItemIDs map[string]struct{}
 
+	// realtimeSessionTools holds the latest session tool definitions from
+	// session.created / session.updated / session.update events, so that
+	// each turn log can record which tools were available.
+	realtimeSessionTools json.RawMessage
+
+	// realtimeVoice holds the voice from the latest session configuration.
+	realtimeVoice string
+
 	// realtimeTurnHooks tracks the active turn-scoped plugin pipeline between
 	// response.create and response.done.
 	realtimeTurnHooks *RealtimeTurnPluginState
@@ -73,6 +82,8 @@ type RealtimeTurnPluginState struct {
 	RequestID      string
 	StartedAt      time.Time
 	PreHookValues  map[any]any
+	TraceID        string
+	RawStore       bool
 }
 
 // NewSession creates a new session for a client WebSocket connection.
@@ -170,6 +181,42 @@ func (s *Session) ProviderSessionID() string {
 	return s.providerSessionID
 }
 
+// SetRealtimeSessionTools updates the tracked session tool definitions.
+// Called when session.created, session.updated, or session.update events
+// carry a tools array.
+func (s *Session) SetRealtimeSessionTools(tools json.RawMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.realtimeSessionTools = tools
+}
+
+// RealtimeSessionTools returns the latest session tool definitions, or nil.
+func (s *Session) RealtimeSessionTools() json.RawMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.realtimeSessionTools
+}
+
+// SetRealtimeVoice updates the tracked voice from session configuration.
+func (s *Session) SetRealtimeVoice(voice string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.realtimeVoice = voice
+}
+
+// RealtimeVoice returns the current session voice, or empty string.
+func (s *Session) RealtimeVoice() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.realtimeVoice
+}
+
 // AppendRealtimeOutputText appends provider output content for the current realtime turn.
 func (s *Session) AppendRealtimeOutputText(text string) {
 	if text == "" {
@@ -177,6 +224,9 @@ func (s *Session) AppendRealtimeOutputText(text string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	s.realtimeOutputText += text
 }
 
@@ -236,11 +286,16 @@ func (s *Session) recordRealtimeTurnInput(itemID, role, summary, raw string) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 
 	itemID = strings.TrimSpace(itemID)
 	if itemID != "" {
-		if _, consumed := s.realtimeConsumedTurnItemIDs[itemID]; consumed {
-			return
+		if s.realtimeConsumedTurnItemIDs != nil {
+			if _, consumed := s.realtimeConsumedTurnItemIDs[itemID]; consumed {
+				return
+			}
 		}
 		for idx := range s.realtimeTurnInputs {
 			if s.realtimeTurnInputs[idx].ItemID != itemID || s.realtimeTurnInputs[idx].Role != role {
@@ -250,15 +305,11 @@ func (s *Session) recordRealtimeTurnInput(itemID, role, summary, raw string) {
 				s.realtimeTurnInputs[idx].Summary = summary
 			}
 			if strings.TrimSpace(raw) != "" {
-				existingRaw := strings.TrimSpace(s.realtimeTurnInputs[idx].Raw)
-				incomingRaw := strings.TrimSpace(raw)
-				switch {
-				case existingRaw == "":
-					s.realtimeTurnInputs[idx].Raw = raw
-				case incomingRaw == "" || existingRaw == incomingRaw:
-				default:
-					s.realtimeTurnInputs[idx].Raw = existingRaw + "\n\n" + incomingRaw
-				}
+				// Same item ID + role: replace raw with the latest event.
+				// Later events (e.g. conversation.item.created after
+				// conversation.item.create) carry the same or more complete
+				// data, so the newest version is always preferred.
+				s.realtimeTurnInputs[idx].Raw = raw
 			}
 			return
 		}
@@ -377,6 +428,15 @@ func (s *Session) Close() {
 		s.realtimeTurnHooks = nil
 	}
 	s.realtimeTurnBusy = false
+
+	// Release accumulated turn data so GC can reclaim memory even if a
+	// goroutine briefly holds a reference to this session after close.
+	s.realtimeTurnInputs = nil
+	s.realtimeConsumedTurnItemIDs = nil
+	s.realtimeSessionTools = nil
+	s.realtimeVoice = ""
+	s.realtimeOutputText = ""
+
 	if s.clientConn != nil {
 		_ = s.clientConn.Close()
 	}

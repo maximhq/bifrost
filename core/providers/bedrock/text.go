@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
-	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -80,7 +79,7 @@ func (request *BedrockTextCompletionRequest) ToBifrostTextCompletionRequest(ctx 
 		prompt = strings.Join(parts, "\n\n")
 	}
 
-	provider, model := schemas.ParseModelString(request.ModelID, utils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(request.ModelID, "")
 
 	bifrostReq := &schemas.BifrostTextCompletionRequest{
 		Provider: provider,
@@ -126,8 +125,7 @@ func (response *BedrockAnthropicTextResponse) ToBifrostTextCompletionResponse() 
 				FinishReason: &response.StopReason,
 			},
 		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
-		},
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 }
 
@@ -149,10 +147,9 @@ func (response *BedrockMistralTextResponse) ToBifrostTextCompletionResponse() *s
 	}
 
 	return &schemas.BifrostTextCompletionResponse{
-		Object:  "text_completion",
-		Choices: choices,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-		},
+		Object:      "text_completion",
+		Choices:     choices,
+		ExtraFields: schemas.BifrostResponseExtraFields{},
 	}
 }
 

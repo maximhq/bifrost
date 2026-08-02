@@ -5,14 +5,20 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Message, MessageType } from "@/lib/message";
-import { Markdown } from "@/components/ui/markdown";
 import { getErrorMessage } from "@/lib/store";
 import { useCommitSessionMutation } from "@/lib/store/apis/promptsApi";
 import { PromptSession, PromptSessionMessage } from "@/lib/types/prompts";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+
+const LazyMarkdown = lazy(() => import("@/components/ui/markdown").then((m) => ({ default: m.Markdown })));
+const Markdown = (props: ComponentProps<typeof LazyMarkdown>) => (
+	<Suspense fallback={null}>
+		<LazyMarkdown {...props} />
+	</Suspense>
+);
 
 interface CommitVersionFormData {
 	commitMessage: string;

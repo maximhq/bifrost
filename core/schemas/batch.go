@@ -79,6 +79,7 @@ type BifrostBatchCreateRequest struct {
 	OutputFolder *BatchOutputFolder `json:"output_folder,omitempty"`
 
 	// Common fields
+	DisplayName        *string            `json:"display_name,omitempty"`         // Human-readable job name (e.g. Vertex displayName)
 	Endpoint           BatchEndpoint      `json:"endpoint,omitempty"`             // Target endpoint for batch requests
 	CompletionWindow   string             `json:"completion_window,omitempty"`    // Time window (e.g., "24h")
 	Metadata           map[string]string  `json:"metadata,omitempty"`             // User-provided metadata
@@ -106,7 +107,8 @@ func (request *BifrostBatchCreateRequest) GetRawRequestBody() []byte {
 // BifrostBatchCreateResponse represents the response from creating a batch job.
 type BifrostBatchCreateResponse struct {
 	ID               string             `json:"id"`
-	Object           string             `json:"object,omitempty"` // "batch" for OpenAI
+	Object           string             `json:"object,omitempty"`       // "batch" for OpenAI
+	DisplayName      *string            `json:"display_name,omitempty"` // Human-readable job name (e.g. Vertex displayName)
 	Endpoint         string             `json:"endpoint,omitempty"`
 	InputFileID      string             `json:"input_file_id,omitempty"`
 	CompletionWindow string             `json:"completion_window,omitempty"`
@@ -126,6 +128,11 @@ type BifrostBatchCreateResponse struct {
 
 	// Gemini-specific (operation response)
 	OperationName *string `json:"operation_name,omitempty"`
+
+	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
@@ -183,6 +190,7 @@ func (request *BifrostBatchRetrieveRequest) GetRawRequestBody() []byte {
 type BifrostBatchRetrieveResponse struct {
 	ID               string             `json:"id"`
 	Object           string             `json:"object,omitempty"`
+	DisplayName      *string            `json:"display_name,omitempty"` // Human-readable job name (e.g. Vertex displayName)
 	Endpoint         string             `json:"endpoint,omitempty"`
 	InputFileID      string             `json:"input_file_id,omitempty"`
 	CompletionWindow string             `json:"completion_window,omitempty"`
@@ -213,6 +221,11 @@ type BifrostBatchRetrieveResponse struct {
 	OperationName *string `json:"operation_name,omitempty"`
 	Done          *bool   `json:"done,omitempty"`
 	Progress      *int    `json:"progress,omitempty"` // Percentage progress
+
+	// Azure-specific Blob Storage URLs (returned when using blob storage input/output)
+	InputBlob  *string `json:"input_blob,omitempty"`
+	OutputBlob *string `json:"output_blob,omitempty"`
+	ErrorBlob  *string `json:"error_blob,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

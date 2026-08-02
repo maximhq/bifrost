@@ -12,6 +12,7 @@ import (
 
 	"cloud.google.com/go/storage"
 	"github.com/maximhq/bifrost/core/schemas"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
@@ -117,6 +118,23 @@ func (g *GCSObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 
 	return body, nil
+}
+
+// ListByPrefix returns object keys matching the given prefix.
+func (g *GCSObjectStore) ListByPrefix(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	it := g.client.Bucket(g.bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	objects := make([]ObjectInfo, 0)
+	for {
+		attrs, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("objectstore: gcs list prefix %s: %w", prefix, err)
+		}
+		objects = append(objects, ObjectInfo{Key: attrs.Name, LastModified: attrs.Updated})
+	}
+	return objects, nil
 }
 
 // Delete removes a single object by key.

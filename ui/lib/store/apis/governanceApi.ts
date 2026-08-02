@@ -1,5 +1,9 @@
 import {
 	Budget,
+	BudgetOverrideRequest,
+	BudgetOverrideResponse,
+	BulkRotateVirtualKeysRequest,
+	BulkRotateVirtualKeysResponse,
 	CreateCustomerRequest,
 	CreateModelConfigRequest,
 	CreatePricingOverrideRequest,
@@ -37,10 +41,12 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
+import { AnalyzerConfig } from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
 	scopeKind?: string;
+	userID?: string;
 	virtualKeyID?: string;
 	providerID?: string;
 	providerKeyID?: string;
@@ -61,8 +67,15 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.search && { search: params.search }),
 					...(params?.customer_id && { customer_id: params.customer_id }),
 					...(params?.team_id && { team_id: params.team_id }),
+					...(params?.user_id && { user_id: params.user_id }),
 					...(params?.exclude_access_profile_managed_virtual === true && {
 						exclude_access_profile_managed_virtual: "true",
+					}),
+					...(params?.exclude_assigned_virtual_keys === true && {
+						exclude_assigned_virtual_keys: "true",
+					}),
+					...(params?.for_user_assignment === true && {
+						for_user_assignment: "true",
 					}),
 					...(params?.sort_by && { sort_by: params.sort_by }),
 					...(params?.order && { order: params.order }),
@@ -83,13 +96,31 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: ["VirtualKeys"],
+			// VK governance is backed by VK-scoped model configs; refresh Model Limits too.
+			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
 		}),
 
 		updateVirtualKey: builder.mutation<{ message: string; virtual_key: VirtualKey }, { vkId: string; data: UpdateVirtualKeyRequest }>({
 			query: ({ vkId, data }) => ({
 				url: `/governance/virtual-keys/${vkId}`,
 				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
+		}),
+
+		rotateVirtualKey: builder.mutation<{ message: string; virtual_key: VirtualKey }, string>({
+			query: (vkId) => ({
+				url: `/governance/virtual-keys/${vkId}/rotate`,
+				method: "POST",
+			}),
+			invalidatesTags: ["VirtualKeys"],
+		}),
+
+		bulkRotateVirtualKeys: builder.mutation<BulkRotateVirtualKeysResponse, BulkRotateVirtualKeysRequest>({
+			query: (data) => ({
+				url: "/governance/virtual-keys/rotate",
+				method: "POST",
 				body: data,
 			}),
 			invalidatesTags: ["VirtualKeys"],
@@ -100,7 +131,24 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/virtual-keys/${vkId}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["VirtualKeys"],
+			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
+		}),
+
+		setVirtualKeyBudgetOverride: builder.mutation<BudgetOverrideResponse, { vkId: string; budgetId: string; data: BudgetOverrideRequest }>({
+			query: ({ vkId, budgetId, data }) => ({
+				url: `/governance/virtual-keys/${encodeURIComponent(vkId)}/budgets/${encodeURIComponent(budgetId)}/override`,
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
+		}),
+
+		removeVirtualKeyBudgetOverride: builder.mutation<BudgetOverrideResponse, { vkId: string; budgetId: string }>({
+			query: ({ vkId, budgetId }) => ({
+				url: `/governance/virtual-keys/${encodeURIComponent(vkId)}/budgets/${encodeURIComponent(budgetId)}/override`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["VirtualKeys", "Budgets", "ModelConfigs"],
 		}),
 
 		// Teams
@@ -118,7 +166,7 @@ export const governanceApi = baseApi.injectEndpoints({
 		}),
 
 		getTeam: builder.query<{ team: Team }, string>({
-			query: (teamId) => `/governance/teams/${teamId}`,
+			query: (teamId) => `/governance/teams/${encodeURIComponent(teamId)}`,
 			providesTags: (result, error, teamId) => [{ type: "Teams", id: teamId }],
 		}),
 
@@ -153,7 +201,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		updateTeam: builder.mutation<{ message: string; team: Team }, { teamId: string; data: UpdateTeamRequest }>({
 			query: ({ teamId, data }) => ({
-				url: `/governance/teams/${teamId}`,
+				url: `/governance/teams/${encodeURIComponent(teamId)}`,
 				method: "PUT",
 				body: data,
 			}),
@@ -186,7 +234,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		deleteTeam: builder.mutation<{ message: string }, string>({
 			query: (teamId) => ({
-				url: `/governance/teams/${teamId}`,
+				url: `/governance/teams/${encodeURIComponent(teamId)}`,
 				method: "DELETE",
 			}),
 			async onQueryStarted(teamId, { dispatch, getState, queryFulfilled }) {
@@ -481,6 +529,9 @@ export const governanceApi = baseApi.injectEndpoints({
 					...(params?.limit && { limit: params.limit }),
 					...(params?.offset !== undefined && { offset: params.offset }),
 					...(params?.search && { search: params.search }),
+					...(params?.scope && { scope: params.scope }),
+					...(params?.scope_id && { scope_id: params.scope_id }),
+					...(params?.provider && { provider: params.provider }),
 				},
 			}),
 			providesTags: ["ModelConfigs"],
@@ -497,18 +548,26 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
+			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
+			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
+					const mc = data.model_config;
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getModelConfigs" || entry?.status !== "fulfilled") continue;
-						const search = entry.originalArgs?.search as string | undefined;
-						if (search && !data.model_config.model_name.toLowerCase().includes(search.toLowerCase())) continue;
+						const args = entry.originalArgs as GetModelConfigsParams | undefined;
+						if (args?.search && !mc.model_name.toLowerCase().includes(args.search.toLowerCase())) continue;
+						if (args?.scope && mc.scope !== args.scope) continue;
+						if (args?.scope_id && mc.scope_id !== args.scope_id) continue;
+						if (args?.provider && mc.provider !== args.provider) continue;
 						dispatch(
 							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
 								if (!draft.model_configs) draft.model_configs = [];
-								draft.model_configs.unshift(data.model_config);
+								draft.model_configs.unshift(mc);
 								draft.count = (draft.count || 0) + 1;
 								draft.total_count = (draft.total_count || 0) + 1;
 							}),
@@ -526,6 +585,10 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
+			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
+			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
 			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -558,6 +621,10 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/model-configs/${id}`,
 				method: "DELETE",
 			}),
+			// Wildcard model configs back provider/VK/user governance; refresh those pages too.
+			// "Users" + "UserGovernance" are no-op tags in OSS builds (no consumer registers them);
+			// enterprise consumers pick them up via the userGovernanceApi / usersApi tag wiring.
+			invalidatesTags: ["ProviderGovernance", "VirtualKeys", "Users", "UserGovernance"],
 			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
@@ -587,6 +654,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: "/governance/pricing-overrides",
 				params: {
 					scope_kind: params?.scopeKind,
+					user_id: params?.userID,
 					virtual_key_id: params?.virtualKeyID,
 					provider_id: params?.providerID,
 					provider_key_id: params?.providerKeyID,
@@ -614,6 +682,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
 						const matchesQuery =
 							(!args.scopeKind || args.scopeKind === created.scope_kind) &&
+							(!args.userID || args.userID === created.user_id) &&
 							(!args.virtualKeyID || args.virtualKeyID === created.virtual_key_id) &&
 							(!args.providerID || args.providerID === created.provider_id) &&
 							(!args.providerKeyID || args.providerKeyID === created.provider_key_id) &&
@@ -657,6 +726,7 @@ export const governanceApi = baseApi.injectEndpoints({
 						const args: PricingOverrideQueryArgs = entry.originalArgs ?? {};
 						const matchesQuery =
 							(!args.scopeKind || args.scopeKind === updated.scope_kind) &&
+							(!args.userID || args.userID === updated.user_id) &&
 							(!args.virtualKeyID || args.virtualKeyID === updated.virtual_key_id) &&
 							(!args.providerID || args.providerID === updated.provider_id) &&
 							(!args.providerKeyID || args.providerKeyID === updated.provider_key_id);
@@ -730,6 +800,8 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
+			// Provider governance is now backed by wildcard model configs; refresh the Model Limits view too.
+			invalidatesTags: ["ModelConfigs"],
 			async onQueryStarted({ provider }, { dispatch, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
@@ -760,6 +832,8 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/providers/${encodeURIComponent(provider)}`,
 				method: "DELETE",
 			}),
+			// Provider governance is now backed by wildcard model configs; refresh the Model Limits view too.
+			invalidatesTags: ["ModelConfigs"],
 			async onQueryStarted(provider, { dispatch, queryFulfilled }) {
 				try {
 					await queryFulfilled;
@@ -778,6 +852,32 @@ export const governanceApi = baseApi.injectEndpoints({
 				}
 			},
 		}),
+
+		// Complexity Analyzer Config
+		getComplexityAnalyzerConfig: builder.query<AnalyzerConfig, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-config",
+				method: "GET",
+			}),
+			providesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
+			query: (data) => ({
+				url: "/governance/complexity-analyzer-config",
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		resetComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, void>({
+			query: () => ({
+				url: "/governance/complexity-analyzer-config/reset",
+				method: "POST",
+			}),
+			invalidatesTags: ["ComplexityAnalyzerConfig"],
+		}),
 	}),
 });
 
@@ -787,7 +887,11 @@ export const {
 	useGetVirtualKeyQuery,
 	useCreateVirtualKeyMutation,
 	useUpdateVirtualKeyMutation,
+	useRotateVirtualKeyMutation,
+	useBulkRotateVirtualKeysMutation,
 	useDeleteVirtualKeyMutation,
+	useSetVirtualKeyBudgetOverrideMutation,
+	useRemoveVirtualKeyBudgetOverrideMutation,
 
 	// Teams
 	useGetTeamsQuery,
@@ -838,6 +942,11 @@ export const {
 	useGetProviderGovernanceQuery,
 	useUpdateProviderGovernanceMutation,
 	useDeleteProviderGovernanceMutation,
+
+	// Complexity Analyzer Config
+	useGetComplexityAnalyzerConfigQuery,
+	useUpdateComplexityAnalyzerConfigMutation,
+	useResetComplexityAnalyzerConfigMutation,
 
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,

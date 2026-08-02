@@ -14,7 +14,8 @@ import (
 
 // testHandlerStore is a minimal HandlerStore for ctx tests.
 type testHandlerStore struct {
-	matcher *HeaderMatcher
+	matcher         *HeaderMatcher
+	allowDirectKeys bool
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -28,6 +29,7 @@ func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
+func (s testHandlerStore) ShouldAllowDirectKeys() bool                { return s.allowDirectKeys }
 func (s testHandlerStore) GetMCPExternalServerURL() string            { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string            { return "" }
 
@@ -166,6 +168,31 @@ func TestConvertToBifrostContext_StarAllowlistDirectForwardingSecurityBlocked(t 
 		if _, ok := extraHeaders[h]; ok {
 			t.Errorf("expected security header %q to be blocked in direct forwarding even with * allowlist", h)
 		}
+	}
+}
+
+// TestConvertToBifrostContext_AsyncWebhookHeaderSurvivesStarAllowlist verifies
+// that the reserved x-bf-async-webhook header is captured into the context even
+// when a "*" allowlist would otherwise forward-and-return it as a direct header,
+// which would drop the endpoint name and run the async job without notifying.
+func TestConvertToBifrostContext_AsyncWebhookHeaderSurvivesStarAllowlist(t *testing.T) {
+	matcher := NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+		Allowlist: []string{"*"},
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-async-webhook", "receiver")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
+	defer cancel()
+
+	if got, ok := bifrostCtx.Value(schemas.BifrostContextKeyAsyncWebhookEndpoint).(string); !ok || got != "receiver" {
+		t.Errorf("expected async webhook endpoint %q to be captured under a * allowlist, got %q (present=%v)", "receiver", got, ok)
+	}
+	// The reserved header must not also leak into forwarded extra headers.
+	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if _, ok := extraHeaders["x-bf-async-webhook"]; ok {
+		t.Error("expected reserved x-bf-async-webhook to be consumed, not forwarded as an extra header")
 	}
 }
 
@@ -376,5 +403,262 @@ func TestConvertToBifrostContext_DimAndPromCanCoexistWithoutCrossing(t *testing.
 	}
 	if len(dimensions) != 2 {
 		t.Fatalf("expected only dim headers in unified dimensions, got %#v", dimensions)
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_ServerDisabled(t *testing.T) {
+	// x-bf-direct-key: true present but server setting is off — no direct key should be set.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-direct-key", "true")
+	ctx.Request.Header.Set("Authorization", "Bearer sk-real-openai-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{allowDirectKeys: false})
+	defer cancel()
+
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		t.Error("expected no direct key when server setting is disabled")
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_HeaderAbsent(t *testing.T) {
+	// Server allows direct keys but caller did not send x-bf-direct-key header.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Authorization", "Bearer sk-real-openai-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{allowDirectKeys: true})
+	defer cancel()
+
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		t.Error("expected no direct key when x-bf-direct-key header is absent")
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_BearerRealKey(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-direct-key", "true")
+	ctx.Request.Header.Set("Authorization", "Bearer sk-real-openai-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{allowDirectKeys: true})
+	defer cancel()
+
+	key, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	if !ok {
+		t.Fatal("expected direct key to be set")
+	}
+	if key.Value.GetValue() != "sk-real-openai-key" {
+		t.Errorf("direct key value = %q, want %q", key.Value.GetValue(), "sk-real-openai-key")
+	}
+	if key.ID != "header-provided" {
+		t.Errorf("direct key ID = %q, want %q", key.ID, "header-provided")
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_VirtualKeyNotBypassed(t *testing.T) {
+	// A virtual key (sk-bf-*) in Authorization must not be treated as a direct key.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-direct-key", "true")
+	ctx.Request.Header.Set("Authorization", "Bearer sk-bf-virtual-key-here")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{allowDirectKeys: true})
+	defer cancel()
+
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		t.Error("expected virtual key not to be treated as a direct key")
+	}
+	// The virtual key should still be set normally.
+	if vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); !ok || vk == "" {
+		t.Error("expected virtual key to be set in context")
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_XAPIKey(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-direct-key", "true")
+	ctx.Request.Header.Set("x-api-key", "sk-ant-real-anthropic-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{allowDirectKeys: true})
+	defer cancel()
+
+	key, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	if !ok {
+		t.Fatal("expected direct key to be set from x-api-key")
+	}
+	if key.Value.GetValue() != "sk-ant-real-anthropic-key" {
+		t.Errorf("direct key value = %q, want %q", key.Value.GetValue(), "sk-ant-real-anthropic-key")
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_XGoogAPIKey(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-direct-key", "true")
+	ctx.Request.Header.Set("x-goog-api-key", "AIza-real-gemini-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{allowDirectKeys: true})
+	defer cancel()
+
+	key, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	if !ok {
+		t.Fatal("expected direct key to be set from x-goog-api-key")
+	}
+	if key.Value.GetValue() != "AIza-real-gemini-key" {
+		t.Errorf("direct key value = %q, want %q", key.Value.GetValue(), "AIza-real-gemini-key")
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_CannotBeSpoofedViaEHPrefix(t *testing.T) {
+	// x-bf-eh-x-bf-direct-key must be blocked by the security denylist.
+	matcher := NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{
+		Allowlist: []string{"*"},
+	})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-eh-x-bf-direct-key", "true")
+	ctx.Request.Header.Set("Authorization", "Bearer sk-real-openai-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher, allowDirectKeys: true})
+	defer cancel()
+
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		t.Error("expected x-bf-direct-key to be blocked when injected via x-bf-eh- prefix")
+	}
+	extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if _, ok := extraHeaders["x-bf-direct-key"]; ok {
+		t.Error("expected x-bf-direct-key to be absent from extra headers (denylist)")
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_RawVirtualKeyNotBypassed(t *testing.T) {
+	// VK sent without Bearer prefix must also be excluded from direct key path.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-direct-key", "true")
+	ctx.Request.Header.Set("Authorization", "sk-bf-virtual-key-no-bearer-prefix")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{allowDirectKeys: true})
+	defer cancel()
+
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
+		t.Error("expected raw VK (no Bearer prefix) to be excluded from direct key path")
+	}
+}
+
+func TestConvertToBifrostContext_DirectKey_EnvPrefixNotResolved(t *testing.T) {
+	// A caller sending "env.SOME_VAR" must get that literal string as the key value,
+	// not the server env var it might reference.
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-direct-key", "true")
+	ctx.Request.Header.Set("Authorization", "Bearer env.SOME_SECRET")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{allowDirectKeys: true})
+	defer cancel()
+
+	key, ok := bifrostCtx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	if !ok {
+		t.Fatal("expected direct key to be set")
+	}
+	if key.Value.GetValue() != "env.SOME_SECRET" {
+		t.Errorf("direct key value = %q, want literal %q (must not resolve env vars)", key.Value.GetValue(), "env.SOME_SECRET")
+	}
+	if key.Value.IsFromSecret() {
+		t.Error("direct key must not be marked as from-secret")
+	}
+}
+
+func TestBuildBaseURL(t *testing.T) {
+	const host = "bifrost.example.com"
+	tests := []struct {
+		name     string
+		external string
+		host     string
+		xfProto  string
+		xbfProto string
+		want     string
+	}{
+		{name: "defaults to http", host: host, want: "http://" + host},
+		{name: "x-forwarded-proto https", host: host, xfProto: "https", want: "https://" + host},
+		{name: "x-forwarded-proto comma list", host: host, xfProto: "https, http", want: "https://" + host},
+		{name: "x-forwarded-proto uppercase", host: host, xfProto: "HTTPS", want: "https://" + host},
+		{name: "x-bf-forwarded-proto https", host: host, xbfProto: "https", want: "https://" + host},
+		{name: "x-bf-forwarded-proto uppercase trimmed", host: host, xbfProto: " HTTPS ", want: "https://" + host},
+		{name: "x-bf-forwarded-proto comma list", host: host, xbfProto: "https, http", want: "https://" + host},
+		{name: "x-bf-forwarded-proto http stays http", host: host, xbfProto: "http", want: "http://" + host},
+		{name: "external override wins", external: "https://proxy.example.com", host: host, xfProto: "http", want: "https://proxy.example.com"},
+		{name: "external override trailing slash trimmed", external: "https://proxy.example.com/", host: host, want: "https://proxy.example.com"},
+		{name: "invalid external falls back to inference", external: "not-a-url", host: host, xbfProto: "https", want: "https://" + host},
+		{name: "empty host yields empty", host: "", xbfProto: "https", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetHost(tt.host)
+			if tt.xfProto != "" {
+				ctx.Request.Header.Set("X-Forwarded-Proto", tt.xfProto)
+			}
+			if tt.xbfProto != "" {
+				ctx.Request.Header.Set("x-bf-forwarded-proto", tt.xbfProto)
+			}
+			if got := BuildBaseURL(ctx, tt.external); got != tt.want {
+				t.Fatalf("BuildBaseURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// A virtual key presented via Azure's native "api-key" header (used by the
+// Azure OpenAI SDK on passthrough) must be captured into the context so
+// governance/logging attribute the call to the VK, not the base key.
+func TestConvertToBifrostContext_VirtualKeyFromAzureAPIKeyHeader(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("api-key", "sk-bf-azure-passthrough-vk")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	if !ok || vk != "sk-bf-azure-passthrough-vk" {
+		t.Fatalf("virtual key = %#v, want %q", bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey), "sk-bf-azure-passthrough-vk")
+	}
+}
+
+// A real (non-VK) provider key in the "api-key" header must not be misread as
+// a virtual key — only the sk-bf- prefix promotes it.
+func TestConvertToBifrostContext_APIKeyHeaderNonVirtualKeyIgnored(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("api-key", "real-azure-api-key")
+
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	if got := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey); got != nil {
+		t.Fatalf("virtual key should not be set from a non-VK api-key value, got %#v", got)
+	}
+}
+
+func TestConvertToBifrostContext_AsyncWebhookHeader(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{name: "value carried as-is", header: "billing", want: "billing"},
+		{name: "value trimmed", header: "  billing  ", want: "billing"},
+		{name: "blank header ignored", header: "   ", want: ""},
+		{name: "absent header ignored", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			if tc.header != "" {
+				ctx.Request.Header.Set("x-bf-async-webhook", tc.header)
+			}
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			if bifrostCtx == nil {
+				t.Fatal("expected a bifrost context")
+			}
+			defer cancel()
+			got, _ := bifrostCtx.Value(schemas.BifrostContextKeyAsyncWebhookEndpoint).(string)
+			if got != tc.want {
+				t.Fatalf("context webhook endpoint = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

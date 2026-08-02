@@ -1,0 +1,204 @@
+---
+title: "Circuit Breaker"
+description: "Automatic failover to a backup provider when a primary endpoint degrades, based on configurable HTTP response header signals."
+icon: "shield"
+---
+
+## Overview
+
+**Circuit Breaker** in Bifrost Enterprise automatically reroutes LLM requests to a fallback provider when a primary provider endpoint shows signs of degradation. Instead of letting throttled or degraded requests fail, Bifrost detects the signal in the response headers, opens the circuit, and transparently redirects subsequent requests to your configured fallback — until the cooldown window expires and the primary is retried.
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Header-based signals** | Trips on HTTP response headers returned by the provider — no latency heuristics or error-rate windows to tune |
+| **Per-model failover** | Each policy targets a specific provider + model combination; other traffic is unaffected |
+| **Per-key sub-circuits** | Optionally track state per API key so a single degraded key doesn't block healthy ones |
+| **AND / OR operators** | Open the circuit when any signal matches (OR) or only when all match simultaneously (AND) |
+| **Dynamic cooldown** | Read cooldown duration directly from a response header (e.g. `retry-after-ms`) or fall back to a configured static duration |
+
+---
+
+## How It Works
+
+Every request that matches a circuit breaker policy passes through two hooks:
+
+1. **Pre-request hook** — checks whether the circuit is open. If open, the request is immediately rerouted to the fallback provider and model. The original target is not contacted.
+2. **Post-response hook** — evaluates the response headers from the primary target against the policy's condition. If the condition matches, the circuit opens for the configured cooldown duration.
+
+The circuit closes automatically once the cooldown expires. The next request to the primary is a probe — if the signal fires again, the circuit reopens; otherwise it stays closed.
+
+---
+
+## Configuration
+
+### Web UI
+
+Navigate to **Circuit Breaker** in the Bifrost dashboard to create and manage policies.
+
+<Frame>
+  <img src="/media/circuit-breaker/circuit-breaker-create.png" alt="Create circuit breaker policy sheet showing provider, model, and signal configuration" />
+</Frame>
+
+### config.json
+
+Add a `circuit_breaker_config` block at the root of your `config.json`:
+
+```json
+{
+  "circuit_breaker_config": {
+    "policies": [
+      {
+        "name": "azure-ptu-spillover",
+        "enabled": true,
+        "primary_provider": "azure",
+        "primary_model": "gpt-4o-ptu",
+        "fallback_provider": "azure",
+        "fallback_model": "gpt-4o-paygo",
+        "condition": {
+          "operator": "OR",
+          "signals": [
+            {
+              "source": "response_header",
+              "header_name": "X-Ms-Is-Spilled-Over",
+              "header_value": "true"
+            }
+          ]
+        },
+        "default_cooldown": "30s"
+      }
+    ]
+  }
+}
+```
+
+### Policy Properties
+
+| Property | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `name` | string | Yes | — | Unique name for this policy |
+| `enabled` | boolean | No | `true` | When `false`, the policy is registered but all hooks skip it |
+| `primary_provider` | string | Yes | — | Provider to monitor (e.g. `azure`, `openai`) |
+| `primary_model` | string | Yes | — | Model name as it appears in requests (e.g. `gpt-4o-ptu`) |
+| `primary_key_ids` | string[] | No | `[]` | API key UUIDs to track individually. See [Key-Level Sub-Circuits](#key-level-sub-circuits) |
+| `fallback_provider` | string | Yes | — | Provider to route to when the circuit is open |
+| `fallback_model` | string | Yes | — | Model to request from the fallback provider |
+| `condition` | object | Yes | — | Signal condition that opens the circuit. See [Signals](#signals) |
+| `default_cooldown` | string | No | `30s` | How long to keep the circuit open. Accepts a Go duration string: `30s`, `5m`, `1h`. See [Cooldown](#cooldown) |
+| `cooldown_header` | string | No | — | Response header name to read the cooldown duration from (in milliseconds). Falls back to `default_cooldown` when absent or unparsable. See [Cooldown](#cooldown) |
+
+### Condition Properties
+
+| Property | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `operator` | `OR` \| `AND` | No | `OR` | How multiple signals are combined. `OR` opens the circuit when any signal matches; `AND` requires all signals to match simultaneously |
+| `signals` | Signal[] | Yes | — | List of response signals to evaluate. At least one required |
+
+### Signal Properties
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `source` | `response_header` | Yes | What part of the HTTP response to inspect. Currently only `response_header` is supported |
+| `header_name` | string | Yes | HTTP response header name to inspect (case-insensitive) |
+| `header_value` | string | No | Trips when the header value exactly equals this string (case-insensitive). Mutually exclusive with `header_contains` |
+| `header_contains` | string | No | Trips when the header value contains this substring (case-insensitive). Mutually exclusive with `header_value`. If neither is set, the signal trips whenever the header is present |
+
+---
+
+## Signals
+
+Signals define what Bifrost watches for in the provider's HTTP response. Each signal inspects a single response header using one of three match modes:
+
+| Match Mode | Config | Trips when… |
+|-----------|--------|-------------|
+| **Exists** | Only `header_name` set | The header is present in the response, regardless of value |
+| **Equals** | `header_name` + `header_value` | The header value exactly matches (case-insensitive) |
+| **Contains** | `header_name` + `header_contains` | The header value contains the substring (case-insensitive) |
+
+---
+
+## Key-Level Sub-Circuits
+
+By default, a policy uses a single shared circuit for all API keys serving the configured primary provider and model. If one key is degraded, the circuit opens and _all_ requests to that provider+model route to the fallback — even requests that could have been served by a healthy key.
+
+Set `primary_key_ids` to a list of key UUIDs to enable per-key tracking:
+
+```json
+{
+  "primary_key_ids": ["key-uuid-1", "key-uuid-2", "key-uuid-3"]
+}
+```
+
+With sub-circuits, each key gets its own circuit state. The main circuit opens only when **all listed keys** have tripped. Until that point, healthy keys continue to receive traffic while degraded keys are excluded.
+
+---
+
+## Cooldown
+
+When the circuit opens, Bifrost blocks the primary provider for a cooldown duration before probing it again.
+
+### Static cooldown
+
+Set `default_cooldown` to a Go duration string. The circuit stays open for exactly this duration:
+
+```json
+{ "default_cooldown": "30s" }
+```
+
+Valid units: `ns`, `us`, `ms`, `s`, `m`, `h`.
+
+### Header-driven cooldown
+
+Some providers return a header telling clients how long to back off. Set `cooldown_header` to read that value (expected in milliseconds):
+
+```json
+{
+  "cooldown_header": "retry-after-ms",
+  "default_cooldown": "30s"
+}
+```
+
+When `retry-after-ms` is present and parsable, Bifrost uses its value as the cooldown. If the header is absent or cannot be parsed, `default_cooldown` is used as the fallback.
+
+---
+
+## Example: Azure PTU → PAYG Spillover
+
+Azure OpenAI Provisioned Throughput Units (PTU) offer predictable latency at fixed capacity. When PTU capacity is exhausted, Azure signals spillover via a response header. This policy detects that signal and routes subsequent requests to a Pay-As-You-Go deployment until the PTU recovers.
+
+```json
+{
+  "circuit_breaker_config": {
+    "policies": [
+      {
+        "name": "azure-gpt4o-ptu-spillover",
+        "enabled": true,
+        "primary_provider": "azure",
+        "primary_model": "gpt-4o-ptu",
+        "fallback_provider": "azure",
+        "fallback_model": "gpt-4o-paygo",
+        "condition": {
+          "operator": "OR",
+          "signals": [
+            {
+              "source": "response_header",
+              "header_name": "X-Ms-Is-Spilled-Over",
+              "header_value": "true"
+            }
+          ]
+        },
+        "default_cooldown": "30s"
+      }
+    ]
+  }
+}
+```
+
+**What happens:**
+
+1. Requests arrive targeting `gpt-4o-ptu` on Azure.
+2. When PTU capacity is exhausted, Azure returns `X-Ms-Is-Spilled-Over: true` in the response.
+3. Bifrost detects the header, opens the circuit for 30 seconds.
+4. All subsequent requests within the cooldown window are transparently rerouted to `gpt-4o-paygo` — no changes required in your application.
+5. After 30 seconds, Bifrost probes the PTU deployment again. If spillover is no longer signalled, the circuit closes and PTU traffic resumes.

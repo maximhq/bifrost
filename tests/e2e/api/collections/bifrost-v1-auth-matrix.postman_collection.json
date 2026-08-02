@@ -1,0 +1,238 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Auth Matrix",
+    "description": "Validates the separation between inference auth (governance / virtual key) and dashboard auth (admin password on /api/*). Driven by two env-vars set per boot config: enforce_auth (client.enforce_auth_on_inference) and admin_auth (governance.auth_config.is_enabled). The runner boots a fresh server per combination with a pre-seeded VK. Asserts: (1) VK-authenticated inference always passes the auth layer regardless of admin password; (2) inference without a VK is rejected by governance only when enforce_auth is on; (3) admin Basic auth is NOT a substitute for a VK on inference; (4) /api/* requires admin creds only when admin_auth is on.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8090", "type": "string" },
+    { "key": "chat_model", "value": "openai/gpt-4o", "type": "string" },
+    { "key": "vk_value", "value": "sk-bf-matrix-test-key", "type": "string" },
+    { "key": "admin_auth_header", "value": "", "type": "string" },
+    { "key": "enforce_auth", "value": "", "type": "string" },
+    { "key": "admin_auth", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Inference",
+      "item": [
+        {
+          "name": "Inference with VK passes auth layer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Core regression guard: a VK-authenticated inference request must pass the",
+                  "// auth layer in EVERY combination (including admin password on). The dummy",
+                  "// provider is unreachable, so 'auth passed' surfaces as a non-401 upstream",
+                  "// error, never a 401.",
+                  "var code = pm.response.code;",
+                  "pm.test('VK inference is not blocked by auth (code != 401)', function () {",
+                  "  pm.expect(code, 'body: ' + pm.response.text()).to.not.equal(401);",
+                  "});",
+                  "pm.test('VK inference response carries no virtual_key rejection', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_required');",
+                  "  pm.expect(pm.response.text()).to.not.include('virtual_key_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-bf-vk", "value": "{{vk_value}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "chat", "completions"]
+            }
+          }
+        },
+        {
+          "name": "Inference without credentials",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var enforce = String(pm.variables.get('enforce_auth') || '') === '1';",
+                  "var code = pm.response.code;",
+                  "if (enforce) {",
+                  "  pm.test('No-VK inference is rejected by governance (401)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('Rejection comes from governance (virtual_key_required)', function () {",
+                  "    pm.expect(pm.response.text()).to.include('virtual_key');",
+                  "    pm.expect(pm.response.text(), 'must not be the admin-middleware 401').to.not.equal('Unauthorized');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('No-VK inference passes auth layer when enforce is off (code != 401)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "chat", "completions"]
+            }
+          }
+        },
+        {
+          "name": "Inference with admin Basic but no VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Send admin Basic auth (when configured) but deliberately no VK. Admin",
+                  "// creds must NOT substitute for a VK on inference.",
+                  "var adminHeader = pm.variables.get('admin_auth_header');",
+                  "if (adminHeader) { pm.request.headers.upsert({ key: 'Authorization', value: adminHeader }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var enforce = String(pm.variables.get('enforce_auth') || '') === '1';",
+                  "var code = pm.response.code;",
+                  "if (enforce) {",
+                  "  pm.test('Admin Basic is not a VK substitute on inference (401)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('Rejection comes from governance (virtual_key_required)', function () {",
+                  "    pm.expect(pm.response.text()).to.include('virtual_key');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Admin Basic / no VK passes auth layer when enforce is off (code != 401)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.not.equal(401);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"{{chat_model}}\", \"messages\": [{\"role\": \"user\", \"content\": \"ok\"}], \"max_tokens\": 5}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "chat", "completions"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dashboard API",
+      "item": [
+        {
+          "name": "GET /api/config without admin creds",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var admin = String(pm.variables.get('admin_auth') || '') === '1';",
+                  "var code = pm.response.code;",
+                  "if (admin) {",
+                  "  pm.test('Admin route requires admin auth (401)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(401);",
+                  "  });",
+                  "  pm.test('Rejection is the admin-middleware Unauthorized', function () {",
+                  "    pm.expect(pm.response.text()).to.include('Unauthorized');",
+                  "  });",
+                  "} else {",
+                  "  pm.test('Admin route is open when admin auth is off (200)', function () {",
+                  "    pm.expect(code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            }
+          }
+        },
+        {
+          "name": "GET /api/config with admin creds",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var adminHeader = pm.variables.get('admin_auth_header');",
+                  "if (adminHeader) { pm.request.headers.upsert({ key: 'Authorization', value: adminHeader }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Admin creds (when set) open the route; when admin auth is off the route is",
+                  "// open anyway. Either way: 200.",
+                  "pm.test('Admin route is accessible with admin creds (200)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

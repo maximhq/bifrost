@@ -83,6 +83,16 @@ store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, log
 
 </Tabs>
 
+### Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `host` | string | — | Qdrant server host. Supports `env.VAR_NAME` syntax. **Required.** |
+| `port` | integer | `6334` | gRPC port. Bifrost always uses the gRPC interface. |
+| `api_key` | string | — | API key for Qdrant Cloud authentication. Supports `env.VAR_NAME` syntax. |
+| `use_tls` | boolean | `false` | Enable TLS. Required for Qdrant Cloud. |
+| `max_recv_msg_size_mb` | integer | `64` | gRPC max receive message size in MB. Increase when caching large payloads (e.g. base64-encoded image generation responses exceed the default). |
+
 <Note>
 Qdrant uses port 6334 for gRPC and port 6333 for REST. Bifrost uses the gRPC port.
 </Note>

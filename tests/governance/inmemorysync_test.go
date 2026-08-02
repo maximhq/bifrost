@@ -18,11 +18,12 @@ func TestInMemorySyncVirtualKeyUpdate(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -48,15 +49,12 @@ func TestInMemorySyncVirtualKeyUpdate(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
 	}
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-
 	// Check that VK exists in in-memory store
-	vkData, exists := virtualKeysMap[vkValue]
-	if !exists {
+	vkDataMap := FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue)
+	if vkDataMap == nil {
 		t.Fatalf("VK %s not found in in-memory store after creation", vkValue)
 	}
 
-	vkDataMap := vkData.(map[string]interface{})
 	vkID2, _ := vkDataMap["id"].(string)
 	if vkID2 != vkID {
 		t.Fatalf("VK ID mismatch in in-memory store: expected %s, got %s", vkID, vkID2)
@@ -70,9 +68,10 @@ func TestInMemorySyncVirtualKeyUpdate(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/virtual-keys/" + vkID,
 		Body: UpdateVirtualKeyRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit: &newBudget,
-			},
+			Budgets: []BudgetRequest{{
+				MaxLimit:      newBudget,
+				ResetDuration: "1h",
+			}},
 		},
 	})
 
@@ -94,32 +93,26 @@ func TestInMemorySyncVirtualKeyUpdate(t *testing.T) {
 		t.Fatalf("Failed to get governance data after update: status %d", getVKResp2.StatusCode)
 	}
 
-	virtualKeysMap2 := getVKResp2.Body["virtual_keys"].(map[string]interface{})
-
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-
 	// Check that VK still exists
-	vkData2, exists := virtualKeysMap2[vkValue]
-	if !exists {
+	vkDataMap2 := FindListItem(t, getVKResp2.Body, "virtual_keys", "value", vkValue)
+	if vkDataMap2 == nil {
 		t.Fatalf("VK %s not found in in-memory store after update", vkValue)
 	}
 
-	vkDataMap2 := vkData2.(map[string]interface{})
-	budgetID, _ := vkDataMap2["budget_id"].(string)
+	budgetID := FirstBudgetID(vkDataMap2)
 
 	// Check that budget in in-memory store is updated
 	if budgetID != "" {
-		budgetData, budgetExists := budgetsMap2[budgetID]
-		if !budgetExists {
+		budgetDataMap := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+		if budgetDataMap == nil {
 			t.Fatalf("Budget %s not found in in-memory store", budgetID)
 		}
 
-		budgetDataMap := budgetData.(map[string]interface{})
 		maxLimit, _ := budgetDataMap["max_limit"].(float64)
 		if maxLimit != newBudget {
 			t.Fatalf("Budget max_limit not updated in in-memory store: expected %.2f, got %.2f", newBudget, maxLimit)
@@ -169,10 +162,7 @@ func TestInMemorySyncTeamUpdate(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
 	}
 
-	teamsMap := getDataResp.Body["teams"].(map[string]interface{})
-
-	_, exists := teamsMap[teamID]
-	if !exists {
+	if FindListItem(t, getDataResp.Body, "teams", "id", teamID) == nil {
 		t.Fatalf("Team %s not found in in-memory store after creation", teamID)
 	}
 
@@ -209,22 +199,17 @@ func TestInMemorySyncTeamUpdate(t *testing.T) {
 		t.Fatalf("Failed to get governance data after update: status %d", getTeamsResp2.StatusCode)
 	}
 
-	teamsMap2 := getTeamsResp2.Body["teams"].(map[string]interface{})
-
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-
-	teamData2, exists := teamsMap2[teamID]
-	if !exists {
+	teamDataMap := FindListItem(t, getTeamsResp2.Body, "teams", "id", teamID)
+	if teamDataMap == nil {
 		t.Fatalf("Team %s not found in in-memory store after update", teamID)
 	}
 
-	teamDataMap := teamData2.(map[string]interface{})
-	// Teams now expose a `budgets` array instead of a single `budget_id` — read the first.
+	// Teams now expose a `budgets` array instead of a single `budget_id` - read the first.
 	var budgetID string
 	if budgetsList, ok := teamDataMap["budgets"].([]interface{}); ok && len(budgetsList) > 0 {
 		if b, ok := budgetsList[0].(map[string]interface{}); ok {
@@ -233,12 +218,11 @@ func TestInMemorySyncTeamUpdate(t *testing.T) {
 	}
 
 	if budgetID != "" {
-		budgetData, budgetExists := budgetsMap2[budgetID]
-		if !budgetExists {
+		budgetDataMap := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+		if budgetDataMap == nil {
 			t.Fatalf("Budget %s not found in in-memory store", budgetID)
 		}
 
-		budgetDataMap := budgetData.(map[string]interface{})
 		maxLimit, _ := budgetDataMap["max_limit"].(float64)
 		if maxLimit != newTeamBudget {
 			t.Fatalf("Team budget max_limit not updated in in-memory store: expected %.2f, got %.2f", newTeamBudget, maxLimit)
@@ -262,10 +246,10 @@ func TestInMemorySyncCustomerUpdate(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      initialBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -288,10 +272,7 @@ func TestInMemorySyncCustomerUpdate(t *testing.T) {
 		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
 	}
 
-	customersMap := getDataResp.Body["customers"].(map[string]interface{})
-
-	_, exists := customersMap[customerID]
-	if !exists {
+	if FindListItem(t, getDataResp.Body, "customers", "id", customerID) == nil {
 		t.Fatalf("Customer %s not found in in-memory store after creation", customerID)
 	}
 
@@ -303,9 +284,10 @@ func TestInMemorySyncCustomerUpdate(t *testing.T) {
 		Method: "PUT",
 		Path:   "/api/governance/customers/" + customerID,
 		Body: UpdateCustomerRequest{
-			Budget: &UpdateBudgetRequest{
-				MaxLimit: &newCustomerBudget,
-			},
+			Budgets: []BudgetRequest{{
+				MaxLimit:      newCustomerBudget,
+				ResetDuration: "1h",
+			}},
 		},
 	})
 
@@ -327,30 +309,24 @@ func TestInMemorySyncCustomerUpdate(t *testing.T) {
 		t.Fatalf("Failed to get governance data after update: status %d", getCustomersResp2.StatusCode)
 	}
 
-	customersMap2 := getCustomersResp2.Body["customers"].(map[string]interface{})
-
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/budgets?from_memory=true",
 	})
 
-	budgetsMap2 := getBudgetsResp2.Body["budgets"].(map[string]interface{})
-
-	customerData2, exists := customersMap2[customerID]
-	if !exists {
+	customerDataMap := FindListItem(t, getCustomersResp2.Body, "customers", "id", customerID)
+	if customerDataMap == nil {
 		t.Fatalf("Customer %s not found in in-memory store after update", customerID)
 	}
 
-	customerDataMap := customerData2.(map[string]interface{})
-	budgetID, _ := customerDataMap["budget_id"].(string)
+	budgetID := FirstBudgetID(customerDataMap)
 
 	if budgetID != "" {
-		budgetData, budgetExists := budgetsMap2[budgetID]
-		if !budgetExists {
+		budgetDataMap := FindListItem(t, getBudgetsResp2.Body, "budgets", "id", budgetID)
+		if budgetDataMap == nil {
 			t.Fatalf("Budget %s not found in in-memory store", budgetID)
 		}
 
-		budgetDataMap := budgetData.(map[string]interface{})
 		maxLimit, _ := budgetDataMap["max_limit"].(float64)
 		if maxLimit != newCustomerBudget {
 			t.Fatalf("Customer budget max_limit not updated in in-memory store: expected %.2f, got %.2f", newCustomerBudget, maxLimit)
@@ -372,11 +348,12 @@ func TestInMemorySyncVirtualKeyDelete(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      10.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -401,13 +378,7 @@ func TestInMemorySyncVirtualKeyDelete(t *testing.T) {
 			return false
 		}
 
-		virtualKeysMap, ok := getDataResp.Body["virtual_keys"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-
-		_, exists := virtualKeysMap[vkValue]
-		return exists
+		return FindListItem(t, getDataResp.Body, "virtual_keys", "value", vkValue) != nil
 	}, 5*time.Second, "VK exists in in-memory store after creation")
 
 	if !vkExists {
@@ -439,13 +410,8 @@ func TestInMemorySyncVirtualKeyDelete(t *testing.T) {
 			return false
 		}
 
-		virtualKeysMap2, ok := getDataResp2.Body["virtual_keys"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-
-		_, exists := virtualKeysMap2[vkValue]
-		return !exists // Return true when VK is NOT found (successfully removed)
+		// Return true when VK is NOT found (successfully removed)
+		return FindListItem(t, getDataResp2.Body, "virtual_keys", "value", vkValue) == nil
 	}, 5*time.Second, "VK removed from in-memory store after deletion")
 
 	if !vkRemoved {
@@ -467,11 +433,12 @@ func TestDataEndpointConsistency(t *testing.T) {
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name: vkName,
-			Budget: &BudgetRequest{
+			Name:            vkName,
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets: []BudgetRequest{{
 				MaxLimit:      15.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -500,10 +467,10 @@ func TestDataEndpointConsistency(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      60.0,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -567,14 +534,10 @@ func TestDataEndpointConsistency(t *testing.T) {
 		t.Fatalf("Failed to get customers: status %d", getCustomersResp.StatusCode)
 	}
 
-	virtualKeysMap := getVKResp.Body["virtual_keys"].(map[string]interface{})
-	teamsMap := getTeamsResp.Body["teams"].(map[string]interface{})
-	customersMap := getCustomersResp.Body["customers"].(map[string]interface{})
-
 	// Verify all created resources are in the in-memory data
-	vkCount := len(virtualKeysMap)
-	teamCount := len(teamsMap)
-	customerCount := len(customersMap)
+	vkCount := len(ListItemsFromResponse(t, getVKResp.Body, "virtual_keys"))
+	teamCount := len(ListItemsFromResponse(t, getTeamsResp.Body, "teams"))
+	customerCount := len(ListItemsFromResponse(t, getCustomersResp.Body, "customers"))
 
 	if vkCount == 0 {
 		t.Fatalf("No virtual keys found in data endpoint")

@@ -132,10 +132,13 @@ func (s *RDBConfigStore) DeleteFolder(ctx context.Context, id string) error {
 // Prompt Repository - Prompts
 // ============================================================================
 
-// GetPrompts gets all prompts, optionally filtered by folder ID
+// GetPrompts gets all prompts, optionally filtered by folder ID.
+//
+// When ctx carries a QueryScope, the query is narrowed to prompts the
+// caller is allowed to see.
 func (s *RDBConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error) {
 	var prompts []tables.TablePrompt
-	query := s.DB().WithContext(ctx).
+	query := s.ScopedDB(ctx).
 		Preload("Folder").
 		Order("created_at DESC")
 
@@ -165,12 +168,15 @@ func (s *RDBConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]ta
 	return prompts, nil
 }
 
-// GetPromptByID gets a prompt by ID with latest version
+// GetPromptByID gets a prompt by ID with latest version.
+//
+// When ctx carries a QueryScope, a prompt that exists but falls
+// outside the scope returns ErrNotFound so URL guessing cannot
+// distinguish "hidden" from "absent".
 func (s *RDBConfigStore) GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error) {
 	var prompt tables.TablePrompt
-	if err := s.DB().WithContext(ctx).
-		Preload("Folder").
-		First(&prompt, "id = ?", id).Error; err != nil {
+	q := s.ScopedDB(ctx).Preload("Folder")
+	if err := q.First(&prompt, "prompts.id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -193,9 +199,15 @@ func (s *RDBConfigStore) GetPromptByID(ctx context.Context, id string) (*tables.
 	return &prompt, nil
 }
 
-// CreatePrompt creates a new prompt
-func (s *RDBConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
-	return s.DB().WithContext(ctx).Create(prompt).Error
+// CreatePrompt creates a new prompt. The optional tx allows callers to
+// chain the insert with follow-up writes in a single transaction (used
+// by the enterprise wrapper to atomically stamp ownership columns).
+func (s *RDBConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt, tx ...*gorm.DB) error {
+	db := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		db = tx[0]
+	}
+	return db.WithContext(ctx).Create(prompt).Error
 }
 
 // UpdatePrompt updates a prompt

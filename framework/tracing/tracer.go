@@ -13,17 +13,43 @@ import (
 	"github.com/maximhq/bifrost/framework/streaming"
 )
 
+const (
+	// maxConcurrentInjectsPerPlugin bounds how many traces may sit inside a single
+	// observability connector's Inject at once. A connector pointed at a wrong or
+	// black-holed endpoint blocks on network I/O while pinning a full trace snapshot;
+	// uncapped that is one goroutine and one snapshot per request, whose heap and
+	// scheduler pressure starves the rest of the process — notably the logging
+	// plugin's single DB batch writer, whose queue then drops rows silently.
+	// Each connector gets its own budget so a stalled one cannot crowd out a healthy one.
+	maxConcurrentInjectsPerPlugin = 1024
+
+	// flushStopTimeout bounds how long Stop waits for in-flight trace exports, so a
+	// hung collector cannot block shutdown or a config reload.
+	flushStopTimeout = 10 * time.Second
+)
+
+// obsPluginSlot pairs an observability plugin with its own concurrency budget and
+// drop counter. Isolating the budget per connector is what keeps a misconfigured
+// exporter from consuming the capacity that healthy connectors need.
+type obsPluginSlot struct {
+	plugin  schemas.ObservabilityPlugin
+	name    string
+	sem     chan struct{}
+	dropped atomic.Int64
+}
+
 // Tracer implements schemas.Tracer using TraceStore.
 // It provides the bridge between the core Tracer interface and the
 // framework's TraceStore implementation.
 // It also embeds a streaming.Accumulator for centralized streaming chunk accumulation.
 type Tracer struct {
-	store          *TraceStore
-	accumulator    *streaming.Accumulator
-	pricingManager *modelcatalog.ModelCatalog
-	logger         schemas.Logger
-	obsPlugins     atomic.Pointer[[]schemas.ObservabilityPlugin]
-	flushWG        sync.WaitGroup
+	store             *TraceStore
+	accumulator       *streaming.Accumulator
+	pricingManager    *modelcatalog.ModelCatalog
+	logger            schemas.Logger
+	obsPlugins        atomic.Pointer[[]*obsPluginSlot]
+	cachedHdrPatterns atomic.Pointer[[]string]
+	flushWG           sync.WaitGroup
 }
 
 // NewTracer creates a new Tracer wrapping the given TraceStore.
@@ -35,16 +61,110 @@ func NewTracer(store *TraceStore, pricingManager *modelcatalog.ModelCatalog, log
 		accumulator:    streaming.NewAccumulator(pricingManager, logger),
 		pricingManager: pricingManager,
 		logger:         logger,
-		obsPlugins:     atomic.Pointer[[]schemas.ObservabilityPlugin]{},
+		obsPlugins:     atomic.Pointer[[]*obsPluginSlot]{},
 	}
 }
 
 // SetObservabilityPlugins updates the plugins that receive completed traces.
+// It also precomputes the deduplicated, normalized union of request-header patterns
+// requested by those plugins so the per-request capture path is a single atomic load.
 func (t *Tracer) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
 	if t == nil {
 		return
 	}
-	t.obsPlugins.Store(&obsPlugins)
+	// Build one slot per distinct plugin, each with its own concurrency budget.
+	// Deduplication by name happens here rather than on every flush, so the hot
+	// path does not rebuild a map per trace.
+	slots := make([]*obsPluginSlot, 0, len(obsPlugins))
+	seenPlugins := make(map[string]struct{}, len(obsPlugins))
+	for _, plugin := range obsPlugins {
+		if plugin == nil {
+			continue
+		}
+		name := plugin.GetName()
+		if _, exists := seenPlugins[name]; exists {
+			continue
+		}
+		seenPlugins[name] = struct{}{}
+		slots = append(slots, &obsPluginSlot{
+			plugin: plugin,
+			name:   name,
+			sem:    make(chan struct{}, maxConcurrentInjectsPerPlugin),
+		})
+	}
+	t.obsPlugins.Store(&slots)
+
+	seen := make(map[string]struct{})
+	var patterns []string
+	for _, plugin := range obsPlugins {
+		if w, ok := plugin.(interface{ RequestHeaderPatterns() []string }); ok {
+			for _, p := range w.RequestHeaderPatterns() {
+				normalized := strings.ToLower(strings.TrimSpace(p))
+				if normalized == "" {
+					continue
+				}
+				if _, exists := seen[normalized]; !exists {
+					seen[normalized] = struct{}{}
+					patterns = append(patterns, normalized)
+				}
+			}
+		}
+	}
+	t.cachedHdrPatterns.Store(&patterns)
+}
+
+// ShouldCaptureRequestHeaders reports whether any observability plugin has opted into
+// request-header capture (by implementing RequestHeaderPatterns). Derived from the cached
+// pattern union computed in SetObservabilityPlugins, so there is no per-request recompute.
+func (t *Tracer) ShouldCaptureRequestHeaders() bool {
+	cached := t.cachedHdrPatterns.Load()
+	return cached != nil && len(*cached) > 0
+}
+
+// CollectRequestHeaderPatterns returns the deduplicated union of header patterns
+// requested by all observability plugins. The middleware uses this to capture only
+// matched headers onto the trace, keeping the trace lean. The union is precomputed in
+// SetObservabilityPlugins; this is a single atomic load.
+func (t *Tracer) CollectRequestHeaderPatterns() []string {
+	cached := t.cachedHdrPatterns.Load()
+	if cached == nil {
+		return nil
+	}
+	return *cached
+}
+
+// SetTraceRequestHeaders filters the given request headers down to the union of
+// patterns requested by observability plugins and stores the matched subset on the
+// trace. Header keys are expected to be lowercased by the caller.
+func (t *Tracer) SetTraceRequestHeaders(traceID string, headers map[string]string) {
+	if len(headers) == 0 {
+		return
+	}
+	patterns := t.CollectRequestHeaderPatterns()
+	matched := schemas.FilterHeaders(headers, patterns)
+	if len(matched) == 0 {
+		return
+	}
+	t.store.SetRequestHeaders(traceID, matched)
+}
+
+// SetTraceAttribute sets a trace-level attribute. Trace attributes are never
+// exported as OTEL/Datadog span attributes; observability connectors read them
+// directly off the completed trace.
+func (t *Tracer) SetTraceAttribute(traceID string, key string, value any) {
+	t.store.SetTraceAttribute(traceID, key, value)
+}
+
+// SetTraceRedactionReplacements stores phase-scoped connector-facing replacements on a trace.
+func (t *Tracer) SetTraceRedactionReplacements(traceID string, phase schemas.RedactionPhase, replacements map[string]string) {
+	if t == nil || t.store == nil || strings.TrimSpace(traceID) == "" || len(replacements) == 0 {
+		return
+	}
+	trace := t.store.GetTrace(strings.TrimSpace(traceID))
+	if trace == nil {
+		return
+	}
+	trace.SetRedactionReplacements(phase, replacements)
 }
 
 // CreateTrace creates a new trace with optional parent ID and returns the trace ID.
@@ -248,7 +368,9 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	respAttrs := PopulateResponseAttributes(resp)
 	for k, v := range respAttrs {
 		if k == schemas.AttrFinishReasons {
-			// llm.call span gets the singular finish_reason (first element only)
+			// Spec: gen_ai.response.finish_reasons (string[]) belongs on the GenAI (llm.call) span.
+			span.SetAttribute(schemas.AttrFinishReasons, v)
+			// legacy: also expose the singular scalar finish_reason (first element) for back-compat.
 			if reasons, ok := v.([]string); ok && len(reasons) > 0 {
 				span.SetAttribute(schemas.AttrFinishReason, reasons[0])
 			}
@@ -259,6 +381,23 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	for k, v := range PopulateErrorAttributes(err) {
 		span.SetAttribute(k, v)
 	}
+
+	// Enrichment dimensions derivable only post-response, attached here so every
+	// connector reads them from one place (see core/schemas EnrichmentDims):
+	//   - alias: the originally requested model when it differs from the resolved
+	//     model (an alias was matched or a fallback swapped the model).
+	//   - routing_engine_used: the comma-joined set of routing engines that handled
+	//     the request; the context list is only complete once routing has run.
+	if resp != nil {
+		ef := resp.GetExtraFields()
+		if ef.ResolvedModelUsed != "" && ef.ResolvedModelUsed != ef.OriginalModelRequested && ef.OriginalModelRequested != "" {
+			span.SetAttribute(schemas.AttrBifrostAlias, ef.OriginalModelRequested)
+		}
+	}
+	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok && len(engines) > 0 {
+		span.SetAttribute(schemas.AttrBifrostRoutingEngineUsed, strings.Join(engines, ","))
+	}
+
 	// Populate cost attribute using pricing manager
 	if t.pricingManager != nil && resp != nil {
 		cost := t.pricingManager.CalculateCost(resp, modelcatalog.PricingLookupScopesFromContext(ctx, string(resp.GetExtraFields().Provider)))
@@ -363,6 +502,118 @@ func (t *Tracer) CreateStreamAccumulator(traceID string, startTime time.Time) {
 	t.accumulator.CreateStreamAccumulator(traceID, startTime)
 }
 
+// PauseStream marks the active streaming response identified by traceID as paused.
+// While paused, post-processed chunks are buffered (not delivered to the client) but
+// PostLLMHooks continue to fire. Idempotent. No-op if no accumulator is associated.
+func (t *Tracer) PauseStream(traceID string) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.PauseStream(traceID)
+}
+
+// ResumeStream resumes a previously paused stream. Buffered chunks are flushed to
+// the client in order, then live streaming continues. Idempotent.
+func (t *Tracer) ResumeStream(traceID string) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.ResumeStream(traceID)
+}
+
+// ResumeStreamWithReplayInterval arms fixed-interval replay after the in-flight chunk reaches the core gate.
+func (t *Tracer) ResumeStreamWithReplayInterval(traceID string, eventInterval time.Duration) bool {
+	if traceID == "" || t.accumulator == nil {
+		return false
+	}
+	return t.accumulator.ResumeStreamWithReplayInterval(traceID, eventInterval)
+}
+
+// ClearPausedStreamBuffer drops chunks buffered while traceID is paused.
+func (t *Tracer) ClearPausedStreamBuffer(traceID string) error {
+	if traceID == "" || t.accumulator == nil {
+		return nil
+	}
+	return t.accumulator.ClearPausedStreamBuffer(traceID)
+}
+
+// EndStream terminates the streaming response. Any buffered chunks are flushed
+// first; if err is non-nil it is then delivered as a terminal error chunk. After
+// EndStream, all further provider chunks are dropped (PostLLMHook still fires).
+func (t *Tracer) EndStream(traceID string, err *schemas.BifrostError) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.EndStream(traceID, err)
+}
+
+// WaitForFlusher blocks until the gate flusher for traceID has finished
+// delivering buffered chunks (or aborted via ctx cancellation). Used by
+// provider close paths to coordinate with paused streams. See
+// schemas.Tracer.WaitForFlusher for full semantics.
+func (t *Tracer) WaitForFlusher(traceID string) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.WaitForFlusher(traceID)
+}
+
+// IsStreamEnded reports whether the gate for traceID is in the Ended state.
+// See schemas.Tracer.IsStreamEnded for full semantics.
+func (t *Tracer) IsStreamEnded(traceID string) bool {
+	if traceID == "" || t.accumulator == nil {
+		return false
+	}
+	return t.accumulator.IsStreamEnded(traceID)
+}
+
+// IsStreamPaused reports whether the gate for traceID is currently Paused.
+// See schemas.Tracer.IsStreamPaused for full semantics.
+func (t *Tracer) IsStreamPaused(traceID string) bool {
+	if traceID == "" || t.accumulator == nil {
+		return false
+	}
+	return t.accumulator.IsStreamPaused(traceID)
+}
+
+// GetAccumulatedResponse returns a snapshot BifrostResponse built on demand
+// from the accumulator's current chunks. See schemas.Tracer.GetAccumulatedResponse
+// for full semantics.
+func (t *Tracer) GetAccumulatedResponse(traceID string) *schemas.BifrostResponse {
+	if traceID == "" || t.accumulator == nil {
+		return nil
+	}
+	return t.accumulator.GetAccumulatedResponse(traceID)
+}
+
+// GateSend delivers a stream chunk through the pause/resume/end gate. Replaces
+// direct channel sends in provider helpers so plugin-driven pause/resume can
+// take effect. See schemas.Tracer.GateSend for full semantics.
+func (t *Tracer) GateSend(traceID string, chunk *schemas.BifrostStreamChunk, isFinal, isHardErr bool, ch chan *schemas.BifrostStreamChunk, ctx *schemas.BifrostContext) (ok bool) {
+	if t.accumulator == nil || traceID == "" {
+		// Fallback to direct send when no accumulator is wired (defensive).
+		// Recover from "send on closed channel" so a closed consumer cannot
+		// crash the provider goroutine — matches NoOpTracer.GateSend and
+		// GateSendChunk's non-gated fast path.
+		defer func() {
+			if recover() != nil {
+				ok = false
+			}
+		}()
+		if ctx == nil {
+			ch <- chunk
+			return true
+		}
+		select {
+		case ch <- chunk:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return t.accumulator.GateSend(traceID, chunk, isFinal, isHardErr, ch, ctx)
+}
+
 // CleanupStreamAccumulator removes the stream accumulator for the given trace ID.
 // This should be called after the streaming request is complete.
 func (t *Tracer) CleanupStreamAccumulator(traceID string) {
@@ -379,11 +630,24 @@ func (t *Tracer) CleanupStreamAccumulator(traceID string) {
 	}
 }
 
+// ForceCleanupStreamAccumulator reaps the stream accumulator for the given trace
+// ID regardless of its reference counter. It is the guaranteed end-of-stream
+// backstop, called from the transport's trace completer once the stream has fully
+// drained, so an aborted or otherwise non-cleanly-terminated stream (or a
+// multi-plugin refcount imbalance) cannot leak its accumulator.
+func (t *Tracer) ForceCleanupStreamAccumulator(traceID string) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.ForceCleanupStreamAccumulator(traceID)
+}
+
 // ProcessStreamingChunk processes a streaming chunk and accumulates it.
-// Returns the accumulated result. IsFinal will be true when the stream is complete.
+// Returns the accumulated result when isFinalChunk is true and the stream is complete;
+// returns nil for non-final chunks.
 // This method is used by plugins to access accumulated streaming data.
-// The ctx parameter must contain the stream end indicator for proper final chunk detection.
-func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result *schemas.BifrostResponse, err *schemas.BifrostError) *schemas.StreamAccumulatorResult {
+// Set isFinalChunk to indicate whether the current chunk is the last in the stream.
+func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID string, isFinalChunk bool, result *schemas.BifrostResponse, err *schemas.BifrostError) *schemas.StreamAccumulatorResult {
 	if traceID == "" || t.accumulator == nil {
 		return nil
 	}
@@ -392,6 +656,12 @@ func (t *Tracer) ProcessStreamingChunk(traceID string, isFinalChunk bool, result
 	accumCtx := schemas.NewBifrostContext(context.Background(), time.Time{})
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
+
+	// Forward relevant context values to the new context
+	if ctx != nil {
+		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
 	if processErr != nil || processedResp == nil {
@@ -470,12 +740,34 @@ func (t *Tracer) AttachPluginLogs(traceID string, logs []schemas.PluginLogEntry)
 // Stop stops the tracer and releases its resources.
 // This stops the internal TraceStore's cleanup goroutine.
 func (t *Tracer) Stop() {
-	t.flushWG.Wait()
+	// Bounded wait: a connector blocked on an unreachable collector would otherwise
+	// hold up shutdown and config reload indefinitely (gRPC exports carry no deadline
+	// of their own).
+	t.waitForFlushes(flushStopTimeout)
 	if t.store != nil {
 		t.store.Stop()
 	}
 	if t.accumulator != nil {
 		t.accumulator.Cleanup()
+	}
+}
+
+// waitForFlushes waits for in-flight trace exports, giving up after timeout.
+// Returns true if every flush completed within the budget.
+func (t *Tracer) waitForFlushes(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		t.flushWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		if t.logger != nil {
+			t.logger.Warn("timed out after %s waiting for in-flight trace exports; continuing shutdown", timeout)
+		}
+		return false
 	}
 }
 
@@ -499,35 +791,85 @@ func (t *Tracer) CompleteAndFlushTrace(traceID string) {
 		// trace object and takes down the whole process.
 		defer t.ReleaseTrace(completedTrace)
 
-		var obsPlugins []schemas.ObservabilityPlugin
+		completedTrace.ApplyRedactionReplacements()
+
+		// Give every connector a private, lock-safe snapshot. Late writers may
+		// still mutate the pooled spans under the span lock (streaming
+		// finalization, redaction), and connectors iterate the attribute maps
+		// (directly or via Marshal) — racing them fatals with "concurrent map
+		// iteration and map write", which recover() can't catch. One snapshot
+		// here covers all connectors.
+		exportTrace := completedTrace.SnapshotForExport()
+
+		// Stamp Bifrost's overhead onto the snapshot's root span now that it has
+		// ended. Done here — one write, before any connector reads the snapshot —
+		// so every trace connector sees the same value on the root span.
+		exportTrace.StampOverheadDuration()
+
+		var slots []*obsPluginSlot
 		if loaded := t.obsPlugins.Load(); loaded != nil {
-			obsPlugins = *loaded
+			slots = *loaded
 		}
-		seen := make(map[string]struct{}, len(obsPlugins))
-		for _, plugin := range obsPlugins {
-			if plugin == nil {
+
+		// Fan out rather than iterate: every connector receives the trace on its own
+		// goroutine, so a connector doing blocking network I/O can never delay another.
+		// This used to be a sequential loop, where only the builtin plugin ordering
+		// (logging before otel) kept a stalled exporter from sitting in front of the
+		// logging plugin's DB enqueue — accidental protection that any custom or
+		// reordered connector would have removed.
+		var wg sync.WaitGroup
+		for _, slot := range slots {
+			// Non-blocking acquire. A saturated connector is skipped and counted; parking
+			// yet another goroutine on it is exactly the failure this cap exists to stop.
+			select {
+			case slot.sem <- struct{}{}:
+			default:
+				// Throttled: at saturation this fires once per request, which would make
+				// the logging itself a second source of load.
+				if n := slot.dropped.Add(1); (n == 1 || n%1000 == 0) && t.logger != nil {
+					t.logger.Warn("observability plugin %s saturated at %d concurrent injects, skipped trace %s (%d skipped so far)",
+						slot.name, maxConcurrentInjectsPerPlugin, exportTrace.TraceID, n)
+				}
 				continue
 			}
-			// Isolate each plugin callback — one bad observability backend should
-			// not crash the server or prevent other plugins from receiving the trace.
-			func(plugin schemas.ObservabilityPlugin) {
-				name := "<unknown>"
+			wg.Add(1)
+			go func(slot *obsPluginSlot) {
+				defer wg.Done()
+				defer func() { <-slot.sem }()
+				// Isolate each plugin callback — one bad observability backend should
+				// not crash the server or prevent other plugins from receiving the trace.
 				defer func() {
 					if r := recover(); r != nil && t.logger != nil {
-						t.logger.Error("observability plugin %s panicked during trace injection: %v", name, r)
+						t.logger.Error("observability plugin %s panicked during trace injection: %v", slot.name, r)
 					}
 				}()
-				name = plugin.GetName()
-				if _, exists := seen[name]; exists {
-					return
+				if err := slot.plugin.Inject(context.Background(), exportTrace); err != nil && t.logger != nil {
+					t.logger.Warn("observability plugin %s failed to inject trace: %v", slot.name, err)
 				}
-				seen[name] = struct{}{}
-				if err := plugin.Inject(context.Background(), completedTrace); err != nil && t.logger != nil {
-					t.logger.Warn("observability plugin %s failed to inject trace: %v", name, err)
-				}
-			}(plugin)
+			}(slot)
 		}
+		// Join before the deferred ReleaseTrace runs: connectors read exportTrace, and
+		// the pooled trace it was snapshotted from must not be recycled underneath them.
+		wg.Wait()
 	})
+}
+
+// ObservabilityDropCounts returns, per observability plugin name, how many traces were
+// skipped because that plugin was already at its concurrency cap. A non-zero and rising
+// count means the connector's backend is unreachable or too slow to keep up.
+func (t *Tracer) ObservabilityDropCounts() map[string]int64 {
+	if t == nil {
+		return nil
+	}
+	loaded := t.obsPlugins.Load()
+	if loaded == nil {
+		return nil
+	}
+	counts := make(map[string]int64, len(*loaded))
+	for _, slot := range *loaded {
+		counts[slot.name] = slot.dropped.Load()
+	}
+	return counts
 }
 
 // Ensure Tracer implements schemas.Tracer at compile time

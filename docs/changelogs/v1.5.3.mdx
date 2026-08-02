@@ -1,0 +1,194 @@
+---
+title: "v1.5.3"
+description: "v1.5.3 changelog - 2026-05-20"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.3
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.3
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.3
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.3">
+## ✨ Features
+
+- **Temporary Access Tokens** - Short-lived access tokens for scoped, time-limited API access (#3603)
+- **MCP Per-User OAuth** - Refactored MCP OAuth into a per-user flow (#3565)
+- **Bedrock Mantle Engine** - Bedrock Mantle inference engine support for `gpt-oss` models via an OpenAI-compatible SSE endpoint (#3489)
+- **Azure Realtime Provider** - Azure realtime provider with nested model normalization, plus enriched realtime routing, logging, cost, and session tracking (#3334, #3335, #3336)
+- **Bedrock System Tools** - System tool support for Bedrock models (#3435)
+- **Service Tier Mappings** - Service tier mappings for Gemini and Anthropic (#3554)
+- **Team-Level Calendar Alignment** - Calendar-aligned budgets at the team level (#3476)
+- **Feature Flags** - Feature flag framework for gating functionality (#3581)
+- **Config Hash Override** - File values in `config.json` now override DB values when the file changes between restarts; `model_parameters_url` is configurable via config JSON and Helm chart (#3608, #3609, #3610)
+- **Direct Access Control** - `access_profile_id` on virtual keys for direct access profile assignment, plus DAC support (#3198, #3560)
+- **Virtual Key Rotation** - Rotate virtual keys from the UI and backend (#3599, #3600)
+- **Cluster-Aware Logging** - Cluster-aware log metadata and per-node usage aggregation (#3590)
+- **Dashboard RBAC** - Granular RBAC for API keys, inference, metrics, MCP logs, and dashboard access, with inaccessible sidebar items filtered (#3295, #3316, #3613)
+- **Onboarding Widget** - Onboarding setup checklist widget with backend support (#3605, #3606)
+- **Broker Mode** - Broker mode schema and configuration (#3509)
+- **Server-Side Filter Search** - Server-side search and pagination on filter sidebar checkbox lists via a debounced `q` query param (#3563, #3567, #3568)
+- **OTEL Plugin Selection** - Custom selection of plugins for OTEL trace-span exports (#3382)
+- **UI Action Menus** - Inline action buttons replaced with pinned dropdown menus across teams, virtual keys, MCP clients, pricing overrides, routing rules, model limits, and logs tables (#3480, #3483, #3484, #3485, #3486, #3487)
+- **Dashboard Chart Polish** - Animated totals/averages and full-precision tooltips on chart card headers (#3499, #3501)
+
+## 🐞 Fixed
+
+- **fasthttp Panic** - Fixed a fasthttp panic on malformed requests (#3595)
+- **Streaming Stability** - Fixed a remote-stream-close race on context cancel, a nil pointer deref in stream cancellations, idle stream timeouts, and context-cancel ordering before read errors (#3495, #3522, #3582, #3591)
+- **Bedrock Fixes** - Bedrock Mantle fixes, chat tool arguments, stop reason, missing lifecycle events, and Responses prefill handling (#3506, #3517, #3527, #3564, #3566)
+- **OpenAI Responses** - Preserve OpenAI responses stream metadata and add usage to the completed event in the Responses-to-Chat-Completions fallback (#3519, #3528, #3530) (thanks [@etnperlong](https://github.com/etnperlong)! and [@kevinpdev](https://github.com/kevinpdev)!)
+- **Anthropic Fixes** - Set Anthropic beta headers on Vertex, emit role chunk from message start, trim trailing whitespace, fix reasoning-content forwarding on Responses->Chat conversion, and preserve output schema refs (#3449, #3496, #3575, #3584, #3585) (thanks [@Javtor](https://github.com/Javtor)!)
+- **Gemini Fixes** - Remove the non-native `fallbacks` key from Gemini requests (#3464)
+- **Pricing Overrides** - VK and provider-key level pricing overrides now apply to streaming requests (#3421)
+- **Secret Redaction** - `FullyRedacted()` for proxy passwords and `MarshalForStorage()` for `ProxyConfig` prevent partial value leakage in API responses (#3445)
+- **Calendar-Aligned Migrations** - Multiple migration fixes for calendar-aligned budget tables (#3452, #3535, #3553, #3614)
+- **Semantic Cache** - Dimension check on namespace creation, double-close panic guard, request-time plugin resolution, and telemetry decoupling (#3423, #3424, #3532, #3611)
+- **Filter Queries** - Removed the `defaultFilterDataLimit` cap and skip pagination clamp on VK export requests (#3416, #3561)
+- **MCP Logs** - Remove stale stats from the logs list response (#3583)
+- **configstore** - Improve error message when an API key name conflicts across providers (#3574)
+- **DB Safety** - Replace unsafe inline jsonb cast with a `bifrost_safe_jsonb` PL/pgSQL helper (#3407)
+- **Azure Batch** - Include Azure blob fields in batch responses (#3469)
+- **UI Fixes** - Validate OAuth popup messages, constrain table column widths, fix provider API structure form padding, and pass through extra image params (#2615, #3481, #3482, #3513, #3572) (thanks [@binbandit](https://github.com/binbandit)! and [@d3lm](https://github.com/d3lm)!)
+- **Security Dependencies** - AWS SDK and dependency updates for security patches (#3461)
+
+</Update>
+<Update label="Core" description="1.5.11">
+- feat: temporary access tokens for scoped, time-limited API access (#3603)
+- feat: MCP per-user OAuth flow refactor (#3565)
+- feat: Bedrock Mantle inference engine support for `gpt-oss` models via OpenAI-compatible SSE endpoint (#3489)
+- feat: Azure realtime provider with nested model normalization (#3334)
+- feat: enrich realtime routing, logging, cost, and session tracking (#3335)
+- feat: Bedrock system tools support (#3435)
+- feat: service tier mappings for Gemini and Anthropic (#3554)
+- feat: cluster-aware log metadata and per-node usage aggregation (#3590)
+- feat: JSON-schema-spec compliant parameter schema (#3444)
+- feat: direct access control (DAC) support (#3198)
+- feat: use chat completions for OpenAI custom providers that disable responses (#3505) (thanks [@kevinpdev](https://github.com/kevinpdev)!)
+- fix: fasthttp panic on malformed requests (#3595)
+- fix: race condition on remote stream close during context cancel (#3591)
+- fix: nil pointer deref in stream cancellations (#3582)
+- fix: handle context cancel before read errors in streaming (#3522)
+- fix: set idle stream timeouts in streaming requests (#3495)
+- fix: VK and provider-key level pricing overrides for streaming (#3421)
+- fix: set Anthropic beta headers on Vertex request headers (#3585)
+- fix: forwarding of reasoning content when converting Responses to Chat (#3584)
+- fix: preserve OpenAI responses stream metadata (#3528, #3530) (thanks [@etnperlong](https://github.com/etnperlong)!)
+- fix: OpenAI provider - add usage to completed event in Responses-to-Chat-Completions fallback (#3519) (thanks [@kevinpdev](https://github.com/kevinpdev)!)
+- fix: add `FullyRedacted()` for proxy passwords and `MarshalForStorage()` for `ProxyConfig` to prevent partial value leakage (#3445)
+- fix: Bedrock Mantle fixes (#3566)
+- fix: emit role chunk from Anthropic message start in chat stream (#3575)
+- fix: Bedrock chat tool arguments (#3564)
+- fix: Bedrock stop reason (#3506)
+- fix: send missing Bedrock lifecycle events (#3527)
+- fix: prefill message handling for Responses in Bedrock (#3517)
+- fix: don't pass multipart request bodies in enrich error (#3524)
+- fix: trim trailing whitespace for Anthropic and Bedrock Anthropic providers (#3496)
+- fix: include Azure blob fields in batch responses (#3469)
+- fix: max tokens and thinking budget value handling (#3498)
+- fix: preserve Anthropic output schema refs (#3449) (thanks [@Javtor](https://github.com/Javtor)!)
+- fix: remove `fallbacks` key from Gemini requests (#3464)
+- fix: map `supports_response_schema` to `response_format`/`text` params and add Chat-Responses format conversion (#3454)
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="Framework" description="1.3.11">
+- feat: temporary access tokens (#3603)
+- feat: MCP per-user OAuth flow refactor (#3565)
+- feat: team-level calendar alignment (#3476)
+- feat: feature flags (#3581)
+- feat: config-hash-based file value override of DB when `config.json` changes between restarts (#3610)
+- feat: configurable `model_parameters_url` in framework config (#3608)
+- feat: `access_profile_id` on virtual keys for direct access profile assignment (#3560)
+- feat: `source_id` column and `GetTeamBySourceID` lookup for governance teams (#3395)
+- feat: cluster-aware log metadata and per-node usage aggregation (#3590)
+- feat: `limit` and `query` params on filter data endpoints for server-side search and pagination (#3567)
+- feat: service tier mappings for Gemini and Anthropic (#3554)
+- feat: onboarding widget backend (#3605)
+- feat: direct access control (DAC) support (#3198)
+- feat: `RunSingleMigration` accepts migration options (#3626)
+- fix: dimension check and semantic cache issues on namespace creation (#3611)
+- fix: migration for drop columns on calendar-aligned tables (#3614)
+- fix: calendar-aligned migration alias and team-level migration fixes (#3452, #3535, #3553)
+- fix: remove budget-level calendar alignment (#3434)
+- fix: VK and provider-key level pricing overrides for streaming (#3421)
+- fix: `FullyRedacted()` for proxy passwords and `MarshalForStorage()` for `ProxyConfig` (#3445)
+- fix(mcp): remove stale stats from logs list response (#3583)
+- fix(configstore): improve error message when API key name conflicts across providers (#3574)
+- fix: remove `defaultFilterDataLimit` cap from filter data queries (#3561)
+- fix: preserve OpenAI responses stream metadata (#3528, #3530) (thanks [@etnperlong](https://github.com/etnperlong)!)
+- fix: handle context cancel before read errors in streaming (#3522)
+- fix: replace unsafe inline jsonb cast with `bifrost_safe_jsonb` PL/pgSQL helper (#3407)
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="compat" description="0.1.10">
+- chore: upgraded core to v1.5.11 and framework to v1.3.11
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="governance" description="1.5.11">
+- feat: team-level calendar alignment (#3476)
+- feat: virtual key rotation backend (#3599)
+- feat: budget and rate-limit dump for the budget tracker (#3550)
+- feat: enrich realtime routing, logging, cost, and session tracking (#3335)
+- fix: calendar-aligned migration and virtual key UI (#3452)
+- fix: remove budget-level calendar alignment (#3434)
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="jsonparser" description="1.5.11">
+- chore: upgraded core to v1.5.11 and framework to v1.3.11
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="logging" description="1.5.11">
+- feat: cluster-aware log metadata and per-node usage aggregation (#3590)
+- feat: `limit` and `query` params on filter data endpoints for server-side search and pagination (#3567)
+- feat: enrich realtime routing, logging, cost, and session tracking (#3335)
+- fix: VK and provider-key level pricing overrides for streaming (#3421)
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="maxim" description="1.6.11">
+- fix: VK and provider-key level pricing overrides for streaming (#3421)
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="mocker" description="1.5.11">
+- chore: upgraded core to v1.5.11 and framework to v1.3.11
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="otel" description="1.2.11">
+- feat: custom selection of plugins for OTEL trace-span exports (#3382)
+- fix: handle context cancel before read errors in streaming (#3522)
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="prompts" description="1.0.11">
+- chore: upgraded core to v1.5.11 and framework to v1.3.11
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="semanticcache" description="1.5.11">
+- refactor: semantic cache plugin rewrite (#3210)
+- feat: remove `cleanup_on_shutdown` from semantic cache plugin config (#3330)
+- fix: dimension check on namespace creation and assorted semantic cache issues (#3611)
+- fix: guard `Cleanup` with `sync.Once` to prevent a double-close panic (#3532)
+- fix: decouple cache telemetry from the write decision and guard no-op search paths (#3424)
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>
+<Update label="telemetry" description="1.5.11">
+- chore: upgraded core to v1.5.11 and framework to v1.3.11
+- chore: dependency and AWS SDK security updates (#3461)
+
+</Update>

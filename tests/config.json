@@ -111,7 +111,18 @@
             "auth_credentials": "env.VERTEX_CREDENTIALS"
           },
           "weight": 1,
-          "models": ["*"]
+          "models": ["*"],
+          "blacklisted_models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
+        },
+        {
+          "name": "Vertex Global (Claude)",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "global",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "weight": 1,
+          "models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
         }
       ],
       "network_config": {
@@ -215,8 +226,7 @@
           "name": "Azure API Key",
           "value": "env.AZURE_API_KEY",
           "azure_key_config": {
-            "endpoint": "env.AZURE_ENDPOINT",
-            "api_version": "env.AZURE_API_VERSION"
+            "endpoint": "env.AZURE_ENDPOINT"
           },
           "aliases": {
             "gpt-5.4": "gpt-5.4",

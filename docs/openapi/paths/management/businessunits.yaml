@@ -1,0 +1,410 @@
+# Paths for Business Unit management (Enterprise).
+#
+# Business units are organizational groupings above teams (1:N with teams) with
+# their own governance (budget + rate limit). They live entirely under
+# /api/governance/business-units, mirroring the other governance entities; the
+# budget + rate-limit configuration is nested under /{id}/governance. Implemented
+# in bifrost-enterprise/handlers/businessunits.go.
+
+# ---- Business Unit CRUD ----
+
+business-units:
+  get:
+    operationId: listBusinessUnits
+    summary: List business units
+    description: Returns a paginated list of business units, each with its team count.
+    tags:
+      - Governance
+    parameters:
+      - name: page
+        in: query
+        description: Page number (1-based)
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        description: Maximum number of business units to return (max 100)
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: search
+        in: query
+        description: Case-insensitive search by business unit name
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListBusinessUnitsResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createBusinessUnit
+    summary: Create business unit
+    description: Creates a new business unit. Names must be unique.
+    tags:
+      - Governance
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Business unit created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BusinessUnitMutationResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: A business unit with this name already exists
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+business-units-by-id:
+  get:
+    operationId: getBusinessUnit
+    summary: Get business unit
+    description: Returns a specific business unit by ID, including governance and team count.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BusinessUnitDetailResponse'
+      '404':
+        description: Business unit not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteBusinessUnit
+    summary: Delete business unit
+    description: |
+      Deletes a business unit. Any teams assigned to it are atomically unassigned
+      as part of the deletion.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Business unit deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Business unit not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# ---- Business Unit - Team Association ----
+
+business-units-teams:
+  get:
+    operationId: listBusinessUnitTeams
+    summary: List business unit teams
+    description: Returns a paginated list of teams assigned to the business unit.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+      - name: page
+        in: query
+        description: Page number (1-based)
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: limit
+        in: query
+        description: Maximum number of teams to return (max 100)
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: search
+        in: query
+        description: Case-insensitive search by team name
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BusinessUnitTeamsResponse'
+      '404':
+        description: Business unit not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: assignTeamToBusinessUnit
+    summary: Assign team to business unit
+    description: |
+      Assigns an existing team to the business unit. Returns 409 if the team is
+      already assigned to a different business unit.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/AssignTeamToBusinessUnitRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Team assigned to business unit
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Business unit or team not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '409':
+        description: Team is already assigned to another business unit
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+business-units-team-by-id:
+  delete:
+    operationId: removeTeamFromBusinessUnit
+    summary: Remove team from business unit
+    description: Unassigns a team from the business unit.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+      - name: team_id
+        in: path
+        required: true
+        description: Team ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Team removed from business unit
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Business unit or team not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# ---- Business Unit Governance (budget + rate limit) ----
+
+business-units-governance:
+  post:
+    operationId: createBusinessUnitGovernance
+    summary: Create business unit governance
+    description: |
+      Configures budget and/or rate limit governance for a business unit. At least
+      one of `budget` or `rate_limit` is required. Returns 409 if the business unit
+      already has governance configured (use PUT to update).
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitGovernanceRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Business unit governance created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BusinessUnitGovernanceResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Business unit not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '409':
+        description: Business unit already has governance configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateBusinessUnitGovernance
+    summary: Update business unit governance
+    description: |
+      Updates budget and/or rate limit governance for a business unit. Passing an
+      empty `budget` or `rate_limit` object removes that governance component.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateBusinessUnitGovernanceRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Business unit governance updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BusinessUnitGovernanceResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Business unit not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteBusinessUnitGovernance
+    summary: Delete business unit governance
+    description: Removes all budget and rate limit governance from a business unit.
+    tags:
+      - Governance
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Business unit governance deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Business unit not found or has no governance configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

@@ -605,14 +605,14 @@ func TestOCRWithMockServer(t *testing.T) {
 			provider := NewMistralProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
 					BaseURL:                        server.URL,
-					DefaultRequestTimeoutInSeconds: 30,
+					DefaultRequestTimeoutInSeconds: 300,
 				},
 			}, &testLogger{})
 
 			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, tt.request)
+			resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, tt.request)
 
 			if tt.expectError {
 				require.NotNil(t, err)
@@ -639,13 +639,13 @@ func TestOCRNilInput(t *testing.T) {
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        "https://api.mistral.ai",
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-key")}, nil)
+	resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, nil)
 
 	require.NotNil(t, err)
 	assert.Nil(t, resp)
@@ -686,7 +686,7 @@ func TestOCRRequestValidation(t *testing.T) {
 	provider := NewMistralProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        server.URL,
-			DefaultRequestTimeoutInSeconds: 30,
+			DefaultRequestTimeoutInSeconds: 300,
 		},
 	}, &testLogger{})
 
@@ -705,7 +705,7 @@ func TestOCRRequestValidation(t *testing.T) {
 		},
 	}
 
-	resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar("test-api-key")}, request)
+	resp, err := provider.OCR(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-api-key")}, request)
 
 	require.Nil(t, err)
 	require.NotNil(t, resp)
@@ -743,7 +743,7 @@ func TestMistralOCRIntegration(t *testing.T) {
 		},
 	}
 
-	resp, bifrostErr := provider.OCR(ctx, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request)
+	resp, bifrostErr := provider.OCR(ctx, schemas.Key{Value: *schemas.NewSecretVar(apiKey)}, request)
 
 	require.Nil(t, bifrostErr, "OCR request failed: %v", bifrostErr)
 	require.NotNil(t, resp)

@@ -1,19 +1,33 @@
 # MCP-Only Plugin Example
 
-This example demonstrates a plugin that only implements the `MCPPlugin` interface for Model Context Protocol governance.
+This example demonstrates a plugin that implements both the `MCPPlugin` and `MCPConnectionPlugin` interfaces for Model Context Protocol governance. It covers all four MCP hook surfaces: the two envelope hooks (per tool call) and the two typed Connect hooks (per client transport setup).
 
 ## Features
 
-- **PreMCPHook**: Intercepts MCP requests before execution
+### Per-call envelope hooks (`MCPPlugin`)
+
+- **PreMCPHook**: Intercepts MCP envelope requests (ping / list_tools / execute_tool) before execution
   - Validates tool/resource calls
   - Implements governance policies (blocking dangerous tools)
   - Adds audit trails
   - Can short-circuit calls with custom responses
-  
-- **PostMCPHook**: Intercepts MCP responses after execution
+
+- **PostMCPHook**: Intercepts MCP envelope responses after execution
   - Logs responses
   - Transforms error messages
   - Accesses audit trails from context
+
+### Typed Connect hooks (`MCPConnectionPlugin`)
+
+- **PreMCPConnectionHook**: Runs once per MCP client when its transport is being established
+  - Observes connection type and auth type (observe-only fields)
+  - Mutates transport-level inputs: ConnectionString, Headers (HTTP/SSE), StdioCommand/StdioArgs (STDIO)
+  - Can short-circuit to refuse a connection (e.g. blocklisted client names)
+
+- **PostMCPConnectionHook**: Runs after the upstream MCP handshake completes
+  - Reads ServerInfo, ProtocolVersion, and ServerCapabilities
+  - Logs / gates on advertised capabilities (e.g. warn if `Tools` not supported)
+  - Can transform handshake errors
 
 ## Use Cases
 
@@ -55,6 +69,8 @@ Add to your Bifrost config:
       "type": "mcp",
       "config": {
         "blocked_tools": ["dangerous_tool", "risky_operation"],
+        "blocked_clients": ["staging-only-mcp"],
+        "audit_header": "X-Bifrost-Audit",
         "enable_audit": true,
         "enable_logging": true,
         "transform_errors": true,
@@ -73,11 +89,13 @@ Add to your Bifrost config:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `blocked_tools` | array of strings | `["dangerous_tool"]` | List of tool names to block |
+| `blocked_tools` | array of strings | `["dangerous_tool"]` | Tool names to block in `PreMCPHook` (envelope) |
+| `blocked_clients` | array of strings | `[]` | MCP client names to refuse connections to in `PreMCPConnectionHook` |
+| `audit_header` | string | `""` | If non-empty, injected into HTTP/SSE Connect request headers; STDIO/InProcess transports ignore headers and silently skip |
 | `enable_audit` | boolean | `true` | Enable audit trail logging |
 | `enable_logging` | boolean | `true` | Enable detailed logging |
 | `transform_errors` | boolean | `true` | Transform 404 errors to user-friendly messages |
-| `custom_error_message` | string | `"Tool is not allowed..."` | Custom error message for blocked tools |
+| `custom_error_message` | string | `"Tool is not allowed..."` | Custom error message for blocked tools / clients |
 
 ### Example Configurations
 

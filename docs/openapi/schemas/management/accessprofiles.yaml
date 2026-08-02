@@ -1,0 +1,553 @@
+# Schemas for Access Profile management.
+
+ResetDuration:
+  type: string
+  enum:
+    - 1h
+    - 1d
+    - 1w
+    - 1M
+    - 1Y
+  description: Reset duration for a budget or rate limit.
+
+Budget:
+  type: object
+  required:
+    - max_limit
+    - reset_duration
+  properties:
+    id:
+      type: string
+      readOnly: true
+    max_limit:
+      type: number
+      description: Cap in dollars (or tokens, depending on configured pricing).
+    reset_duration:
+      $ref: '#/ResetDuration'
+    scope:
+      type: string
+      description: Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets.
+    current_usage:
+      type: number
+      readOnly: true
+    last_reset:
+      type: string
+      format: date-time
+      readOnly: true
+
+RateLimit:
+  type: object
+  properties:
+    id:
+      type: string
+      readOnly: true
+    token_max_limit:
+      type: number
+      nullable: true
+    token_reset_duration:
+      $ref: '#/ResetDuration'
+    request_max_limit:
+      type: number
+      nullable: true
+    request_reset_duration:
+      $ref: '#/ResetDuration'
+    token_current_usage:
+      type: number
+      readOnly: true
+    request_current_usage:
+      type: number
+      readOnly: true
+
+ProviderConfig:
+  type: object
+  required:
+    - provider_name
+  properties:
+    id:
+      type: integer
+      format: uint
+      readOnly: true
+    provider_name:
+      type: string
+      description: Provider identifier (`anthropic`, `openai`, `bedrock`, ...).
+    all_models_allowed:
+      type: boolean
+      description: If true, every model from this provider is allowed.
+    allowed_models:
+      type: array
+      items:
+        type: string
+      description: Explicit model list. Empty array denies all models from the provider.
+    budgets:
+      type: array
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+
+MCPToolGroupLink:
+  type: object
+  required:
+    - tool_group_id
+  properties:
+    tool_group_id:
+      type: integer
+      format: uint
+
+MCPServerLink:
+  type: object
+  required:
+    - mcp_server_id
+  properties:
+    mcp_server_id:
+      type: string
+
+MCPToolOverride:
+  type: object
+  required:
+    - mcp_client_id
+    - tool_name
+    - action
+  properties:
+    mcp_client_id:
+      type: string
+    tool_name:
+      type: string
+    action:
+      type: string
+      enum:
+        - include
+        - exclude
+
+AccessProfile:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+    name:
+      type: string
+    description:
+      type: string
+      nullable: true
+    is_active:
+      type: boolean
+    version:
+      type: integer
+    tags:
+      type: array
+      items:
+        type: string
+    provider_configs:
+      type: array
+      items:
+        $ref: '#/ProviderConfig'
+    budgets:
+      type: array
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    calendar_aligned:
+      type: boolean
+    mcp_tool_groups:
+      type: array
+      items:
+        $ref: '#/MCPToolGroupLink'
+    mcp_servers:
+      type: array
+      items:
+        $ref: '#/MCPServerLink'
+    mcp_tool_overrides:
+      type: array
+      items:
+        $ref: '#/MCPToolOverride'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+AccessProfileRoleAttachment:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+    access_profile_id:
+      type: integer
+      format: uint
+    role_id:
+      type: integer
+      format: uint
+    role_name:
+      type: string
+    is_default:
+      type: boolean
+
+CreateAccessProfileRequest:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+      maxLength: 255
+    description:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    provider_configs:
+      type: array
+      items:
+        $ref: '#/ProviderConfig'
+    budgets:
+      type: array
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    calendar_aligned:
+      type: boolean
+    mcp_tool_groups:
+      type: array
+      items:
+        $ref: '#/MCPToolGroupLink'
+    mcp_servers:
+      type: array
+      items:
+        $ref: '#/MCPServerLink'
+    mcp_tool_overrides:
+      type: array
+      items:
+        $ref: '#/MCPToolOverride'
+
+UpdateAccessProfileRequest:
+  type: object
+  description: |
+    Partial update. Omitted fields preserve the current value.
+    `rate_limit: null` explicitly clears the existing rate limit; omitting the field preserves it.
+    Update enforces size limits not enforced on create: max 100 provider_configs, max 100 budgets, max 50 tags.
+  properties:
+    name:
+      type: string
+      maxLength: 255
+    description:
+      type: string
+      nullable: true
+    tags:
+      type: array
+      items:
+        type: string
+    provider_configs:
+      type: array
+      items:
+        $ref: '#/ProviderConfig'
+    budgets:
+      type: array
+      items:
+        $ref: '#/Budget'
+    rate_limit:
+      type: object
+      nullable: true
+      allOf:
+        - $ref: '#/RateLimit'
+    calendar_aligned:
+      type: boolean
+      nullable: true
+    mcp_tool_groups:
+      type: array
+      items:
+        $ref: '#/MCPToolGroupLink'
+    mcp_servers:
+      type: array
+      items:
+        $ref: '#/MCPServerLink'
+    mcp_tool_overrides:
+      type: array
+      items:
+        $ref: '#/MCPToolOverride'
+
+AccessProfileResponse:
+  type: object
+  properties:
+    access_profile:
+      $ref: '#/AccessProfile'
+
+AccessProfileDetailResponse:
+  type: object
+  description: Returned by GET /api/access-profiles/{id}. Includes role attachments and the count of users holding a copy.
+  properties:
+    access_profile:
+      $ref: '#/AccessProfile'
+    roles:
+      type: array
+      items:
+        $ref: '#/AccessProfileRoleAttachment'
+    user_count:
+      type: integer
+
+AccessProfileListResponse:
+  type: object
+  properties:
+    access_profiles:
+      type: array
+      items:
+        $ref: '#/AccessProfile'
+    count:
+      type: integer
+    total_count:
+      type: integer
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+AttachRolesRequest:
+  type: object
+  required:
+    - role_ids
+  properties:
+    role_ids:
+      type: array
+      items:
+        type: integer
+        format: uint
+      minItems: 1
+    is_default:
+      type: boolean
+    apply_to_existing:
+      type: boolean
+
+AttachRolesResponse:
+  type: object
+  properties:
+    message:
+      type: string
+    users_applied:
+      type: integer
+
+PropagateRequest:
+  type: object
+  required:
+    - fields
+  properties:
+    dry_run:
+      type: boolean
+    fields:
+      type: array
+      items:
+        type: string
+        enum:
+          - provider_configs
+          - budgets
+          - rate_limit
+          - mcp_tool_groups
+          - mcp_servers
+          - mcp_tool_overrides
+      minItems: 1
+    user_ids:
+      type: array
+      items:
+        type: string
+      description: Empty or omitted = all users with a copy of this profile.
+    group_ids:
+      type: array
+      items:
+        type: string
+      description: Filter by SCIM group or team IDs.
+    reset_usage:
+      type: boolean
+      description: If true, zero out budget and rate-limit usage on cloned rows. Default false (preserves usage).
+
+PropagateResponse:
+  type: object
+  properties:
+    affected_users:
+      type: integer
+    failed_users:
+      type: integer
+    skipped_users:
+      type: integer
+    user_ids:
+      type: array
+      items:
+        type: string
+    fields:
+      type: array
+      items:
+        type: string
+    applied:
+      type: boolean
+      description: False on dry run, true when changes were persisted.
+    vk_sync_errors:
+      type: array
+      items:
+        type: string
+
+CloneProfileRequest:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+
+MessageResponse:
+  type: object
+  properties:
+    message:
+      type: string
+
+AccessProfileVersion:
+  type: object
+  properties:
+    id:
+      type: integer
+    access_profile_id:
+      type: integer
+    version:
+      type: integer
+    name:
+      type: string
+    description:
+      type: string
+      nullable: true
+    snapshot:
+      type: string
+      description: JSON snapshot of the profile at this version.
+    changed_by:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+
+VersionListResponse:
+  type: object
+  properties:
+    versions:
+      type: array
+      items:
+        $ref: '#/AccessProfileVersion'
+
+VersionResponse:
+  type: object
+  properties:
+    version:
+      $ref: '#/AccessProfileVersion'
+
+AccessProfileAuditLog:
+  type: object
+  properties:
+    id:
+      type: integer
+    access_profile_id:
+      type: integer
+      nullable: true
+    user_id:
+      type: string
+      nullable: true
+    actor:
+      type: string
+    action:
+      type: string
+    previous_values:
+      type: string
+      nullable: true
+    new_values:
+      type: string
+      nullable: true
+    metadata:
+      type: string
+      nullable: true
+    created_at:
+      type: string
+      format: date-time
+
+AuditLogListResponse:
+  type: object
+  properties:
+    audit_logs:
+      type: array
+      items:
+        $ref: '#/AccessProfileAuditLog'
+    total_count:
+      type: integer
+
+UserAccessProfile:
+  type: object
+  properties:
+    id:
+      type: integer
+    user_id:
+      type: string
+    parent_profile_id:
+      type: integer
+      nullable: true
+    name:
+      type: string
+    is_active:
+      type: boolean
+    expires_at:
+      type: string
+      format: date-time
+      nullable: true
+    virtual_key_ids:
+      type: array
+      items:
+        type: string
+    virtual_key_values:
+      type: object
+      additionalProperties:
+        type: string
+      description: Map of virtual key ID to masked secret value.
+
+UserAccessProfileListResponse:
+  type: object
+  properties:
+    access_profiles:
+      type: array
+      items:
+        $ref: '#/UserAccessProfile'
+
+DetachUserProfileResponse:
+  type: object
+  properties:
+    message:
+      type: string
+    deleted_vk_names:
+      type: array
+      items:
+        type: string
+    deleted_vk_count:
+      type: integer
+
+AddVirtualKeyRequest:
+  type: object
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+
+VirtualKeySummary:
+  type: object
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    value:
+      type: string
+      description: The generated virtual key secret. Shown only once on creation.
+
+AddVirtualKeyResponse:
+  type: object
+  properties:
+    virtual_key:
+      $ref: '#/VirtualKeySummary'

@@ -2,6 +2,7 @@ import { ColumnConfigDropdown, type ColumnConfigEntry } from "@/components/table
 import { Button } from "@/components/ui/button";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { Radio, RefreshCw, Search } from "lucide-react";
@@ -38,6 +39,7 @@ export function McpHeaderView({
 	onResetColumns,
 }: McpHeaderViewProps) {
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
+	const [timezone, setTimezone] = useTimezonePreference();
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
 	const [endTime, setEndTime] = useState<Date | undefined>(filters.end_time ? new Date(filters.end_time) : undefined);
 	const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -106,6 +108,9 @@ export function McpHeaderView({
 			<DateTimePickerWithRange
 				dateTime={{ from: startTime, to: endTime }}
 				predefinedPeriod={period || undefined}
+				showTimezone
+				timezone={timezone}
+				onTimezoneChange={setTimezone}
 				onDateTimeUpdate={(p) => {
 					setStartTime(p.from);
 					setEndTime(p.to);

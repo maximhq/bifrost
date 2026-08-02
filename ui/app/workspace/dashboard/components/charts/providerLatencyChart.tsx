@@ -5,9 +5,9 @@ import {
 	formatFullTimestamp,
 	formatLatency,
 	formatTimestamp,
+	computeDisplaySeries,
 	getModelColor,
 	LATENCY_COLORS,
-	pickTopSeries,
 } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -106,7 +106,7 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 		// No "Other" bucket — averaging latencies across the long tail would mislead.
 		const providers = isSingleProvider
 			? [selectedProvider]
-			: pickTopSeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_requests ?? 0);
+			: computeDisplaySeries(data.buckets, data.providers, (b, p) => b.by_provider?.[p]?.total_requests ?? 0, false);
 
 		const processed = data.buckets.map((bucket, index) => {
 			const item: any = {
@@ -206,7 +206,10 @@ function ProviderLatencyChartImpl({ data, chartType, startTime, endTime, selecte
 							</>
 						) : (
 							<>
-								<Tooltip content={<AllProvidersTooltip displayProviders={displayProviders} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
+								<Tooltip
+									content={<AllProvidersTooltip displayProviders={displayProviders} />}
+									cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }}
+								/>
 								{displayProviders.map((provider, idx) => (
 									<Bar
 										key={provider}

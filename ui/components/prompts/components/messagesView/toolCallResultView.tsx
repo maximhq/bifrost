@@ -140,6 +140,7 @@ export default function ToolResultMessageView({
 						lang="json"
 						readonly={disabled}
 						autoResize
+						maxHeight={400}
 						onChange={(value) => {
 							jsonBufferRef.current = value ?? "";
 						}}

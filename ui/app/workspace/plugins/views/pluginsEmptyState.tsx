@@ -1,6 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Puzzle } from "lucide-react";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Puzzle } from "lucide-react";
 
 const CUSTOM_PLUGINS_DOCS_URL = "https://docs.getbifrost.ai/plugins";
 

@@ -179,7 +179,6 @@ export function SessionDetailsSheet({
 		loadSessionPage(0, true);
 	}, [open, sessionId, sortOrder, loadSessionPage]);
 
-
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-8 sm:max-w-[60%]">

@@ -116,6 +116,28 @@ tokens_used < 50           // Route to fast provider when below 50% token limit
 request > 90               // Switch providers when request limit near max
 ```
 
+#### Complexity Routing
+
+```cel
+complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", "COMPLEX", or "REASONING"
+```
+
+Bifrost analyzes each request's prompt content and assigns a tier before routing rules are evaluated. This lets you route cheap/fast requests to small models and deep reasoning tasks to frontier models with no application-side changes.
+
+<Note>
+If complexity analysis is unavailable for a request (e.g. unparseable body), `complexity_tier` is treated as **unknown** by the evaluator — the rule does not match and evaluation falls through. Rules using other variables are unaffected.
+</Note>
+
+**Examples:**
+```cel
+complexity_tier == "REASONING"                              // Only frontier-worthy tasks
+complexity_tier in ["COMPLEX", "REASONING"]                 // Complex and above
+!(complexity_tier in ["SIMPLE", "MEDIUM"])                  // Same as above, negated form
+complexity_tier == "REASONING" && team_name == "research"   // Scoped to a team
+```
+
+See [Complexity Router](/features/governance/complexity-router) for how tiers are computed and how to tune the thresholds and keyword lists.
+
 #### How Capacity Metrics Are Resolved
 
 Each variable reflects **current usage as a percentage of the configured limit** for the request's provider and model combination. Values above 100 mean the limit is exhausted.

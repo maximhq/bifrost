@@ -42,13 +42,13 @@ type RedisTestSetup struct {
 func NewRedisTestSetup(t *testing.T) *RedisTestSetup {
 	// Get configuration from environment variables
 
-	addr := schemas.NewEnvVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr))
-	username := schemas.NewEnvVar(os.Getenv("REDIS_USERNAME"))
-	password := schemas.NewEnvVar(os.Getenv("REDIS_PASSWORD"))
-	db := schemas.NewEnvVar(getEnvWithDefault("REDIS_DB", "0"))
-	useTLS := schemas.NewEnvVar(os.Getenv("REDIS_USE_TLS"))
-	insecureSkipVerify := schemas.NewEnvVar(os.Getenv("REDIS_INSECURE_SKIP_VERIFY"))
-	clusterMode := schemas.NewEnvVar(os.Getenv("REDIS_CLUSTER_MODE"))
+	addr := schemas.NewSecretVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr))
+	username := schemas.NewSecretVar(os.Getenv("REDIS_USERNAME"))
+	password := schemas.NewSecretVar(os.Getenv("REDIS_PASSWORD"))
+	db := schemas.NewSecretVar(getEnvWithDefault("REDIS_DB", "0"))
+	useTLS := schemas.NewSecretVar(os.Getenv("REDIS_USE_TLS"))
+	insecureSkipVerify := schemas.NewSecretVar(os.Getenv("REDIS_INSECURE_SKIP_VERIFY"))
+	clusterMode := schemas.NewSecretVar(os.Getenv("REDIS_CLUSTER_MODE"))
 
 	timeoutStr := getEnvWithDefault("REDIS_TIMEOUT", "10s")
 	timeout, err := time.ParseDuration(timeoutStr)
@@ -194,14 +194,14 @@ func TestRedisConfig_Validation(t *testing.T) {
 		{
 			name: "valid config",
 			config: RedisConfig{
-				Addr: schemas.NewEnvVar("localhost:6379"),
+				Addr: schemas.NewSecretVar("localhost:6379"),
 			},
 			expectError: false,
 		},
 		{
 			name: "missing addr",
 			config: RedisConfig{
-				Username: schemas.NewEnvVar("user"),
+				Username: schemas.NewSecretVar("user"),
 			},
 			expectError: true,
 			errorMsg:    "redis addr is required",
@@ -209,26 +209,26 @@ func TestRedisConfig_Validation(t *testing.T) {
 		{
 			name: "with credentials",
 			config: RedisConfig{
-				Addr:     schemas.NewEnvVar("localhost:6379"),
-				Username: schemas.NewEnvVar("default"),
-				Password: schemas.NewEnvVar(""),
+				Addr:     schemas.NewSecretVar("localhost:6379"),
+				Username: schemas.NewSecretVar("default"),
+				Password: schemas.NewSecretVar(""),
 			},
 			expectError: false,
 		},
 		{
 			name: "with custom db",
 			config: RedisConfig{
-				Addr: schemas.NewEnvVar("localhost:6379"),
-				DB:   schemas.NewEnvVar("1"),
+				Addr: schemas.NewSecretVar("localhost:6379"),
+				DB:   schemas.NewSecretVar("1"),
 			},
 			expectError: false,
 		},
 		{
 			name: "tls enabled",
 			config: RedisConfig{
-				Addr:               schemas.NewEnvVar("localhost:6380"),
-				UseTLS:             schemas.NewEnvVar("true"),
-				InsecureSkipVerify: schemas.NewEnvVar("true"),
+				Addr:               schemas.NewSecretVar("localhost:6380"),
+				UseTLS:             schemas.NewSecretVar("true"),
+				InsecureSkipVerify: schemas.NewSecretVar("true"),
 			},
 			expectError: false,
 		},
@@ -270,10 +270,10 @@ func TestNewRedisStore_ConfiguresStandaloneTLSClient(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 	store, err := newRedisStore(context.Background(), RedisConfig{
-		Addr:               schemas.NewEnvVar("localhost:6380"),
-		DB:                 schemas.NewEnvVar("2"),
-		UseTLS:             schemas.NewEnvVar("true"),
-		InsecureSkipVerify: schemas.NewEnvVar("true"),
+		Addr:               schemas.NewSecretVar("localhost:6380"),
+		DB:                 schemas.NewSecretVar("2"),
+		UseTLS:             schemas.NewSecretVar("true"),
+		InsecureSkipVerify: schemas.NewSecretVar("true"),
 	}, logger)
 	require.NoError(t, err)
 
@@ -288,10 +288,10 @@ func TestNewRedisStore_ConfiguresStandaloneTLSClientWithCACert(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 	store, err := newRedisStore(context.Background(), RedisConfig{
-		Addr:      schemas.NewEnvVar("localhost:6380"),
-		DB:        schemas.NewEnvVar("2"),
-		UseTLS:    schemas.NewEnvVar("true"),
-		CACertPEM: schemas.NewEnvVar(readTestCACert(t)),
+		Addr:      schemas.NewSecretVar("localhost:6380"),
+		DB:        schemas.NewSecretVar("2"),
+		UseTLS:    schemas.NewSecretVar("true"),
+		CACertPEM: schemas.NewSecretVar(readTestCACert(t)),
 	}, logger)
 	require.NoError(t, err)
 
@@ -306,10 +306,10 @@ func TestNewRedisStore_ConfiguresClusterTLSClient(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 	store, err := newRedisStore(context.Background(), RedisConfig{
-		Addr:               schemas.NewEnvVar("localhost:7100"),
-		UseTLS:             schemas.NewEnvVar("true"),
-		InsecureSkipVerify: schemas.NewEnvVar("true"),
-		ClusterMode:        schemas.NewEnvVar("true"),
+		Addr:               schemas.NewSecretVar("localhost:7100"),
+		UseTLS:             schemas.NewSecretVar("true"),
+		InsecureSkipVerify: schemas.NewSecretVar("true"),
+		ClusterMode:        schemas.NewSecretVar("true"),
 	}, logger)
 	require.NoError(t, err)
 
@@ -324,10 +324,10 @@ func TestNewRedisStore_ConfiguresClusterTLSClientWithCACert(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 	store, err := newRedisStore(context.Background(), RedisConfig{
-		Addr:        schemas.NewEnvVar("localhost:7100"),
-		UseTLS:      schemas.NewEnvVar("true"),
-		CACertPEM:   schemas.NewEnvVar(readTestCACert(t)),
-		ClusterMode: schemas.NewEnvVar("true"),
+		Addr:        schemas.NewSecretVar("localhost:7100"),
+		UseTLS:      schemas.NewSecretVar("true"),
+		CACertPEM:   schemas.NewSecretVar(readTestCACert(t)),
+		ClusterMode: schemas.NewSecretVar("true"),
 	}, logger)
 	require.NoError(t, err)
 
@@ -342,9 +342,9 @@ func TestNewRedisStore_RejectsInvalidCACertPEM(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 	store, err := newRedisStore(context.Background(), RedisConfig{
-		Addr:      schemas.NewEnvVar("localhost:6379"),
-		UseTLS:    schemas.NewEnvVar("true"),
-		CACertPEM: schemas.NewEnvVar("not-valid-pem"),
+		Addr:      schemas.NewSecretVar("localhost:6379"),
+		UseTLS:    schemas.NewSecretVar("true"),
+		CACertPEM: schemas.NewSecretVar("not-valid-pem"),
 	}, logger)
 	require.Error(t, err)
 	assert.Nil(t, store)
@@ -1687,9 +1687,9 @@ func TestVectorStoreFactory_Redis(t *testing.T) {
 		Enabled: true,
 		Type:    VectorStoreTypeRedis,
 		Config: RedisConfig{
-			Addr:     schemas.NewEnvVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr)),
-			Username: schemas.NewEnvVar("env.REDIS_USERNAME"),
-			Password: schemas.NewEnvVar("env.REDIS_PASSWORD"),
+			Addr:     schemas.NewSecretVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr)),
+			Username: schemas.NewSecretVar("env.REDIS_USERNAME"),
+			Password: schemas.NewSecretVar("env.REDIS_PASSWORD"),
 		},
 	}
 

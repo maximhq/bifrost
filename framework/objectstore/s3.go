@@ -218,6 +218,34 @@ func (s *S3ObjectStore) DeleteBatch(ctx context.Context, keys []string) error {
 	return nil
 }
 
+// ListByPrefix returns all non-empty object keys matching the given prefix.
+func (s *S3ObjectStore) ListByPrefix(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+	})
+
+	objects := make([]ObjectInfo, 0)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("objectstore: list objects with prefix %s: %w", prefix, err)
+		}
+		for _, object := range page.Contents {
+			key := aws.ToString(object.Key)
+			if key != "" {
+				info := ObjectInfo{Key: key}
+				if object.LastModified != nil {
+					info.LastModified = *object.LastModified
+				}
+				objects = append(objects, info)
+			}
+		}
+	}
+
+	return objects, nil
+}
+
 // Ping checks connectivity by performing a HeadBucket call.
 // Note: HeadBucket requires the s3:ListBucket IAM permission on the bucket resource.
 func (s *S3ObjectStore) Ping(ctx context.Context) error {

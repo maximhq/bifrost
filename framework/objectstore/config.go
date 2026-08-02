@@ -18,25 +18,25 @@ const (
 // Config holds the configuration for an object store.
 type Config struct {
 	Type   StoreType      `json:"type"` // "s3" or "gcs"
-	Bucket schemas.EnvVar `json:"bucket"`
+	Bucket schemas.SecretVar `json:"bucket"`
 
 	// Common fields (apply to all store types)
 	Prefix   string `json:"prefix,omitempty"`   // Key prefix for all stored objects. Default: "bifrost".
 	Compress bool   `json:"compress,omitempty"` // Enables gzip compression for stored objects. Default: false.
 
 	// S3 fields (used when Type == "s3")
-	Region          *schemas.EnvVar `json:"region,omitempty"`
-	Endpoint        *schemas.EnvVar `json:"endpoint,omitempty"`
-	AccessKeyID     *schemas.EnvVar `json:"access_key_id,omitempty"`
-	SecretAccessKey *schemas.EnvVar `json:"secret_access_key,omitempty"`
-	SessionToken    *schemas.EnvVar `json:"session_token,omitempty"`
-	RoleARN         *schemas.EnvVar `json:"role_arn,omitempty"`
+	Region          *schemas.SecretVar `json:"region,omitempty"`
+	Endpoint        *schemas.SecretVar `json:"endpoint,omitempty"`
+	AccessKeyID     *schemas.SecretVar `json:"access_key_id,omitempty"`
+	SecretAccessKey *schemas.SecretVar `json:"secret_access_key,omitempty"`
+	SessionToken    *schemas.SecretVar `json:"session_token,omitempty"`
+	RoleARN         *schemas.SecretVar `json:"role_arn,omitempty"`
 	ForcePathStyle  bool            `json:"force_path_style,omitempty"`
 
 	// GCS fields (used when Type == "gcs")
-	Credentials     *schemas.EnvVar `json:"credentials,omitempty"`      // Deprecated: use credentials_json
-	CredentialsJSON *schemas.EnvVar `json:"credentials_json,omitempty"` // Service account JSON or path
-	ProjectID       *schemas.EnvVar `json:"project_id,omitempty"`       // GCP project ID override
+	Credentials     *schemas.SecretVar `json:"credentials,omitempty"`      // Deprecated: use credentials_json
+	CredentialsJSON *schemas.SecretVar `json:"credentials_json,omitempty"` // Service account JSON or path
+	ProjectID       *schemas.SecretVar `json:"project_id,omitempty"`       // GCP project ID override
 }
 
 // GetPrefix returns the configured prefix or "bifrost" as default.

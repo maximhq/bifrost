@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="640" viewBox="0 0 980 640" role="img" aria-labelledby="title desc">
+  <title id="title">Per-user OAuth lazy authentication flow</title>
+  <desc id="desc">Sequence diagram showing a caller request, Bifrost token lookup, an OAuth authorize URL, provider consent, callback token storage, and a successful retry with the user token.</desc>
+
+  <defs>
+    <marker id="arrow-slate" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#475569" />
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#EA580C" />
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#2563EB" />
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#15803D" />
+    </marker>
+    <style>
+      .bg { fill: #FFFFFF; }
+      .title { font: 700 22px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #0F172A; }
+      .subtitle { font: 14px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #475569; }
+      .actor { font: 700 15px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #0F172A; text-anchor: middle; }
+      .lane { stroke: #CBD5E1; stroke-width: 1.5; stroke-dasharray: 2 8; }
+      .label { font: 13px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #111827; text-anchor: middle; }
+      .note { font: 12px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #475569; text-anchor: middle; }
+      .small { font: 11px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #64748B; text-anchor: middle; }
+      .step { fill: #FFFFFF; stroke: #CBD5E1; stroke-width: 1.5; }
+      .num { font: 700 11px "Helvetica Neue", Helvetica, Arial, sans-serif; fill: #475569; text-anchor: middle; dominant-baseline: middle; }
+      .arrow-slate { stroke: #475569; stroke-width: 2.2; fill: none; marker-end: url(#arrow-slate); }
+      .arrow-orange { stroke: #EA580C; stroke-width: 2.2; fill: none; stroke-dasharray: 7 5; marker-end: url(#arrow-orange); }
+      .arrow-blue { stroke: #2563EB; stroke-width: 2.2; fill: none; marker-end: url(#arrow-blue); }
+      .arrow-green { stroke: #15803D; stroke-width: 2.2; fill: none; marker-end: url(#arrow-green); }
+      .card { fill: #F8FAFC; stroke: #CBD5E1; stroke-width: 1.2; }
+      .warn { fill: #FFF7ED; stroke: #FDBA74; stroke-width: 1.2; }
+      .ok { fill: #ECFDF5; stroke: #86EFAC; stroke-width: 1.2; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="980" height="640" />
+
+  <text class="title" x="40" y="40">Per-user OAuth lazy flow</text>
+  <text class="subtitle" x="40" y="64">Bifrost starts OAuth only when a tool call needs a user token and none is usable for that identity.</text>
+
+  <text class="actor" x="90" y="115">Caller</text>
+  <text class="actor" x="275" y="115">Bifrost</text>
+  <text class="actor" x="455" y="115">End User</text>
+  <text class="actor" x="665" y="115">OAuth Provider</text>
+  <text class="actor" x="885" y="115">MCP Server</text>
+
+  <line class="lane" x1="90" y1="135" x2="90" y2="590" />
+  <line class="lane" x1="275" y1="135" x2="275" y2="590" />
+  <line class="lane" x1="455" y1="135" x2="455" y2="590" />
+  <line class="lane" x1="665" y1="135" x2="665" y2="590" />
+  <line class="lane" x1="885" y1="135" x2="885" y2="590" />
+
+  <rect class="card" x="38" y="142" width="240" height="36" rx="18" />
+  <text class="small" x="158" y="164">MCP Gateway or LLM Gateway request</text>
+
+  <line class="arrow-slate" x1="90" y1="205" x2="275" y2="205" />
+  <text class="label" x="182" y="195">request + identity + tool call</text>
+  <circle class="step" cx="182" cy="205" r="12" />
+  <text class="num" x="182" y="205">1</text>
+
+  <rect class="warn" x="315" y="184" width="260" height="50" rx="12" />
+  <text class="label" x="445" y="204">No active token found</text>
+  <text class="note" x="445" y="222">lookup key: identity + mcp_client</text>
+
+  <line class="arrow-orange" x1="275" y1="265" x2="90" y2="265" />
+  <text class="label" x="182" y="255">mcp_auth_required + authorize_url</text>
+  <circle class="step" cx="182" cy="265" r="12" />
+  <text class="num" x="182" y="265">2</text>
+
+  <line class="arrow-blue" x1="90" y1="325" x2="455" y2="325" />
+  <text class="label" x="272" y="315">open Bifrost consent URL</text>
+  <circle class="step" cx="272" cy="325" r="12" />
+  <text class="num" x="272" y="325">3</text>
+
+  <line class="arrow-blue" x1="455" y1="382" x2="665" y2="382" />
+  <text class="label" x="560" y="372">authorize with provider</text>
+  <circle class="step" cx="560" cy="382" r="12" />
+  <text class="num" x="560" y="382">4</text>
+
+  <line class="arrow-blue" x1="665" y1="438" x2="275" y2="438" />
+  <text class="label" x="470" y="428">OAuth callback + code</text>
+  <circle class="step" cx="470" cy="438" r="12" />
+  <text class="num" x="470" y="438">5</text>
+
+  <line class="arrow-green" x1="275" y1="492" x2="665" y2="492" />
+  <text class="label" x="470" y="482">exchange code, store token</text>
+  <circle class="step" cx="470" cy="492" r="12" />
+  <text class="num" x="470" y="492">6</text>
+
+  <rect class="ok" x="620" y="522" width="250" height="48" rx="12" />
+  <text class="label" x="745" y="542">Next request succeeds</text>
+  <text class="note" x="745" y="560">Bifrost attaches the user token</text>
+
+  <line class="arrow-slate" x1="90" y1="585" x2="275" y2="585" />
+  <text class="label" x="182" y="575">retry request</text>
+  <circle class="step" cx="182" cy="585" r="12" />
+  <text class="num" x="182" y="585">7</text>
+
+  <line class="arrow-green" x1="275" y1="610" x2="885" y2="610" />
+  <text class="label" x="580" y="600">tool call + user OAuth token</text>
+  <circle class="step" cx="580" cy="610" r="12" />
+  <text class="num" x="580" y="610">8</text>
+</svg>

@@ -175,6 +175,7 @@ export OPENAI_API_KEY="your-openai-api-key"
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 export MISTRAL_API_KEY="your-mistral-api-key"
 export CEREBRAS_API_KEY="your-cerebras-api-key"
+export DEEPSEEK_API_KEY="your-deepseek-api-key"
 export GROQ_API_KEY="your-groq-api-key"
 export COHERE_API_KEY="your-cohere-api-key"
 ```
@@ -404,6 +405,63 @@ curl --location 'http://localhost:8080/api/providers' \
   For self-hosted providers like Ollama and SGL, `base_url` is required. For
   standard providers, it's optional and overrides the default endpoint.
 </Note>
+
+### Private Network Access
+
+If your provider runs on a private IP address (e.g. a local vLLM or Ollama instance on `192.168.x.x` or `10.x.x.x`), set `allow_private_network: true` in `network_config`. Link-local addresses (`169.254.x.x`) remain blocked regardless of this setting.
+
+<Tabs group="private-network">
+
+<Tab title="Using API">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+--header 'Content-Type: application/json' \
+--data '{
+    "provider": "ollama-local",
+    "keys": [
+        {
+            "name": "ollama-key",
+            "value": "dummy",
+            "models": ["*"],
+            "weight": 1.0
+        }
+    ],
+    "network_config": {
+        "base_url": "http://192.168.1.195:8000",
+        "allow_private_network": true
+    }
+}'
+```
+
+</Tab>
+
+<Tab title="Using config.json">
+
+```json
+{
+  "providers": {
+    "ollama-local": {
+      "keys": [
+        {
+          "name": "ollama-key",
+          "value": "dummy",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "http://192.168.1.195:8000",
+        "allow_private_network": true
+      }
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
 
 ### Managing Retries
 

@@ -1,0 +1,36 @@
+{
+  "name": "@maximhq/bifrost-migration-cli",
+  "version": "0.1.0",
+  "description": "Migrate LiteLLM entities (models, organizations, teams, users, virtual keys) into Bifrost",
+  "keywords": [
+    "ai",
+    "gateway",
+    "migration",
+    "bifrost",
+    "ai-gateway"
+  ],
+  "homepage": "https://github.com/maximhq/bifrost",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maximhq/bifrost.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Maxim HQ",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "bifrost-migration-cli": "bin.js"
+  },
+  "type": "module",
+  "main": "bin.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "bugs": {
+    "url": "https://github.com/maximhq/bifrost/issues"
+  }
+}

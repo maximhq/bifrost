@@ -20,10 +20,10 @@ func TestCustomerBudgetExceededWithMultipleVKs(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      customerBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -41,12 +41,13 @@ func TestCustomerBudgetExceededWithMultipleVKs(t *testing.T) {
 			Method: "POST",
 			Path:   "/api/governance/virtual-keys",
 			Body: CreateVirtualKeyRequest{
-				Name:       "test-vk-" + generateRandomID(),
-				CustomerID: &customerID,
-				Budget: &BudgetRequest{
+				Name:            "test-vk-" + generateRandomID(),
+				ProviderConfigs: defaultProviderConfigs(),
+				CustomerID:      &customerID,
+				Budgets: []BudgetRequest{{
 					MaxLimit:      1.0, // High VK budget so customer is the limiting factor
 					ResetDuration: "1h",
-				},
+				}},
 			},
 		})
 
@@ -174,10 +175,10 @@ func TestCustomerBudgetExceededWithMultipleTeams(t *testing.T) {
 		Path:   "/api/governance/customers",
 		Body: CreateCustomerRequest{
 			Name: customerName,
-			Budget: &BudgetRequest{
+			Budgets: []BudgetRequest{{
 				MaxLimit:      customerBudget,
 				ResetDuration: "1h",
-			},
+			}},
 		},
 	})
 
@@ -216,12 +217,13 @@ func TestCustomerBudgetExceededWithMultipleTeams(t *testing.T) {
 			Method: "POST",
 			Path:   "/api/governance/virtual-keys",
 			Body: CreateVirtualKeyRequest{
-				Name:   "test-vk-" + generateRandomID(),
-				TeamID: &teamID,
-				Budget: &BudgetRequest{
+				Name:            "test-vk-" + generateRandomID(),
+				ProviderConfigs: defaultProviderConfigs(),
+				TeamID:          &teamID,
+				Budgets: []BudgetRequest{{
 					MaxLimit:      1.0, // High VK budget so customer is the limiting factor
 					ResetDuration: "1h",
-				},
+				}},
 			},
 		})
 

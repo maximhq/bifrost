@@ -51,7 +51,7 @@ func RunEagerInputStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 			Model:    testConfig.ChatModel,
 			Input:    chatMessages,
 			Params: &schemas.ChatParameters{
-				MaxCompletionTokens: bifrost.Ptr(200),
+				MaxCompletionTokens: bifrost.Ptr(300),
 				Tools:               []schemas.ChatTool{*chatTool},
 			},
 			Fallbacks: testConfig.Fallbacks,

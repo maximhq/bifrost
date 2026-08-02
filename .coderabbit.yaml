@@ -1,0 +1,116 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+early_access: true
+
+issue_enrichment:
+  auto_enrich:
+    enabled: true
+
+reviews:
+  high_level_summary_in_walkthrough: true
+  fail_commit_status: true
+  suggested_labels: false
+  auto_assign_reviewers: true
+  profile: chill
+  request_changes_workflow: true
+  high_level_summary: true
+  review_status: true
+  changed_files_summary: true
+  slop_detection:
+    enabled: true
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    base_branches:
+      - ".*"
+  path_instructions:
+    - path: package.json
+      instructions: |
+        do not allow any carats in package.json, we never want any auto updates for any patch versions of any
+        packages in package.json
+    - path: "**"
+      instructions: |
+        always check the stack if there is one for the current PR. do not give localized reviews for the PR,
+        always see all changes in the light of the whole stack of PRs (if there is a stack, if there is no stack you can
+        continue to make localized suggestions/reviews)
+    - path: "**/*.go"
+      instructions: |
+        Rule: No raw context keys in Go.
+
+        When reviewing code, ALWAYS check for incorrect usage of context values.
+
+        Reject or flag the change if you find ANY of the following:
+        - context.WithValue(ctx, "someKey", value)         // string literal key
+        - context.WithValue(ctx, someStringVar, value)   // key is type string
+        - context.WithValue(ctx, fmt.Sprintf(...), value)    // computed/dynamic string key
+        - ctx.Value("someKey") or ctx.Value(someStringVar)        // same problem on retrieval
+
+        Required pattern:
+        - Context keys MUST be a dedicated named type (NOT plain string), e.g.
+          - type contextKey string
+            const userIDKey contextKey = "userId"
+          OR
+          - type userIDKeyType struct{}
+            var userIDKey userIDKeyType
+
+        - The key passed to WithValue/Value MUST be that typed identifier, e.g.
+          - ctx = context.WithValue(ctx, userIDKey, userID)
+    - path: "core/**"
+      instructions: |
+        Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
+        Apply standard Go review practices: small interfaces, clear error wrapping, context propagation, race-safe shared state, goroutine/channel cleanup, and table-driven tests for behavior changes.
+        Apply Go security practices: avoid logging secrets or request bodies by default, validate untrusted input before provider calls, use constant-time comparison for secrets/tokens, and prefer well-reviewed standard-library crypto primitives over custom crypto.
+        Preserve Bifrost patterns: provider queues use atomic closing plus sync.Once, hot provider/plugin config swaps use atomic pointer replacement instead of in-place slice mutation, and pooled schema/plugin objects must be fully reset before release.
+        Flag channel lifecycle changes that do not follow the ProviderQueue atomic closing/sync.Once pattern.
+        For provider changes, verify converters remain pure, OpenAI helper changes account for delegated providers, streaming paths use the streaming client, fasthttp requests/responses are acquired and released correctly, and response/error metadata is preserved.
+    - path: "framework/**"
+      instructions: |
+        Review persistence, streaming, and shared framework changes for backward-compatible data formats and careful memory ownership.
+        Apply standard Go review practices: explicit error handling, correct context cancellation, bounded resource usage, race-safe maps/slices, and tests that cover edge cases and failure paths.
+        Apply security practices for persistence and storage: parameterized queries, safe file permissions, secret redaction, encryption key handling, path traversal prevention, and least-privilege access to external stores.
+        Preserve Bifrost configstore/logstore patterns: duration JSON fields are milliseconds, mutable map config such as ExtraHeaders must be defensively copied, and migration/runtime hash generation must stay parity-tested.
+        For logstore/configstore changes, check migration behavior, duration serialization, and map-copy race prevention.
+        When migrations are added or changed, verify they avoid deadlocks on large tables and create indexes concurrently.
+        If a migration cannot be rolled back, explicitly flag it as non-rollbackable.
+    - path: "transports/**"
+      instructions: |
+        Treat transports/config.schema.json as the source of truth for config fields.
+        Apply HTTP/API security review: authentication and authorization checks, fail-closed behavior, input size limits, request validation, SSRF/path traversal/header injection defenses, CORS/cookie safety, and secret redaction in logs/errors.
+        Preserve transport patterns: handlers are dependency-injected structs with RegisterRoutes, route middleware is applied through lib.ChainMiddlewares, SDK integration compatibility must remain drop-in, and config changes must update transports/config.schema.json first.
+        Verify HTTP handlers preserve SDK compatibility, middleware ordering, context conversion, and route-level middleware behavior.
+    - path: "plugins/**"
+      instructions: |
+        Review plugin changes for hook symmetry, nil response/error handling, fallback behavior, and module-local dependency hygiene.
+        Apply standard Go and security review practices: context propagation, race-safe shared state, bounded goroutines, least-privilege defaults, fail-closed auth/rate-limit behavior, secret redaction, and dependency vulnerability awareness.
+        Preserve plugin patterns: pre-hooks may short-circuit, plugin errors are warnings rather than caller failures, post-hooks run only for executed pre-hooks in reverse order, and fallbacks can re-run the full pipeline.
+        Each plugin has its own go.mod; do not assume root-level Go module commands apply.
+        When migrations are added or changed, verify they avoid deadlocks on large tables and create indexes concurrently.
+        If a migration cannot be rolled back, explicitly flag it as non-rollbackable.
+    - path: "ui/**"
+      instructions: |
+        Preserve existing UI conventions and data-testid attributes used by Playwright tests.
+        Preserve workspace UI patterns: use existing shared components/constants, keep operational screens dense and predictable, and avoid renaming data-testid values without updating tests/e2e references.
+        Review interactive changes for expected loading, empty, error, and mobile states.
+        Alert if frontend code uses the browser crypto APIs because they can fail in non-HTTPS contexts, except localhost and other secure contexts.
+    - path: "tests/e2e/**"
+      instructions: |
+        Verify tests import fixtures from tests/e2e/core/fixtures/base.fixture and use data-testid selectors.
+        Preserve E2E patterns: page objects extend BasePage, unique test data should avoid parallel collisions, created resources should be cleaned up, and API payload field order must remain intentional.
+        Do not marshal API payloads through Records, maps, Object.fromEntries, or JSON round trips because field order matters.
+    - path: "docs/**"
+      instructions: |
+        Check docs for parity with code, config.schema.json, and provider behavior.
+        Verify new or renamed Mintlify pages are reflected in docs/docs.json where appropriate.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "AGENTS.md"
+      - ".greptile/rules.md"
+
+chat:
+  auto_reply: true

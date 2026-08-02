@@ -5,12 +5,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/maximhq/bifrost/core/network"
 )
 
 // FetchAndEncodeURL downloads a remote resource (image, document, etc.) and
@@ -21,9 +21,10 @@ import (
 // deadlines; pass context.Background() if no request context is available.
 //
 // SSRF-hardened: only http/https schemes are accepted, and the dialer rejects
-// connections to loopback, private, link-local, unique-local, and unspecified
-// addresses. The IP check runs at dial time (not just lookup time) so DNS
-// rebinding does not bypass it. Redirect targets are subject to the same
+// connections to loopback, private, CGNAT, link-local, unique-local, site-local,
+// and unspecified addresses (including IPv4 targets smuggled inside IPv6
+// transition addresses). The IP check runs at dial time (not just lookup time)
+// so DNS rebinding does not bypass it. Redirect targets are subject to the same
 // scheme + dial-time IP validation.
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
 	const maxBytes int64 = 25 * 1024 * 1024
@@ -36,25 +37,8 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 		return "", "", fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
 
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, splitErr := net.SplitHostPort(addr)
-			if splitErr != nil {
-				return nil, splitErr
-			}
-			ips, lookupErr := (&net.Resolver{}).LookupIP(ctx, "ip", host)
-			if lookupErr != nil {
-				return nil, lookupErr
-			}
-			for _, ip := range ips {
-				if !isPublicIP(ip) {
-					return nil, fmt.Errorf("blocked fetch to non-public address %s", ip.String())
-				}
-			}
-			// Dial the first validated IP directly to close the DNS-rebinding TOCTOU.
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
-		},
+		DialContext: network.SSRFSafeDialContext(10 * time.Second),
 	}
 	client := &http.Client{
 		Timeout:   20 * time.Second,
@@ -76,7 +60,7 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 	}
 	req.Header.Set("User-Agent", "bifrost-fetch/1")
 
-	resp, err := client.Do(req)
+	resp, err := DoHTTPRequest(client, req)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to fetch from %q: %w", resourceURL, err)
 	}
@@ -100,19 +84,4 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 	}
 
 	return mediaType, base64.StdEncoding.EncodeToString(body), nil
-}
-
-// isPublicIP reports whether the given IP address is safe to fetch from
-// (i.e. not loopback, private, link-local, unique-local, or unspecified).
-func isPublicIP(ip net.IP) bool {
-	addr, ok := netip.AddrFromSlice(ip)
-	if !ok {
-		return false
-	}
-	addr = addr.Unmap()
-	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
-		addr.IsMulticast() || addr.IsUnspecified() || addr.IsInterfaceLocalMulticast() {
-		return false
-	}
-	return true
 }

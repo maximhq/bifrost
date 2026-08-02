@@ -43,6 +43,10 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				chat_completion_stream: provider.custom_provider_config?.allowed_requests?.chat_completion_stream ?? true,
 				responses: provider.custom_provider_config?.allowed_requests?.responses ?? true,
 				responses_stream: provider.custom_provider_config?.allowed_requests?.responses_stream ?? true,
+				responses_retrieve: provider.custom_provider_config?.allowed_requests?.responses_retrieve ?? false,
+				responses_delete: provider.custom_provider_config?.allowed_requests?.responses_delete ?? false,
+				responses_cancel: provider.custom_provider_config?.allowed_requests?.responses_cancel ?? false,
+				responses_input_items: provider.custom_provider_config?.allowed_requests?.responses_input_items ?? false,
 				embedding: provider.custom_provider_config?.allowed_requests?.embedding ?? true,
 				speech: provider.custom_provider_config?.allowed_requests?.speech ?? true,
 				speech_stream: provider.custom_provider_config?.allowed_requests?.speech_stream ?? true,
@@ -96,7 +100,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 p-0">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6 pb-6">
 				<div className="flex flex-col gap-4">
 					<FormField
 						control={form.control}
@@ -166,11 +170,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<Button
-									type="submit"
-									disabled={!form.formState.isDirty || !hasUpdateProviderAccess}
-									isLoading={isUpdatingProvider}
-								>
+								<Button type="submit" disabled={!form.formState.isDirty || !hasUpdateProviderAccess} isLoading={isUpdatingProvider}>
 									Save API Structure Configuration
 								</Button>
 							</TooltipTrigger>

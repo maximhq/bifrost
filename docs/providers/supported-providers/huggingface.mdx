@@ -39,9 +39,72 @@ The Hugging Face provider supports routing to 20+ inference backends. Below is t
 | `together` | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
 | `z-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
+<Warning>
+Usage metadata depends on the selected inference provider and model. In particular, Novita models do not consistently return token usage, and other Hugging Face inference backends may behave similarly. When an upstream backend omits usage, Bifrost cannot determine how many tokens the request consumed or calculate and correlate its cost. Applications that rely on token or cost tracking should handle missing usage and validate the specific provider and model they use.
+</Warning>
+
 <Note>Provider capabilities may change over time. For the most up-to-date information, refer to the [Hugging Face Inference Providers documentation](https://huggingface.co/docs/inference-providers/en/index#partners). Also checkmarks (✅) indicate capabilities supported by the inference provider itself.</Note>
 
 <Info>All Chat-supported models automatically support Responses(`v1/responses`) as well via Bifrost's internal conversion logic.</Info>
+
+## Setup & Configuration
+
+Configure Hugging Face as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+![Hugging Face provider dashboard](../../media/provider-dashboard-huggingface.png)
+
+1. Navigate to **Models** > **Model Providers**. Look for **Hugging Face** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Hugging Face**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.HUGGINGFACE_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "huggingface": {
+      "keys": [
+        {
+          "name": "huggingface-key-1",
+          "value": "env.HUGGINGFACE_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.HuggingFace:
+    return []schemas.Key{{
+        Name:   "huggingface-key-1",
+        Value:  *schemas.NewSecretVar("env.HUGGINGFACE_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Requests use the model format `huggingface/<inference_provider>/<model_id>` so Bifrost can route each call to the correct Hugging Face inference backend.
 
 ## Model Aliases & Identification
 

@@ -106,6 +106,24 @@ export const virtualKeysApi = {
   },
 
   /**
+   * Rotate a virtual key value
+   */
+  async rotate(request: APIRequestContext, id: string) {
+    const response = await request.post(`${API_BASE}/governance/virtual-keys/${id}/rotate`)
+    return handleResponse(response, `Rotate virtual key ${id}`)
+  },
+
+  /**
+   * Rotate multiple virtual key values
+   */
+  async bulkRotate(request: APIRequestContext, ids: string[]) {
+    const response = await request.post(`${API_BASE}/governance/virtual-keys/rotate`, {
+      data: { ids },
+    })
+    return handleResponse(response, 'Bulk rotate virtual keys')
+  },
+
+  /**
    * Delete a virtual key
    */
   async delete(request: APIRequestContext, id: string) {

@@ -55,7 +55,7 @@ var payloadFields = []string{
 // ExtractPayload reads the serialized TEXT payload fields from a Log into a map.
 // The map keys are the DB column names.
 func ExtractPayload(l *Log) map[string]string {
-	m := make(map[string]string, len(payloadFields))
+	m := make(map[string]string, len(payloadFields)+1)
 	m["input_history"] = l.InputHistory
 	m["responses_input_history"] = l.ResponsesInputHistory
 	m["output_message"] = l.OutputMessage
@@ -90,6 +90,15 @@ func ExtractPayload(l *Log) map[string]string {
 	m["passthrough_request_body"] = l.PassthroughRequestBody
 	m["passthrough_response_body"] = l.PassthroughResponseBody
 	m["routing_engine_logs"] = l.RoutingEngineLogs
+	// Metadata is written to the snapshot so consumers reading objects
+	// directly see custom attributes, but it is deliberately NOT part of
+	// payloadFields: it must always stay DB-resident as well (filters,
+	// rankings, log-list display), so ClearPayload never strips it from the
+	// row. NOTE: the snapshot carries the metadata value as of upload time;
+	// subsequent DB updates are NOT reflected in the object store.
+	if l.Metadata != nil && *l.Metadata != "" {
+		m["metadata"] = *l.Metadata
+	}
 	return m
 }
 
@@ -98,6 +107,56 @@ func ExtractPayload(l *Log) map[string]string {
 // GORM's BeforeCreate/SerializeFields from re-populating TEXT columns.
 // After calling this, the struct only contains index-weight data suitable
 // for a lightweight DB INSERT.
+// BillingHydrationChunkSize is how many rows a cost recomputation may hydrate at
+// once. Kept deliberately tiny: a hydrated row holds its whole offloaded payload,
+// which can include full message histories and raw request/response bodies, so this
+// is the knob that bounds a recompute worker's peak memory. Billing query pages are
+// capped to the same size because DB-resident modality payloads are materialized by
+// the query before object-store hydration begins.
+const BillingHydrationChunkSize = 3
+
+// BillingHydrationResult reports what one hydration pass actually did, so the caller
+// does not have to infer it from the rows.
+type BillingHydrationResult struct {
+	// Hydrated lists the rows whose pricing inputs were fetched from object storage.
+	// These are the only rows worth persisting via BulkBackfillBillingPayloads: every
+	// other row's inputs already came from the database.
+	Hydrated []string
+	// Unpriceable lists rows whose inputs could not be recovered — for example, a
+	// missing object or unavailable object storage. Callers must skip these rather
+	// than price them from the lossy fallback.
+	Unpriceable []string
+}
+
+// BillingPayloadBackfill carries pricing inputs recovered from object storage that are
+// worth writing back into the row.
+//
+// Deliberately only the two small ones. token_usage is a few hundred bytes of counters
+// and cache_debug a handful of cache-hit fields, so keeping them in the row is cheap and
+// repairs legacy rows written before pricing metadata became unconditionally
+// DB-resident. The modality payloads
+// (image_generation_output above all, which carries base64 image bytes) are exactly what
+// offloading exists to keep out of the database, so they stay in object storage and
+// modality rows keep fetching.
+type BillingPayloadBackfill struct {
+	TokenUsage string
+	CacheDebug string
+}
+
+// ReleaseBillingPayloads drops the payload fields from rows that have already been
+// priced, so a batch never accumulates more than one chunk of them.
+//
+// Safe because pricing is the last thing that reads these: the recalc job keeps only
+// the ID, timestamp and computed cost afterwards, and the rows are never written back
+// (BulkUpdateCost takes an id → cost map).
+func ReleaseBillingPayloads(logs []*Log) {
+	for _, l := range logs {
+		if l != nil {
+			ClearPayload(l)
+		}
+	}
+}
+
 func ClearPayload(l *Log) {
 	// Clear serialized TEXT columns.
 	l.InputHistory = ""
@@ -277,7 +336,17 @@ func MergePayloadFromJSON(l *Log, data []byte) error {
 	if v, ok := m["routing_engine_logs"]; ok && v != "" {
 		l.RoutingEngineLogs = v
 	}
-	return l.DeserializeFields()
+	// Metadata is intentionally NOT restored from the snapshot: the copy
+	// written there (see ExtractPayload) is for external object consumers
+	// only, and the DB row stays authoritative.
+	if err := l.DeserializeFields(); err != nil {
+		return err
+	}
+	// Rebuild content summary from freshly deserialized Parsed fields so it
+	// reflects the correct data from object storage, not a potentially
+	// corrupted DB value (e.g. from client/server encoding mismatch).
+	l.ContentSummary = l.BuildContentSummary()
+	return nil
 }
 
 // ExtractPayloadFiltered is like ExtractPayload but omits fields present in
@@ -458,12 +527,106 @@ func extractResponsesMessageText(msg *schemas.ResponsesMessage) string {
 	return ""
 }
 
+// attachmentStrippedPlaceholder replaces attachment payloads (base64 data,
+// image/file URLs, audio data) in the last-user-message preview kept in the
+// DB row. The untouched original always lives in object storage.
+const attachmentStrippedPlaceholder = "[attachment stripped]"
+
+// stripChatMessageAttachments returns a copy of msg with attachment payloads
+// replaced by attachmentStrippedPlaceholder so the DB preview stays
+// lightweight. Copy-on-write: msg, its blocks slice, and nested structs are
+// shared with the caller's entry and are never mutated.
+func stripChatMessageAttachments(msg *schemas.ChatMessage) schemas.ChatMessage {
+	out := *msg
+	if msg.Content == nil || len(msg.Content.ContentBlocks) == 0 {
+		return out
+	}
+	blocks := make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
+	copy(blocks, msg.Content.ContentBlocks)
+	for i := range blocks {
+		if img := blocks[i].ImageURLStruct; img != nil && img.URL != "" {
+			imgCopy := *img
+			imgCopy.URL = attachmentStrippedPlaceholder
+			blocks[i].ImageURLStruct = &imgCopy
+		}
+		if audio := blocks[i].InputAudio; audio != nil && audio.Data != "" {
+			audioCopy := *audio
+			audioCopy.Data = attachmentStrippedPlaceholder
+			blocks[i].InputAudio = &audioCopy
+		}
+		if file := blocks[i].File; file != nil && (file.FileData != nil || file.FileURL != nil) {
+			fileCopy := *file
+			if fileCopy.FileData != nil {
+				fileCopy.FileData = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			if fileCopy.FileURL != nil {
+				fileCopy.FileURL = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			blocks[i].File = &fileCopy
+		}
+	}
+	content := *msg.Content
+	content.ContentBlocks = blocks
+	out.Content = &content
+	return out
+}
+
+// stripResponsesMessageAttachments mirrors stripChatMessageAttachments for
+// the Responses API message shape. Copy-on-write for the same reason.
+func stripResponsesMessageAttachments(msg *schemas.ResponsesMessage) schemas.ResponsesMessage {
+	out := *msg
+	if msg.Content == nil || len(msg.Content.ContentBlocks) == 0 {
+		return out
+	}
+	blocks := make([]schemas.ResponsesMessageContentBlock, len(msg.Content.ContentBlocks))
+	copy(blocks, msg.Content.ContentBlocks)
+	for i := range blocks {
+		if img := blocks[i].ResponsesInputMessageContentBlockImage; img != nil && img.ImageURL != nil && *img.ImageURL != "" {
+			imgCopy := *img
+			imgCopy.ImageURL = schemas.Ptr(attachmentStrippedPlaceholder)
+			blocks[i].ResponsesInputMessageContentBlockImage = &imgCopy
+		}
+		if file := blocks[i].ResponsesInputMessageContentBlockFile; file != nil && (file.FileData != nil || file.FileURL != nil) {
+			fileCopy := *file
+			if fileCopy.FileData != nil {
+				fileCopy.FileData = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			if fileCopy.FileURL != nil {
+				fileCopy.FileURL = schemas.Ptr(attachmentStrippedPlaceholder)
+			}
+			blocks[i].ResponsesInputMessageContentBlockFile = &fileCopy
+		}
+		if audio := blocks[i].Audio; audio != nil && audio.Data != "" {
+			audioCopy := *audio
+			audioCopy.Data = attachmentStrippedPlaceholder
+			blocks[i].Audio = &audioCopy
+		}
+	}
+	content := *msg.Content
+	content.ContentBlocks = blocks
+	out.Content = &content
+	return out
+}
+
 // findLastUserMessageIndex returns the index of the last ChatMessage with
 // role "user", or -1 if none exists. Used by both BuildInputContentSummary
 // and prepareDBEntry to avoid scanning the slice twice.
 func findLastUserMessageIndex(msgs []schemas.ChatMessage) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == schemas.ChatMessageRoleUser {
+			return i
+		}
+	}
+	return -1
+}
+
+// findLastUserResponsesMessageIndex returns the index of the last
+// ResponsesMessage with role "user", or -1 if none exists. Mirrors
+// findLastUserMessageIndex for the Responses API input history so prepareDBEntry
+// can preserve a last-user-message preview when payloads are offloaded.
+func findLastUserResponsesMessageIndex(msgs []schemas.ResponsesMessage) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != nil && *msgs[i].Role == schemas.ResponsesInputMessageRoleUser {
 			return i
 		}
 	}
@@ -583,10 +746,12 @@ func fieldsNeedHydration(fields []string) bool {
 	return false
 }
 
-// ensureHydrationFields appends id, timestamp, and has_object to the
-// projection if not already present, so hydrateLog can function correctly.
+// ensureHydrationFields appends id, timestamp, has_object, and content_hidden
+// to the projection if not already present, so hydrateLog can function
+// correctly. content_hidden must always be selected: a projection that omits
+// it would zero-value the flag and hydrate a hidden log.
 func ensureHydrationFields(fields []string) []string {
-	required := [3]string{"id", "timestamp", "has_object"}
+	required := [4]string{"id", "timestamp", "has_object", "content_hidden"}
 	have := make(map[string]struct{}, len(fields))
 	for _, f := range fields {
 		have[f] = struct{}{}

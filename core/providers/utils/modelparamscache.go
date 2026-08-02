@@ -13,7 +13,7 @@ const DefaultModelParamsCacheSize = 2048
 // ModelParams holds cached parameters for a model.
 // Add new fields here as more model-level parameters need caching.
 type ModelParams struct {
-	MaxOutputTokens    *int
+	MaxOutputTokens         *int
 	IsVertexMultiRegionOnly *bool // true when model is only available on Vertex multi-region pool endpoints (rep.googleapis.com)
 }
 
@@ -48,7 +48,9 @@ var (
 // knownAnthropicMaxOutputTokens provides static fallback defaults for Claude models
 // when both cache and DB miss handler return nothing. Only Anthropic requires max_tokens.
 var knownAnthropicMaxOutputTokens = map[string]int{
+	"claude-fable-5":    128000,
 	"claude-opus-4-6":   128000,
+	"claude-sonnet-5":   128000,
 	"claude-sonnet-4-6": 64000,
 	"claude-haiku-4-5":  64000,
 	"claude-sonnet-4-5": 64000,

@@ -127,26 +127,49 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ---
 
-## Two Configuration Modes
+## Configuration Modes
 
-Bifrost supports **two configuration approaches** - you cannot use both simultaneously:
+Bifrost has two user-facing configuration modes:
 
-### Mode 1: Web UI Configuration
+| Mode | When to use it | Behavior |
+|-------|------|----------|
+| Web UI / database | You want to manage configuration from the dashboard or management API | Bifrost stores configuration in SQLite or PostgreSQL. If `config.json` is also present, it seeds or reconciles the database at startup. |
+| File-only `config.json` | You want declarative, restart-based configuration with no config database | Bifrost loads configuration from the file at startup. Config-backed UI/API edits are unavailable and file changes require restart. |
+
+<Note>
+Omitting `config_store` does **not** mean file-only mode. If `config.json` exists and `config_store` is omitted, Bifrost creates the default SQLite config store and treats the file as DB-backed startup configuration. Set `config_store.enabled: false` only when the file should be the only configuration source.
+</Note>
+
+**How DB-backed `config.json` interacts with database state:**
+
+- Entities defined in `config.json` are stored with a
+  content-based hash on first load.
+- Changes made later through the UI or API are persisted to the
+  database and survive pod restarts, scale-ups, and redeployments.
+- Re-applying the same
+  `config.json` does not overwrite those database changes, because the content hash is unchanged. If
+  you edit an entity directly in `config.json`, its hash changes and the file-based definition
+  overwrites the database copy.
+- Set `source_of_truth: "config.json"` only when explicitly present file sections should replace
+  matching DB state on startup. Missing sections leave DB rows untouched; present empty sections can
+  prune matching DB rows.
+
+For the full reconciliation rules, see [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+
+### Mode 1: Web UI / Database Configuration
 
 ![Configuration via UI](../../media/ui-config.png)
 
 **When the UI is available:**
 
 - No `config.json` file exists (Bifrost auto-creates SQLite database)
-- `config.json` exists with `config_store` configured
+- `config.json` exists with `config_store` omitted or enabled
 
-### Mode 2: File-based Configuration
+### Optional: DB-backed config.json
 
-<Note>
-  You can view entire config schema [here](https://www.getbifrost.ai/schema)
-</Note>
+<Note>You can view entire config schema [here](https://www.getbifrost.ai/schema)</Note>
 
-**When to use:** Advanced setups, GitOps workflows, or when UI is not needed
+**When to use:** Bootstrap from file, then keep runtime UI/API configuration available.
 
 Create `config.json` in your app directory:
 
@@ -178,23 +201,45 @@ Create `config.json` in your app directory:
 }
 ```
 
-**Without `config_store` in `config.json`:**
-
-- **UI is disabled** - no real-time configuration possible
-- **Read-only mode** - `config.json` is never modified
-- **Memory-only** - all configurations loaded into memory at startup
-- **Restart required** - changes to `config.json` only apply after restart
-
-**With `config_store` in `config.json`:**
+**With `config_store` omitted or enabled:**
 
 - **UI is enabled** - full real-time configuration via web interface
-- **Database check** - Bifrost checks if config store database exists and has data
-  - **Empty DB**: Bootstraps database with `config.json` settings, then uses DB exclusively
-  - **Existing DB**: Uses database directly, **ignores** `config.json` configurations
+- **Database check** - Bifrost reconciles `config.json` against the config store using a content-based hash per entity
+  - **Empty DB**: Bootstraps database with `config.json` settings, then uses DB for runtime reads
+  - **Existing DB**: Compares each entity's file hash to the stored `ConfigHash`. In default split mode, unchanged file-backed entities keep the DB copy so UI/API edits are preserved. If you edit that entity in `config.json`, the file definition overwrites the DB copy for that entity.
 - **Persistent storage** - all changes saved to database immediately
 
-**Important for Advanced Users:**
-If you want database persistence but prefer not to use the UI, note that modifying `config.json` after initial bootstrap has no effect when `config_store` is enabled. Use the public HTTP APIs to make configuration changes instead.
+### Mode 2: File-only config.json
+
+**When to use:** Advanced setups, GitOps workflows, or when UI is not needed.
+
+Set `config_store.enabled` to `false` when `config.json` should be the only configuration source:
+
+```json
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-key-1",
+          "value": "env.OPENAI_API_KEY",
+          "models": ["gpt-4o-mini", "gpt-4o"],
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+  "config_store": {
+    "enabled": false
+  }
+}
+```
+
+- **Config UI/API edits are unavailable** - no config store is initialized
+- **Read-only file** - Bifrost never modifies `config.json`
+- **Memory-only config** - settings are loaded into memory at startup
+- **Restart required** - changes to `config.json` apply after restart
 
 **The Three Stores Explained:**
 
@@ -207,9 +252,13 @@ If you want database persistence but prefer not to use the UI, note that modifyi
 <Note>The minimum PostgreSQL version required is 16 or above.</Note>
 
 <Note>
-  For the log store, Bifrost creates materialized views to improve analytics
-  performance. Ensure that the PostgreSQL user has the necessary permissions to
-  perform these operations on the target schema.
+  For the log store, Bifrost creates materialized views to improve analytics performance. Ensure
+  that the PostgreSQL user has the necessary permissions to perform these operations on the target
+  schema.
+</Note>
+
+<Note>
+  If you are behind PgBouncer in transaction pooling mode, RDS Proxy or any proxy that does not guarantee session affinity, Bifrost migrations may fail due to concurrent session locking issues.
 </Note>
 
 If you use PostgreSQL for `config_store` or `logs_store`, the target database must use `UTF8` encoding.

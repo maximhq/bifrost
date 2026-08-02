@@ -1,0 +1,95 @@
+---
+title: "OpenTelemetry"
+description: "Native OpenTelemetry tracing for every LLM call routed through Bifrost — export to any OTLP collector."
+icon: "telescope"
+---
+
+## Overview
+
+Bifrost provides built-in OpenTelemetry support that emits a fully-attributed span for every LLM request, including retries and fallbacks. Spans follow the [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/), so they correlate cleanly with the rest of your application traces and ship over OTLP to any compatible backend — Grafana, Datadog, New Relic, Honeycomb, Langfuse, Arize Phoenix, or a self-hosted OTel Collector.
+
+**Key Features:**
+
+- **Native OTLP Export** — HTTP or gRPC transport to any OTLP-compatible backend, no vendor lock-in
+- **GenAI Semantic Conventions** — `gen_ai.*` attributes for provider, model, tokens, cost
+- **Per-Attempt Spans** — retries and fallbacks each get their own span with their own context
+- **Streaming-Aware** — accumulates chunks and emits one complete span per request
+- **Cost Tracking** — `gen_ai.usage.cost` attribute computed from the model catalog on every call
+- **Dynamic Attributes** — runtime span enrichment via `x-bf-eh-*` headers
+- **Push Metrics for Clusters** — OTLP-based metrics export for multi-node deployments
+- **Configurable Span Granularity** — include or exclude plugin pre/post-hook spans
+- **Async Emission** — zero impact on request latency
+
+OpenTelemetry export runs asynchronously to ensure span emission doesn't impact request latency or throughput.
+
+---
+
+## Captured Attributes
+
+Every LLM call produces a span whose attributes follow OpenTelemetry GenAI semantic conventions. The main categories:
+
+| Category | Example attributes |
+|----------|--------------------|
+| **Provider & model** | `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model` |
+| **Request parameters** | `gen_ai.request.temperature`, `gen_ai.request.max_tokens`, `gen_ai.request.top_p` |
+| **Usage & cost** | `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.cost` |
+| **Bifrost context** | `gen_ai.virtual_key_id`, `gen_ai.team_id`, `gen_ai.customer_id`, `gen_ai.number_of_retries` |
+| **Caller-supplied headers** | `gen_ai.request.extra_header.<name>` (see below) |
+| **Input / output** | `gen_ai.input.messages`, `gen_ai.output.messages` |
+
+See [OpenTelemetry → Captured Data](/features/observability/otel#captured-data) for the full attribute list and an example span payload.
+
+---
+
+## Dynamic Attribute Injection
+
+Any header Bifrost forwards to the upstream provider is also surfaced on the `llm.call` span. This includes:
+
+- `x-bf-eh-*` prefixed extra headers (the standard mechanism)
+- Headers matched by the [direct allowlist](/deployment-guides/config-json/client#header-filtering) (e.g. `anthropic-beta`)
+
+For `x-bf-eh-*` headers the `x-bf-eh-` prefix is stripped and the remainder is lowercased; for direct-allowlist headers the header name is used as-is (lowercased). The result becomes the `<name>` in `gen_ai.request.extra_header.<name>`. The same security denylist and filter config that gates provider forwarding gates the span attribute — they are always the same set.
+
+### Example: forwarding a session ID
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'x-bf-eh-session-id: sess-abc-123' \
+  -H 'x-bf-eh-tenant-id: acme-corp' \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+Result on the `llm.call` span:
+
+| Attribute | Value |
+|-----------|-------|
+| `gen_ai.request.extra_header.session-id` | `sess-abc-123` |
+| `gen_ai.request.extra_header.tenant-id` | `acme-corp` |
+
+You can then filter or group traces by session in Grafana, Datadog, Honeycomb, Langfuse, etc. — no extra wiring required.
+
+<Note>
+Want runtime labels on Prometheus metrics instead of OTel spans? Use `x-bf-dim-*` headers — see [Telemetry → Dynamic Label Injection](./telemetry#dynamic-label-injection). The same `x-bf-dim-*` values also flow through to OTel as span attributes.
+</Note>
+
+---
+
+## Setup
+
+OpenTelemetry export is configured through the Bifrost UI, `config.json`, or the Go SDK. Full configuration options, popular platform recipes (Grafana Cloud, Datadog, New Relic, Honeycomb, Langfuse, self-hosted), cluster-mode metrics push, and the local Docker Compose stack are documented on the integrations page:
+
+<Card title="OpenTelemetry Integration Guide" icon="bolt" href="/features/observability/otel">
+  Full configuration reference, platform-specific examples, Docker Compose stack, and metrics push setup.
+</Card>
+
+---
+
+## Next Steps
+
+- **[OpenTelemetry Integration](./observability/otel)** — Full setup with platform-specific examples
+- **[Telemetry](./telemetry)** — Prometheus metrics that complement OTel traces
+- **[Extra Headers Reference](/providers/request-options#extra-headers-x-bf-eh)** — Full `x-bf-eh-*` request format

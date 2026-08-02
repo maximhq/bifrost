@@ -64,7 +64,9 @@ func TestCohereRerankRouteRequestConverter(t *testing.T) {
 	require.NotNil(t, bifrostReq)
 	require.NotNil(t, bifrostReq.RerankRequest)
 
-	assert.Equal(t, schemas.Cohere, bifrostReq.RerankRequest.Provider)
+	// Provider resolution is deferred to the modelcatalogresolver plugin layer,
+	// so the converter leaves it empty for an unprefixed model string.
+	assert.Equal(t, schemas.ModelProvider(""), bifrostReq.RerankRequest.Provider)
 	assert.Equal(t, "rerank-v3.5", bifrostReq.RerankRequest.Model)
 	assert.Equal(t, "what is bifrost?", bifrostReq.RerankRequest.Query)
 	require.Len(t, bifrostReq.RerankRequest.Documents, 2)

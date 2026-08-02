@@ -387,7 +387,7 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
 	}
-	provider, model := schemas.ParseModelString(modelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelID, "")
 	req := &schemas.BifrostEmbeddingRequest{
 		Provider: provider,
 		Model:    model,
@@ -451,7 +451,7 @@ func (r *BedrockInvokeRequest) ToBifrostImageGenerationRequest(ctx *schemas.Bifr
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
 	}
-	provider, model := schemas.ParseModelString(modelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelID, "")
 	req := &schemas.BifrostImageGenerationRequest{
 		Provider: provider,
 		Model:    model,
@@ -515,7 +515,7 @@ func (r *BedrockInvokeRequest) ToBifrostImageEditRequest(ctx *schemas.BifrostCon
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
 	}
-	provider, model := schemas.ParseModelString(modelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelID, "")
 	req := &schemas.BifrostImageEditRequest{
 		Provider: provider,
 		Model:    model,
@@ -690,7 +690,7 @@ func (r *BedrockInvokeRequest) ToBifrostImageVariationRequest(ctx *schemas.Bifro
 	if unescaped, err := url.PathUnescape(r.ModelID); err == nil {
 		modelID = unescaped
 	}
-	provider, model := schemas.ParseModelString(modelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+	provider, model := schemas.ParseModelString(modelID, "")
 	req := &schemas.BifrostImageVariationRequest{
 		Provider: provider,
 		Model:    model,
@@ -956,7 +956,7 @@ func ToBedrockInvokeImagesResponse(ctx *schemas.BifrostContext, resp *schemas.Bi
 // Bedrock invoke API response format.
 // Single-embedding (Titan) responses use: {"embedding": [...], "inputTextTokenCount": N}
 // Multi-embedding (Cohere) responses use:  {"embeddings": [[...],[...]], "response_type": "embeddings_floats"}
-func ToBedrockEmbeddingInvokeResponse(resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("bifrost embedding response is nil")
 	}
@@ -975,7 +975,7 @@ func ToBedrockEmbeddingInvokeResponse(resp *schemas.BifrostEmbeddingResponse) (i
 		return &BedrockInvokeEmbeddingResp{InputTextTokenCount: tokenCount}, nil
 	}
 
-	// Use model name to distinguish Cohere from Titan — not batch size.
+	// Use the resolved family to distinguish Cohere from Titan — not batch size.
 	// A single-input Cohere request must still return the Cohere envelope format.
 	model := resp.Model
 	if model == "" {
@@ -986,7 +986,7 @@ func ToBedrockEmbeddingInvokeResponse(resp *schemas.BifrostEmbeddingResponse) (i
 		}
 	}
 
-	if strings.Contains(strings.ToLower(model), "cohere") {
+	if schemas.IsCohereModelFamily(ctx, model) {
 		floats := make([][]float32, 0, len(resp.Data))
 		for _, d := range resp.Data {
 			float32Emb := make([]float32, len(d.Embedding.EmbeddingArray))

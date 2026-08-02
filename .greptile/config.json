@@ -1,0 +1,66 @@
+{
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax", "style"],
+  "instructions": "Review Bifrost PRs for correctness, regressions, concurrency bugs, streaming behavior, data races, API compatibility, and missing tests. Prefer high-signal comments tied to concrete behavior over stylistic preferences.",
+  "rules": [
+    {
+      "id": "multi-module-go-workspace",
+      "rule": "This repository is a multi-module Go workspace. Do not suggest running go mod tidy at the repository root; dependency cleanup belongs in the specific module directory.",
+      "severity": "medium"
+    },
+    {
+      "id": "provider-streaming-client",
+      "rule": "Provider streaming paths must use the provider streaming client rather than the unary client, so long-running streams are governed by per-chunk idle timeout instead of whole-response fasthttp deadlines.",
+      "scope": ["core/providers/**"],
+      "severity": "high"
+    },
+    {
+      "id": "pooled-object-reset",
+      "rule": "Every pooled object must have all fields reset before being returned to a pool. Flag stale field leaks and partial resets.",
+      "scope": ["core/**", "framework/**", "transports/**"],
+      "severity": "high"
+    },
+    {
+      "id": "provider-queue-lifecycle",
+      "rule": "Channel lifecycle changes must preserve the ProviderQueue atomic closing flag and sync.Once close/signal pattern to avoid send-on-closed-channel panics.",
+      "scope": ["core/**"],
+      "severity": "high"
+    },
+    {
+      "id": "plugin-hook-order",
+      "rule": "Plugin pre-hooks run in registration order and post-hooks run in reverse order. Flag changes that break this wrapping model or mishandle nil response/error values.",
+      "scope": ["core/**", "plugins/**", "transports/**"],
+      "severity": "high"
+    },
+    {
+      "id": "config-schema-source-of-truth",
+      "rule": "transports/config.schema.json is the source of truth for config fields. New config fields must stay aligned with handlers, docs, and UI behavior.",
+      "scope": ["transports/**", "docs/**", "ui/**"],
+      "severity": "medium"
+    },
+    {
+      "id": "migration-large-table-safety",
+      "rule": "Whenever a migration is added or changed, verify it avoids deadlocks and long blocking locks on large tables. Index creation in migrations must be concurrent where the database supports it.",
+      "scope": ["**/*migration*", "**/migrations/**", "framework/**", "plugins/**", "transports/**"],
+      "severity": "high"
+    },
+    {
+      "id": "frontend-crypto-secure-context",
+      "rule": "Alert when frontend code uses browser crypto APIs such as crypto, crypto.subtle, or globalThis.crypto because they can fail in non-HTTPS contexts, except localhost and other secure contexts.",
+      "scope": ["ui/**", "docs/**"],
+      "severity": "medium"
+    },
+    {
+      "id": "preserve-e2e-testid",
+      "rule": "UI changes must preserve data-testid attributes used by Playwright tests unless tests are updated in the same PR.",
+      "scope": ["ui/**", "tests/e2e/**"],
+      "severity": "medium"
+    },
+    {
+      "id": "e2e-payload-order",
+      "rule": "E2E API payloads must be constructed directly as object literals. Do not serialize through maps, Records, Object.fromEntries, or JSON round trips because field order matters.",
+      "scope": ["tests/e2e/**"],
+      "severity": "medium"
+    }
+  ]
+}

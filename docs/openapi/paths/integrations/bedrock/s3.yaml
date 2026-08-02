@@ -1,0 +1,233 @@
+# AWS Bedrock - S3-Compatible File Storage
+#
+# These routes let boto3's S3 client (using `endpoint_url`) target Bifrost
+# directly for file operations that back Bedrock batch jobs.
+# `x-model-provider` (header) lets the same routes target other providers'
+# file backends.
+
+s3-object:
+  put:
+    operationId: bedrockS3PutObject
+    summary: S3-compatible PutObject
+    description: |
+      Uploads an object to the Bifrost file store using S3 PutObject semantics.
+      The response is empty with an `ETag` header, mirroring native S3.
+    tags:
+    - Bedrock Integration
+    parameters:
+    - name: bucket
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Bucket name.
+    - name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Object key. Supports `/`-separated nested keys (`{key:*}` wildcard).
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override; defaults to `bedrock`.
+    requestBody:
+      required: true
+      content:
+        application/octet-stream:
+          schema:
+            type: string
+            format: binary
+            description: Raw object bytes.
+    responses:
+      '200':
+        description: Object stored. Empty body with `ETag` response header.
+      '500':
+        description: Internal error returned as S3 XML.
+        content:
+          application/xml:
+            schema:
+              type: string
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  get:
+    operationId: bedrockS3GetObject
+    summary: S3-compatible GetObject
+    description: Retrieves raw object bytes from the Bifrost file store.
+    tags:
+    - Bedrock Integration
+    parameters:
+    - name: bucket
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Bucket name.
+    - name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Object key (`{key:*}` wildcard).
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override; defaults to `bedrock`.
+    responses:
+      '200':
+        description: Raw object content.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      '404':
+        description: Object not found (S3 XML error).
+        content:
+          application/xml:
+            schema:
+              type: string
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  head:
+    operationId: bedrockS3HeadObject
+    summary: S3-compatible HeadObject
+    description: |
+      Returns S3 metadata headers (ETag, Content-Length, etc.) without a body.
+    tags:
+    - Bedrock Integration
+    parameters:
+    - name: bucket
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Bucket name.
+    - name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Object key (`{key:*}` wildcard).
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override; defaults to `bedrock`.
+    responses:
+      '200':
+        description: Empty body with object metadata headers.
+      '404':
+        description: Object not found (empty body).
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+  delete:
+    operationId: bedrockS3DeleteObject
+    summary: S3-compatible DeleteObject
+    description: Deletes an object from the Bifrost file store.
+    tags:
+    - Bedrock Integration
+    parameters:
+    - name: bucket
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Bucket name.
+    - name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Object key (`{key:*}` wildcard).
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override; defaults to `bedrock`.
+    responses:
+      '200':
+        description: Object deleted. Empty body.
+      '500':
+        description: Internal error returned as S3 XML.
+        content:
+          application/xml:
+            schema:
+              type: string
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+s3-bucket:
+  get:
+    operationId: bedrockS3ListObjects
+    summary: S3-compatible ListObjectsV2
+    description: |
+      Lists objects in a bucket using S3 ListObjectsV2 semantics. Supports
+      the `prefix` and `max-keys` query parameters used by boto3.
+    tags:
+    - Bedrock Integration
+    parameters:
+    - name: bucket
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Bucket name.
+    - name: prefix
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Filter keys by prefix.
+    - name: max-keys
+      in: query
+      required: false
+      schema:
+        type: integer
+      description: Maximum number of keys to return.
+    - name: x-model-provider
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Optional provider override; defaults to `bedrock`.
+    responses:
+      '200':
+        description: ListObjectsV2 result (S3 XML or JSON, depending on provider).
+        content:
+          application/xml:
+            schema:
+              type: string
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      '500':
+        description: Internal error returned as S3 XML.
+        content:
+          application/xml:
+            schema:
+              type: string
+    security:
+    - BearerAuth: []
+    - BasicAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

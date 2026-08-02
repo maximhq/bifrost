@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mark3labs/mcp-go/client"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -63,9 +64,17 @@ func (m *MCPManager) executeToolWithHooks(
 	request *schemas.BifrostMCPRequest,
 	requestType schemas.RequestType,
 ) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	if request == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          &schemas.ErrorField{Message: "request cannot be nil"},
+			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: requestType},
+		}
+	}
+
 	// Populate top-level ClientName from the prefixed tool name so the gate can
 	// attribute short-circuit responses without depending on prefix parsing.
-	if request != nil && request.ClientName == "" {
+	if request.ClientName == "" {
 		if toolName := request.GetToolName(); toolName != "" {
 			if idx := strings.IndexByte(toolName, '-'); idx > 0 {
 				request.ClientName = toolName[:idx]
@@ -73,14 +82,39 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 	}
 
-	// Capture MCPUserOAuthRequiredError out-of-band: runWithPluginPipeline wraps Go errors into
-	// a generic BifrostError before PostHooks, which strips typed-error info.
-	var oauthErr *schemas.MCPUserOAuthRequiredError
+	// Resolve the upstream client and acquire its connection BEFORE the plugin
+	// gate runs. Connection lifecycle is the orchestrator's concern, not the
+	// plugin op's — the plugin pipeline only wraps the actual CallTool. When
+	// AcquireClientConn fails (e.g. *MCPAuthRequiredError for per-user
+	// clients that need re-auth or headers submission), the plugin gate is
+	// never invoked.
+	state, conn, release, prepErr := m.prepareToolExecution(ctx, request)
+	if prepErr != nil {
+		bErr := &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          &schemas.ErrorField{Message: prepErr.Error()},
+			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: requestType, MCPRequestType: request.RequestType},
+		}
+		var authRequiredErr *schemas.MCPAuthRequiredError
+		if errors.As(prepErr, &authRequiredErr) {
+			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
+		}
+		return nil, bErr
+	}
+	defer release()
 
-	resp, bErr := m.runWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
-		result, opErr := m.ExecuteToolCall(ctx, preReq)
+	// state == nil signals a code-mode tool: pass nil conn/config/mapping and
+	// ToolsManager.ExecuteTool routes directly to CodeMode.
+	var executionConfig *schemas.MCPClientConfig
+	var toolNameMapping map[string]string
+	if state != nil {
+		executionConfig = state.ExecutionConfig
+		toolNameMapping = state.ToolNameMapping
+	}
+
+	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+		result, opErr := m.toolsManager.ExecuteTool(ctx, preReq, conn, executionConfig, toolNameMapping)
 		if opErr != nil {
-			errors.As(opErr, &oauthErr)
 			return nil, opErr
 		}
 		if result == nil {
@@ -91,12 +125,68 @@ func (m *MCPManager) executeToolWithHooks(
 
 	if bErr != nil {
 		bErr.ExtraFields.RequestType = requestType
-		if oauthErr != nil {
-			bErr.ExtraFields.MCPAuthRequired = oauthErr
-		}
 		return nil, bErr
 	}
 	return resp, nil
+}
+
+// prepareToolExecution resolves the tool to its owning MCP client and
+// acquires a connection. Returns (state, conn, release, err):
+//   - For regular MCP tools: state non-nil, conn is the live transport, release
+//     must be called by the caller (defer).
+//   - For code-mode tools: state nil, conn nil, release is a no-op. The caller
+//     forwards nil conn/config/mapping to ToolsManager.ExecuteTool which
+//     dispatches via the CodeMode implementation.
+//
+// Errors here mean the call should NOT run — neither the envelope plugin
+// gate nor the wire op. Typed errors (e.g. *MCPUserOAuthRequiredError)
+// propagate so the caller can stamp BifrostError.ExtraFields.
+func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.MCPClientState, *client.Client, func(), error) {
+	toolName := request.GetToolName()
+	if toolName == "" {
+		return nil, nil, nil, fmt.Errorf("tool call missing function name")
+	}
+
+	// Code-mode tools have no upstream client — skip client lookup.
+	codeMode := m.toolsManager.GetCodeMode()
+	if codeMode != nil && codeMode.IsCodeModeTool(toolName) {
+		return nil, nil, func() {}, nil
+	}
+
+	state := m.GetClientForTool(toolName)
+	if state == nil {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
+	}
+	clientName := state.ExecutionConfig.Name
+	// Enforce the same filters that GetToolPerClient applies for tool
+	// discovery, in the same order. Without these a caller could invoke a
+	// tool by name that was deliberately hidden from the tool list.
+	//
+	//  1. Client lifecycle — a disabled client is not usable.
+	//  2. Client allow-list — request-context MCPContextKeyIncludeClients.
+	//  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
+	//  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
+	if state.State == schemas.MCPConnectionStateDisabled {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (client %s is disabled)", toolName, clientName)
+	}
+	var includeClients []string
+	if v, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok {
+		includeClients = v
+	}
+	if !shouldIncludeClient(clientName, includeClients, m.logger) {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (client %s is not in request-context include list)", toolName, clientName)
+	}
+	if shouldSkipToolForConfig(toolName, state.ExecutionConfig) {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (not in client's ToolsToExecute allow-list)", toolName)
+	}
+	if shouldSkipToolForRequest(ctx, clientName, toolName) {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (filtered by request context)", toolName)
+	}
+	conn, release, err := m.AcquireClientConn(ctx, state)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return state, conn, release, nil
 }
 
 // executeToolForAgent is the agent-mode-facing helper. The agent loop expects a

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -45,48 +47,133 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 	}
 }
 
+// clientForwardedIP returns the client-supplied originating IP from reverse-proxy
+// headers, or "" if none are present. X-Forwarded-For may be a comma-separated list
+// (client, proxy1, proxy2); the leftmost entry is the original client.
+//
+// These headers are caller-controlled and unauthenticated unless Bifrost sits behind
+// a trusted proxy that overwrites them. The value is logged as http.forwarded_for —
+// separate from the authoritative http.remote_addr (the real TCP peer) — so a forged
+// header cannot mask the true peer in the access log.
+func clientForwardedIP(ctx *fasthttp.RequestCtx) string {
+	if xff := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-For"))); xff != "" {
+		if first, _, found := strings.Cut(xff, ","); found {
+			return strings.TrimSpace(first)
+		}
+		return xff
+	}
+	if xrip := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP"))); xrip != "" {
+		return xrip
+	}
+	return ""
+}
+
+// corsMiddlewareConfig is an immutable snapshot of the CORS-relevant client config.
+// The slices are cloned at construction so a hot reload mutating the source
+// ClientConfig in place cannot race with in-flight requests reading these fields.
+type corsMiddlewareConfig struct {
+	dumpErrorsInConsoleLogs bool
+	allowedOrigins          []string
+	allowedHeaders          []string
+}
+
+// newCorsMiddlewareConfig builds an immutable snapshot from the live config,
+// cloning the slices so the snapshot never aliases the shared ClientConfig.
+func newCorsMiddlewareConfig(config *lib.Config) *corsMiddlewareConfig {
+	if config == nil || config.ClientConfig == nil {
+		return nil
+	}
+	return &corsMiddlewareConfig{
+		dumpErrorsInConsoleLogs: config.ClientConfig.DumpErrorsInConsoleLogs,
+		allowedOrigins:          slices.Clone(config.ClientConfig.AllowedOrigins),
+		allowedHeaders:          slices.Clone(config.ClientConfig.AllowedHeaders),
+	}
+}
+
+// CorsMiddleware handles CORS headers for localhost and configured allowed origins.
+// The snapshot is held in an atomic.Pointer so UpdateConfig can swap it at runtime
+// without racing in-flight requests, which read the pointer concurrently. Because the
+// snapshot is immutable (slices cloned), readers never observe a torn or half-updated
+// config even while a reload swaps in a new one.
+type CorsMiddleware struct {
+	config atomic.Pointer[corsMiddlewareConfig]
+}
+
+func NewCorsMiddleware(config *lib.Config) *CorsMiddleware {
+	c := &CorsMiddleware{}
+	c.config.Store(newCorsMiddlewareConfig(config))
+	return c
+}
+
+// UpdateConfig atomically swaps in a fresh immutable snapshot of the configuration.
+// In-flight requests reading the pointer observe either the old or the new snapshot,
+// never a torn value. ReloadClientConfigFromConfigStore must call this whenever the
+// client config is refreshed, mirroring how AuthMiddleware is updated.
+func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
+	c.config.Store(newCorsMiddlewareConfig(config))
+}
+
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
-func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			startTime := time.Now()
-			// skip logging if it's a /health check request
-			if slices.IndexFunc(loggingSkipPaths, func(path string) bool {
-				return strings.HasPrefix(string(ctx.RequestURI()), path)
-			}) != -1 {
-				goto corsFlow
+			// Snapshot the config once per request so a concurrent UpdateConfig swap
+			// cannot apply two different configs within a single response.
+			cfg := c.config.Load()
+			if cfg == nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, "CORS middleware configuration not loaded")
+				return
 			}
-			defer func() {
-				statusCode := ctx.Response.Header.StatusCode()
-				level := schemas.LogLevelInfo
-				if statusCode >= 500 {
-					level = schemas.LogLevelError
-				} else if statusCode >= 400 {
-					level = schemas.LogLevelWarn
-				}
-				logBuilder := logger.LogHTTPRequest(level, "request completed").
-					Str("http.method", string(ctx.Method())).
-					Str("http.target", string(ctx.RequestURI())).
-					Int("http.status_code", statusCode).
-					Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
-					Str("http.remote_addr", ctx.RemoteAddr().String()).
-					Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
-				if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
-					logBuilder = logBuilder.Str("trace_id", traceID)
-				}
-				logBuilder.Send()
-			}()
-		corsFlow:
+			shouldLog := slices.IndexFunc(loggingSkipPaths, func(path string) bool {
+				return strings.HasPrefix(string(ctx.RequestURI()), path)
+			}) == -1
+			if shouldLog {
+				startTime := time.Now()
+				defer func() {
+					statusCode := ctx.Response.Header.StatusCode()
+					level := schemas.LogLevelInfo
+					if statusCode >= 500 {
+						level = schemas.LogLevelError
+					} else if statusCode >= 400 {
+						level = schemas.LogLevelWarn
+					}
+					logBuilder := logger.LogHTTPRequest(level, "request completed").
+						Str("http.method", string(ctx.Method())).
+						Str("http.target", string(ctx.RequestURI())).
+						Int("http.status_code", statusCode).
+						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
+						Str("http.remote_addr", ctx.RemoteAddr().String()).
+						Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
+					if forwarded := clientForwardedIP(ctx); forwarded != "" {
+						logBuilder = logBuilder.Str("http.forwarded_for", forwarded)
+					}
+					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+						logBuilder = logBuilder.Str("trace_id", traceID)
+					}
+					// Emit the request ID alongside trace_id
+					if requestID := string(ctx.Request.Header.Peek("x-request-id")); requestID != "" {
+						logBuilder = logBuilder.Str("request_id", requestID)
+					}
+					if cfg.dumpErrorsInConsoleLogs {
+						if statusCode >= 400 && !ctx.Response.IsBodyStream() {
+							if body := ctx.Response.Body(); len(body) > 0 {
+								logBuilder = logBuilder.Str("http.error", string(body))
+							}
+						}
+					}
+					logBuilder.Send()
+				}()
+			}
 			origin := string(ctx.Request.Header.Peek("Origin"))
-			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
+			allowed := IsOriginAllowed(origin, cfg.allowedOrigins)
 			// Credentialed responses are sent when the origin is not matched solely by a
 			// wildcard AllowedOrigins — i.e. the origin is localhost or explicitly listed.
-			credentialed := !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
+			credentialed := !slices.Contains(cfg.allowedOrigins, "*") ||
 				isLocalhostOrigin(origin) ||
-				slices.Contains(config.ClientConfig.AllowedOrigins, origin)
+				slices.Contains(cfg.allowedOrigins, origin)
 
 			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID"}
-			if slices.Contains(config.ClientConfig.AllowedHeaders, "*") {
+			if slices.Contains(cfg.allowedHeaders, "*") {
 				if credentialed {
 					// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
 					// wildcard when Access-Control-Allow-Credentials: true is set — browsers
@@ -99,9 +186,9 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				} else {
 					allowedHeaders = []string{"*"}
 				}
-			} else if len(config.ClientConfig.AllowedHeaders) > 0 {
+			} else if len(cfg.allowedHeaders) > 0 {
 				// append allowed headers from config to the default headers
-				for _, header := range config.ClientConfig.AllowedHeaders {
+				for _, header := range cfg.allowedHeaders {
 					if !slices.Contains(allowedHeaders, header) {
 						allowedHeaders = append(allowedHeaders, header)
 					}
@@ -312,6 +399,12 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			// Get or create BifrostContext from fasthttp context
 			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			// Transport pre-hooks run before the inference path stamps the
+			// catalog, so stamp it here too — otherwise ctx.GetModelInfo would
+			// be nil in HTTPTransportPreHook but populated in every other hook.
+			if config.ModelCatalog != nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyModelCatalog, config.ModelCatalog)
+			}
 			// Acquire pooled request
 			req := schemas.AcquireHTTPRequest()
 			defer schemas.ReleaseHTTPRequest(req)
@@ -698,10 +791,14 @@ type AuthMiddleware struct {
 	whitelistedRoutes atomic.Pointer[[]string]
 	authConfig        atomic.Pointer[configstore.AuthConfig]
 	wsTicketStore     *WSTicketStore
+	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
+	tempTokensEnabled atomic.Bool
 }
 
-// InitAuthMiddleware initializes the auth middleware.
-func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore) (*AuthMiddleware, error) {
+// InitAuthMiddleware initializes the auth middleware. The tempTokens service
+// is optional and still gated by client config — when nil or disabled, the
+// temp-token fallback path is skipped.
+func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore, tempTokensService *temptoken.Service) (*AuthMiddleware, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is not present")
 	}
@@ -710,9 +807,10 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 		return nil, fmt.Errorf("failed to get auth config from store: %v", err)
 	}
 	am := &AuthMiddleware{
-		store:         store,
-		authConfig:    atomic.Pointer[configstore.AuthConfig]{},
-		wsTicketStore: wsTicketStore,
+		store:             store,
+		authConfig:        atomic.Pointer[configstore.AuthConfig]{},
+		wsTicketStore:     wsTicketStore,
+		tempTokensService: tempTokensService,
 	}
 
 	am.authConfig.Store(authConfig)
@@ -721,9 +819,11 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	clientConfig, err := store.GetClientConfig(context.Background())
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
+		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
 	} else {
 		emptyRoutes := []string{}
 		am.whitelistedRoutes.Store(&emptyRoutes)
+		am.tempTokensEnabled.Store(false)
 	}
 
 	return am, nil
@@ -738,10 +838,54 @@ func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 	m.whitelistedRoutes.Store(&routes)
 }
 
-// InferenceMiddleware is for inference requests (including MCP routes) if authConfig is set, it will skip authentication if disableAuthOnInference is true.
+// UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
+func (m *AuthMiddleware) UpdateTempTokenAuthEnabled(enabled bool) {
+	m.tempTokensEnabled.Store(enabled)
+}
+
+// tryTempTokenOrUnauthorized is the last-resort auth path: a request that
+// failed every conventional credential check (no Authorization header, no
+// valid cookie) is given one more chance to present an X-Bifrost-Temp-Token
+// header that authorizes the specific (method, path) being requested. On
+// success the validated scope and resource_id are attached to ctx for
+// handler-side defense-in-depth checks, and the next handler runs. On
+// failure (no header, expired, route-mismatch, etc.) a 401 is written.
+//
+// Temp-token validation is intentionally *not* attempted when an
+// Authorization header or session cookie is present — those paths have
+// their own success/failure semantics and silently rescuing a bad password
+// with a temp token would be surprising.
+func (m *AuthMiddleware) tryTempTokenOrUnauthorized(ctx *fasthttp.RequestCtx, next fasthttp.RequestHandler) {
+	if m.tempTokensService != nil && m.tempTokensEnabled.Load() {
+		token := string(ctx.Request.Header.Peek("X-Bifrost-Temp-Token"))
+		if token != "" {
+			validated, err := m.tempTokensService.Validate(ctx, token, string(ctx.Method()), string(ctx.Path()))
+			if err == nil && validated != nil {
+				ctx.SetUserValue(schemas.BifrostContextKeyTempTokenScope, validated.Scope)
+				ctx.SetUserValue(schemas.BifrostContextKeyTempTokenResourceID, validated.ResourceID)
+				next(ctx)
+				return
+			}
+		}
+	}
+	SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+}
+
+// InferenceMiddleware is for inference requests (including MCP routes). It always
+// passes the request through — inference authentication is owned entirely by the
+// governance plugin, not by this dashboard-auth middleware.
+//
+// Governance runs downstream on every inference request type (via RunLLMPreHooks) and
+// is the authoritative virtual-key validator: it rejects missing/unknown/revoked keys
+// and enforces whether a VK is mandatory (driven by ClientConfig.EnforceAuthOnInference).
+// In OSS it is loaded unconditionally and cannot be disabled, so delegating to it never
+// leaves inference ungated. Keeping admin-password checks out of this path is deliberate:
+// gating inference on dashboard credentials would reject virtual-key callers, since a VK
+// is not an admin/session credential. Admin-password auth therefore stays exclusive to
+// dashboard/API routes (APIMiddleware) and is never required for inference.
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		return authConfig.DisableAuthOnInference
+		return true
 	})
 }
 
@@ -770,9 +914,23 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		"/api/version",
 	}
 	whitelistedPrefixes := []string{
-		"/api/oauth/callback",
-		"/api/oauth",
+		// "/api/oauth/callback" is also in systemWhitelistedRoutes above as an
+		// exact match — that's the only OAuth route that must be public (it's
+		// hit by the browser after the upstream provider redirects back, with
+		// no cookie context). DO NOT add a broad "/api/oauth" prefix here:
+		// it would whitelist /api/oauth/per-user/* (auth-via-temp-token) and
+		// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
+		// in tryTempTokenOrUnauthorized.
 		"/api/dev",
+		// Skills serving endpoints are public — marketplace URLs cannot carry
+		// credentials securely. Management endpoints under /api/skills (without
+		// /serve/) remain authenticated.
+		"/api/skills/serve/",
+		// OAuth2 discovery endpoints (RFC 8414 AS metadata, RFC 9728 protected
+		// resource metadata, RFC 7517 JWKS) must be reachable without auth so
+		// clients can bootstrap the flow. Each handler still gates availability
+		// behind discoveryEnabled() and serves 404 when OAuth mode is off.
+		"/.well-known/",
 	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		if slices.Contains(systemWhitelistedRoutes, url) ||
@@ -784,8 +942,8 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 		// Check user-configured whitelisted routes
 		if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
 			if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-				if strings.HasSuffix(route, "*") {
-					return strings.HasPrefix(url, strings.TrimSuffix(route, "*"))
+				if before, ok := strings.CutSuffix(route, "*"); ok {
+					return strings.HasPrefix(url, before)
 				}
 				return false
 			}) != -1 {
@@ -808,7 +966,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			}
 			authConfig := m.authConfig.Load()
 			if authConfig == nil || !authConfig.IsEnabled {
-				logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
+				// logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
 				// Mark as local admin so downstream RBAC bypasses cleanly when
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters
@@ -817,13 +975,14 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				next(ctx)
 				return
 			}
-			url := string(ctx.Request.URI().RequestURI())
+			// Match the whitelist against the path only
+			url := string(ctx.Path())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
 				next(ctx)
 				return
 			}
-			if isRealtimeTransportEndpoint(string(ctx.Path())) {
+			if isRealtimeTransportEndpoint(url) {
 				next(ctx)
 				return
 			}
@@ -882,7 +1041,10 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					next(ctx)
 					return
 				}
-				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+				// Last-resort: a scoped temp token (e.g. for the MCP per-user
+				// OAuth auth page accessed by a non-admin browser) can rescue
+				// this request when it targets a route the token authorizes.
+				m.tryTempTokenOrUnauthorized(ctx, next)
 				return
 			}
 			// Split the authorization header into the scheme and the token
@@ -995,20 +1157,25 @@ type TracingMiddleware struct {
 	tracer atomic.Pointer[tracing.Tracer]
 }
 
-func attachDimensionAttributesToHTTPSpan(ctx *fasthttp.RequestCtx, setAttribute func(key string, value any)) {
-	if ctx == nil || setAttribute == nil {
-		return
+// collectDimensionHeaders gathers x-bf-dim-* request headers into a map keyed by
+// the bare dimension name. TracingMiddleware runs before ConvertToBifrostContext,
+// so it reads the headers directly rather than BifrostContextKeyDimensions.
+func collectDimensionHeaders(ctx *fasthttp.RequestCtx) map[string]string {
+	if ctx == nil {
+		return nil
 	}
-	// Root HTTP span starts before ConvertToBifrostContext, so read x-bf-dim-* directly.
+	var dims map[string]string
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-dim-"); ok && labelName != "" {
-			if labelName != "path" && labelName != "method" {
-				setAttribute(labelName, string(value))
+			if dims == nil {
+				dims = make(map[string]string)
 			}
+			dims[labelName] = string(value)
 		}
 		return true
 	})
+	return dims
 }
 
 // NewTracingMiddleware creates a new tracing middleware
@@ -1054,6 +1221,22 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
 			// Create trace in store - only ID returned (trace data stays in store)
 			traceID := tracer.CreateTrace(inheritedTraceID, requestID)
+			// Surface correlation IDs back to the caller so a request can be pivoted
+			// into its logs (Loki) and trace (Tempo) in Grafana and similar stacks.
+			ctx.Response.Header.Set("x-request-id", requestID)
+			ctx.Response.Header.Set("x-bifrost-trace-id", traceID)
+			// Store dimensions and session ID at the trace level (not as span
+			// attributes) so connectors like BigQuery can export them without
+			// changing the OTEL/Datadog span payloads.
+			dimensions := collectDimensionHeaders(ctx)
+			if len(dimensions) > 0 {
+				// Hand the trace its own copy — connectors read the attribute
+				// asynchronously and must never observe later mutations.
+				tracer.SetTraceAttribute(traceID, schemas.TraceAttrDimensions, maps.Clone(dimensions))
+			}
+			if sessionID := strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-session-id"))); sessionID != "" {
+				tracer.SetTraceAttribute(traceID, schemas.TraceAttrSessionID, sessionID)
+			}
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
 			// Extract parent span ID from W3C traceparent header (if present)
@@ -1070,14 +1253,36 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				if len(transportLogs) > 0 {
 					tracer.AttachPluginLogs(traceID, transportLogs)
 				}
+				// End the root HTTP span now that the stream has fully drained, so its
+				// latency covers the entire streamed response. For deferred (streaming)
+				// requests the TracingMiddleware defer below intentionally leaves the root
+				// span open; ending it here keeps the parent from closing before its child
+				// llm.call span (which is ended by completeDeferredSpan on the final chunk).
+				// Status is always Ok: deferral is only set after the stream was set up with
+				// HTTP 200, and mid-stream failures surface as SSE error frames / on the
+				// llm.call span, not as an HTTP error on the root.
+				if rootHandle := tracer.GetSpanHandleByID(traceID, nil); rootHandle != nil {
+					tracer.EndSpan(rootHandle, schemas.SpanStatusOk, "")
+				}
 				tracer.CompleteAndFlushTrace(traceID)
+				// Guaranteed end-of-stream backstop: force-reap the stream accumulator
+				// now that the stream has fully drained and the trace is flushed. This
+				// covers streams that ended without a clean terminal chunk (client abort,
+				// broken SSE write, or a multi-plugin refcount imbalance), which would
+				// otherwise leak their accumulated (deep-copied) chunks until the TTL
+				// sweep. Safe after CompleteAndFlushTrace: span completion reads the
+				// separately stored accumulated response, not the live accumulator.
+				tracer.ForceCleanupStreamAccumulator(traceID)
 			})
 			// Create root span for the HTTP request
 			spanCtx, rootSpan := tracer.StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
 			if rootSpan != nil {
-				attachDimensionAttributesToHTTPSpan(ctx, func(key string, value any) {
-					tracer.SetAttribute(rootSpan, key, value)
-				})
+				for name, value := range dimensions {
+					// "path" and "method" stay reserved for the standard http.* attributes.
+					if name != "path" && name != "method" {
+						tracer.SetAttribute(rootSpan, name, value)
+					}
+				}
 				tracer.SetAttribute(rootSpan, "http.method", string(ctx.Method()))
 				tracer.SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
 				tracer.SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))
@@ -1086,19 +1291,38 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					ctx.SetUserValue(schemas.BifrostContextKeySpanID, spanID)
 				}
 			}
+			// Capture request headers onto the trace when a connector has opted in.
+			// Gated so there is no overhead when no observability plugin wants headers.
+			if tracer.ShouldCaptureRequestHeaders() {
+				headers := make(map[string]string)
+				ctx.Request.Header.All()(func(key, value []byte) bool {
+					headers[strings.ToLower(string(key))] = string(value)
+					return true
+				})
+				tracer.SetTraceRequestHeaders(traceID, headers)
+			}
 			defer func() {
+				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
 				// Record response status on the root span
 				if rootSpan != nil {
 					tracer.SetAttribute(rootSpan, "http.status_code", ctx.Response.StatusCode())
-					if ctx.Response.StatusCode() >= 400 {
-						tracer.EndSpan(rootSpan, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", ctx.Response.StatusCode()))
-					} else {
-						tracer.EndSpan(rootSpan, schemas.SpanStatusOk, "")
+					// For deferred (streaming) requests, the trace completer ends the root
+					// span after the stream fully drains, so its latency reflects the whole
+					// streamed response. Ending it here (at handler return) would close the
+					// parent before the deferred llm.call span finishes, making the child
+					// span appear longer than its parent in trace viewers.
+					if !deferred {
+						if ctx.Response.StatusCode() >= 400 {
+							tracer.EndSpan(rootSpan, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", ctx.Response.StatusCode()))
+						} else {
+							tracer.EndSpan(rootSpan, schemas.SpanStatusOk, "")
+						}
 					}
 				}
 				// Check if trace completion is deferred (for streaming requests)
-				// If deferred, the streaming handler will complete the trace after stream ends
-				if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+				// If deferred, the streaming handler will complete the trace (and end the
+				// root span via the trace completer) after the stream ends.
+				if deferred {
 					return
 				}
 				// Attach transport plugin logs to trace before completion

@@ -11,6 +11,10 @@ import (
 // TestImageGenerationCacheBasicFunctionality tests basic image generation caching
 func TestImageGenerationCacheBasicFunctionality(t *testing.T) {
 	if testing.Short() {
+		t.Skipf("skipping %s in -short mode (gpt-image-1 calls take ~15-65s)", "TestImageGenerationCacheBasicFunctionality")
+	}
+	t.Parallel()
+	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" {
@@ -19,7 +23,7 @@ func TestImageGenerationCacheBasicFunctionality(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("test-image-gen-value")
+	ctx := CreateContextWithCacheKey(t, "test-image-gen-value")
 
 	// Create test image generation request
 	testRequest := CreateImageGenerationRequest(
@@ -117,6 +121,10 @@ func TestImageGenerationCacheBasicFunctionality(t *testing.T) {
 // TestImageGenerationSemanticSearch tests semantic similarity search for image generation
 func TestImageGenerationSemanticSearch(t *testing.T) {
 	if testing.Short() {
+		t.Skipf("skipping %s in -short mode (gpt-image-1 calls take ~15-65s)", "TestImageGenerationSemanticSearch")
+	}
+	t.Parallel()
+	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" {
@@ -132,7 +140,7 @@ func TestImageGenerationSemanticSearch(t *testing.T) {
 	setup := NewTestSetupWithConfig(t, config)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("image-semantic-test-value")
+	ctx := CreateContextWithCacheKey(t, "image-semantic-test-value")
 
 	// First request - this will be cached
 	firstRequest := CreateImageGenerationRequest(
@@ -235,6 +243,10 @@ func TestImageGenerationSemanticSearch(t *testing.T) {
 // TestImageGenerationDifferentParameters tests that different parameters are cached separately
 func TestImageGenerationDifferentParameters(t *testing.T) {
 	if testing.Short() {
+		t.Skipf("skipping %s in -short mode (gpt-image-1 calls take ~15-65s)", "TestImageGenerationDifferentParameters")
+	}
+	t.Parallel()
+	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" {
@@ -243,7 +255,7 @@ func TestImageGenerationDifferentParameters(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("image-params-test")
+	ctx := CreateContextWithCacheKey(t, "image-params-test")
 
 	basePrompt := "A cute cat sitting on a windowsill"
 
@@ -293,6 +305,10 @@ func TestImageGenerationDifferentParameters(t *testing.T) {
 // TestImageGenerationStreamCaching tests streaming image generation caching
 func TestImageGenerationStreamCaching(t *testing.T) {
 	if testing.Short() {
+		t.Skipf("skipping %s in -short mode (gpt-image-1 calls take ~15-65s)", "TestImageGenerationStreamCaching")
+	}
+	t.Parallel()
+	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
 	if os.Getenv("OPENAI_API_KEY") == "" {
@@ -301,7 +317,7 @@ func TestImageGenerationStreamCaching(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("image-stream-test")
+	ctx := CreateContextWithCacheKey(t, "image-stream-test")
 
 	// Create test image generation request
 	testRequest := CreateImageGenerationRequest(

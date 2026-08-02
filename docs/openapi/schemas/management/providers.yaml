@@ -37,6 +37,10 @@ NetworkConfig:
     ca_cert_pem:
       type: string
       description: PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)
+    allow_private_network:
+      type: boolean
+      default: false
+      description: Allow connections to RFC 1918 private IPs (10.x, 172.16.x, 192.168.x). Enable for providers on a k8s pod network, LAN, or private VPC. Loopback addresses (localhost, 127.0.0.1, ::1) remain allowed regardless of this setting. Link-local addresses (169.254.x.x) are always blocked.
 
 ConcurrencyAndBufferSize:
   type: object
@@ -450,8 +454,24 @@ ModelDetailsResponse:
       type: integer
     max_output_tokens:
       type: integer
+    input_cost_per_token:
+      type: number
+      format: double
+    output_cost_per_token:
+      type: number
+      format: double
+    cache_creation_input_token_cost:
+      type: number
+      format: double
+    cache_read_input_token_cost:
+      type: number
+      format: double
     architecture:
       $ref: '#/Architecture'
+    additional_attributes:
+      type: object
+      additionalProperties:
+        type: string
     accessible_by_keys:
       type: array
       items:

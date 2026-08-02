@@ -1,5 +1,5 @@
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
 	AlertDialog,
@@ -11,17 +11,19 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
-import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
+import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { Button } from "@/components/ui/button";
+import { DateTimePicker } from "@/components/ui/datePickerWithRange";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { ProviderConfigCard } from "@/components/ui/providerConfigCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -30,8 +32,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/components/ui/utils";
-import { ModelPlaceholders } from "@/lib/constants/config";
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
@@ -41,24 +41,28 @@ import {
 	useGetAllKeysQuery,
 	useGetMCPClientsQuery,
 	useGetProvidersQuery,
+	useGetTeamQuery,
+	useRotateVirtualKeyMutation,
+	useRemoveVirtualKeyBudgetOverrideMutation,
+	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
-import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
+import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
+import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride, parseResetPeriod } from "@/lib/utils/governance";
+import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
-import { Info, Lock, RotateCcw, Trash2, Users, X } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { Info, Lock, RotateCcw, Trash2, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
-import { components, MultiValueProps, OptionProps } from "react-select";
 import { toast } from "sonner";
 import { z } from "zod";
 
 interface VirtualKeySheetProps {
 	virtualKey?: VirtualKey | null;
-	teams: Team[];
-	customers: Customer[];
 	// When set, the new VK is created under this team. The entity assignment is pre-set
 	// and cannot be changed (but all other fields remain editable).
 	defaultTeamId?: string;
@@ -72,11 +76,13 @@ const providerConfigSchema = z.object({
 	provider: z.string().min(1, "Provider is required"),
 	weight: z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1").optional(),
 	allowed_models: z.array(z.string()).optional(),
+	blacklisted_models: z.array(z.string()).optional(),
 	key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
 	// Provider-level budget
 	budgets: z
 		.array(
 			z.object({
+				id: z.string().optional(),
 				max_limit: z.number().nonnegative().optional(),
 				reset_duration: z.string().optional(),
 			}),
@@ -110,11 +116,13 @@ const formSchema = z
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
 		isActive: z.boolean(),
+		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
 		// Budget
 		budgetCalendarAligned: z.boolean(),
 		budgets: z
 			.array(
 				z.object({
+					id: z.string().optional(),
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string(),
 				}),
@@ -146,15 +154,86 @@ const formSchema = z
 	);
 
 type FormData = z.infer<typeof formSchema>;
-
-type VirtualKeyType = {
-	label: string;
-	value: string;
-	description: string;
-	provider: string;
+type BudgetComparisonEntry = {
+	id?: string;
+	max_limit?: number;
+	reset_duration?: string;
+	current_usage?: number;
 };
 
-export default function VirtualKeySheet({ virtualKey, teams, customers, defaultTeamId, onSave, onCancel }: VirtualKeySheetProps) {
+const pad2 = (n: number) => n.toString().padStart(2, "0");
+
+const toDatetimeLocal = (d: Date) =>
+	`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+const presetFromNow = (offsetMs: number) => toDatetimeLocal(new Date(Date.now() + offsetMs));
+
+const EXPIRY_PRESETS = [
+	{ label: "30 min", ms: 30 * 60_000 },
+	{ label: "1 hour", ms: 60 * 60_000 },
+	{ label: "24 hours", ms: 24 * 60 * 60_000 },
+	{ label: "7 days", ms: 7 * 24 * 60 * 60_000 },
+] as const;
+
+interface ExpiryFieldProps {
+	value: string | null | undefined;
+	onChange: (v: string | null) => void;
+}
+
+function ExpiryPickerField({ value, onChange }: ExpiryFieldProps) {
+	// Preset timestamps are computed from Date.now() at click time, so the picked
+	// preset can't be derived back from the value; track it for highlighting.
+	const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
+
+	return (
+		<FormItem>
+			<FormLabel>Expiry</FormLabel>
+			<p className="text-muted-foreground text-xs">
+				{value ? `This key expires ${formatDistanceToNow(new Date(value), { addSuffix: true })}.` : "This key never expires."}
+			</p>
+			<div className="flex flex-wrap gap-1.5">
+				<Button
+					type="button"
+					variant={!value ? "default" : "outline"}
+					size="sm"
+					onClick={() => {
+						setSelectedPreset(null);
+						onChange(null);
+					}}
+				>
+					Never
+				</Button>
+				{EXPIRY_PRESETS.map(({ label, ms }) => (
+					<Button
+						key={label}
+						type="button"
+						variant={value && selectedPreset === label ? "default" : "outline"}
+						size="sm"
+						onClick={() => {
+							setSelectedPreset(label);
+							onChange(presetFromNow(ms));
+						}}
+					>
+						{label}
+					</Button>
+				))}
+				<DateTimePicker
+					buttonClassName="h-8 text-sm px-3"
+					buttonVariant={value && !selectedPreset ? "default" : "outline"}
+					dateTime={value ? new Date(value) : undefined}
+					disabledBefore={new Date()}
+					onDateTimeUpdate={(dt) => {
+						setSelectedPreset(null);
+						onChange(toDatetimeLocal(dt));
+					}}
+				/>
+			</div>
+			<FormMessage />
+		</FormItem>
+	);
+}
+
+export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onCancel }: VirtualKeySheetProps) {
 	const [isOpen, setIsOpen] = useState(true);
 	const navigate = useNavigate();
 	const isEditing = !!virtualKey;
@@ -165,13 +244,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 
 	// Detect AP-managed status via the managing profile's virtual_key_ids, not just by the presence
 	// of assignees — directly-attached users don't imply an access-profile relation.
-	const { assignedUsers, isManagedByProfile: isManagedByProfileHook } = useVirtualKeyUsage(virtualKey);
+	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
 	const isManagedByProfile = isEditing && isManagedByProfileHook;
 	// Team attachment: when creating from a team context (defaultTeamId provided), the entity
 	// assignment is pre-set and locked. When editing an existing VK the assignment can be changed.
 	const attachedTeamId = isEditing ? virtualKey?.team_id || "" : defaultTeamId || "";
-	const attachedTeam = attachedTeamId ? teams.find((t) => t.id === attachedTeamId) : undefined;
 	const isTeamLocked = !isEditing && !!defaultTeamId;
+	// Only the locked banner needs this name, and only when creating under a team,
+	// so resolve that one team by id rather than holding the whole list.
+	const { data: attachedTeamData } = useGetTeamQuery(attachedTeamId, {
+		skip: !isTeamLocked || !attachedTeamId,
+	});
+	const attachedTeam = attachedTeamData?.team;
 
 	const handleClose = () => {
 		setIsOpen(false);
@@ -185,9 +269,32 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const { data: keysData, error: keysError } = useGetAllKeysQuery();
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
+	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
+	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
+	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
 	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery();
 	const mcpClientsData = mcpClientsResponse?.clients || [];
-	const isLoading = isCreating || isUpdating;
+	const isLoading = isCreating || isUpdating || isRotating;
+	const persistedOverrideBudgets = [
+		...(virtualKey?.budgets ?? []).map((budget) => ({
+			budget,
+			label: "Virtual key",
+		})),
+		...(virtualKey?.provider_configs ?? []).flatMap((config) =>
+			(config.budgets ?? []).map((budget) => ({
+				budget,
+				label: ProviderLabels[config.provider as ProviderName] ?? config.provider,
+			})),
+		),
+	];
+	const saveBudgetOverride = async (budgetId: string, data: BudgetOverrideRequest) => {
+		if (!virtualKey) throw new Error("Virtual key is required");
+		await setBudgetOverride({ vkId: virtualKey.id, budgetId, data }).unwrap();
+	};
+	const clearBudgetOverride = async (budgetId: string) => {
+		if (!virtualKey) throw new Error("Virtual key is required");
+		await removeBudgetOverride({ vkId: virtualKey.id, budgetId }).unwrap();
+	};
 
 	const availableKeys = keysData || [];
 	const availableProviders = providersData || [];
@@ -203,19 +310,21 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					id: config.id,
 					provider: config.provider,
 					weight: config.weight ?? undefined,
-					allowed_models: config.allowed_models,
+					allowed_models: config.allowed_models || [],
+					blacklisted_models: config.blacklisted_models || [],
 					key_ids: config.allow_all_keys ? ["*"] : config.keys?.map((key) => key.key_id) || [],
 					budgets: config.budgets?.map((b) => ({
+						id: b.id,
 						max_limit: b.max_limit,
 						reset_duration: b.reset_duration,
 					})),
 					rate_limit: config.rate_limit
 						? {
-							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration,
-							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration,
-						}
+								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+								token_reset_duration: config.rate_limit.token_reset_duration,
+								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+								request_reset_duration: config.rate_limit.request_reset_duration,
+							}
 						: undefined,
 				})) || [],
 			mcpConfigs:
@@ -228,9 +337,19 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 			teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
 			customerId: virtualKey?.customer_id || "",
 			isActive: virtualKey?.is_active ?? true,
+			expiresAt: virtualKey?.expires_at
+				? (() => {
+						const d = new Date(virtualKey.expires_at);
+						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+					})()
+				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
-					? virtualKey.budgets.map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration ?? "1M" }))
+					? virtualKey.budgets.map((b) => ({
+							id: b.id,
+							max_limit: b.max_limit,
+							reset_duration: b.reset_duration ?? "1M",
+						}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -290,13 +409,22 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const watchedBudgets = form.watch("budgets");
 	const watchedTokenMaxLimit = form.watch("tokenMaxLimit");
 	const watchedRequestMaxLimit = form.watch("requestMaxLimit");
+	const watchedTokenResetDuration = form.watch("tokenResetDuration");
+	const watchedRequestResetDuration = form.watch("requestResetDuration");
 	const watchedBudgetCalendarAligned = form.watch("budgetCalendarAligned");
 
-	// Calendar alignment is VK-wide: show toggle if any budget has a max_limit and supports alignment
+	// Calendar alignment is VK-wide and applies to both budgets and rate limits: show the
+	// toggle when any configured budget or rate-limit uses a calendar-alignable duration.
 	const hasAnyAlignableBudget =
 		watchedBudgets &&
 		watchedBudgets.length > 0 &&
 		watchedBudgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration || "1M"));
+	const hasAnyAlignableRateLimit =
+		(watchedTokenMaxLimit !== undefined && watchedTokenMaxLimit !== null && supportsCalendarAlignment(watchedTokenResetDuration || "1h")) ||
+		(watchedRequestMaxLimit !== undefined &&
+			watchedRequestMaxLimit !== null &&
+			supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
+	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
 
 	// Handle adding a new provider configuration
 	const handleAddProvider = (provider: string) => {
@@ -310,22 +438,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 			provider: provider,
 			weight: undefined as number | undefined, // undefined = excluded from weighted routing until user sets a weight
 			allowed_models: ["*"],
+			blacklisted_models: [],
 			key_ids: ["*"],
 		};
 
-		form.setValue("providerConfigs", [...providerConfigs, newConfig], { shouldDirty: true });
+		form.setValue("providerConfigs", [...providerConfigs, newConfig], {
+			shouldDirty: true,
+		});
 	};
 
 	// Handle removing a provider configuration
 	const handleRemoveProvider = (index: number) => {
 		const updatedConfigs = providerConfigs.filter((_, i) => i !== index);
-		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
-	};
-
-	// Handle updating provider configuration
-	const handleUpdateProviderConfig = (index: number, field: string, value: any) => {
-		const updatedConfigs = [...providerConfigs];
-		updatedConfigs[index] = { ...updatedConfigs[index], [field]: value };
 		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
 	};
 
@@ -342,7 +466,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 			tools_to_execute: ["*"],
 		};
 
-		form.setValue("mcpConfigs", [...mcpConfigs, newConfig], { shouldDirty: true });
+		form.setValue("mcpConfigs", [...mcpConfigs, newConfig], {
+			shouldDirty: true,
+		});
 	};
 
 	// Handle removing an MCP client configuration
@@ -361,6 +487,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
 	const [showReassignTeamWarning, setShowReassignTeamWarning] = useState(false);
 	const [pendingTeamId, setPendingTeamId] = useState<string | null>(null);
+	const [showRotateWarning, setShowRotateWarning] = useState(false);
+	const [showBudgetResetPrompt, setShowBudgetResetPrompt] = useState(false);
+	const [pendingBudgetResetData, setPendingBudgetResetData] = useState<FormData | null>(null);
+	const [pendingBudgetUsageWarning, setPendingBudgetUsageWarning] = useState<string | null>(null);
 
 	const handleCalendarAlignedChange = (checked: boolean) => {
 		if (checked && isEditing) {
@@ -386,7 +516,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 	const normalizeProviderConfigs = (configs: typeof providerConfigs, existingConfigs?: VirtualKey["provider_configs"]): any[] => {
 		return configs.map((config) => ({
 			...config,
-			budgets: config.budgets?.filter((b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined),
+			budgets: config.budgets?.filter((b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined),
 			weight: config.weight ?? null,
 			rate_limit: (() => {
 				const hasTokenMaxLimit = config.rate_limit?.token_max_limit !== undefined;
@@ -410,8 +540,182 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 		}));
 	};
 
-	// Handle form submission
-	const onSubmit = async (data: FormData) => {
+	const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
+		(budgets || [])
+			.filter((budget) => budget.max_limit !== undefined)
+			.map((budget) => `${budget.id ?? ""}:${budget.max_limit}:${budget.reset_duration ?? ""}`)
+			.sort()
+			.join("|");
+
+	const parseResetDurationMs = (duration?: string) => {
+		if (!duration) return null;
+		const match = duration.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d|w|M|Y)$/);
+		if (!match) return null;
+		const amount = Number(match[1]);
+		const unit = match[2];
+		const multipliers: Record<string, number> = {
+			ms: 1,
+			s: 1000,
+			m: 60 * 1000,
+			h: 60 * 60 * 1000,
+			d: 24 * 60 * 60 * 1000,
+			w: 7 * 24 * 60 * 60 * 1000,
+			M: 30 * 24 * 60 * 60 * 1000,
+			Y: 365 * 24 * 60 * 60 * 1000,
+		};
+		return amount * multipliers[unit];
+	};
+
+	const formatBudgetAmount = (value: number) =>
+		new Intl.NumberFormat("en-US", {
+			style: "currency",
+			currency: "USD",
+			maximumFractionDigits: 2,
+		}).format(value);
+
+	const findBudgetUsageWarning = (
+		currentBudgets: BudgetComparisonEntry[] | undefined,
+		existingBudgets: BudgetComparisonEntry[] | undefined,
+		scopeLabel: string,
+	) => {
+		const current = (currentBudgets || [])
+			.filter(
+				(
+					budget,
+				): budget is BudgetComparisonEntry & {
+					max_limit: number;
+					reset_duration: string;
+				} => {
+					return budget.max_limit !== undefined && !!budget.reset_duration;
+				},
+			)
+			.sort((left, right) => (parseResetDurationMs(left.reset_duration) ?? 0) - (parseResetDurationMs(right.reset_duration) ?? 0));
+		const existingByID = new Map((existingBudgets || []).filter((budget) => budget.id).map((budget) => [budget.id, budget]));
+		const existingByDuration = new Map((existingBudgets || []).map((budget) => [budget.reset_duration, budget]));
+		const reconciled: BudgetComparisonEntry[] = [];
+
+		for (const budget of current) {
+			const existing = budget.id ? existingByID.get(budget.id) : existingByDuration.get(budget.reset_duration);
+			if (existing) {
+				const configChanged = existing.max_limit !== budget.max_limit || existing.reset_duration !== budget.reset_duration;
+				const usage = existing.current_usage ?? 0;
+				if (configChanged && usage >= budget.max_limit) {
+					return `${scopeLabel} ${budget.reset_duration} budget has ${formatBudgetAmount(usage)} usage, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`;
+				}
+				reconciled.push({ ...budget, current_usage: usage });
+				continue;
+			}
+
+			const targetDuration = parseResetDurationMs(budget.reset_duration);
+			const closestShorter = reconciled.reduce<BudgetComparisonEntry | null>((closest, candidate) => {
+				const candidateDuration = parseResetDurationMs(candidate.reset_duration);
+				const closestDuration = parseResetDurationMs(closest?.reset_duration);
+				if (targetDuration === null || candidateDuration === null || candidateDuration >= targetDuration) {
+					return closest;
+				}
+				if (closest === null || closestDuration === null || candidateDuration > closestDuration) {
+					return candidate;
+				}
+				return closest;
+			}, null);
+			const inheritedUsage = closestShorter?.current_usage ?? 0;
+			if (inheritedUsage >= budget.max_limit) {
+				return `${scopeLabel} ${budget.reset_duration} budget will inherit ${formatBudgetAmount(inheritedUsage)} from the ${closestShorter?.reset_duration} budget, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`;
+			}
+			reconciled.push({ ...budget, current_usage: inheritedUsage });
+		}
+
+		return null;
+	};
+
+	const getBudgetUsageWarning = (data: FormData) => {
+		if (!isEditing || !virtualKey || isManagedByProfile) {
+			return null;
+		}
+
+		const vkWarning = findBudgetUsageWarning(data.budgets, virtualKey.budgets, "Virtual key");
+		if (vkWarning) {
+			return vkWarning;
+		}
+
+		const existingProviderConfigs = new Map<string, NonNullable<VirtualKey["provider_configs"]>[number]>();
+		(virtualKey.provider_configs || []).forEach((config) => {
+			existingProviderConfigs.set(String(config.id ?? config.provider), config);
+		});
+		for (const config of data.providerConfigs || []) {
+			const existingConfig = existingProviderConfigs.get(String(config.id ?? config.provider));
+			const providerLabel = ProviderLabels[config.provider as ProviderName] ?? config.provider;
+			const warning = findBudgetUsageWarning(config.budgets, existingConfig?.budgets, `${providerLabel} provider`);
+			if (warning) {
+				return warning;
+			}
+		}
+
+		return null;
+	};
+
+	const hasBudgetResetRelevantChanges = (data: FormData) => {
+		if (!isEditing || !virtualKey || isManagedByProfile) {
+			return false;
+		}
+
+		const currentBudgets = (data.budgets || []).filter(
+			(budget): budget is { id?: string; max_limit: number; reset_duration: string } => budget.max_limit !== undefined,
+		);
+		const existingBudgets = virtualKey.budgets || [];
+		const hasBudgetFields =
+			currentBudgets.length > 0 ||
+			existingBudgets.length > 0 ||
+			(data.providerConfigs || []).some((config) => (config.budgets || []).some((budget) => budget.max_limit !== undefined)) ||
+			(virtualKey.provider_configs || []).some((config) => (config.budgets || []).length > 0);
+
+		if (budgetSignature(currentBudgets) !== budgetSignature(existingBudgets)) {
+			return true;
+		}
+
+		if (hasBudgetFields && data.budgetCalendarAligned !== (virtualKey.calendar_aligned ?? false)) {
+			return true;
+		}
+
+		const existingProviderConfigs = new Map<string, NonNullable<VirtualKey["provider_configs"]>[number]>();
+		(virtualKey.provider_configs || []).forEach((config) => {
+			existingProviderConfigs.set(String(config.id ?? config.provider), config);
+		});
+
+		const currentProviderConfigs = new Map<string, NonNullable<FormData["providerConfigs"]>[number]>();
+		(data.providerConfigs || []).forEach((config) => {
+			currentProviderConfigs.set(String(config.id ?? config.provider), config);
+		});
+
+		const providerConfigKeys = new Set([...existingProviderConfigs.keys(), ...currentProviderConfigs.keys()]);
+		for (const key of providerConfigKeys) {
+			const currentSignature = budgetSignature(currentProviderConfigs.get(key)?.budgets);
+			const existingSignature = budgetSignature(existingProviderConfigs.get(key)?.budgets);
+			if (currentSignature !== existingSignature) {
+				return true;
+			}
+		}
+
+		return false;
+	};
+
+	const handleRotateVirtualKey = async () => {
+		if (!virtualKey) return;
+		if (!hasUpdateAccess) {
+			toast.error("You don't have permission to perform this action");
+			return;
+		}
+		try {
+			await rotateVirtualKey(virtualKey.id).unwrap();
+			toast.success("Virtual key rotated successfully");
+			setShowRotateWarning(false);
+			onSave();
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
+	const submitVirtualKeyForm = async (data: FormData, resetBudgetUsage = false) => {
 		if (!canSubmit) {
 			toast.error("You don't have permission to perform this action");
 			return;
@@ -437,27 +741,55 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 				: [];
 			if (isEditing && virtualKey) {
 				// Update existing virtual key
+				// Only include expires_at when the user actually changed the expiry field
+				// (a timestamp sets it, "" clears it). Pre-filled defaultValues are not dirty,
+				// so an unchanged expired key won't resend its old expired timestamp and
+				// cause the backend to reject the edit.
+				const expiryChanged = !!form.formState.dirtyFields.expiresAt;
+				const expiryPayload = expiryChanged
+					? data.expiresAt
+						? { expires_at: new Date(data.expiresAt).toISOString() }
+						: virtualKey?.expires_at
+							? { expires_at: "" }
+							: {}
+					: {};
+
 				const updateData: UpdateVirtualKeyRequest = {
 					name: data.name,
 					description: data.description,
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
-					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
-					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
+					team_id:
+						assignedUsers.length > 0
+							? undefined
+							: data.entityType === "team" && data.teamId && data.teamId.trim() !== ""
+								? data.teamId
+								: data.entityType === "none"
+									? null
+									: undefined,
+					customer_id:
+						assignedUsers.length > 0
+							? undefined
+							: data.entityType === "customer" && data.customerId && data.customerId.trim() !== ""
+								? data.customerId
+								: data.entityType === "none"
+									? null
+									: undefined,
 					is_active: data.isActive,
+					calendar_aligned: data.budgetCalendarAligned,
+					reset_budget_usage: resetBudgetUsage,
+					...expiryPayload,
 				};
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+					(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
 				);
 				const hadBudget = virtualKey.budgets && virtualKey.budgets.length > 0;
 				if (validBudgets.length > 0) {
 					updateData.budgets = validBudgets;
-					updateData.calendar_aligned = data.budgetCalendarAligned;
 				} else if (hadBudget) {
 					updateData.budgets = [];
-					updateData.calendar_aligned = false;
 				}
 
 				// Add rate limit if enabled
@@ -476,7 +808,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					updateData.rate_limit = {};
 				}
 
-				await updateVirtualKey({ vkId: virtualKey.id, data: updateData }).unwrap();
+				await updateVirtualKey({
+					vkId: virtualKey.id,
+					data: updateData,
+				}).unwrap();
 				toast.success("Virtual key updated successfully");
 			} else {
 				// Create new virtual key
@@ -488,15 +823,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : undefined,
 					customer_id: data.entityType === "customer" && data.customerId && data.customerId.trim() !== "" ? data.customerId : undefined,
 					is_active: data.isActive,
+					// VK-level setting that governs both budget and rate-limit calendar alignment.
+					calendar_aligned: data.budgetCalendarAligned,
+					// Optional expiry: send as UTC ISO string, or omit for no expiry
+					...(data.expiresAt ? { expires_at: new Date(data.expiresAt).toISOString() } : {}),
 				};
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+					(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
 				);
 				if (validBudgets.length > 0) {
 					createData.budgets = validBudgets;
-					createData.calendar_aligned = data.budgetCalendarAligned;
 				}
 
 				// Add rate limit if enabled
@@ -516,9 +854,34 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 			}
 
 			onSave();
-		} catch (error) {
+		} catch (error: any) {
+			if (error?.status === 409) {
+				form.setError("name", { message: getErrorMessage(error) });
+				return;
+			}
 			toast.error(getErrorMessage(error));
 		}
+	};
+
+	// Handle form submission
+	const onSubmit = async (data: FormData) => {
+		if (hasBudgetResetRelevantChanges(data)) {
+			setPendingBudgetResetData(data);
+			setPendingBudgetUsageWarning(getBudgetUsageWarning(data));
+			setShowBudgetResetPrompt(true);
+			return;
+		}
+
+		await submitVirtualKeyForm(data, false);
+	};
+
+	const handleBudgetResetChoice = async (resetBudgetUsage: boolean) => {
+		if (!pendingBudgetResetData) return;
+		const data = pendingBudgetResetData;
+		setPendingBudgetResetData(null);
+		setPendingBudgetUsageWarning(null);
+		setShowBudgetResetPrompt(false);
+		await submitVirtualKeyForm(data, resetBudgetUsage);
 	};
 
 	return (
@@ -529,7 +892,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={() => handleClose()}
 			>
-				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>
 					<SheetDescription>
 						{isEditing
@@ -540,24 +903,26 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="space-y-4 px-8">
+						<div className="grow space-y-4 px-8">
 							{isManagedByProfile && (
-								<Alert variant="info">
-									<Lock className="h-4 w-4" />
-									<AlertDescription>
-										This virtual key is managed by an access profile. Only the name and description can be modified — providers, budgets,
-										rate limits, and MCP access are controlled by the profile.
-									</AlertDescription>
-								</Alert>
+								<>
+									<Alert variant="info">
+										<Lock className="h-4 w-4" />
+										<AlertDescription>
+											This virtual key is managed by an access profile. Only the name and description can be modified; providers, budgets,
+											rate limits, and MCP access are controlled by the profile.
+										</AlertDescription>
+									</Alert>
+									<ManagedVirtualKeyActions managingProfile={managingProfile} />
+								</>
 							)}
 
 							{isTeamLocked && !isManagedByProfile && (
 								<Alert variant="info">
 									<Users className="h-4 w-4" />
 									<AlertDescription>
-										Creating this virtual key under team{" "}
-										<span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>
-										. Team assignment is pre-set — all other fields are editable.
+										Creating this virtual key under team <span className="font-medium">{attachedTeam?.name ?? attachedTeamId}</span>. Team
+										assignment is pre-set; all other fields are editable.
 									</AlertDescription>
 								</Alert>
 							)}
@@ -618,6 +983,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 												<Toggle label="Is this key active?" val={field.value} setVal={field.onChange} data-testid="vk-is-active-toggle" />
 											</FormItem>
 										)}
+									/>
+									<FormField
+										control={form.control}
+										name="expiresAt"
+										render={({ field }) => <ExpiryPickerField value={field.value} onChange={field.onChange} />}
 									/>
 								</div>
 								{/* Provider Configurations */}
@@ -717,319 +1087,55 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 
 									{/* Provider Configurations Table */}
 									{providerConfigs.length > 0 && (
-										<div className="rounded-md border px-2">
-											<Accordion type="multiple" className="w-full">
-												{providerConfigs.map((config, index) => {
-													const providerConfig = availableProviders.find((provider) => provider.name === config.provider);
-													return (
-														<AccordionItem key={index} className="w-full" value={`${config.provider}-${index}`}>
-															<AccordionTrigger className="flex h-12 items-center gap-0 px-1">
-																<div className="flex w-full items-center justify-between">
-																	<div className="flex w-fit items-center gap-2">
-																		<RenderProviderIcon
-																			provider={
-																				providerConfig?.custom_provider_config?.base_provider_type || (config.provider as ProviderIconType)
-																			}
-																			size="sm"
-																			className="h-4 w-4"
-																		/>
-																		{providerConfig?.custom_provider_config
-																			? providerConfig.name
-																			: ProviderLabels[config.provider as ProviderName]}
-																	</div>
-																	<Button
-																		type="button"
-																		variant="ghost"
-																		size="icon"
-																		aria-label={`Remove ${config.provider} provider`}
-																		className="hover:bg-accent/50 h-8 w-8 rounded-sm p-2"
-																		data-testid={`vk-delete-provider-${index}`}
-																		onClick={(e) => {
-																			e.stopPropagation();
-																			handleRemoveProvider(index);
-																		}}
-																	>
-																		<Trash2 className="h-4 w-4 opacity-75" />
-																	</Button>
-																</div>
-															</AccordionTrigger>
-															<AccordionContent className="flex flex-col gap-4 px-1 text-balance">
-																<div className="flex w-full items-start gap-2">
-																	<div className="w-1/4">
-																		<NumberAndSelect
-																			id={`vk-weight-${index}`}
-																			label="Weight"
-																			labelClassName="text-sm font-medium"
-																			placeholder="Exclude from routing"
-																			inputClassName="h-[38px] w-full"
-																			dataTestId={`vk-weight-input-${index}`}
-																			value={config.weight}
-																			onChangeNumber={(value) => handleUpdateProviderConfig(index, "weight", value)}
-																		/>
-																	</div>
-																	<div className="w-3/4 space-y-2">
-																		<Label className="text-sm font-medium">
-																			Allowed Models <span className="text-muted-foreground ml-auto text-xs italic">type to search</span>
-																		</Label>
-																		{(() => {
-																			const hasWildcardModels = (config.allowed_models || []).includes("*");
-																			return (
-																				<ModelMultiselect
-																					data-testid={`vk-models-multiselect-${index}`}
-																					provider={config.provider}
-																					keys={(() => {
-																						const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-																						const configKeyIds = config.key_ids || [];
-																						return configKeyIds.includes("*")
-																							? providerKeys.map((key) => key.key_id)
-																							: providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
-																					})()}
-																					allowAllOption={true}
-																					value={hasWildcardModels ? ["*"] : config.allowed_models || []}
-																					onChange={(models: string[]) => {
-																						const hadStar = (config.allowed_models || []).includes("*");
-																						const hasStar = models.includes("*");
-																						if (!hadStar && hasStar) {
-																							handleUpdateProviderConfig(index, "allowed_models", ["*"]);
-																						} else if (hadStar && hasStar && models.length > 1) {
-																							handleUpdateProviderConfig(
-																								index,
-																								"allowed_models",
-																								models.filter((m) => m !== "*"),
-																							);
-																						} else {
-																							handleUpdateProviderConfig(index, "allowed_models", models);
-																						}
-																					}}
-																					placeholder={
-																						hasWildcardModels
-																							? "All models allowed"
-																							: (config.allowed_models || []).length === 0
-																								? "No models (deny all)"
-																								: config.provider
-																									? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] ||
-																									ModelPlaceholders.default
-																									: ModelPlaceholders.default
-																					}
-																					className="min-h-10 max-w-[500px] min-w-[200px]"
-																				/>
-																			);
-																		})()}
-																		<p className="text-muted-foreground text-xs">
-																			Select specific models or choose “Allow All Models” to allow all. Leave empty to deny all.
-																		</p>
-																	</div>
-																</div>
-
-																{/* Allowed Keys for this provider */}
-																{(() => {
-																	const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-																	const configKeyIds = config.key_ids || [];
-																	const hasWildcard = configKeyIds.includes("*");
-																	const allKeyOptions = [
-																		{
-																			label: "Allow All Keys",
-																			value: "*",
-																			description: "Allow all current and future keys for this provider",
-																			provider: "",
-																		},
-																		...providerKeys.map((key) => ({
-																			label: key.name,
-																			value: key.key_id,
-																			description:
-																				key.models == null || key.models.includes("*")
-																					? "All models"
-																					: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-																			provider: key.provider,
-																		})),
-																	];
-																	const selectedProviderKeys = hasWildcard
-																		? [allKeyOptions[0]]
-																		: providerKeys
-																			.filter((key) => configKeyIds.includes(key.key_id))
-																			.map((key) => ({
-																				label: key.name,
-																				value: key.key_id,
-																				description:
-																					key.models == null || key.models.includes("*")
-																						? "All models"
-																						: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
-																				provider: key.provider,
-																			}));
-
-																	return (
-																		<div className="mx-0.5 space-y-2">
-																			<Label className="text-sm font-medium">Allowed Keys</Label>
-																			<p className="text-muted-foreground text-xs">
-																				Select specific keys or allow all. Leave empty to block all keys for this provider.
-																			</p>
-																			<AsyncMultiSelect
-																				hideSelectedOptions
-																				isNonAsync
-																				closeMenuOnSelect={false}
-																				menuPlacement="auto"
-																				defaultOptions={allKeyOptions}
-																				views={{
-																					multiValue: (multiValueProps: MultiValueProps<VirtualKeyType>) => {
-																						return (
-																							<div
-																								{...multiValueProps.innerProps}
-																								className="bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm"
-																							>
-																								{multiValueProps.data.label}{" "}
-																								<X
-																									className="hover:text-foreground text-muted-foreground h-4 w-4 cursor-pointer"
-																									onClick={(e) => {
-																										e.stopPropagation();
-																										multiValueProps.removeProps.onClick?.(e as any);
-																									}}
-																								/>
-																							</div>
-																						);
-																					},
-																					option: (optionProps: OptionProps<VirtualKeyType>) => {
-																						const { Option } = components;
-																						return (
-																							<Option
-																								{...optionProps}
-																								className={cn(
-																									"flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm",
-																									optionProps.isFocused && "bg-accent dark:!bg-card",
-																									"hover:bg-accent",
-																									optionProps.isSelected && "bg-accent dark:!bg-card",
-																								)}
-																							>
-																								<span className="text-content-primary grow truncate text-sm">{optionProps.data.label}</span>
-																								{optionProps.data.description && (
-																									<span className="text-content-tertiary max-w-[70%] text-sm">
-																										{optionProps.data.description}
-																									</span>
-																								)}
-																							</Option>
-																						);
-																					},
-																				}}
-																				value={selectedProviderKeys}
-																				onChange={(keys) => {
-																					const hadStar = hasWildcard;
-																					const hasStar = keys.some((k) => k.value === "*");
-																					if (!hadStar && hasStar) {
-																						// Just selected "Allow All Keys" — set to ["*"] only
-																						handleUpdateProviderConfig(index, "key_ids", ["*"]);
-																					} else if (hadStar && hasStar && keys.length > 1) {
-																						// Had "*", still has "*", but user also selected a specific key — drop "*"
-																						handleUpdateProviderConfig(
-																							index,
-																							"key_ids",
-																							keys.filter((k) => k.value !== "*").map((k) => k.value as string),
-																						);
-																					} else {
-																						handleUpdateProviderConfig(
-																							index,
-																							"key_ids",
-																							keys.map((k) => k.value as string),
-																						);
-																					}
-																				}}
-																				placeholder={
-																					hasWildcard
-																						? "All keys allowed"
-																						: configKeyIds.length === 0
-																							? "No keys selected"
-																							: "Select keys..."
-																				}
-																				className="hover:bg-accent w-full"
-																				menuClassName="z-[60] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
-																			/>
-																		</div>
-																	);
-																})()}
-
-																<DottedSeparator />
-
-																{/* Provider Budget Configuration */}
-																<MultiBudgetLines
-																	id={`providerBudget-${index}`}
-																	data-testid={`vk-provider-budget-${index}`}
-																	label="Provider Budget"
-																	lines={
-																		config.budgets && config.budgets.length > 0
-																			? config.budgets.map((b) => ({
-																				max_limit: b.max_limit,
-																				reset_duration: b.reset_duration || "1M",
-																			}))
-																			: []
-																	}
-																	onChange={(lines) => {
-																		const updatedConfigs = [...providerConfigs];
-																		updatedConfigs[index] = {
-																			...updatedConfigs[index],
-																			budgets: lines.map((l) => ({
-																				max_limit: l.max_limit,
-																				reset_duration: l.reset_duration,
-																			})),
-																		};
-																		form.setValue("providerConfigs", updatedConfigs, { shouldDirty: true });
-																	}}
-																/>
-
-																<DottedSeparator />
-
-																{/* Provider Rate Limit Configuration */}
-																<div className="space-y-4">
-																	<Label className="text-sm font-medium">Provider Rate Limits</Label>
-
-																	<NumberAndSelect
-																		id={`providerTokenLimit-${index}`}
-																		labelClassName="font-normal"
-																		label="Maximum Tokens"
-																		value={config.rate_limit?.token_max_limit}
-																		selectValue={config.rate_limit?.token_reset_duration || "1h"}
-																		onChangeNumber={(value) => {
-																			const currentRateLimit = config.rate_limit || {};
-																			handleUpdateProviderConfig(index, "rate_limit", {
-																				...currentRateLimit,
-																				token_max_limit: value,
-																			});
-																		}}
-																		onChangeSelect={(value) => {
-																			const currentRateLimit = config.rate_limit || {};
-																			handleUpdateProviderConfig(index, "rate_limit", {
-																				...currentRateLimit,
-																				token_reset_duration: value,
-																			});
-																		}}
-																		options={resetDurationOptions}
-																	/>
-
-																	<NumberAndSelect
-																		id={`providerRequestLimit-${index}`}
-																		labelClassName="font-normal"
-																		label="Maximum Requests"
-																		value={config.rate_limit?.request_max_limit}
-																		selectValue={config.rate_limit?.request_reset_duration || "1h"}
-																		onChangeNumber={(value) => {
-																			const currentRateLimit = config.rate_limit || {};
-																			handleUpdateProviderConfig(index, "rate_limit", {
-																				...currentRateLimit,
-																				request_max_limit: value,
-																			});
-																		}}
-																		onChangeSelect={(value) => {
-																			const currentRateLimit = config.rate_limit || {};
-																			handleUpdateProviderConfig(index, "rate_limit", {
-																				...currentRateLimit,
-																				request_reset_duration: value,
-																			});
-																		}}
-																		options={resetDurationOptions}
-																	/>
-																</div>
-															</AccordionContent>
-														</AccordionItem>
-													);
-												})}
-											</Accordion>
+										<div className="space-y-2.5">
+											{providerConfigs.map((config, index) => {
+												const providerConfig = availableProviders.find((provider) => provider.name === config.provider);
+												const providerLabel = providerConfig?.custom_provider_config
+													? providerConfig.name
+													: ProviderLabels[config.provider as ProviderName] || config.provider;
+												const iconProvider = (providerConfig?.custom_provider_config?.base_provider_type ||
+													config.provider) as ProviderIconType;
+												const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
+												return (
+													<ProviderConfigCard
+														key={config.provider}
+														index={index}
+														testIdPrefix="vk"
+														providerLabel={providerLabel}
+														iconProvider={iconProvider}
+														providerKeys={providerKeys}
+														onRemove={() => handleRemoveProvider(index)}
+														value={{
+															providerName: config.provider,
+															allowedModels: config.allowed_models || [],
+															blacklistedModels: config.blacklisted_models || [],
+															weight: config.weight,
+															keyIds: config.key_ids || [],
+															budgets: config.budgets || [],
+															rateLimit: config.rate_limit ?? null,
+														}}
+														onChange={(next) => {
+															const updated = [...providerConfigs];
+															updated[index] = {
+																...config,
+																allowed_models: next.allowedModels,
+																blacklisted_models: next.blacklistedModels,
+																weight: next.weight ?? undefined,
+																key_ids: next.keyIds,
+																budgets: next.budgets.map((l) => ({
+																	id: l.id,
+																	max_limit: l.max_limit,
+																	reset_duration: l.reset_duration,
+																})),
+																rate_limit: next.rateLimit ?? undefined,
+															};
+															form.setValue("providerConfigs", updated, {
+																shouldDirty: true,
+															});
+														}}
+													/>
+												);
+											})}
 										</div>
 									)}
 									{/* Display validation errors for provider configurations */}
@@ -1235,7 +1341,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 								{/* Budget Configuration */}
 								<div className="space-y-4">
 									<MultiBudgetLines
-										id="vkBudget"
 										data-testid="vk-budget-lines"
 										label="Budget Configuration"
 										lines={form.watch("budgets") ?? []}
@@ -1246,53 +1351,38 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
 									/>
 
-									{/* Calendar alignment toggle — shown when any budget supports alignment */}
-									{hasAnyAlignableBudget && (
-										<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-											<div className="space-y-0.5">
-												<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
-													Align to calendar cycle
-												</Label>
-												<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
-													Reset at the start of each period (e.g. 1st of month) instead of rolling from creation date
+									{isEditing && !isManagedByProfile && persistedOverrideBudgets.length > 0 ? (
+										<div className="space-y-3 rounded-sm border p-4" data-testid="vk-budget-overrides-section">
+											<div>
+												<h4 className="text-sm font-medium">Budget Overrides</h4>
+												<p className="text-muted-foreground text-xs">
+													Add temporary capacity without changing the configured base budgets above.
 												</p>
 											</div>
-											<Switch
-												id="vk-budget-calendar-aligned-toggle"
-												aria-describedby="vk-budget-calendar-aligned-description"
-												checked={watchedBudgetCalendarAligned}
-												onCheckedChange={handleCalendarAlignedChange}
-												data-testid="vk-budget-calendar-aligned-toggle"
-											/>
+											<div className="divide-y">
+												{persistedOverrideBudgets.map(({ budget, label }) => (
+													<div key={budget.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+														<div className="min-w-0">
+															<p className="truncate text-sm font-medium">
+																{label} · resets every {parseResetPeriod(budget.reset_duration)}
+															</p>
+															<p className="text-muted-foreground text-xs">
+																Base {formatCurrency(budget.max_limit)}
+																{hasActiveBudgetOverride(budget) ? ` · effective ${formatCurrency(getEffectiveBudgetLimit(budget))}` : ""}
+															</p>
+														</div>
+														<BudgetOverrideDialog
+															budget={budget}
+															onSave={(data) => saveBudgetOverride(budget.id, data)}
+															onRemove={() => clearBudgetOverride(budget.id)}
+															disabled={!hasUpdateAccess}
+															calendarAligned={virtualKey.calendar_aligned}
+														/>
+													</div>
+												))}
+											</div>
 										</div>
-									)}
-
-									{/* Warning dialog shown when enabling calendar alignment on an existing budget */}
-									<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
-										<AlertDialogContent>
-											<AlertDialogHeader>
-												<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
-												<AlertDialogDescription>
-													Enabling calendar alignment will reset all budget usage for this virtual key to{" "}
-													<span className="font-semibold">$0.00</span> and snap each budget&apos;s reset date to the start of its current
-													period (e.g. start of day, week, month, or year). The usage reset to $0.00 cannot be undone, but calendar
-													alignment can be turned off later. This will take effect when you save.
-												</AlertDialogDescription>
-											</AlertDialogHeader>
-											<AlertDialogFooter>
-												<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
-												<AlertDialogAction
-													data-testid="vk-calendar-align-enable-btn"
-													onClick={() => {
-														form.setValue("budgetCalendarAligned", true, { shouldDirty: true });
-														setShowCalendarAlignWarning(false);
-													}}
-												>
-													Enable Calendar Alignment
-												</AlertDialogAction>
-											</AlertDialogFooter>
-										</AlertDialogContent>
-									</AlertDialog>
+									) : null}
 
 									{/* Reassign team confirmation dialog */}
 									<AlertDialog
@@ -1308,8 +1398,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 											<AlertDialogHeader>
 												<AlertDialogTitle>Reassign to a different team?</AlertDialogTitle>
 												<AlertDialogDescription>
-													This key is currently assigned to another team. Reassigning it will move budget tracking to this
-													team — future requests through this key will count against this team’s budget, not the previous one.
+													This key is currently assigned to another team. Reassigning it will move budget tracking to this team; future
+													requests through this key will count against this team’s budget, not the previous one.
 												</AlertDialogDescription>
 											</AlertDialogHeader>
 											<AlertDialogFooter>
@@ -1320,7 +1410,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 													data-testid="virtual-key-reassign-confirm"
 													onClick={() => {
 														if (pendingTeamId !== null) {
-															form.setValue("teamId", pendingTeamId, { shouldDirty: true });
+															form.setValue("teamId", pendingTeamId, {
+																shouldDirty: true,
+															});
 														}
 														setPendingTeamId(null);
 														setShowReassignTeamWarning(false);
@@ -1364,7 +1456,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 													onChangeNumber={(value) => {
 														field.onChange(value);
 													}}
-													onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
+													onChangeSelect={(value) =>
+														form.setValue("tokenResetDuration", value, {
+															shouldDirty: true,
+														})
+													}
 													options={resetDurationOptions}
 												/>
 												<FormMessage />
@@ -1386,7 +1482,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 													onChangeNumber={(value) => {
 														field.onChange(value);
 													}}
-													onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
+													onChangeSelect={(value) =>
+														form.setValue("requestResetDuration", value, {
+															shouldDirty: true,
+														})
+													}
 													options={resetDurationOptions}
 												/>
 												<FormMessage />
@@ -1394,116 +1494,237 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 										)}
 									/>
 								</div>
-								{(teams?.length > 0 || customers?.length > 0) && (
-									<>
-										<DottedSeparator className="my-6" />
-
-										{/* Entity Assignment */}
-										<div className="space-y-4">
-											<Label className="text-sm font-medium">Entity Assignment</Label>
-
-											<div className="grid grid-cols-1 items-center gap-2 md:grid-cols-2">
-												<FormField
-													control={form.control}
-													name="entityType"
-													render={({ field }) => (
-														<FormItem>
-															<FormLabel className="font-normal">Assignment Type</FormLabel>
-															<ComboboxSelect
-																options={[
-																	{ value: "none", label: "No Assignment" },
-																	...(teams?.length > 0 ? [{ value: "team", label: "Assign to Team" }] : []),
-																	...(customers?.length > 0 ? [{ value: "customer", label: "Assign to Customer" }] : []),
-																]}
-																value={field.value}
-																onValueChange={async (value) => {
-																	const val = value ?? "none";
-																	field.onChange(val);
-																	if (val === "team" && teams?.length > 0) {
-																		form.setValue("teamId", teams[0].id, { shouldDirty: true, shouldValidate: true });
-																		form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-																		await form.trigger(["teamId", "customerId", "entityType"]);
-																	} else if (val === "customer" && customers?.length > 0) {
-																		form.setValue("customerId", customers[0].id, { shouldDirty: true, shouldValidate: true });
-																		form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
-																		await form.trigger(["teamId", "customerId", "entityType"]);
-																	} else {
-																		form.setValue("teamId", "", { shouldDirty: true, shouldValidate: true });
-																		form.setValue("customerId", "", { shouldDirty: true, shouldValidate: true });
-																		await form.trigger(["teamId", "customerId", "entityType"]);
-																	}
-																}}
-																disabled={isTeamLocked}
-																disableSearch
-																hideClear
-																className="h-9"
-															/>
-															<FormMessage />
-														</FormItem>
-													)}
-												/>
-												{form.watch("entityType") === "team" && teams?.length > 0 && (
-													<FormField
-														control={form.control}
-														name="teamId"
-														render={({ field }) => (
-															<FormItem>
-																<FormLabel className="font-normal">Select Team</FormLabel>
-																<ComboboxSelect
-																	options={teams.map((team) => ({
-																		value: team.id,
-																		label: team.customer ? `${team.name} — ${team.customer.name}` : team.name,
-																	}))}
-																	value={field.value || null}
-																	onValueChange={(val) => {
-																		const newVal = val ?? "";
-																		if (isEditing && virtualKey?.team_id && newVal && newVal !== virtualKey.team_id) {
-																			setPendingTeamId(newVal);
-																			setShowReassignTeamWarning(true);
-																		} else {
-																			field.onChange(newVal);
-																		}
-																	}}
-																	placeholder="Select a team"
-																	disabled={isTeamLocked}
-																	emptyMessage="No teams found."
-																	className="h-9"
-																/>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
-												)}
-
-												{form.watch("entityType") === "customer" && customers?.length > 0 && (
-													<FormField
-														control={form.control}
-														name="customerId"
-														render={({ field }) => (
-															<FormItem>
-																<FormLabel className="font-normal">Select Customer</FormLabel>
-																<ComboboxSelect
-																	options={customers.map((customer) => ({
-																		value: customer.id,
-																		label: customer.name,
-																	}))}
-																	value={field.value || null}
-																	onValueChange={(val) => field.onChange(val ?? "")}
-																	placeholder="Select a customer"
-																	emptyMessage="No customers found."
-																	className="h-9"
-																/>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
-												)}
-											</div>
+								{/* Calendar alignment — VK-wide setting that applies to both budgets and rate limits */}
+								{showCalendarAlignToggle && (
+									<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+										<div className="space-y-0.5">
+											<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
+												Align to calendar cycle
+											</Label>
+											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
+												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+												Applies to durations of a day or longer.
+											</p>
 										</div>
-									</>
+										<Switch
+											id="vk-budget-calendar-aligned-toggle"
+											aria-describedby="vk-budget-calendar-aligned-description"
+											checked={watchedBudgetCalendarAligned}
+											onCheckedChange={handleCalendarAlignedChange}
+											data-testid="vk-budget-calendar-aligned-toggle"
+										/>
+									</div>
 								)}
+
+								{/* Warning dialog shown when enabling calendar alignment on an existing VK */}
+								<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+									<AlertDialogContent>
+										<AlertDialogHeader>
+											<AlertDialogTitle>Reset budget and rate-limit usage?</AlertDialogTitle>
+											<AlertDialogDescription>
+												Enabling calendar alignment will reset budget usage to <span className="font-semibold">$0.00</span> and
+												token/request rate-limit counters to <span className="font-semibold">0</span> for this virtual key, then snap each
+												reset date to the start of its current period (e.g. start of day, week, month, or year). The usage reset cannot be
+												undone, but calendar alignment can be turned off later. This will take effect when you save.
+											</AlertDialogDescription>
+										</AlertDialogHeader>
+										<AlertDialogFooter>
+											<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+											<AlertDialogAction
+												data-testid="vk-calendar-align-enable-btn"
+												onClick={() => {
+													form.setValue("budgetCalendarAligned", true, {
+														shouldDirty: true,
+													});
+													setShowCalendarAlignWarning(false);
+												}}
+											>
+												Enable Calendar Alignment
+											</AlertDialogAction>
+										</AlertDialogFooter>
+									</AlertDialogContent>
+								</AlertDialog>
+								<DottedSeparator className="my-6" />
+
+								{/* Entity Assignment */}
+								<div className="space-y-4">
+									<Label className="text-sm font-medium">Entity Assignment</Label>
+
+									<div className="grid grid-cols-1 items-center gap-2 md:grid-cols-2">
+										<FormField
+											control={form.control}
+											name="entityType"
+											render={({ field }) => (
+												<FormItem>
+													<FormLabel className="font-normal">Assignment Type</FormLabel>
+													<ComboboxSelect
+														options={[
+															{ value: "none", label: "No Assignment" },
+															{ value: "team", label: "Assign to Team" },
+															{
+																value: "customer",
+																label: "Assign to Customer",
+															},
+														]}
+														value={field.value}
+														onValueChange={async (value) => {
+															const val = value ?? "none";
+															field.onChange(val);
+															// Switching type clears both ids and lets the user pick;
+															// there is no entity list loaded to default from.
+															if (val === "team") {
+																form.setValue("teamId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																form.setValue("customerId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																await form.trigger(["teamId", "customerId", "entityType"]);
+															} else if (val === "customer") {
+																form.setValue("customerId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																form.setValue("teamId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																await form.trigger(["teamId", "customerId", "entityType"]);
+															} else {
+																form.setValue("teamId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																form.setValue("customerId", "", {
+																	shouldDirty: true,
+																	shouldValidate: true,
+																});
+																await form.trigger(["teamId", "customerId", "entityType"]);
+															}
+														}}
+														disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
+														disableSearch
+														hideClear
+														className="h-9"
+													/>
+													{isEditing && assignedUsers.length > 0 ? (
+														<p className="text-muted-foreground text-xs">
+															This key is assigned to a user. Detach the user first to change the assignment type.
+														</p>
+													) : (
+														<FormMessage />
+													)}
+												</FormItem>
+											)}
+										/>
+										{form.watch("entityType") === "team" && (
+											<FormField
+												control={form.control}
+												name="teamId"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel className="font-normal">Select Team</FormLabel>
+														<TeamSelector
+															value={field.value || ""}
+															onChange={(newVal) => {
+																if (isEditing && virtualKey?.team_id && newVal && newVal !== virtualKey.team_id) {
+																	setPendingTeamId(newVal);
+																	setShowReassignTeamWarning(true);
+																} else {
+																	field.onChange(newVal);
+																}
+															}}
+															// The already-assigned team may fall outside the
+															// selector's first page, so seed its label from the
+															// team embedded on the virtual key itself.
+															fallbackOption={
+																field.value
+																	? {
+																			value: field.value,
+																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
+																		}
+																	: null
+															}
+															disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
+															triggerClassName="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+										)}
+
+										{form.watch("entityType") === "customer" && (
+											<FormField
+												control={form.control}
+												name="customerId"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel className="font-normal">Select Customer</FormLabel>
+														<CustomerSelector
+															value={field.value || ""}
+															onChange={(val) => field.onChange(val)}
+															fallbackOption={
+																field.value
+																	? {
+																			value: field.value,
+																			label:
+																				field.value === virtualKey?.customer_id ? (virtualKey?.customer?.name ?? field.value) : field.value,
+																		}
+																	: null
+															}
+															disabled={isEditing && assignedUsers.length > 0}
+															triggerClassName="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+										)}
+									</div>
+								</div>
 							</fieldset>
 						</div>
+						<AlertDialog open={showRotateWarning} onOpenChange={setShowRotateWarning}>
+							<AlertDialogContent>
+								<AlertDialogHeader>
+									<AlertDialogTitle>Rotate virtual key?</AlertDialogTitle>
+									<AlertDialogDescription>
+										This will replace the secret value for &quot;
+										{virtualKey?.name}&quot;. The key ID, budgets, rate limits, provider permissions, MCP access, and assignments stay the
+										same. The previous key value will stop working immediately.
+									</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel data-testid="vk-rotate-cancel-btn">Cancel</AlertDialogCancel>
+									<AlertDialogAction onClick={handleRotateVirtualKey} disabled={isRotating} data-testid="vk-rotate-confirm-btn">
+										{isRotating ? "Rotating..." : "Rotate Key"}
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
+						<AlertDialog open={showBudgetResetPrompt} onOpenChange={setShowBudgetResetPrompt}>
+							<AlertDialogContent data-testid="vk-budget-reset-dialog">
+								<AlertDialogHeader>
+									<AlertDialogTitle>{pendingBudgetUsageWarning ? "Preserve over-limit usage?" : "Reset budget usage?"}</AlertDialogTitle>
+									<AlertDialogDescription>
+										{pendingBudgetUsageWarning
+											? `${pendingBudgetUsageWarning} You can preserve usage anyway, or reset usage to 0.`
+											: "You changed a budget amount, reset frequency, or calendar alignment. Reset current budget usage to 0, or preserve the existing usage counters."}
+									</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel onClick={() => handleBudgetResetChoice(false)} data-testid="vk-budget-reset-preserve-btn">
+										{pendingBudgetUsageWarning ? "Preserve Anyway" : "Preserve Usage"}
+									</AlertDialogCancel>
+									<AlertDialogAction onClick={() => handleBudgetResetChoice(true)} data-testid="vk-budget-reset-confirm-btn">
+										Reset Usage
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
 						{isEditing && virtualKey?.config_hash && (
 							<div className="px-8">
 								<ConfigSyncAlert className="mt-2" />
@@ -1511,34 +1732,50 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, defaultT
 						)}
 						{/* Form Footer */}
 						<div className="border-border bg-card sticky bottom-0 z-10 border-t px-8 py-4">
-							<div className="flex justify-end gap-2">
-								<Button type="button" variant="outline" onClick={handleClose} data-testid="vk-cancel-btn">
-									Cancel
-								</Button>
-								<TooltipProvider>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span className="inline-block">
-												<Button type="submit" disabled={isLoading || !form.formState.isDirty || !canSubmit} data-testid="vk-save-btn">
-													{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
-												</Button>
-											</span>
-										</TooltipTrigger>
-										{(isLoading || !form.formState.isDirty || !canSubmit) && (
-											<TooltipContent>
-												<p>
-													{!canSubmit
-														? "You don't have permission to perform this action"
-														: isLoading
-															? "Saving..."
-															: !form.formState.isDirty
-																? "No changes made"
-																: ""}
-												</p>
-											</TooltipContent>
-										)}
-									</Tooltip>
-								</TooltipProvider>
+							<div className="flex items-center justify-between gap-2">
+								{isEditing ? (
+									<Button
+										type="button"
+										variant="outline"
+										onClick={() => setShowRotateWarning(true)}
+										disabled={!hasUpdateAccess || isRotating}
+										data-testid="vk-rotate-btn"
+									>
+										<RotateCcw className="h-4 w-4" />
+										{isRotating ? "Rotating..." : "Rotate Key"}
+									</Button>
+								) : (
+									<span />
+								)}
+								<div className="flex justify-end gap-2">
+									<Button type="button" variant="outline" onClick={handleClose} data-testid="vk-cancel-btn">
+										Cancel
+									</Button>
+									<TooltipProvider>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<span className="inline-block">
+													<Button type="submit" disabled={isLoading || !form.formState.isDirty || !canSubmit} data-testid="vk-save-btn">
+														{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
+													</Button>
+												</span>
+											</TooltipTrigger>
+											{(isLoading || !form.formState.isDirty || !canSubmit) && (
+												<TooltipContent>
+													<p>
+														{!canSubmit
+															? "You don't have permission to perform this action"
+															: isLoading
+																? "Saving..."
+																: !form.formState.isDirty
+																	? "No changes made"
+																	: ""}
+													</p>
+												</TooltipContent>
+											)}
+										</Tooltip>
+									</TooltipProvider>
+								</div>
 							</div>
 						</div>
 					</form>

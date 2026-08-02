@@ -1,6 +1,7 @@
 package semanticcache
 
 import (
+	"strings"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -87,18 +88,33 @@ func TestExtractTextForEmbedding_NilContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// This should not panic
-			text, hash, err := plugin.extractTextForEmbedding(tt.request)
-			// We don't care about the error — the important thing is no panic
-			t.Logf("text=%q, hash=%q, err=%v", text, hash, err)
+			// Primary contract: must not panic on nil-content messages.
+			// Secondary: returned text must not contain stringification
+			// artifacts, and the all-nil case must surface as an error.
+			text, err := plugin.extractTextForEmbedding(nil, tt.request)
+			if strings.Contains(text, "<nil>") || strings.Contains(text, "%!") {
+				t.Fatalf("extractTextForEmbedding produced a stringification artifact: %q", text)
+			}
+			if tt.name == "ChatRequest where all messages have nil Content" {
+				if err == nil {
+					t.Fatalf("expected error when no message has text content, got text=%q", text)
+				}
+				if text != "" {
+					t.Fatalf("expected empty text when all content is nil, got %q", text)
+				}
+			}
 		})
 	}
 }
 
-func TestPrepareDirectCacheLookup_ResponsesStreamRequest(t *testing.T) {
+// TestPreLLMHookSeedsDirectCacheIDForResponsesStream verifies the streaming
+// Responses path runs through PreLLMHook → performDirectSearch and stamps a
+// deterministic DirectCacheID on the per-request cacheState.
+func TestPreLLMHookSeedsDirectCacheIDForResponsesStream(t *testing.T) {
 	plugin := &Plugin{
 		config: getDefaultTestConfig(),
 		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		store:  newDirectFastPathStore(),
 	}
 
 	req := &schemas.BifrostRequest{
@@ -106,26 +122,32 @@ func TestPrepareDirectCacheLookup_ResponsesStreamRequest(t *testing.T) {
 		ResponsesRequest: CreateStreamingResponsesRequest("Explain cache invalidation", 0.2, 200),
 	}
 
-	ctx := CreateContextWithCacheKey("responses-stream-direct")
-	directID, err := plugin.prepareDirectCacheLookup(ctx, req, "responses-stream-direct")
-	if err != nil {
-		t.Fatalf("prepareDirectCacheLookup failed: %v", err)
+	ctx := CreateContextWithCacheKeyAndType(t, "responses-stream-direct", CacheTypeDirect)
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook failed: %v", err)
 	}
-	if directID == "" {
-		t.Fatal("expected deterministic direct cache id")
+
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	state := plugin.getCacheState(requestID)
+	if state == nil {
+		t.Fatal("expected cache state to be created")
 	}
-	if got, _ := ctx.Value(requestHashKey).(string); got == "" {
-		t.Fatal("expected request hash to be stored in context")
+	if state.DirectCacheID == "" {
+		t.Fatal("expected DirectCacheID to be populated by direct search")
 	}
-	if got, _ := ctx.Value(requestParamsHashKey).(string); got == "" {
-		t.Fatal("expected params hash to be stored in context")
+	if state.ParamsHash == "" {
+		t.Fatal("expected ParamsHash to be populated")
 	}
 }
 
-func TestPrepareDirectCacheLookup_UnsupportedRequestTypeFailsClosed(t *testing.T) {
+// TestPreLLMHookFailsClosedForUnsupportedRequestType verifies the plugin
+// short-circuits early for unsupported request types and never populates
+// state fields that downstream caching logic would read.
+func TestPreLLMHookFailsClosedForUnsupportedRequestType(t *testing.T) {
 	plugin := &Plugin{
 		config: getDefaultTestConfig(),
 		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		store:  newDirectFastPathStore(),
 	}
 
 	req := &schemas.BifrostRequest{
@@ -138,29 +160,36 @@ func TestPrepareDirectCacheLookup_UnsupportedRequestTypeFailsClosed(t *testing.T
 		},
 	}
 
-	ctx := CreateContextWithCacheKey("unsupported-direct")
-	directID, err := plugin.prepareDirectCacheLookup(ctx, req, "unsupported-direct")
-	if err == nil {
-		t.Fatal("expected prepareDirectCacheLookup to reject unsupported request type")
+	ctx := CreateContextWithCacheKey(t, "unsupported-direct")
+	if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); err != nil || shortCircuit != nil {
+		t.Fatalf("PreLLMHook unexpected: shortCircuit=%v err=%v", shortCircuit, err)
 	}
-	if directID != "" {
-		t.Fatalf("expected no direct cache id, got %q", directID)
-	}
-	if got, _ := ctx.Value(requestHashKey).(string); got != "" {
-		t.Fatalf("expected request hash to remain unset, got %q", got)
-	}
-	if got, _ := ctx.Value(requestParamsHashKey).(string); got != "" {
-		t.Fatalf("expected params hash to remain unset, got %q", got)
-	}
-	if got, _ := ctx.Value(requestStorageIDKey).(string); got != "" {
-		t.Fatalf("expected storage id to remain unset, got %q", got)
+
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	state := plugin.getCacheState(requestID)
+	// Unsupported types create the state slot (reset happens up front) but
+	// never populate the caching fields.
+	if state != nil {
+		if state.DirectCacheID != "" {
+			t.Fatalf("expected DirectCacheID unset, got %q", state.DirectCacheID)
+		}
+		if state.ParamsHash != "" {
+			t.Fatalf("expected ParamsHash unset, got %q", state.ParamsHash)
+		}
+		if state.Embeddings != nil {
+			t.Fatalf("expected Embeddings unset, got %v", state.Embeddings)
+		}
 	}
 }
 
+// TestPreLLMHookSkipsUnsupportedCountTokensRequest verifies CountTokensRequest
+// (which is not in the supported set) flows through PreLLMHook without
+// short-circuiting and without populating cache fields.
 func TestPreLLMHookSkipsUnsupportedCountTokensRequest(t *testing.T) {
 	plugin := &Plugin{
 		config: getDefaultTestConfig(),
 		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		store:  newDirectFastPathStore(),
 	}
 
 	req := &schemas.BifrostRequest{
@@ -179,18 +208,7 @@ func TestPreLLMHookSkipsUnsupportedCountTokensRequest(t *testing.T) {
 		},
 	}
 
-	ctx := CreateContextWithCacheKey("count-tokens-test")
-	ctx.SetValue(requestIDKey, "stale-request-id")
-	ctx.SetValue(requestStorageIDKey, "stale-storage-id")
-	ctx.SetValue(requestHashKey, "stale-request-hash")
-	ctx.SetValue(requestParamsHashKey, "stale-params-hash")
-	ctx.SetValue(requestModelKey, "stale-model")
-	ctx.SetValue(requestProviderKey, schemas.OpenAI)
-	ctx.SetValue(requestEmbeddingKey, []float32{1, 2, 3})
-	ctx.SetValue(requestEmbeddingTokensKey, 99)
-	ctx.SetValue(isCacheHitKey, true)
-	ctx.SetValue(cacheHitTypeKey, CacheTypeDirect)
-
+	ctx := CreateContextWithCacheKey(t, "count-tokens-test")
 	modifiedReq, shortCircuit, err := plugin.PreLLMHook(ctx, req)
 	if err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)
@@ -201,35 +219,12 @@ func TestPreLLMHookSkipsUnsupportedCountTokensRequest(t *testing.T) {
 	if shortCircuit != nil {
 		t.Fatal("expected no short-circuit for unsupported count tokens request")
 	}
-	if got, _ := ctx.Value(requestIDKey).(string); got != "" {
-		t.Fatalf("expected requestIDKey to remain unset, got %q", got)
-	}
-	if got, _ := ctx.Value(requestHashKey).(string); got != "" {
-		t.Fatalf("expected requestHashKey to remain unset, got %q", got)
-	}
-	if got, _ := ctx.Value(requestParamsHashKey).(string); got != "" {
-		t.Fatalf("expected requestParamsHashKey to remain unset, got %q", got)
-	}
-	if got, _ := ctx.Value(requestStorageIDKey).(string); got != "" {
-		t.Fatalf("expected requestStorageIDKey to remain unset, got %q", got)
-	}
-	if got, _ := ctx.Value(requestModelKey).(string); got != "" {
-		t.Fatalf("expected requestModelKey to remain unset, got %q", got)
-	}
-	if got, ok := ctx.Value(requestProviderKey).(schemas.ModelProvider); ok && got != "" {
-		t.Fatalf("expected requestProviderKey to remain unset, got %q", got)
-	}
-	if got := ctx.Value(requestEmbeddingKey); got != nil {
-		t.Fatalf("expected requestEmbeddingKey to remain unset, got %#v", got)
-	}
-	if got, ok := ctx.Value(requestEmbeddingTokensKey).(int); ok && got != 0 {
-		t.Fatalf("expected requestEmbeddingTokensKey to remain unset, got %d", got)
-	}
-	if got, ok := ctx.Value(isCacheHitKey).(bool); ok && got {
-		t.Fatal("expected isCacheHitKey to remain unset")
-	}
-	if got, ok := ctx.Value(cacheHitTypeKey).(CacheType); ok && got != "" {
-		t.Fatalf("expected cacheHitTypeKey to remain unset, got %q", got)
+
+	requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if state := plugin.getCacheState(requestID); state != nil {
+		if state.DirectCacheID != "" || state.ParamsHash != "" || state.Embeddings != nil {
+			t.Fatalf("expected unsupported request to leave state empty, got %+v", state)
+		}
 	}
 }
 
@@ -276,9 +271,19 @@ func TestGetNormalizedInputForCaching_NilContent(t *testing.T) {
 		},
 	}
 
-	// This should not panic
+	// Must not panic, and must return a non-nil filtered messages slice
+	// of the right element type (we built a ChatCompletionRequest).
 	result := plugin.getNormalizedInputForCaching(request)
-	t.Logf("result type: %T", result)
+	if result == nil {
+		t.Fatal("getNormalizedInputForCaching returned nil for a valid Chat request")
+	}
+	msgs, ok := result.([]schemas.ChatMessage)
+	if !ok {
+		t.Fatalf("expected []schemas.ChatMessage, got %T", result)
+	}
+	if len(msgs) != len(request.ChatRequest.Input) {
+		t.Fatalf("normalized message count %d differs from input %d (filtering changed unexpectedly)", len(msgs), len(request.ChatRequest.Input))
+	}
 }
 
 // createResponsesRequestWithNilContent builds a BifrostResponsesRequest with a nil Content message for testing.

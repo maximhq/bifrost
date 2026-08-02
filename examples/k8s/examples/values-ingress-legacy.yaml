@@ -1,0 +1,24 @@
+# Legacy ingress format — single Ingress resource named "<release>".
+# Use this when you only need one ingress controller.
+#
+# Test with:
+#   helm template bifrost ../bifrost/helm-charts/bifrost -f values-ingress-legacy.yaml
+#
+image:
+  repository: maximhq/bifrost
+  tag: latest
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: bifrost.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - bifrost.example.com
+      secretName: bifrost-tls

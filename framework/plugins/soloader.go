@@ -94,6 +94,15 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		}
 	}
 
+	// Optional: PreRequestHook — new .so plugins built against LLMPlugin can export this
+	// to participate in routing. Legacy plugins predating PreRequestHook keep working;
+	// DynamicPlugin's default PreRequestHook is a no-op passthrough.
+	if sym, err := pluginObj.Lookup("PreRequestHook"); err == nil {
+		if dp.preRequestHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error); !ok {
+			return nil, fmt.Errorf("failed to cast PreRequestHook to expected signature")
+		}
+	}
+
 	// Optional: PreLLMHook (with backward compatibility for legacy PreHook)
 	if sym, err := pluginObj.Lookup("PreLLMHook"); err == nil {
 		if dp.preLLMHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)); !ok {

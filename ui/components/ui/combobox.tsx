@@ -285,6 +285,10 @@ function ComboboxEmpty({ className, ...props }: React.ComponentProps<typeof Comm
 interface ComboboxSelectOption {
 	label: string;
 	value: string;
+	// Optional leading icon rendered next to the label in the dropdown list.
+	// Useful for facet filters where the icon helps disambiguate values
+	// (e.g. identity-mode dropdown: user / vk / session glyphs).
+	icon?: React.ReactNode;
 }
 
 interface ComboboxSelectBaseProps {
@@ -295,6 +299,133 @@ interface ComboboxSelectBaseProps {
 	hideClear?: boolean;
 	className?: string;
 	emptyMessage?: string;
+	// compactTrigger swaps the multi-select trigger from a wrapping row of
+	// per-value badges to a single "N selected" summary. Useful in filter
+	// bars where the trigger has a fixed narrow width and a long badge list
+	// would overflow. No-op on the single-select variant.
+	compactTrigger?: boolean;
+	creatable?: boolean;
+	createLabel?: (value: string) => React.ReactNode;
+	"data-testid"?: string;
+}
+
+interface ComboboxCreatableProps {
+	options: ComboboxSelectOption[];
+	value?: string | null;
+	onValueChange?: (value: string) => void;
+	placeholder?: string;
+	disabled?: boolean;
+	className?: string;
+	createLabel?: (value: string) => React.ReactNode;
+	noPortal?: boolean;
+	"data-testid"?: string;
+}
+
+function ComboboxCreatable({
+	options,
+	value,
+	onValueChange,
+	placeholder = "Type or select...",
+	disabled = false,
+	className,
+	createLabel,
+	noPortal,
+	"data-testid": dataTestId,
+}: ComboboxCreatableProps) {
+	const [open, setOpen] = React.useState(false);
+	const [query, setQuery] = React.useState(value ?? "");
+
+	React.useEffect(() => {
+		setQuery(value ?? "");
+	}, [value]);
+
+	const filtered = React.useMemo(() => {
+		if (!query) return options;
+		const q = query.toLowerCase();
+		return options.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q));
+	}, [options, query]);
+
+	const createValue = query.trim();
+	const showCreateOption = createValue.length > 0 && filtered.length === 0;
+	const showContent = open && (filtered.length > 0 || showCreateOption);
+
+	const handleChange = React.useCallback(
+		(next: string) => {
+			setQuery(next);
+			onValueChange?.(next);
+			setOpen(true);
+		},
+		[onValueChange],
+	);
+
+	const selectValue = React.useCallback(
+		(next: string) => {
+			setQuery(next);
+			onValueChange?.(next);
+			setOpen(false);
+		},
+		[onValueChange],
+	);
+
+	return (
+		<Popover open={showContent} onOpenChange={setOpen}>
+			<PopoverTrigger asChild disabled={disabled}>
+				<input
+					value={query}
+					onChange={(e) => handleChange(e.target.value)}
+					onFocus={() => setOpen(true)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter" && showCreateOption) {
+							e.preventDefault();
+							selectValue(createValue);
+						}
+					}}
+					placeholder={placeholder}
+					disabled={disabled}
+					data-testid={dataTestId}
+					className={cn(
+						"border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring h-8 w-full rounded-md border px-3 py-1 text-sm outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+						className,
+					)}
+				/>
+			</PopoverTrigger>
+			<PopoverContent
+				className="w-[var(--radix-popover-trigger-width)] p-0"
+				align="start"
+				sideOffset={4}
+				noPortal={noPortal}
+				onOpenAutoFocus={(e) => e.preventDefault()}
+			>
+				<CommandPrimitive filter={() => 1}>
+					<CommandPrimitive.List className="max-h-[300px] overflow-y-auto p-1">
+						{filtered.map((option) => (
+							<CommandPrimitive.Item
+								key={option.value}
+								value={option.value}
+								className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
+								onSelect={() => selectValue(option.value)}
+							>
+								{option.icon ? <span className="text-muted-foreground flex shrink-0 items-center">{option.icon}</span> : null}
+								<span>{option.label}</span>
+								<span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
+									{value === option.value && <CheckIcon className="size-4" />}
+								</span>
+							</CommandPrimitive.Item>
+						))}
+						{showCreateOption && (
+							<CommandPrimitive.Item
+								value={createValue}
+								className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
+								onSelect={() => selectValue(createValue)}
+							>
+								<span>{createLabel?.(createValue) ?? `Use "${createValue}"`}</span>
+							</CommandPrimitive.Item>
+						)}
+					</CommandPrimitive.List>
+				</CommandPrimitive>
+			</PopoverContent>
+		</Popover>
+	);
 }
 
 interface ComboboxSelectSingleProps extends ComboboxSelectBaseProps {
@@ -309,7 +440,7 @@ interface ComboboxSelectMultiProps extends ComboboxSelectBaseProps {
 	onValueChange?: (value: string[]) => void;
 }
 
-type ComboboxSelectProps = (ComboboxSelectSingleProps | ComboboxSelectMultiProps) & { noPortal?: boolean };
+type ComboboxSelectProps = (ComboboxSelectSingleProps | ComboboxSelectMultiProps) & { noPortal?: boolean; searchPlaceholder?: string };
 
 function ComboboxSelect(props: ComboboxSelectProps) {
 	const {
@@ -319,7 +450,12 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 		disableSearch = false,
 		className,
 		emptyMessage = "No results found.",
-		noPortal
+		noPortal,
+		compactTrigger = false,
+		creatable = false,
+		createLabel,
+		"data-testid": dataTestId,
+		searchPlaceholder,
 	} = props;
 
 	const [open, setOpen] = React.useState(false);
@@ -332,10 +468,17 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 	}, [options, query, disableSearch]);
 
 	const getLabel = React.useCallback((val: string | null) => options.find((o) => o.value === val)?.label ?? val ?? "", [options]);
+	const createValue = query.trim();
+	const showCreateOption =
+		creatable &&
+		!disableSearch &&
+		createValue.length > 0 &&
+		!options.some((o) => o.value.toLowerCase() === createValue.toLowerCase() || o.label.toLowerCase() === createValue.toLowerCase());
 
 	// Multi-select variant
 	if (props.multiple) {
 		const selectedValues = props.value ?? [];
+		const canCreateValue = showCreateOption && !selectedValues.some((v) => v.toLowerCase() === createValue.toLowerCase());
 
 		return (
 			<Popover
@@ -351,6 +494,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						role="combobox"
 						aria-expanded={open}
 						disabled={disabled}
+						data-testid={dataTestId}
 						className={cn(
 							"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 							selectedValues.length === 0 && "text-muted-foreground",
@@ -360,6 +504,8 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						<div className="flex flex-1 flex-wrap gap-1 overflow-hidden">
 							{selectedValues.length === 0 ? (
 								<span>{placeholder}</span>
+							) : compactTrigger ? (
+								<span className="text-foreground truncate text-sm">{selectedValues.length} selected</span>
 							) : (
 								selectedValues.map((val) => (
 									<Badge key={val} variant="secondary" className="text-xs">
@@ -388,7 +534,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						{!disableSearch && (
 							<div className="flex items-center border-b px-3">
 								<CommandPrimitive.Input
-									placeholder="Search..."
+									placeholder={searchPlaceholder || "Search..."}
 									className="placeholder:text-muted-foreground flex h-8 w-full bg-transparent py-3 text-sm outline-none"
 									value={query}
 									onValueChange={setQuery}
@@ -408,14 +554,24 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 											props.onValueChange?.(next);
 										}}
 									>
-										{option.label}
+										{option.icon ? <span className="text-muted-foreground flex shrink-0 items-center">{option.icon}</span> : null}
+										<span>{option.label}</span>
 										<span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center">
 											{isSelected && <CheckIcon className="size-4" />}
 										</span>
 									</CommandPrimitive.Item>
 								);
 							})}
-							{!disableSearch && filtered.length === 0 && (
+							{canCreateValue && (
+								<CommandPrimitive.Item
+									value={createValue}
+									className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
+									onSelect={() => props.onValueChange?.([...selectedValues, createValue])}
+								>
+									<span>{createLabel?.(createValue) ?? `Use "${createValue}"`}</span>
+								</CommandPrimitive.Item>
+							)}
+							{!disableSearch && filtered.length === 0 && !creatable && (
 								<div className="text-muted-foreground py-6 text-center text-sm">{emptyMessage}</div>
 							)}
 						</CommandPrimitive.List>
@@ -442,6 +598,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					role="combobox"
 					aria-expanded={open}
 					disabled={disabled}
+					data-testid={dataTestId}
 					className={cn(
 						"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 						!selectedLabel && "text-muted-foreground",
@@ -474,14 +631,14 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					{!disableSearch && (
 						<div className="flex items-center border-b px-3">
 							<CommandPrimitive.Input
-								placeholder="Search..."
+								placeholder={searchPlaceholder || "Search..."}
 								className="placeholder:text-muted-foreground flex h-8 w-full bg-transparent py-3 text-sm outline-none"
 								value={query}
 								onValueChange={setQuery}
 							/>
 						</div>
 					)}
-					<CommandPrimitive.List className="max-h-[300px] overflow-y-auto p-1">
+					<CommandPrimitive.List className={cn("max-h-[300px] overflow-y-auto p-1", filtered.length === 0 ? "p-0" : "")}>
 						{filtered.map((option) => (
 							<CommandPrimitive.Item
 								key={option.value}
@@ -498,7 +655,19 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 								</span>
 							</CommandPrimitive.Item>
 						))}
-						{!disableSearch && filtered.length === 0 && (
+						{showCreateOption && (
+							<CommandPrimitive.Item
+								value={createValue}
+								className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
+								onSelect={() => {
+									props.onValueChange?.(createValue);
+									setOpen(false);
+								}}
+							>
+								<span>{createLabel?.(createValue) ?? `Use "${createValue}"`}</span>
+							</CommandPrimitive.Item>
+						)}
+						{!disableSearch && filtered.length === 0 && !creatable && (
 							<div className="text-muted-foreground py-6 text-center text-sm">{emptyMessage}</div>
 						)}
 					</CommandPrimitive.List>
@@ -511,6 +680,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 export {
 	Combobox,
 	ComboboxContent,
+	ComboboxCreatable,
 	ComboboxEmpty,
 	ComboboxGroup,
 	ComboboxInput,
@@ -518,8 +688,7 @@ export {
 	ComboboxLabel,
 	ComboboxList,
 	ComboboxSelect,
-	ComboboxSeparator
+	ComboboxSeparator,
 };
 
-export type { ComboboxSelectOption, ComboboxSelectProps };
-
+export type { ComboboxCreatableProps, ComboboxSelectOption, ComboboxSelectProps };

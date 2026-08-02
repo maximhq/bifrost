@@ -136,6 +136,7 @@ func newProgressLogger(total int64) *progressLogger {
 	}
 }
 
+// Write records downloaded bytes and periodically prints a progress line.
 func (p *progressLogger) Write(data []byte) (int, error) {
 	n := len(data)
 
@@ -152,6 +153,7 @@ func (p *progressLogger) Write(data []byte) (int, error) {
 	return n, nil
 }
 
+// Finish prints the final progress line once the download completes.
 func (p *progressLogger) Finish() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

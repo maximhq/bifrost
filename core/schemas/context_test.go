@@ -376,6 +376,40 @@ func TestPluginLog_PoolReuse(t *testing.T) {
 	}
 }
 
+// TestRoot_UnwrapsChainedValueDelegates verifies Root() walks the entire
+// delegate chain. A naive single-step unwrap would return an intermediate
+// pooled scope, which loses the async-safety guarantee as soon as that
+// intermediate scope is recycled.
+func TestRoot_UnwrapsChainedValueDelegates(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+
+	a := "outer"
+	b := "inner"
+	outer := root.WithPluginScope(&a)
+	// Manually build a second scoped context whose delegate is the first
+	// scoped context — simulates a plugin that derives its own scope from
+	// an already-scoped ctx.
+	inner := &BifrostContext{
+		parent:        outer.parent,
+		done:          outer.done,
+		pluginScope:   &b,
+		valueDelegate: outer,
+	}
+
+	got := inner.Root()
+	if got != root {
+		t.Fatalf("Root() did not walk the chain to the request root: got %p, want %p", got, root)
+	}
+	if got.valueDelegate != nil {
+		t.Fatalf("Root() returned a context with a non-nil valueDelegate: %+v", got)
+	}
+
+	// Sanity: Root() on a non-scoped context returns itself.
+	if root.Root() != root {
+		t.Fatal("Root() on a non-scoped context should return the receiver")
+	}
+}
+
 // TestNewBifrostContext_DerivedFromReleasedScope_NoPanic locks in the
 // deterministic half of the scoped-parent-release bug: a derived BifrostContext
 // must not deref a pool-released scoped ancestor when its accessors are called.

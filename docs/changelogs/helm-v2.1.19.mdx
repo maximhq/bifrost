@@ -1,0 +1,20 @@
+---
+title: "v2.1.19"
+description: "Helm v2.1.19 changelog - 2026-05-26"
+---
+
+<Update label="Bifrost Helm" description="v2.1.19">
+
+## Changelog
+
+- Added `bifrost.modelCatalog.modelParametersUrl` to `values.yaml`, `values.schema.json`, and `_helpers.tpl`, allowing operators to override the URL Bifrost uses to fetch model parameter definitions.
+- Added `existingSecret` support for hosted PostgreSQL (`postgresql.enabled: true`). Set `postgresql.auth.existingSecret` and `postgresql.auth.passwordKey` to reference a Kubernetes secret (e.g. from Vault Secrets Operator) instead of a plaintext password in values. Both the postgres pod and the bifrost pod will read the password from the secret; the chart-managed secret is not created when `existingSecret` is set.
+- Added `postgresql.primary.podSecurityContext` and `postgresql.primary.containerSecurityContext` to allow configuring pod- and container-level security contexts on the hosted PostgreSQL deployment. Defaults to `podSecurityContext: { fsGroup: 999 }` (preserving prior behaviour) and `containerSecurityContext: {}` (no container security context). Required for clusters enforcing strict Kyverno/OPA policies (e.g. `runAsNonRoot`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `seccompProfile`).
+- Added `bifrost.featureFlags` map to `values.yaml` and `_helpers.tpl`. Renders into `feature_flags.flags` in the generated config JSON. Each entry accepts a literal boolean or `"env.NAME"` string.
+- Fixed Deployment not exposing the cluster gRPC container port; fixed `service.yaml` missing the gRPC service port. Both now match StatefulSet/headless service behaviour.
+- Fixed Weaviate PVC rendering when `vectorStore.weaviate.persistence.enabled=false`; PVC is now gated on persistence being enabled.
+- Fixed Redis probes passing password via `-a` flag in process args; switched to `REDISCLI_AUTH` env var.
+- Fixed nondeterministic env var order for `providerSecrets` and `weaviate.env` map iterations; keys are now sorted with `sortAlpha`.
+- Corrected guardrail `timeout` examples in `values.yaml`: provider default is `30s`, rule default is `60s`.
+
+</Update>

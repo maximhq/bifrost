@@ -1,123 +1,140 @@
-import { test as base, expect } from '@playwright/test'
-import { SidebarPage } from '../pages/sidebar.page'
-import { ProvidersPage } from '../../features/providers/pages/providers.page'
-import { VirtualKeysPage } from '../../features/virtual-keys/pages/virtual-keys.page'
-import { DashboardPage } from '../../features/dashboard/pages/dashboard.page'
-import { LogsPage } from '../../features/logs/pages/logs.page'
-import { MCPLogsPage } from '../../features/mcp-logs/pages/mcp-logs.page'
-import { RoutingRulesPage } from '../../features/routing-rules/pages/routing-rules.page'
-import { MCPRegistryPage } from '../../features/mcp-registry/pages/mcp-registry.page'
-import { PluginsPage } from '../../features/plugins/pages/plugins.page'
-import { ObservabilityPage } from '../../features/observability/pages/observability.page'
-import { ConfigSettingsPage } from '../../features/config/pages/config-settings.page'
-import { GovernancePage } from '../../features/governance/pages/governance.page'
-import { MCPAuthConfigPage } from '../../features/mcp-auth-config/pages/mcp-auth-config.page'
-import { MCPSettingsPage } from '../../features/mcp-settings/pages/mcp-settings.page'
-import { MCPToolGroupsPage } from '../../features/mcp-tool-groups/pages/mcp-tool-groups.page'
-import { ModelLimitsPage } from '../../features/model-limits/pages/model-limits.page'
+import { test as base, expect } from "@playwright/test";
+import { SidebarPage } from "../pages/sidebar.page";
+import { ProvidersPage } from "../../features/providers/pages/providers.page";
+import { VirtualKeysPage } from "../../features/virtual-keys/pages/virtual-keys.page";
+import { DashboardPage } from "../../features/dashboard/pages/dashboard.page";
+import { LogsPage } from "../../features/logs/pages/logs.page";
+import { MCPLogsPage } from "../../features/mcp-logs/pages/mcp-logs.page";
+import { RoutingRulesPage } from "../../features/routing-rules/pages/routing-rules.page";
+import { MCPRegistryPage } from "../../features/mcp-registry/pages/mcp-registry.page";
+import { PluginsPage } from "../../features/plugins/pages/plugins.page";
+import { ObservabilityPage } from "../../features/observability/pages/observability.page";
+import { ConfigSettingsPage } from "../../features/config/pages/config-settings.page";
+import { GovernancePage } from "../../features/governance/pages/governance.page";
+import { MCPAuthConfigPage } from "../../features/mcp-auth-config/pages/mcp-auth-config.page";
+import { MCPSettingsPage } from "../../features/mcp-settings/pages/mcp-settings.page";
+import { MCPToolGroupsPage } from "../../features/mcp-tool-groups/pages/mcp-tool-groups.page";
+import { ModelLimitsPage } from "../../features/model-limits/pages/model-limits.page";
 
 /**
  * Custom test fixtures type
  */
 type BifrostFixtures = {
-  closeDevProfiler: void
-  sidebarPage: SidebarPage
-  providersPage: ProvidersPage
-  virtualKeysPage: VirtualKeysPage
-  dashboardPage: DashboardPage
-  logsPage: LogsPage
-  mcpLogsPage: MCPLogsPage
-  routingRulesPage: RoutingRulesPage
-  mcpRegistryPage: MCPRegistryPage
-  pluginsPage: PluginsPage
-  observabilityPage: ObservabilityPage
-  configSettingsPage: ConfigSettingsPage
-  governancePage: GovernancePage
-  modelLimitsPage: ModelLimitsPage
-  mcpSettingsPage: MCPSettingsPage
-  mcpToolGroupsPage: MCPToolGroupsPage
-  mcpAuthConfigPage: MCPAuthConfigPage
-}
+	closeDevProfiler: void;
+	sidebarPage: SidebarPage;
+	providersPage: ProvidersPage;
+	virtualKeysPage: VirtualKeysPage;
+	dashboardPage: DashboardPage;
+	logsPage: LogsPage;
+	mcpLogsPage: MCPLogsPage;
+	routingRulesPage: RoutingRulesPage;
+	mcpRegistryPage: MCPRegistryPage;
+	pluginsPage: PluginsPage;
+	observabilityPage: ObservabilityPage;
+	configSettingsPage: ConfigSettingsPage;
+	governancePage: GovernancePage;
+	modelLimitsPage: ModelLimitsPage;
+	mcpSettingsPage: MCPSettingsPage;
+	mcpToolGroupsPage: MCPToolGroupsPage;
+	mcpAuthConfigPage: MCPAuthConfigPage;
+};
 
 /**
  * Extended test with Bifrost-specific fixtures
  */
 export const test = base.extend<BifrostFixtures>({
-  closeDevProfiler: [async ({ page }, use) => {
-    // Automatically dismiss the Dev Profiler overlay whenever it appears.
-    // Uses addLocatorHandler so it triggers before any test action if the profiler is visible.
-    await page.addLocatorHandler(
-      page.getByText('Dev Profiler', { exact: true }),
-      async () => {
-        await page.locator('button[title="Dismiss"]').click({ force: true })
-      }
-    )
-    await use()
-  }, { auto: true }],
+	closeDevProfiler: [
+		async ({ page }, use) => {
+			// Keep the development profiler from stealing focus or blocking assertions when
+			// tests reuse a manually started dev server that was not launched with
+			// BIFROST_DISABLE_PROFILER=1.
+			await page.addInitScript(() => {
+				window.localStorage.setItem("devProfiler.isVisible", "false");
+				window.localStorage.setItem("devProfiler.isExpanded", "false");
+			});
 
-  sidebarPage: async ({ page }, use) => {
-    await use(new SidebarPage(page))
-  },
+			await page.addLocatorHandler(
+				page.getByText("Dev Profiler", { exact: true }),
+				async () => {
+					await page.evaluate(() => {
+						window.localStorage.setItem("devProfiler.isVisible", "false");
+						window.localStorage.setItem("devProfiler.isExpanded", "false");
+					});
+					await page
+						.locator('button[title="Dismiss"]')
+						.click({ force: true, timeout: 1000 })
+						.catch(() => {});
+				},
+				{ noWaitAfter: true },
+			);
+			await use();
+		},
+		{ auto: true },
+	],
 
-  providersPage: async ({ page }, use) => {
-    await use(new ProvidersPage(page))
-  },
+	sidebarPage: async ({ page }, use) => {
+		await use(new SidebarPage(page));
+	},
 
-  virtualKeysPage: async ({ page }, use) => {
-    await use(new VirtualKeysPage(page))
-  },
+	providersPage: async ({ page }, use) => {
+		await use(new ProvidersPage(page));
+	},
 
-  dashboardPage: async ({ page }, use) => {
-    await use(new DashboardPage(page))
-  },
+	virtualKeysPage: async ({ page }, use) => {
+		await use(new VirtualKeysPage(page));
+	},
 
-  logsPage: async ({ page }, use) => {
-    await use(new LogsPage(page))
-  },
+	dashboardPage: async ({ page }, use) => {
+		await use(new DashboardPage(page));
+	},
 
-  mcpLogsPage: async ({ page }, use) => {
-    await use(new MCPLogsPage(page))
-  },
+	logsPage: async ({ page }, use) => {
+		await use(new LogsPage(page));
+	},
 
-  routingRulesPage: async ({ page }, use) => {
-    await use(new RoutingRulesPage(page))
-  },
+	mcpLogsPage: async ({ page }, use) => {
+		await use(new MCPLogsPage(page));
+	},
 
-  mcpRegistryPage: async ({ page }, use) => {
-    await use(new MCPRegistryPage(page))
-  },
+	routingRulesPage: async ({ page }, use) => {
+		await use(new RoutingRulesPage(page));
+	},
 
-  pluginsPage: async ({ page }, use) => {
-    await use(new PluginsPage(page))
-  },
+	mcpRegistryPage: async ({ page }, use) => {
+		await use(new MCPRegistryPage(page));
+	},
 
-  observabilityPage: async ({ page }, use) => {
-    await use(new ObservabilityPage(page))
-  },
+	pluginsPage: async ({ page }, use) => {
+		await use(new PluginsPage(page));
+	},
 
-  configSettingsPage: async ({ page }, use) => {
-    await use(new ConfigSettingsPage(page))
-  },
+	observabilityPage: async ({ page }, use) => {
+		await use(new ObservabilityPage(page));
+	},
 
-  governancePage: async ({ page }, use) => {
-    await use(new GovernancePage(page))
-  },
+	configSettingsPage: async ({ page }, use) => {
+		await use(new ConfigSettingsPage(page));
+	},
 
-  modelLimitsPage: async ({ page }, use) => {
-    await use(new ModelLimitsPage(page))
-  },
+	governancePage: async ({ page }, use) => {
+		await use(new GovernancePage(page));
+	},
 
-  mcpSettingsPage: async ({ page }, use) => {
-    await use(new MCPSettingsPage(page))
-  },
+	modelLimitsPage: async ({ page }, use) => {
+		await use(new ModelLimitsPage(page));
+	},
 
-  mcpToolGroupsPage: async ({ page }, use) => {
-    await use(new MCPToolGroupsPage(page))
-  },
+	mcpSettingsPage: async ({ page }, use) => {
+		await use(new MCPSettingsPage(page));
+	},
 
-  mcpAuthConfigPage: async ({ page }, use) => {
-    await use(new MCPAuthConfigPage(page))
-  },
-})
+	mcpToolGroupsPage: async ({ page }, use) => {
+		await use(new MCPToolGroupsPage(page));
+	},
 
-export { expect }
+	mcpAuthConfigPage: async ({ page }, use) => {
+		await use(new MCPAuthConfigPage(page));
+	},
+});
+
+export { expect };

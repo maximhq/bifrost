@@ -22,6 +22,15 @@ Cluster mode requires **PostgreSQL** as the storage backend. SQLite is single-no
 | Multiple replicas, shared DB only | Optional - DB provides eventual consistency |
 | Multiple replicas with strict per-minute rate limiting | **Enable cluster mode** - in-memory counters are synced via gossip |
 | Geographic multi-region | Enable cluster mode with DNS or Consul discovery |
+| Serverless platforms without peer-to-peer networking (e.g. Cloud Run) | Use **broker mode** instead of gossip - see note below |
+
+<Note>
+The Helm chart deploys the default **mesh** clustering, which needs nodes to
+reach each other directly over gossip (`10101`) and gRPC (`10102`). On
+platforms that do not allow peer-to-peer connectivity - such as Google Cloud
+Run - use **broker mode**, where nodes only make an outbound connection to a
+central relay. See [Enterprise Clustering &rarr; Broker Mode](/enterprise/clustering#broker-mode).
+</Note>
 
 ---
 

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -157,9 +156,9 @@ func (req *VertexRankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext
 	var provider schemas.ModelProvider
 	var model string
 	if req.Model != nil {
-		provider, model = schemas.ParseModelString(*req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Vertex))
+		provider, model = schemas.ParseModelString(*req.Model, schemas.Vertex)
 	} else {
-		provider = providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Vertex)
+		provider = schemas.Vertex
 	}
 
 	bifrostReq := &schemas.BifrostRerankRequest{

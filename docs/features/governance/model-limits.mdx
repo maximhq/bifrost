@@ -1,0 +1,377 @@
+---
+title: "Model Limits"
+description: "Set budget and rate limits at the model level — globally or per virtual key, optionally filtered to a specific provider — from a single unified interface."
+icon: "sliders"
+---
+
+## Overview
+
+Model limits let you enforce spending caps and rate limits keyed on a specific model (or all models), an optional provider, and a **scope** that determines who the limit applies to.
+
+They are the unified control plane for all model-level governance in Bifrost:
+
+- **Global provider budgets** — cap what OpenAI (or any provider) can spend across all traffic
+- **Virtual key top-level budgets** — limit how much a specific virtual key can spend across all its providers
+- **Virtual key per-provider budgets** — limit what a virtual key can spend on a single provider
+- **Per-model limits** — enforce fine-grained caps on individual models for any of the above scopes
+
+<Note>
+The `user` scope is available in Bifrost Enterprise. Support for **customer** and **team** scopes is coming soon.
+</Note>
+
+---
+
+## Scope system
+
+Every model limit has a **scope** that determines the audience it applies to.
+
+| Scope | Who it applies to | Scope Target required? |
+|-------|-------------------|----------------------|
+| `global` | All traffic through Bifrost | No |
+| `virtual_key` | All requests made with a specific virtual key | Yes — the virtual key ID |
+| `user` | All requests made by a specific user (Enterprise only) | Yes — the user ID |
+
+**Scope + model name combinations:**
+
+| model_name | provider | scope | What it governs |
+|------------|----------|-------|-----------------|
+| `*` (All Models) | `openai` | `global` | Global OpenAI provider budget |
+| `*` (All Models) | _(none)_ | `virtual_key` | That VK's top-level cross-provider budget |
+| `*` (All Models) | `anthropic` | `virtual_key` | That VK's Anthropic-only budget |
+| `gpt-4o` | `openai` | `global` | Hard cap on gpt-4o usage across all traffic |
+| `claude-3-5-sonnet-20241022` | _(none)_ | `virtual_key` | Per-VK cap on a specific model |
+
+---
+
+## Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+Navigate to **Budget & Limits → Model Limits** in the Bifrost dashboard.
+
+### Table view
+
+The table shows all configured model limits with their current usage. Use the toolbar to find what you need:
+
+- **Search** — filter by model name
+- **Scope** dropdown — show only `global` or `virtual_key` limits
+- **Provider** dropdown — show only limits for a specific provider
+
+The **Scope Target** column links directly back to the parent entity (e.g. clicking a virtual key badge takes you to that VK).
+
+![Model Limits Table](../../media/ui-model-limits-table.png)
+
+### Adding a model limit
+
+Click **Add Model Limit** to open the configuration sheet.
+
+1. **Provider** — select a specific provider or leave as _All Providers_
+2. **Model Name** — search and select a model, or pick _All Models_ to cover every model for the chosen provider/scope
+3. **Scope** — choose `Global` or `Virtual Key`
+4. **Scope Target** — appears when scope is `Virtual Key`; select the target virtual key
+5. **Budget** — add one or more budget lines, each with a dollar cap and reset duration. Multiple budgets per limit are supported (e.g. `$50/day` + `$500/month`).
+6. **Rate Limits** — optionally set token and/or request limits with their own reset durations
+
+Click **Create Limit** to save.
+
+![Model Limit Sheet](../../media/ui-model-limits-sheet.png)
+
+<Note>
+Model name and scope are locked after creation. To change them, delete the limit and recreate it.
+</Note>
+
+</Tab>
+<Tab title="API">
+
+### List model limits
+
+```bash
+curl "http://localhost:8080/api/governance/model-configs" \
+  -H "Content-Type: application/json"
+```
+
+With filters:
+
+```bash
+curl "http://localhost:8080/api/governance/model-configs?scope=virtual_key&provider=openai&limit=25&offset=0&search=gpt" \
+  -H "Content-Type: application/json"
+```
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | integer | Page size |
+| `offset` | integer | Page offset |
+| `search` | string | Filter by model name (case-insensitive) |
+| `scope` | string | Filter by scope (`global`, `virtual_key`) |
+| `provider` | string | Filter by provider name |
+| `from_memory` | boolean | Read from in-memory cache (faster, may lag DB by one poll cycle) |
+
+**Response:**
+
+```json
+{
+  "model_configs": [
+    {
+      "id": "mc_abc123",
+      "model_name": "*",
+      "provider": "openai",
+      "scope": "global",
+      "scope_id": null,
+      "scope_name": null,
+      "calendar_aligned": false,
+      "budgets": [
+        {
+          "id": "b_xyz",
+          "max_limit": 500.00,
+          "current_usage": 42.10,
+          "reset_duration": "1M",
+          "last_reset": "2026-06-01T00:00:00Z"
+        }
+      ],
+      "rate_limit": null,
+      "created_at": "2026-05-01T10:00:00Z",
+      "updated_at": "2026-06-01T00:00:00Z"
+    }
+  ],
+  "total_count": 1
+}
+```
+
+### Create a model limit
+
+```bash
+curl -X POST "http://localhost:8080/api/governance/model-configs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_name": "gpt-4o",
+    "provider": "openai",
+    "scope": "global",
+    "budgets": [
+      { "max_limit": 200.00, "reset_duration": "1d" },
+      { "max_limit": 2000.00, "reset_duration": "1M" }
+    ],
+    "rate_limit": {
+      "request_max_limit": 1000,
+      "request_reset_duration": "1h"
+    }
+  }'
+```
+
+**Request fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `model_name` | string | Yes | Model name, or `*` for all models |
+| `provider` | string | No | Provider name; omit to cover all providers |
+| `scope` | string | No | `global` (default) or `virtual_key` |
+| `scope_id` | string | Conditional | Required when `scope` is not `global` |
+| `budgets` | array | No | One or more budget lines (each needs `max_limit` + `reset_duration`) |
+| `rate_limit` | object | No | Token and/or request rate limits |
+
+### Update a model limit
+
+Send the full desired set of budgets — the server reconciles additions, updates, and removals. Send an empty `budgets` array to remove all budgets.
+
+```bash
+curl -X PUT "http://localhost:8080/api/governance/model-configs/{mc_id}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "budgets": [
+      { "max_limit": 300.00, "reset_duration": "1d" },
+      { "max_limit": 3000.00, "reset_duration": "1M" }
+    ]
+  }'
+```
+
+### Delete a model limit
+
+```bash
+curl -X DELETE "http://localhost:8080/api/governance/model-configs/{mc_id}"
+```
+
+</Tab>
+<Tab title="config.json">
+
+Model limits are declared under `governance.model_configs`. Each entry references budgets and rate limits by ID from the sibling `governance.budgets` and `governance.rate_limits` arrays.
+
+```json
+{
+  "governance": {
+    "model_configs": [
+      {
+        "id": "mc-openai-global",
+        "model_name": "*",
+        "provider": "openai",
+        "scope": "global",
+        "budget_ids": ["b-openai-daily", "b-openai-monthly"]
+      },
+      {
+        "id": "mc-gpt4o-vk",
+        "model_name": "gpt-4o",
+        "provider": "openai",
+        "scope": "virtual_key",
+        "scope_id": "vk-production",
+        "budget_ids": ["b-gpt4o-daily"],
+        "rate_limit_id": "rl-gpt4o"
+      }
+    ],
+    "budgets": [
+      {
+        "id": "b-openai-daily",
+        "max_limit": 50.00,
+        "reset_duration": "1d"
+      },
+      {
+        "id": "b-openai-monthly",
+        "max_limit": 1000.00,
+        "reset_duration": "1M"
+      },
+      {
+        "id": "b-gpt4o-daily",
+        "max_limit": 50.00,
+        "reset_duration": "1d"
+      }
+    ],
+    "rate_limits": [
+      {
+        "id": "rl-gpt4o",
+        "request_max_limit": 500,
+        "request_reset_duration": "1h",
+        "token_max_limit": 500000,
+        "token_reset_duration": "1h"
+      }
+    ]
+  }
+}
+```
+
+**`model_configs` fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique identifier |
+| `model_name` | string | Yes | Model name, or `*` for all models |
+| `provider` | string | No | Provider name; omit to apply to all providers |
+| `scope` | string | No | `global` (default) or `virtual_key` |
+| `scope_id` | string | Conditional | Required when `scope` is not `global` |
+| `budget_ids` | string[] | No | List of `governance.budgets` IDs to attach. Supports multiple budgets (e.g. daily + monthly). Replaces `budget_id`. |
+| `budget_id` | string | No | Deprecated — single budget reference. Use `budget_ids` instead. |
+| `rate_limit_id` | string | No | References a `governance.rate_limits` entry |
+
+</Tab>
+</Tabs>
+
+---
+
+## Examples
+
+### Global provider cap
+
+Prevent OpenAI from exceeding $1,000/month regardless of which virtual key triggered the request:
+
+```bash
+curl -X POST "http://localhost:8080/api/governance/model-configs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_name": "*",
+    "provider": "openai",
+    "scope": "global",
+    "budgets": [
+      { "max_limit": 1000.00, "reset_duration": "1M" }
+    ]
+  }'
+```
+
+This is also manageable from the **Providers** page → **Governance** tab per provider, which writes to the same underlying entry.
+
+---
+
+### Virtual key top-level budget
+
+Cap the total spend for a virtual key across all its providers:
+
+```bash
+curl -X POST "http://localhost:8080/api/governance/model-configs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_name": "*",
+    "scope": "virtual_key",
+    "scope_id": "vk-staging-team",
+    "budgets": [
+      { "max_limit": 200.00, "reset_duration": "1M" }
+    ]
+  }'
+```
+
+---
+
+### Virtual key per-provider budget
+
+Let the staging VK use Anthropic up to $50/month independently of its OpenAI spend:
+
+```bash
+curl -X POST "http://localhost:8080/api/governance/model-configs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_name": "*",
+    "provider": "anthropic",
+    "scope": "virtual_key",
+    "scope_id": "vk-staging-team",
+    "budgets": [
+      { "max_limit": 50.00, "reset_duration": "1M" }
+    ]
+  }'
+```
+
+These VK governance limits are also editable through the **Virtual Keys** page → provider governance section.
+
+---
+
+### Multi-budget daily + monthly cap
+
+Protect against both runaway daily spikes and monthly overruns on a single model:
+
+```bash
+curl -X POST "http://localhost:8080/api/governance/model-configs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_name": "gpt-4o",
+    "provider": "openai",
+    "scope": "global",
+    "budgets": [
+      { "max_limit": 30.00, "reset_duration": "1d" },
+      { "max_limit": 500.00, "reset_duration": "1M" }
+    ]
+  }'
+```
+
+All budgets must pass for a request to be allowed — a spike that exhausts the daily cap blocks further requests until it resets, even if the monthly cap has room remaining.
+
+---
+
+## How limits interact
+
+When a request arrives, Bifrost checks every applicable model limit **independently**. All must pass:
+
+```
+Request: VK "staging" → openai → gpt-4o
+
+Checks run in order:
+  1. Global gpt-4o limit (if any)
+  2. Global openai limit (if any)
+  3. VK "staging" top-level limit (if any)
+  4. VK "staging" → openai limit (if any)
+```
+
+If any single limit is exhausted, the request is blocked. Costs are deducted from **all** matching limits after a successful response.
+
+---
+
+## Next Steps
+
+- **[Budget & Limits](./budget-and-limits)** — Budgets at the virtual key, team, and customer hierarchy level
+- **[Virtual Keys](./virtual-keys)** — Create and manage virtual keys with provider configs
+- **[Routing](./routing)** — Automatic failover when a limit is exhausted

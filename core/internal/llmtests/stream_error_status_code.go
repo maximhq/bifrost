@@ -24,10 +24,10 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		return
 	}
 
-	// Skip providers that perform deployment-based key selection.
-	// These providers validate model→deployment mapping during key selection,
-	// which means invalid models fail BEFORE reaching the provider API.
-	// Since no HTTP request is made, there's no provider status code to propagate.
+	// Skip providers that validate the model during key selection (deployment
+	// mapping, or an allowlist as Fireworks builds its model list from config).
+	// These reject invalid models BEFORE reaching the provider API, so no HTTP
+	// request is made and there's no provider status code to propagate.
 	deploymentBasedProviders := map[schemas.ModelProvider]bool{
 		schemas.Azure:       true,
 		schemas.Bedrock:     true,
@@ -35,6 +35,7 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		schemas.Replicate:   true,
 		schemas.VLLM:        true,
 		schemas.HuggingFace: true,
+		schemas.Fireworks:   true,
 	}
 	if deploymentBasedProviders[testConfig.Provider] {
 		t.Logf("Skipping StreamErrorStatusCode for %s (deployment-based key selection validates models before API call)", testConfig.Provider)
@@ -134,13 +135,6 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			}
 
 			if bifrostErr.StatusCode == nil {
-				if testConfig.Provider == schemas.Fireworks &&
-					bifrostErr.Type != nil &&
-					*bifrostErr.Type == string(schemas.ResponsesStreamResponseTypeFailed) {
-					t.Logf("ℹ️ Fireworks surfaced invalid-model failure as response.failed without an HTTP status code. Error: %s",
-						GetErrorMessage(bifrostErr))
-					return
-				}
 				t.Fatalf("❌ BifrostError.StatusCode is nil for provider %s responses stream — provider status code was not propagated. Error: %s",
 					testConfig.Provider, GetErrorMessage(bifrostErr))
 			}

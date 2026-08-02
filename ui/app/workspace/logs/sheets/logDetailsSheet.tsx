@@ -1,11 +1,12 @@
+import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import { useGetPromptQuery } from "@/lib/store/apis/promptsApi";
 import type { LogEntry } from "@/lib/types/logs";
-import { ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import { useSheetNavigation } from "@/hooks/useSheetNavigation";
+import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useHotkeys } from "react-hotkeys-hook";
 import { LogDetailView } from "./logDetailView";
 
 interface LogDetailSheetProps {
@@ -16,6 +17,7 @@ interface LogDetailSheetProps {
 	onNavigate?: (direction: "prev" | "next") => void;
 	hasPrev?: boolean;
 	hasNext?: boolean;
+	canReveal?: boolean;
 	onViewSession?: (sessionId: string, logId: string) => void;
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 }
@@ -28,6 +30,7 @@ export function LogDetailSheet({
 	onNavigate,
 	hasPrev = false,
 	hasNext = false,
+	canReveal = false,
 	onViewSession,
 	onFilterByParentRequestId,
 }: LogDetailSheetProps) {
@@ -55,13 +58,11 @@ export function LogDetailSheet({
 	}, [shouldPoll]);
 
 	// Keyboard navigation: arrow up/down to navigate between logs
-	useHotkeys("up", () => onNavigate?.("prev"), {
-		enabled: open && hasPrev,
-		preventDefault: true,
-	});
-	useHotkeys("down", () => onNavigate?.("next"), {
-		enabled: open && hasNext,
-		preventDefault: true,
+	const { prev: prevKeys, next: nextKeys } = useSheetNavigation({
+		enabled: open,
+		hasPrev,
+		hasNext,
+		onNavigate: (direction) => onNavigate?.(direction),
 	});
 
 	if (!log) return null;
@@ -83,6 +84,7 @@ export function LogDetailSheet({
 						log={displayLog}
 						resolvedSelectedPromptName={resolvedSelectedPromptName}
 						handleDelete={handleDelete}
+						canReveal={canReveal}
 						onClose={() => onOpenChange(false)}
 						onFilterByParentRequestId={onFilterByParentRequestId}
 						headerAction={
@@ -97,30 +99,14 @@ export function LogDetailSheet({
 										View Session
 									</Button>
 								) : null}
-								<div className="flex items-center">
-									<Button
-										variant="ghost"
-										className="size-8"
-										disabled={!hasPrev}
-										onClick={() => onNavigate?.("prev")}
-										aria-label="Previous log"
-										data-testid="logdetails-prev-button"
-										type="button"
-									>
-										<ChevronUp className="size-4" />
-									</Button>
-									<Button
-										variant="ghost"
-										className="size-8"
-										disabled={!hasNext}
-										onClick={() => onNavigate?.("next")}
-										aria-label="Next log"
-										data-testid="logdetails-next-button"
-										type="button"
-									>
-										<ChevronDown className="size-4" />
-									</Button>
-								</div>
+								<SheetNavigationButtons
+									hasPrev={hasPrev}
+									hasNext={hasNext}
+									onNavigate={(dir) => onNavigate?.(dir)}
+									prevKeys={prevKeys}
+									nextKeys={nextKeys}
+									entityLabel="log"
+								/>
 							</>
 						}
 					/>

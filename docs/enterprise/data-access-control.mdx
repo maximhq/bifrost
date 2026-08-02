@@ -1,0 +1,109 @@
+---
+title: "Data Access Control (DAC)"
+description: "Restrict row-level visibility of configuration and operational data based on the authenticated caller's role, team, and identity."
+icon: "user-shield"
+---
+
+## Overview
+
+Data Access Control (DAC) decides **which rows** a user is allowed to see and act on inside Bifrost Enterprise. It complements Role-Based Access Control: RBAC controls **what operations** a user can perform; DAC scopes the **result set** of those operations to the rows the user is entitled to view.
+
+**Key benefits:**
+
+- **Row-level isolation** - A developer on Team A cannot see virtual keys, prompts, or routing rules owned by Team B unless their role grants broader scope.
+- **Role-driven** - Each role carries a data access scope that determines what its members see.
+- **Migration-safe** - Rows created before DAC was adopted remain visible by default, so adopting DAC on an existing install does not silently hide data.
+- **Inference-aware** - Inference requests authenticated with a virtual key are scoped to the virtual key's owner, so per-key calls behave consistently with dashboard sessions.
+
+<Info>
+  DAC scope is configured on the **role**, not on individual users. For the underlying API contract
+  (create role, update role, assign role to user, manage permissions), see the [API
+  Reference](/api-reference). All role and permission endpoints are tagged **RBAC**.
+</Info>
+
+---
+
+## How it works
+
+### The three scopes
+
+Every role in Bifrost Enterprise has a data access scope with one of three values:
+
+| Scope                                         | Value       | Meaning                                                                                                                         |
+| --------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| <Icon icon="user" size={16} /> **Own data**   | `own-data`  | Members see only rows they personally created or own. Virtual keys assigned to them, prompts they authored, logs they produced. |
+| <Icon icon="users" size={16} /> **Team data** | `team-data` | Members see their own rows plus every row created by any user on any team they belong to.                                       |
+| <Icon icon="globe" size={16} /> **All data**  | `all-data`  | No row filtering. Members see everything across the workspace. This is the default for system roles such as `Admin`.            |
+
+### What gets scoped
+
+DAC tracks ownership on every row created through the dashboard or API. When a user makes a request, Bifrost determines who is asking, looks up the membership context (team, business unit, customer), and filters every query so the result set matches the role's scope.
+
+Resources that participate in scoping include virtual keys, prompts, teams, customers, routing rules, access profiles, guardrail configurations, business units, MCP clients, MCP tool groups, and API keys. Resources without an ownership concept (system-wide configuration, supported provider list) are not scoped.
+
+### Identity resolution
+
+Bifrost resolves the caller's identity at two entry points:
+
+- **Dashboard / API path (user authenticated)** - The session or token carries the user's ID. Their role, team memberships, and derived customer / business unit IDs are used to build the scope.
+- **Inference path** - The request carries no dashboard session, only a credential. Bifrost accepts three credential types and resolves each to an identity, after which the same scope logic applies:
+  - **Virtual key** - looked up to its owner: if owned by a user, the user's scope applies; if owned only by a team, a team-scoped view applies; if the key is global with no owner, no scoping is applied and the request behaves as workspace-wide.
+  - **API key** - resolved to the API key's owner user, along with their role and team memberships.
+  - **User token (JWT)** - claims in the token identify the user directly; their role and team memberships drive the scope just like a dashboard session.
+
+This means a `team-data` user's credential (virtual key, API key, or JWT), when called server-to-server, cannot see another team's prompts even though no dashboard session is attached to the request.
+
+### Fail-closed defaults
+
+- Invalid scope values are rejected at the API.
+- A user with no resolved team list under `team-data` sees an empty result set rather than falling back to all data.
+- Rows that pre-date DAC adoption (no ownership stamp) remain visible under every scope. This is intentional for safe rollouts; newly created rows always carry ownership.
+- Background jobs and migration runners have no user identity attached. They run unscoped because there is no principal to filter by.
+
+---
+
+## Configuring scope on a role (Web UI)
+
+1. Navigate to **Workspace** -> **Governance & Access Control** -> **Roles**.
+2. In the context menu, click **Set data visibility**.
+
+<Frame>
+  <img
+    src="/media/dac/dac-set-visibility.png"
+    alt="Create New Role dialog showing name, description, and data visibility fields"
+  />
+</Frame>
+
+The **Roles** table includes a **Data Access** column showing the current scope of every role at a glance:
+
+For programmatic configuration (create role, update scope, assign role to user, manage permissions), see the **RBAC** endpoints in the [API Reference](/api-reference).
+
+---
+
+## Behavior matrix
+
+The table below summarizes which rows a member sees under each scope. Resources not listed here are not row-scoped.
+
+| Resource                                                             | `own-data`                                                | `team-data`                                                             | `all-data`      |
+| -------------------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- | --------------- |
+| Virtual keys                                                         | Keys the user personally owns                             | Own keys + keys created by team members + keys attached to user's teams | All keys        |
+| Prompts                                                              | Prompts authored by the user (+ legacy unowned prompts)   | Own prompts + prompts belonging to user's teams                         | All prompts     |
+| Teams                                                                | Teams the user belongs to or created                      | Same as own + teams created by team members                             | All teams       |
+| Customers                                                            | Customers derived from user's team or virtual key linkage | Same + customers created by team members                                | All customers   |
+| Routing rules                                                        | Rules user created                                        | Rules created by user or any team member                                | All rules       |
+| Access profile attachments                                           | Attachments matching user's role                          | Attachments held by user + team members                                 | All attachments |
+| Guardrails / Audit logs / Business units / MCP clients / Tool groups | Rows the user created                                     | Rows created by user + team members                                     | All rows        |
+
+<Note>
+  Rows created before DAC was adopted remain visible under every scope. New rows always carry
+  ownership, so this fallback shrinks naturally as old data is replaced.
+</Note>
+
+---
+
+## Next steps
+
+- **[RBAC](/enterprise/rbac)** - Define the permissions whose results the data access scope filters.
+- **[Access Profiles](/enterprise/access-profiles)** - Apply provider, model, and budget policies on top of scoped roles.
+- **[User Provisioning](/enterprise/user-provisioning)** - Use OIDC to populate the roles and team memberships that DAC depends on.
+- **[Audit Logs](/enterprise/audit-logs)** - Audit entries are scoped the same way, so each operator only sees logs for resources they can see.

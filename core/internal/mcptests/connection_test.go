@@ -357,9 +357,9 @@ func TestConnectionWithHeaders(t *testing.T) {
 
 	// Create client config with custom headers
 	clientConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
-	clientConfig.Headers = map[string]schemas.EnvVar{
-		"Authorization":   *schemas.NewEnvVar("Bearer test-token"),
-		"X-Custom-Header": *schemas.NewEnvVar("test-value"),
+	clientConfig.Headers = map[string]schemas.SecretVar{
+		"Authorization":   *schemas.NewSecretVar("Bearer test-token"),
+		"X-Custom-Header": *schemas.NewSecretVar("test-value"),
 	}
 
 	manager := setupMCPManager(t, clientConfig)

@@ -23,6 +23,10 @@ This powerful feature enables key use cases like:
 - **Cost Management**: Route traffic to cheaper models or providers based on weights to optimize costs.
 - **Fine-grained Access Control**: Ensure that different teams or applications only use the models and API keys they are explicitly permitted to.
 
+<Info>
+This page covers **static governance routing** through Virtual Key provider configuration. If you want routing decisions to depend on runtime request attributes such as headers, budgets, or request-content complexity, use [Routing Rules](/providers/routing-rules). For complexity-based tiering specifically, see [Complexity Router](/features/governance/complexity-router).
+</Info>
+
 ## Provider/Model Restrictions
 
 Virtual Keys can be restricted to use only specific provider/models. When provider/model restrictions are configured, the VK can only access those designated provider/models, providing fine-grained control over which provider/models different users or applications can utilize.

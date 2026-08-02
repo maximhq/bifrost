@@ -11,6 +11,7 @@ import (
 )
 
 func TestExtractPayload_RoundTrip(t *testing.T) {
+	metadata := `{"cortex-user-id":"user-123"}`
 	log := &Log{
 		ID:                      "test-1",
 		InputHistory:            `[{"role":"user","content":"hello"}]`,
@@ -45,13 +46,15 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 		PassthroughRequestBody:  `body-req`,
 		PassthroughResponseBody: `body-resp`,
 		RoutingEngineLogs:       `routing log`,
+		Metadata:                &metadata,
 	}
 
 	payload := ExtractPayload(log)
-	assert.Equal(t, len(payloadFields), len(payload), "payload map should have all payload fields")
+	assert.Equal(t, len(payloadFields)+1, len(payload), "payload map should have all payload fields plus metadata")
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, payload["input_history"])
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, payload["output_message"])
 	assert.Equal(t, `routing log`, payload["routing_engine_logs"])
+	assert.Equal(t, metadata, payload["metadata"], "metadata must be written to the snapshot for object consumers")
 
 	// Clear and verify.
 	ClearPayload(log)
@@ -59,16 +62,37 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Empty(t, log.OutputMessage)
 	assert.Empty(t, log.RawRequest)
 	assert.Empty(t, log.RoutingEngineLogs)
+	require.NotNil(t, log.Metadata)
+	assert.Equal(t, metadata, *log.Metadata)
 
 	// Marshal and merge back.
 	data, err := MarshalPayload(payload)
 	require.NoError(t, err)
 
+	// Metadata is DB-authoritative: the snapshot carries a backup copy, but
+	// MergePayloadFromJSON must NOT override the live DB value with it. Simulate
+	// a DB row whose metadata was updated after the snapshot was written, then
+	// confirm the merge leaves it untouched.
+	dbMetadata := `{"cortex-user-id":"user-456"}`
+	log.Metadata = &dbMetadata
+	log.MetadataParsed = nil
 	err = MergePayloadFromJSON(log, data)
 	require.NoError(t, err)
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, log.InputHistory)
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, log.OutputMessage)
 	assert.Equal(t, `routing log`, log.RoutingEngineLogs)
+	require.NotNil(t, log.Metadata)
+	assert.Equal(t, dbMetadata, *log.Metadata, "merge must not override DB-authoritative metadata with the snapshot")
+	assert.Equal(t, "user-456", log.MetadataParsed["cortex-user-id"])
+}
+
+func TestExtractPayload_NilOrEmptyMetadataOmittedFromSnapshot(t *testing.T) {
+	payload := ExtractPayload(&Log{ID: "x"})
+	assert.NotContains(t, payload, "metadata", "nil Metadata must not appear in snapshot")
+
+	empty := ""
+	payload = ExtractPayload(&Log{ID: "y", Metadata: &empty})
+	assert.NotContains(t, payload, "metadata", "empty Metadata must not appear in snapshot")
 }
 
 func TestClearPayload_DoesNotTouchIndexFields(t *testing.T) {

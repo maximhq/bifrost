@@ -3,13 +3,17 @@ export const KnownProvidersNames = [
 	"anthropic",
 	"azure",
 	"bedrock",
+	"bedrock_mantle",
 	"cerebras",
 	"cohere",
+	"deepseek",
 	"gemini",
 	"groq",
 	"huggingface",
 	"mistral",
 	"ollama",
+	"opencode-go",
+	"opencode-zen",
 	"openai",
 	"openrouter",
 	"parasail",
@@ -22,13 +26,35 @@ export const KnownProvidersNames = [
 	"replicate",
 	"vllm",
 	"runway",
+	"runware",
 	"fireworks",
+	"sarvam",
+	"wafer",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
 export type ProviderName = (typeof KnownProvidersNames)[number];
 
 export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
+
+// Built-in providers whose Bifrost implementation supports embedding requests.
+// Custom providers must instead be checked via custom_provider_config.allowed_requests.embedding.
+export const EmbeddingSupportedProviders: readonly ProviderName[] = [
+	"azure",
+	"bedrock",
+	"cohere",
+	"fireworks",
+	"gemini",
+	"huggingface",
+	"mistral",
+	"nebius",
+	"ollama",
+	"openai",
+	"openrouter",
+	"sgl",
+	"vertex",
+	"vllm",
+] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
@@ -40,6 +66,11 @@ export const RequestTypes = [
 	"chat_completion_stream",
 	"responses",
 	"responses_stream",
+	"responses_retrieve",
+	"responses_retrieve_stream",
+	"responses_delete",
+	"responses_cancel",
+	"responses_input_items",
 	"embedding",
 	"rerank",
 	"speech",
@@ -60,6 +91,7 @@ export const RequestTypes = [
 	"video_list",
 	"video_remix",
 	"count_tokens",
+	"compaction",
 	// Container operations
 	"container_create",
 	"container_list",
@@ -84,10 +116,14 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	anthropic: "Anthropic",
 	azure: "Azure",
 	bedrock: "AWS Bedrock",
+	bedrock_mantle: "AWS Bedrock Mantle",
 	cohere: "Cohere",
+	deepseek: "DeepSeek",
 	vertex: "Vertex AI",
 	mistral: "Mistral AI",
 	ollama: "Ollama",
+	"opencode-go": "OpenCode Go",
+	"opencode-zen": "OpenCode Zen",
 	groq: "Groq",
 	parasail: "Parasail",
 	elevenlabs: "Elevenlabs",
@@ -102,7 +138,10 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	replicate: "Replicate",
 	vllm: "vLLM",
 	runway: "Runway",
+	runware: "Runware",
 	fireworks: "Fireworks AI",
+	sarvam: "Sarvam AI",
+	wafer: "Wafer",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -151,6 +190,11 @@ export const RequestTypeLabels = {
 	chat_completion_stream: "Chat Stream",
 	responses: "Responses",
 	responses_stream: "Responses Stream",
+	responses_retrieve: "Responses Retrieve",
+	responses_retrieve_stream: "Responses Retrieve Stream",
+	responses_delete: "Responses Delete",
+	responses_cancel: "Responses Cancel",
+	responses_input_items: "Responses Input Items",
 
 	embedding: "Embedding",
 	rerank: "Rerank",
@@ -175,6 +219,7 @@ export const RequestTypeLabels = {
 	video_list: "Video List",
 	video_remix: "Video Remix",
 	count_tokens: "Count Tokens",
+	compaction: "Compaction",
 
 	batch_create: "Batch Create",
 	batch_list: "Batch List",
@@ -233,6 +278,11 @@ export const RequestTypeColors = {
 
 	responses: "bg-teal-100 text-teal-800",
 	responses_stream: "bg-violet-100 text-violet-800",
+	responses_retrieve: "bg-teal-100 text-teal-800",
+	responses_retrieve_stream: "bg-violet-100 text-violet-800",
+	responses_delete: "bg-teal-100 text-teal-800",
+	responses_cancel: "bg-teal-100 text-teal-800",
+	responses_input_items: "bg-teal-100 text-teal-800",
 
 	embedding: "bg-red-100 text-red-800",
 	rerank: "bg-fuchsia-100 text-fuchsia-800",
@@ -257,6 +307,7 @@ export const RequestTypeColors = {
 	video_list: "bg-cyan-100 text-cyan-800",
 	video_remix: "bg-pink-100 text-pink-800",
 	count_tokens: "bg-cyan-100 text-cyan-800",
+	compaction: "bg-indigo-100 text-indigo-800",
 
 	// Container operations
 	container_create: "bg-emerald-100 text-emerald-800",
@@ -298,13 +349,15 @@ export const RoutingEngineUsedLabels = {
 	governance: "Governance",
 	loadbalancing: "Loadbalancing",
 	"model-catalog": "Model Catalog",
+	core: "Core",
 } as const;
 
 export const RoutingEngineUsedColors = {
 	"routing-rule": "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
 	governance: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
-	loadbalancing: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
+	loadbalancing: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300",
 	"model-catalog": "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300",
+	core: "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-300",
 } as const;
 
 export type Status = (typeof Statuses)[number];

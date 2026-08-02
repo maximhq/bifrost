@@ -264,3 +264,58 @@ updates:
     schedule:
       interval: daily
     open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /.github/workflows/scripts/schemasync
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/oauth-demo-server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /plugins/compat
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /plugins/prompts
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/async
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/e2e/clis
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/semanticcache
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/cmd/e2eseed
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/cmd/seed
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/cmd/seedvks
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /plugins/modelcatalogresolver
+    schedule:
+      interval: weekly

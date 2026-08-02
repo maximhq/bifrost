@@ -21,12 +21,21 @@ spec:
         {{- include "bifrost.labels" . | nindent 8 }}
         app.kubernetes.io/component: database
     spec:
+      {{- with .Values.postgresql.primary.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- else }}
       securityContext:
         fsGroup: 999
+      {{- end }}
       containers:
         - name: postgresql
           image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
           imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          {{- with .Values.postgresql.primary.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: postgresql
               containerPort: 5432
@@ -37,8 +46,8 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "bifrost.fullname" . }}-postgresql
-                  key: password
+                  name: {{ .Values.postgresql.auth.existingSecret | default (printf "%s-postgresql" (include "bifrost.fullname" .)) }}
+                  key: {{ if .Values.postgresql.auth.existingSecret }}{{ .Values.postgresql.auth.passwordKey | default "password" }}{{ else }}password{{ end }}
             - name: POSTGRES_DB
               value: {{ .Values.postgresql.auth.database | quote }}
             - name: PGDATA

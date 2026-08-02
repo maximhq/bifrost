@@ -19,7 +19,6 @@ func TestClaudePreLaunchPinsSelectedModelAcrossClaudeTiers(t *testing.T) {
 	defer cleanup()
 
 	for _, want := range []string{
-		"CLAUDE_CODE_SIMPLE=1",
 		"ANTHROPIC_DEFAULT_SONNET_MODEL=openai/gpt-5",
 		"ANTHROPIC_DEFAULT_OPUS_MODEL=openai/gpt-5",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL=openai/gpt-5",
@@ -32,6 +31,9 @@ func TestClaudePreLaunchPinsSelectedModelAcrossClaudeTiers(t *testing.T) {
 
 	if got := envValue(env, "ANTHROPIC_MODEL"); got != "" {
 		t.Fatalf("did not expect ANTHROPIC_MODEL in env, got %#v", env)
+	}
+	if got := envValue(env, "CLAUDE_CODE_SIMPLE"); got != "" {
+		t.Fatalf("did not expect CLAUDE_CODE_SIMPLE in env, got %#v", env)
 	}
 }
 

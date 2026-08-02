@@ -1,7 +1,6 @@
 package cohere
 
 import (
-	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -74,7 +73,7 @@ func (req *CohereEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.Bifros
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Cohere))
+	provider, model := schemas.ParseModelString(req.Model, "")
 
 	bifrostReq := &schemas.BifrostEmbeddingRequest{
 		Provider: provider,

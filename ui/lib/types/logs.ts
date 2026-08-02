@@ -142,6 +142,7 @@ export interface DefaultParameters {
 // Message content types
 export type MessageContentType =
 	| "text"
+	| "file"
 	| "image_url"
 	| "input_audio"
 	| "input_text"
@@ -156,6 +157,13 @@ export interface ContentBlock {
 	image_url?: {
 		url: string;
 		detail?: string;
+	};
+	file?: {
+		file_data?: string;
+		file_url?: string;
+		file_id?: string;
+		filename?: string;
+		file_type?: string;
 	};
 	input_audio?: {
 		data: string;
@@ -497,6 +505,12 @@ export interface LogEntry {
 	provider: string;
 	model: string;
 	alias?: string; // Set when model was resolved via alias mapping; the original name the caller used
+	canonical_model_name?: string; // Canonical model name configured on the resolved alias, when set
+	alias_model_family?: string; // Model family configured on the resolved alias, when set
+	// Model that actually produced the response when the provider swapped models inside a
+	// single call (Anthropic server-side fallback). Distinct from fallback_index, which
+	// counts Bifrost's own cross-provider failover attempts.
+	server_side_fallback_model?: string;
 	number_of_retries: number;
 	fallback_index: number;
 	attempt_trail?: KeyAttemptRecord[]; // Per-attempt key selection history
@@ -510,11 +524,19 @@ export interface LogEntry {
 	customer_id?: string;
 	business_unit_id?: string;
 	business_unit_name?: string;
+	team_ids?: string[];
+	team_names?: string[];
+	customer_ids?: string[];
+	customer_names?: string[];
+	business_unit_ids?: string[];
+	business_unit_names?: string[];
 	user_id?: string;
 	user_name?: string;
 	virtual_key_id?: string;
+	virtual_key_name?: string;
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
+	routing_rule_name?: string;
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
@@ -551,18 +573,23 @@ export interface LogEntry {
 	token_usage?: LLMUsage;
 	cache_debug?: CacheDebug;
 	cost?: number; // Cost in dollars (total cost of the request - includes cache lookup cost)
-	status: string; // "success" or "error"
+	status: string; // "success", "error", "processing", or "cancelled"
 	stop_reason?: string; // Why the model stopped: "stop", "length", "content_filter", "tool_calls", etc.
 	error_details?: BifrostError;
 	stream: boolean; // true if this was a streaming response
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
+	content_hidden?: boolean; // true when content logging was disabled for this request, so no content is served back
 	is_large_payload_request?: boolean; // true if request used large payload streaming
 	is_large_payload_response?: boolean; // true if response used large payload streaming
 	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
 	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
+	redaction_mapping?: {
+		input?: Record<string, string>;
+		output?: Record<string, string>;
+	}; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 }
 
 export interface LogFilters {
@@ -585,6 +612,7 @@ export interface LogFilters {
 	min_tokens?: number;
 	max_tokens?: number;
 	missing_cost_only?: boolean;
+	cache_hit_types?: string[]; // For filtering by local-cache hit type ("direct", "semantic")
 	content_search?: string;
 	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
 	user_ids?: string[];
@@ -607,6 +635,8 @@ export interface LogStats {
 	user_facing_total_requests: number;
 	average_latency: number;
 	total_tokens: number;
+	prompt_tokens: number;
+	completion_tokens: number;
 	total_cost: number;
 	cache_hit_rate_total_requests?: number | null;
 	direct_cache_hits?: number | null;
@@ -637,6 +667,7 @@ export interface HistogramBucket {
 	count: number;
 	success: number;
 	error: number;
+	cancelled: number;
 }
 
 export interface LogsHistogramResponse {
@@ -676,6 +707,7 @@ export interface ModelUsageStats {
 	total: number;
 	success: number;
 	error: number;
+	cancelled: number;
 }
 
 export interface ModelHistogramBucket {
@@ -754,6 +786,38 @@ export interface ProviderLatencyHistogramResponse {
 	providers: string[];
 }
 
+// Throughput (tokens/sec) histogram types
+// tokens_per_second is the aggregate rate for the bucket: total completion tokens
+// divided by total generation latency in seconds.
+export interface ThroughputHistogramBucket {
+	timestamp: string;
+	tokens_per_second: number;
+	total_completion_tokens: number;
+	total_requests: number;
+}
+
+export interface ThroughputHistogramResponse {
+	buckets: ThroughputHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
+export interface ProviderThroughputStats {
+	tokens_per_second: number;
+	total_completion_tokens: number;
+	total_requests: number;
+}
+
+export interface ProviderThroughputHistogramBucket {
+	timestamp: string;
+	by_provider: Record<string, ProviderThroughputStats>;
+}
+
+export interface ProviderThroughputHistogramResponse {
+	buckets: ProviderThroughputHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
 export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;
@@ -765,6 +829,30 @@ export interface RecalculateCostResponse {
 	updated: number;
 	skipped: number;
 	remaining: number;
+}
+
+export interface RecalculateCostProgress {
+	total_matched: number;
+	processed: number;
+	updated: number;
+	skipped: number;
+	remaining?: number;
+	done: boolean;
+}
+
+// RecalcJobStatus is the status of a background cost-recalculation job, returned by
+// POST /api/logs/recalculate-cost (202/409) and GET /api/logs/recalculate-cost/status.
+export interface RecalcJobStatus {
+	id?: string;
+	status: "idle" | "pending" | "running" | "completed" | "failed";
+	total: number;
+	processed: number;
+	updated: number;
+	skipped: number;
+	message?: string;
+	last_error?: string;
+	started_at?: string;
+	updated_at?: string;
 }
 
 // Responses API types (for responses_output field)
@@ -794,7 +882,10 @@ export type ResponsesMessageType =
 	| "mcp_approval_responses"
 	| "reasoning"
 	| "item_reference"
-	| "refusal";
+	| "refusal"
+	| "tool_search_call"
+	| "tool_search_output"
+	| "additional_tools";
 
 // Content block types for responses
 export type ResponsesMessageContentBlockType =
@@ -1076,8 +1167,7 @@ export interface MCPToolLogStats {
 // MCP Tool Log Search Response
 export interface MCPToolLogsResponse {
 	logs: MCPToolLogEntry[];
-	pagination: Pagination;
-	stats: MCPToolLogStats;
+	pagination: Pagination & { total_count: number };
 	has_logs: boolean;
 }
 
@@ -1102,6 +1192,7 @@ export interface MCPHistogramBucket {
 	count: number;
 	success: number;
 	error: number;
+	cancelled?: number;
 }
 
 export interface MCPHistogramResponse {
@@ -1136,10 +1227,12 @@ export interface ModelRankingTrend {
 	tokens_trend: number;
 	cost_trend: number;
 	latency_trend: number;
+	throughput_trend: number;
 }
 
 export interface ModelRankingEntry {
 	model: string;
+	canonical_model_name?: string;
 	provider: string;
 	total_requests: number;
 	success_count: number;
@@ -1147,6 +1240,7 @@ export interface ModelRankingEntry {
 	total_tokens: number;
 	total_cost: number;
 	avg_latency: number;
+	throughput: number; // tokens/sec
 	trend: ModelRankingTrend;
 }
 
@@ -1171,6 +1265,31 @@ export interface UserRankingEntry {
 
 export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
+}
+
+export type RankingDimension = "team" | "customer" | "business_unit" | "user" | "virtual_key";
+
+export interface DimensionRankingTrend {
+	has_previous_period: boolean;
+	requests_trend: number;
+	tokens_trend: number;
+	cost_trend: number;
+}
+
+export interface DimensionRankingEntry {
+	id: string;
+	name?: string;
+	total_requests: number;
+	total_tokens: number;
+	total_cost: number;
+	trend: DimensionRankingTrend;
+}
+
+export interface DimensionRankingsResponse {
+	rankings: DimensionRankingEntry[];
+	dimension: RankingDimension;
+	total_actual_requests?: number; // shows the actual request count for units that can have multiple child entities
+	total_attributed_requests?: number; // shows the request count attributed to all entities for units that can have multiple child entities
 }
 
 // Date utility functions for URL state management

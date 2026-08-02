@@ -3,11 +3,11 @@ name: Release Pipeline
 # Triggers automatically on push to main when any version file changes
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "v2.0.0"]
   workflow_dispatch:
     inputs:
       skip_tests:
-        description: 'Skip all tests and jump directly to release (admin only)'
+        description: "Skip all tests and jump directly to release (admin only)"
         required: false
         type: boolean
         default: false
@@ -29,7 +29,7 @@ jobs:
       skip-tests: ${{ steps.skip_tests.outputs.skip-tests }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >+
@@ -82,7 +82,7 @@ jobs:
       transport-version: ${{ steps.detect.outputs.transport-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -90,6 +90,9 @@ jobs:
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            _https._tcp.dl.google.com:443
+            motd.ubuntu.com:443
+            dl.google.com:443
             api.github.com:443
             azure.archive.ubuntu.com:80
             dl.google.com:443
@@ -116,7 +119,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Detect what needs release
         id: detect
@@ -146,7 +149,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -161,6 +164,9 @@ jobs:
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
+            api.x.ai:443
+            bifrost-gateway-resource.openai.azure.com:443
+            bedrock-mantle.us-east-1.api.aws:443
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
@@ -171,6 +177,7 @@ jobs:
             login.microsoftonline.com:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
+            oauth2.googleapis.com:443
             openrouter.ai:443
             proxy.golang.org:443
             registry.npmjs.org:443
@@ -188,7 +195,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -221,10 +228,13 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
@@ -251,7 +261,7 @@ jobs:
       approved: ${{ steps.approve.outputs.approved }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >+
@@ -273,7 +283,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -289,6 +299,7 @@ jobs:
             github.com:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             release-assets.githubusercontent.com:443
@@ -306,7 +317,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Docker Compose
         run: |
@@ -347,10 +358,13 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
@@ -364,15 +378,18 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
             _grpc_config.localhost:443
             _http._tcp.azure.archive.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
+            _https._tcp.dl.google.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            production.cloudfront.docker.com:443
+            dl.google.com:443
             api.github.com:443
             api.openai.com:443
             auth.docker.io:443
@@ -408,7 +425,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Docker Compose
         run: |
@@ -449,10 +466,13 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
@@ -466,13 +486,23 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # bifrost-http binary runs on the host and connects to Postgres via
+          # the published port mapping (5432:5432) at 127.0.0.1. harden-runner
+          # filters on the post-NAT destination IP, so the published port DNATs
+          # to Postgres's pinned bridge IP 172.38.0.11 - that IP:port (not
+          # 127.0.0.1:5432) is what must be allowed. The 172.38.0.12 entries are
+          # weaviate's pinned bridge IP from
+          # .github/workflows/configs/docker-compose.yml (gossip + published
+          # 9000->8080). Keep all *.0.11/*.0.12 entries in sync with that file.
           allowed-endpoints: >
+            127.0.0.1:5432
+            172.38.0.11:5432
             172.38.0.12:8080
             172.38.0.12:8301
-            172.38.0.2:5432
+            iojs.org:443
             api.github.com:443
             auth.docker.io:443
             codecov.io:443
@@ -485,6 +515,7 @@ jobs:
             github.com:443
             nodejs.org:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -504,7 +535,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -541,11 +572,22 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # Migration test binary runs on the host (not in a container) and
+          # connects to Postgres via the published port mapping (5432:5432) at
+          # 127.0.0.1 (see run-migration-tests.sh:46, POSTGRES_HOST defaults to
+          # localhost). harden-runner filters on the post-NAT destination IP, so
+          # the published port DNATs to Postgres's pinned bridge IP 172.38.0.11 -
+          # that IP:port must be allowed. Keep in sync with the pinned IP in
+          # .github/workflows/configs/docker-compose.yml. (The 172.38.0.12
+          # weaviate entries are vestigial here - this job only starts postgres.)
           allowed-endpoints: >
-            172.38.0.2:5432
+            127.0.0.1:5432
+            172.38.0.11:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
             api.anthropic.com:443
             api.github.com:443
             api.openai.com:443
@@ -555,6 +597,7 @@ jobs:
             github.com:443
             nodejs.org:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -571,7 +614,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -606,11 +649,26 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # API integrations test compiles bifrost-http and runs it on the host
+          # (not in a container), connecting to Postgres via the published port
+          # mapping (5432:5432) at 127.0.0.1. See test-api-integrations.sh which
+          # defaults POSTGRES_HOST to localhost. harden-runner filters on the
+          # post-NAT destination IP, so the published port DNATs to Postgres's
+          # pinned bridge IP 172.38.0.11 - that IP:port must be allowed. This
+          # script does `docker compose up -d` (ALL services) and waits for them
+          # to be healthy, so weaviate's gossip to its own advertise address
+          # 172.38.0.12:8301 (and 8080) must also be allowed or weaviate never
+          # becomes healthy. Keep the pinned IPs in sync with
+          # .github/workflows/configs/docker-compose.yml.
           allowed-endpoints: >
-            172.38.0.2:5432
+            127.0.0.1:5432
+            172.38.0.11:5432
+            172.38.0.12:8080
+            172.38.0.12:8301
+            iojs.org:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -620,9 +678,13 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            api.perplexity.ai:443
             api.replicate.com:443
+            api.x.ai:443
             auth.docker.io:443
+            bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
+            bifrost-gateway-resource.openai.azure.com:443
             cr.weaviate.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
@@ -634,9 +696,11 @@ jobs:
             huggingface.co:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
+            oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -655,7 +719,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -663,7 +727,7 @@ jobs:
           node-version: "25"
 
       - name: Install Newman
-        run: npm install -g newman newman-reporter-htmlextra
+        run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
 
       - name: Set up Docker Compose
         run: |
@@ -686,12 +750,15 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -718,6 +785,164 @@ jobs:
           path: tests/e2e/api/newman-reports/
           retention-days: 30
 
+  # Cost accuracy test - validates logged LLM costs against provider usage
+  test-cost-accuracy:
+    needs: [check-skip, detect-changes]
+    if: |
+      needs.check-skip.outputs.should-skip != 'true' &&
+      needs.check-skip.outputs.skip-tests != 'true' &&
+      (
+        needs.detect-changes.outputs.core-needs-release == 'true' ||
+        needs.detect-changes.outputs.framework-needs-release == 'true' ||
+        needs.detect-changes.outputs.plugins-need-release == 'true' ||
+        needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
+        needs.detect-changes.outputs.docker-needs-release == 'true'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            127.0.0.1:5432
+            127.0.0.1:8000
+            127.0.0.1:8080
+            172.38.0.11:5432
+            api.github.com:443
+            auth.docker.io:443
+            codeload.github.com:443
+            getbifrost.ai:443
+            github.com:443
+            objects.githubusercontent.com:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            proxy.golang.org:443
+            registry-1.docker.io:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            www.getbifrost.ai:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Checkout bifrost-benchmarking
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: maximhq/bifrost-benchmarking
+          path: bifrost-benchmarking
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.26.5"
+
+      - name: Run cost accuracy test
+        env:
+          BENCHMARK_DIR: ${{ github.workspace }}/bifrost-benchmarking
+        run: |
+          chmod +x ./.github/workflows/scripts/cost-accuracy-test.sh
+          ./.github/workflows/scripts/cost-accuracy-test.sh
+
+      - name: Upload cost accuracy artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cost-accuracy-results
+          path: tmp/cost-accuracy/
+          retention-days: 30
+
+  # Non-blocking load performance test - runs streaming and non-streaming load flows
+  test-load-performance:
+    needs: [check-skip, detect-changes]
+    if: |
+      needs.check-skip.outputs.should-skip != 'true' &&
+      needs.check-skip.outputs.skip-tests != 'true' &&
+      (
+        needs.detect-changes.outputs.core-needs-release == 'true' ||
+        needs.detect-changes.outputs.framework-needs-release == 'true' ||
+        needs.detect-changes.outputs.plugins-need-release == 'true' ||
+        needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
+        needs.detect-changes.outputs.docker-needs-release == 'true'
+      )
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            127.0.0.1:8000
+            127.0.0.1:8080
+            api.github.com:443
+            bedrock.us-east-1.amazonaws.com:443
+            codeload.github.com:443
+            getbifrost.ai:443
+            github.com:443
+            huggingface.co:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            www.getbifrost.ai:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Checkout bifrost-benchmarking
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: maximhq/bifrost-benchmarking
+          path: bifrost-benchmarking
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.26.5"
+
+      - name: Run load performance test
+        env:
+          BENCHMARK_DIR: ${{ github.workspace }}/bifrost-benchmarking
+          BIFROST_LOG_LEVEL: "warn"
+          RATE: "1000"
+          STREAMING_RATE: "1000"
+          MAX_WORKERS: "12000"
+          OVERHEAD_DURATION: "10"
+          STRESS_DURATION: "10"
+          OVERHEAD_MOCKER_LATENCY_MS: "500"
+          STRESS_MOCKER_LATENCY_MS: "500"
+        run: |
+          chmod +x ./.github/workflows/scripts/load-test.sh
+          ./.github/workflows/scripts/load-test.sh
+
+      - name: Upload load test artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: load-performance-results
+          path: |
+            .github/workflows/scripts/load-test-results.md
+            .github/workflows/scripts/load-test-results.json
+          retention-days: 30
+
   # Docker image test - amd64
   test-docker-image-amd64:
     needs: [check-skip, detect-changes]
@@ -727,10 +952,20 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # 172.28.0.16:5432 is the pinned postgres IP from
+          # tests/docker-compose.yml (postgres.networks.bifrost_network.ipv4_address).
+          # It's also referenced as the literal "host" value in the config.json
+          # generated by .github/workflows/scripts/test-docker-image.sh - the
+          # hostname "postgres" can't be used because harden-runner interferes
+          # with Docker's embedded DNS at 127.0.0.11:53. Keep all three files
+          # in sync; drift here will block egress to Postgres during the docker
+          # image test.
           allowed-endpoints: >
+            127.0.0.11:53
+            172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -740,9 +975,13 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            api.perplexity.ai:443
             api.replicate.com:443
+            api.x.ai:443
             auth.docker.io:443
+            bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
+            bifrost-gateway-resource.openai.azure.com:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
@@ -753,9 +992,11 @@ jobs:
             huggingface.co:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
+            oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -774,7 +1015,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -782,10 +1023,10 @@ jobs:
           node-version: "25"
 
       - name: Install Newman
-        run: npm install -g newman newman-reporter-htmlextra
+        run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Test Docker image (amd64)
         env:
@@ -795,12 +1036,15 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -836,10 +1080,20 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
+          # 172.28.0.16:5432 is the pinned postgres IP from
+          # tests/docker-compose.yml (postgres.networks.bifrost_network.ipv4_address).
+          # It's also referenced as the literal "host" value in the config.json
+          # generated by .github/workflows/scripts/test-docker-image.sh - the
+          # hostname "postgres" can't be used because harden-runner interferes
+          # with Docker's embedded DNS at 127.0.0.11:53. Keep all three files
+          # in sync; drift here will block egress to Postgres during the docker
+          # image test.
           allowed-endpoints: >
+            127.0.0.11:53
+            172.28.0.16:5432
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
@@ -849,9 +1103,13 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            api.perplexity.ai:443
             api.replicate.com:443
+            api.x.ai:443
             auth.docker.io:443
+            bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
+            bifrost-gateway-resource.openai.azure.com:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
@@ -862,9 +1120,11 @@ jobs:
             huggingface.co:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
+            oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -883,7 +1143,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -891,10 +1151,10 @@ jobs:
           node-version: "25"
 
       - name: Install Newman
-        run: npm install -g newman newman-reporter-htmlextra
+        run: npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Test Docker image (arm64)
         env:
@@ -904,12 +1164,15 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -948,10 +1211,11 @@ jobs:
         test-bifrost-http,
         test-migrations,
         test-api-integrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -960,7 +1224,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.core-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -979,7 +1243,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1019,17 +1283,21 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
           AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
-          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
   framework-release:
@@ -1044,11 +1312,12 @@ jobs:
         test-bifrost-http,
         test-migrations,
         test-api-integrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1057,7 +1326,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.framework-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1078,7 +1347,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Configure Git
         run: |
@@ -1128,15 +1397,19 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
-          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
   plugins-release:
@@ -1151,12 +1424,13 @@ jobs:
         test-bifrost-http,
         test-migrations,
         test-api-integrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
         framework-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1164,7 +1438,7 @@ jobs:
       success: ${{ steps.release.outputs.success }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1198,7 +1472,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1253,15 +1527,19 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+          VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
-          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   # Prep: update dependencies, validate build, commit/push
@@ -1277,13 +1555,14 @@ jobs:
         test-bifrost-http,
         test-migrations,
         test-api-integrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
         framework-release,
         plugins-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1291,7 +1570,7 @@ jobs:
       success: ${{ steps.prep.outputs.success }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1316,7 +1595,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1343,7 +1622,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1380,7 +1659,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1419,7 +1698,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1449,7 +1728,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.2"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1488,7 +1767,7 @@ jobs:
       version: ${{ needs.detect-changes.outputs.transport-version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1535,6 +1814,7 @@ jobs:
         test-plugins,
         test-bifrost-http,
         test-migrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
@@ -1542,17 +1822,18 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1560,8 +1841,11 @@ jobs:
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -1583,13 +1867,20 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buidx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine Docker tags
         id: tags
@@ -1597,10 +1888,14 @@ jobs:
           git pull origin ${{ github.ref_name }}
           VERSION="${{ needs.detect-changes.outputs.transport-version }}"
           BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-amd64"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_TAG="ghcr.io/${GHCR_REPO}:v${VERSION}-amd64"
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "dockerhub-tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push AMD64 Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
           build-args: |
@@ -1609,6 +1904,16 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/amd64
+
+      # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
+      # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
+      # failure must not fail the Docker Hub release.
+      - name: Mirror AMD64 image to GitHub Container Registry
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.tags.outputs.ghcr-tag }}" \
+            "${{ steps.tags.outputs.dockerhub-tag }}"
 
   # Docker build arm64
   docker-build-arm64:
@@ -1622,6 +1927,7 @@ jobs:
         test-plugins,
         test-bifrost-http,
         test-migrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
@@ -1629,17 +1935,18 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1647,8 +1954,11 @@ jobs:
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
             registry.npmjs.org:443
@@ -1670,13 +1980,20 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buidx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine Docker tags
         id: tags
@@ -1684,10 +2001,14 @@ jobs:
           git pull origin ${{ github.ref_name }}
           VERSION="${{ needs.detect-changes.outputs.transport-version }}"
           BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-arm64"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_TAG="ghcr.io/${GHCR_REPO}:v${VERSION}-arm64"
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "dockerhub-tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push ARM64 Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
           file: ./transports/Dockerfile
@@ -1697,34 +2018,57 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/arm64
 
+      # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
+      # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
+      # failure must not fail the Docker Hub release.
+      - name: Mirror ARM64 image to GitHub Container Registry
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.tags.outputs.ghcr-tag }}" \
+            "${{ steps.tags.outputs.dockerhub-tag }}"
+
   # Docker manifest
   docker-manifest:
     needs: [check-skip, detect-changes, docker-build-amd64, docker-build-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-amd64.result == 'success' && needs.docker-build-arm64.result == 'success'"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
             auth.docker.io:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             registry-1.docker.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push multi-arch manifest
         run: |
@@ -1742,6 +2086,7 @@ jobs:
         test-plugins,
         test-bifrost-http,
         test-migrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
@@ -1749,17 +2094,18 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1767,11 +2113,14 @@ jobs:
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
-            registry.access.redhat.com:443
+            *.redhat.com:443
             *.quay.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
@@ -1792,13 +2141,20 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine Docker tags
         id: tags
@@ -1806,10 +2162,14 @@ jobs:
           git pull origin ${{ github.ref_name }}
           VERSION="${{ needs.detect-changes.outputs.transport-version }}"
           BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-ubi9-amd64"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_TAG="ghcr.io/${GHCR_REPO}:v${VERSION}-ubi9-amd64"
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "dockerhub-tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 AMD64 Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
           build-args: |
@@ -1820,6 +2180,16 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha,scope=docker-ubi9-amd64
           cache-to: type=gha,mode=max,scope=docker-ubi9-amd64
+
+      # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
+      # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
+      # failure must not fail the Docker Hub release.
+      - name: Mirror UBI9 AMD64 image to GitHub Container Registry
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.tags.outputs.ghcr-tag }}" \
+            "${{ steps.tags.outputs.dockerhub-tag }}"
 
   # Docker build UBI9 arm64
   docker-build-ubi9-arm64:
@@ -1833,6 +2203,7 @@ jobs:
         test-plugins,
         test-bifrost-http,
         test-migrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
@@ -1840,17 +2211,18 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1858,11 +2230,14 @@ jobs:
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             proxy.golang.org:443
             registry-1.docker.io:443
-            registry.access.redhat.com:443
+            *.redhat.com:443
             *.quay.io:443
             registry.npmjs.org:443
             storage.googleapis.com:443
@@ -1883,13 +2258,20 @@ jobs:
           echo "verified=true" >> $GITHUB_OUTPUT
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: step-security/setup-buildx-action@f931205d68723ad9589fd2a7e2ece238bf9de341 # v4.0.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine Docker tags
         id: tags
@@ -1897,10 +2279,14 @@ jobs:
           git pull origin ${{ github.ref_name }}
           VERSION="${{ needs.detect-changes.outputs.transport-version }}"
           BASE_TAG="${{ env.REGISTRY }}/${{ env.ACCOUNT }}/${{ env.IMAGE_NAME }}:v${VERSION}-ubi9-arm64"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          GHCR_TAG="ghcr.io/${GHCR_REPO}:v${VERSION}-ubi9-arm64"
           echo "tags=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "dockerhub-tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "ghcr-tag=${GHCR_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push UBI9 ARM64 Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
         with:
           context: .
           file: ./transports/Dockerfile.redhat
@@ -1912,34 +2298,57 @@ jobs:
           cache-from: type=gha,scope=docker-ubi9-arm64
           cache-to: type=gha,mode=max,scope=docker-ubi9-arm64
 
+      # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
+      # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
+      # failure must not fail the Docker Hub release.
+      - name: Mirror UBI9 ARM64 image to GitHub Container Registry
+        continue-on-error: true
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.tags.outputs.ghcr-tag }}" \
+            "${{ steps.tags.outputs.dockerhub-tag }}"
+
   # Docker UBI9 manifest — merges amd64 + arm64 into a single multi-arch tag
   docker-manifest-ubi9:
     needs: [check-skip, detect-changes, docker-build-ubi9-amd64, docker-build-ubi9-arm64]
     if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.docker-build-ubi9-amd64.result == 'success' && needs.docker-build-ubi9-arm64.result == 'success'"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     env:
       REGISTRY: docker.io
       ACCOUNT: maximhq
       IMAGE_NAME: bifrost
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
             auth.docker.io:443
+            ghcr.io:443
             github.com:443
+            pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
             registry-1.docker.io:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: step-security/docker-login-action@870af644803bf9f204aed474adbad2958fec048b # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push UBI9 multi-arch manifest
         run: |
@@ -1957,6 +2366,7 @@ jobs:
         test-plugins,
         test-bifrost-http,
         test-migrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
@@ -1964,13 +2374,13 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1998,6 +2408,7 @@ jobs:
         test-plugins,
         test-bifrost-http,
         test-migrations,
+        test-cost-accuracy,
         test-docker-image-amd64,
         test-docker-image-arm64,
         core-release,
@@ -2011,16 +2422,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
         with:
           egress-policy: block
           allowed-endpoints: >
             _http._tcp.azure.archive.ubuntu.com:443
+            _https._tcp.dl.google.com:443
+            motd.ubuntu.com:443
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
             azure.archive.ubuntu.com:80
             discord.com:443
+            discordapp.com:443
             dl.google.com:443
             esm.ubuntu.com:443
             packages.microsoft.com:443

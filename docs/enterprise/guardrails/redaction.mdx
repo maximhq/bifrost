@@ -1,0 +1,183 @@
+---
+title: "Redaction Modes"
+description: "Configure Bifrost-managed guardrail redaction for runtime payloads, Bifrost logs, and trace-export connectors."
+icon: "eraser"
+---
+
+## Overview
+
+Guardrail redaction lets Bifrost rewrite sensitive text detected by supported guardrail providers instead of only detecting or blocking it.
+
+Bifrost-managed redaction is supported by:
+
+- [Custom Regex](/enterprise/guardrails/custom-regex)
+- [Secrets Detection](/enterprise/guardrails/secrets-detection)
+- [Microsoft Presidio](/integrations/guardrails/presidio)
+- [Azure AI Language PII](/integrations/guardrails/azure-language-pii)
+- [Lakera Guard](/integrations/guardrails/lakera)
+
+Each provider can produce findings with byte ranges and entity types such as `EMAIL`, `PHONE_NUMBER`, `AWS_ACCESS_TOKEN`, or a custom regex `entity_type`. Bifrost then applies the configured redaction action, strategy, and mode.
+
+<Note>
+Redaction only applies to text that a guardrail provider detects. If a provider does not detect a value, Bifrost cannot redact that value in runtime payloads, logs, or connector exports.
+</Note>
+
+## Bifrost-Managed vs Provider-Managed Rewrites
+
+Bifrost-managed redaction is different from provider-managed transformation.
+
+- **Bifrost-managed redaction** means the guardrail provider returns findings, and Bifrost applies the replacement using `redaction_strategy` and `redaction_mode`.
+- **Provider-managed transformation** means an external guardrail provider returns already-transformed text for Bifrost to apply.
+
+Only one rewrite owner can apply to a given request or response phase. If the same phase produces both provider-managed transformed text and Bifrost-managed redaction findings, Bifrost fails closed with a guardrail intervention instead of trying to merge the two rewritten outputs. Bifrost also rejects multiple provider-managed transformed outputs for the same phase because the final replacement would be ambiguous.
+
+Detection-only and blocking guardrails can still run alongside Bifrost-managed redaction. The restriction applies when more than one guardrail path attempts to rewrite the same input or output content.
+
+Lakera Guard uses Bifrost-managed redaction, but its response shape is different from a local detector. Lakera returns optional message-content spans for supported findings, and Bifrost maps those spans back to the original text before applying the configured strategy and mode. Lakera documents maskable payload spans for PII, profanity, and custom regular-expression detectors. A flagged Lakera result without safely mappable spans fails closed instead of forwarding the original content.
+
+## Actions
+
+The `action` field controls what happens when the provider finds sensitive text.
+
+| Action | Behavior |
+|--------|----------|
+| `detect_only` | Records the detection but does not block or rewrite content. |
+| `block` | Returns a guardrail intervention when a detection is found. |
+| `redact` | Rewrites detected text using the selected redaction strategy and mode. |
+
+`redaction_strategy` and `redaction_mode` only change request, response, log, or trace content when `action` is `redact`.
+
+## Redaction Strategies
+
+Strategies control the replacement value used by the non-reversible `runtime` mode.
+
+| Strategy | Example | Notes |
+|----------|---------|-------|
+| `replace` | `alex@example.com` -> `[EMAIL]` | Default strategy. Keeps only the entity type. |
+| `mask` | `alex@example.com` -> `[EMAIL:****************]` | Preserves approximate value length with `*`. |
+| `hash` | `alex@example.com` -> `[EMAIL:8c7dd922ad47494f]` | Uses a deterministic short hash for the detected value. |
+
+Reversible modes use numbered placeholders such as `[EMAIL-1]` so a permitted user can reveal the original values in Bifrost logs.
+
+## Redaction Modes
+
+Redaction mode decides where Bifrost applies the rewrite.
+
+<Frame>
+  <img src="/media/guardrails/redaction-mode-selector.png" alt="Regex guardrail configuration showing the redaction mode selector with Runtime, Logs only, and Runtime plus reversible logs options" />
+</Frame>
+
+| Mode | API value | Runtime request/response | Bifrost logs | Trace/export connectors | Reveal supported |
+|------|-----------|--------------------------|--------------|-------------------------|------------------|
+| Runtime | `runtime` | Redacted with `replace`, `mask`, or `hash` | Redacted the same way | Redacted content only | No |
+| Logs only | `logs_only` | Left raw | Redacted with reversible placeholders | Placeholderized content | Yes, for Bifrost logs only |
+| Runtime + reversible logs | `runtime_reversible` | Redacted with reversible placeholders | Redacted with reversible placeholders | Placeholderized content | Yes, for Bifrost logs only |
+
+For streaming output, runtime redaction checks buffered text segments before releasing their redacted content. Logs-only redaction does not delay client delivery. If the same matched rule set can also block, Bifrost holds the complete stream until the final guardrail decision; see [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails).
+
+### Runtime (`runtime`)
+
+Use `runtime` when sensitive text should not reach the model provider or the caller. Bifrost rewrites detected text in the live request or response and stores the already-redacted value in Bifrost logs.
+
+Example with `redaction_strategy: "replace"`:
+
+```text
+Contact alex@example.com
+```
+
+becomes:
+
+```text
+Contact [EMAIL]
+```
+
+### Logs only (`logs_only`)
+
+Use `logs_only` when the model should receive the original text, but Bifrost logs and trace exports should not store raw sensitive values.
+
+Runtime content stays unchanged. Bifrost logs and trace-export connectors receive placeholders:
+
+```text
+Contact [EMAIL-1]
+```
+
+The placeholder mapping is stored with the Bifrost log row for reveal. It is not sent to connectors.
+
+### Runtime + reversible logs (`runtime_reversible`)
+
+Use `runtime_reversible` when runtime content should be redacted, but authorized users still need a controlled way to view the original values in Bifrost logs.
+
+Runtime content, Bifrost logs, and trace-export connectors use the same placeholder style:
+
+```text
+Contact [EMAIL-1]
+```
+
+## Reveal
+
+Reveal is Enterprise-only and applies only to Bifrost logs.
+
+Users need the `Logs:Reveal` permission to reveal original values for a log that has reversible redaction data. When the caller has that permission, the log detail response can include the placeholder mapping for that log, for example:
+
+```json
+{
+  "redaction_mapping": {
+    "input": {
+      "EMAIL-1": "alex@example.com"
+    },
+    "output": {
+      "PHONE_NUMBER-1": "+1 555 0100"
+    }
+  }
+}
+```
+
+Important details:
+
+- Reveal is scoped to Bifrost logs, not external destinations.
+- The mapping is stored with the log row and is deleted when the log row is deleted.
+- When an encryption key is configured, the mapping is encrypted before storage.
+- The reveal response is marked `Cache-Control: no-store`.
+- Data Access Control still applies when fetching or revealing a log.
+
+<Warning>
+If content logging is disabled, Bifrost does not persist request/response content or redaction reveal data for that log. In that setup, there is nothing to reveal later.
+</Warning>
+
+## Connector Exports
+
+For trace-export connectors, Bifrost applies raw-to-placeholder replacements before the completed trace is exported.
+
+This keeps exported span content aligned with Bifrost log redaction for reversible modes, while keeping the reversible mapping inside Bifrost.
+
+| Destination type | Behavior |
+|------------------|----------|
+| Trace-export connectors such as OpenTelemetry, Datadog, Kafka, Pub/Sub, and BigQuery | Receive redacted or placeholderized content. The reveal mapping is not exported. |
+| Prometheus metrics | No request/response content is exported, so there is no redaction payload to apply. |
+| Bifrost logs | Store redacted content and, for reversible modes, the reveal mapping. |
+
+<Note>
+This section describes Bifrost's completed-trace export path. Integrations that do not consume completed Bifrost traces should not be assumed to receive the same connector redaction behavior.
+</Note>
+
+## Provider Defaults
+
+| Provider | Default action | Default strategy | Default mode |
+|----------|----------------|------------------|--------------|
+| Custom Regex | `block` | `replace` | `runtime` |
+| Secrets Detection | `block` | `replace` | `runtime` |
+| Microsoft Presidio | `detect_only` | `replace` | `runtime` |
+| Azure AI Language PII | `detect_only` | `replace` | `runtime` |
+| Lakera Guard | `block` | `replace` | `runtime` |
+
+For redaction, set `action: "redact"` explicitly. Relying on defaults is usually the wrong move here, especially for Presidio and Azure AI Language PII.
+
+## Edge Cases
+
+- Redaction is text-based. It does not inspect image pixels, audio, or arbitrary binary content.
+- Custom Regex uses Go's RE2-compatible regexp engine.
+- Overlapping findings are resolved into a non-overlapping set before replacement.
+- Bifrost-managed redaction cannot be combined with provider-managed transformed output for the same request or response phase.
+- Lakera tool-call arguments are screened but are not rewritten from Lakera message-content spans. A flagged argument that cannot be mapped safely fails closed in `redact` mode.
+- Input redaction cannot safely run together with raw-body passthrough transformations; Bifrost fails closed rather than forwarding an inconsistent payload.
+- If a request uses both input and output redaction, Bifrost carries replacements forward so raw log fields and exported trace content are redacted consistently.

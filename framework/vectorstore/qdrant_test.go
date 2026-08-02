@@ -29,10 +29,10 @@ type QdrantTestSetup struct {
 }
 
 func NewQdrantTestSetup(t *testing.T) *QdrantTestSetup {
-	host := schemas.NewEnvVar(getEnvWithDefault("QDRANT_HOST", QdrantTestDefaultHost))
-	port := schemas.NewEnvVar(getEnvWithDefault("QDRANT_PORT", QdrantTestDefaultPort))
-	apiKey := schemas.NewEnvVar(os.Getenv("QDRANT_API_KEY"))
-	useTLS := schemas.NewEnvVar(os.Getenv("QDRANT_USE_TLS"))
+	host := schemas.NewSecretVar(getEnvWithDefault("QDRANT_HOST", QdrantTestDefaultHost))
+	port := schemas.NewSecretVar(getEnvWithDefault("QDRANT_PORT", QdrantTestDefaultPort))
+	apiKey := schemas.NewSecretVar(os.Getenv("QDRANT_API_KEY"))
+	useTLS := schemas.NewSecretVar(os.Getenv("QDRANT_USE_TLS"))
 
 	config := QdrantConfig{
 		Host:   *host,
@@ -152,15 +152,15 @@ func TestQdrantConfig_Validation(t *testing.T) {
 		{
 			name: "valid config",
 			config: QdrantConfig{
-				Host: *schemas.NewEnvVar("localhost"),
-				Port: *schemas.NewEnvVar("6334"),
+				Host: *schemas.NewSecretVar("localhost"),
+				Port: *schemas.NewSecretVar("6334"),
 			},
 			expectError: false,
 		},
 		{
 			name: "missing host",
 			config: QdrantConfig{
-				Port: *schemas.NewEnvVar("6334"),
+				Port: *schemas.NewSecretVar("6334"),
 			},
 			expectError: true,
 			errorMsg:    "qdrant host is required",
@@ -168,25 +168,25 @@ func TestQdrantConfig_Validation(t *testing.T) {
 		{
 			name: "missing port uses default",
 			config: QdrantConfig{
-				Host: *schemas.NewEnvVar("localhost"),
+				Host: *schemas.NewSecretVar("localhost"),
 			},
 			expectError: false, // Port defaults to 6334 via CoerceInt fallback
 		},
 		{
 			name: "with api key",
 			config: QdrantConfig{
-				Host:   *schemas.NewEnvVar("cluster.qdrant.io"),
-				Port:   *schemas.NewEnvVar("6334"),
-				APIKey: *schemas.NewEnvVar("test-key"),
+				Host:   *schemas.NewSecretVar("cluster.qdrant.io"),
+				Port:   *schemas.NewSecretVar("6334"),
+				APIKey: *schemas.NewSecretVar("test-key"),
 			},
 			expectError: false,
 		},
 		{
 			name: "with tls",
 			config: QdrantConfig{
-				Host:   *schemas.NewEnvVar("localhost"),
-				Port:   *schemas.NewEnvVar("6334"),
-				UseTLS: *schemas.NewEnvVar("true"),
+				Host:   *schemas.NewSecretVar("localhost"),
+				Port:   *schemas.NewSecretVar("6334"),
+				UseTLS: *schemas.NewSecretVar("true"),
 			},
 			expectError: false,
 		},
@@ -417,9 +417,9 @@ func TestVectorStoreFactory_Qdrant(t *testing.T) {
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
-	host := schemas.NewEnvVar(getEnvWithDefault("QDRANT_HOST", QdrantTestDefaultHost))
-	port := schemas.NewEnvVar(getEnvWithDefault("QDRANT_PORT", QdrantTestDefaultPort))
-	apiKey := schemas.NewEnvVar(os.Getenv("QDRANT_API_KEY"))
+	host := schemas.NewSecretVar(getEnvWithDefault("QDRANT_HOST", QdrantTestDefaultHost))
+	port := schemas.NewSecretVar(getEnvWithDefault("QDRANT_PORT", QdrantTestDefaultPort))
+	apiKey := schemas.NewSecretVar(os.Getenv("QDRANT_API_KEY"))
 
 	config := &Config{
 		Enabled: true,

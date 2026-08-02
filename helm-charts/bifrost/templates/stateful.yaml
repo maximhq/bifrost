@@ -93,6 +93,10 @@ spec:
               value: {{ .Values.bifrost.logLevel | quote }}
             - name: LOG_STYLE
               value: {{ .Values.bifrost.logStyle | quote }}
+            {{- if .Values.bifrost.schemaUrl }}
+            - name: BIFROST_SCHEMA_URL
+              value: {{ .Values.bifrost.schemaUrl | quote }}
+            {{- end }}
             {{- if .Values.bifrost.encryptionKeySecret.name }}
             - name: BIFROST_ENCRYPTION_KEY
               valueFrom:
@@ -114,6 +118,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.postgresql.external.existingSecret }}
                   key: {{ .Values.postgresql.external.passwordKey | default "password" }}
+            {{- else if and .Values.postgresql.enabled (not .Values.postgresql.external.enabled) .Values.postgresql.auth.existingSecret }}
+            - name: BIFROST_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.auth.existingSecret }}
+                  key: {{ .Values.postgresql.auth.passwordKey | default "password" }}
             {{- end }}
             {{- /* Redis password from existing secret */ -}}
             {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") .Values.vectorStore.redis.external.enabled .Values.vectorStore.redis.external.existingSecret }}
@@ -230,7 +240,8 @@ spec:
                   key: {{ .Values.bifrost.authConfig.passwordKey | default "password" }}
             {{- end }}
             {{- /* Provider secrets */ -}}
-            {{- range $provider, $secret := .Values.bifrost.providerSecrets }}
+            {{- range $provider := (.Values.bifrost.providerSecrets | keys | sortAlpha) }}
+            {{- $secret := index $.Values.bifrost.providerSecrets $provider }}
             {{- if and $secret.existingSecret $secret.envVar }}
             - name: {{ $secret.envVar }}
               valueFrom:
@@ -312,4 +323,3 @@ spec:
           requests:
             storage: {{ .Values.storage.persistence.size }}
 {{- end }}
-

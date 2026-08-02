@@ -169,3 +169,44 @@ func TestConvertMCPToolToBifrostSchema_WithParameters(t *testing.T) {
 		t.Errorf("Expected required field 'param1', got '%s'", bifrostTool.Function.Parameters.Required[0])
 	}
 }
+
+// TestConvertMCPToolToBifrostSchema_PreservesDefs verifies that top-level JSON
+// Schema definitions ($defs) on an MCP tool's input schema survive conversion.
+// Without this, a $ref inside a property (which rides along in Properties) would
+// be left dangling once the definitions it targets are dropped — the cause of
+// Vertex Gemini rejecting such tools with INVALID_ARGUMENT.
+func TestConvertMCPToolToBifrostSchema_PreservesDefs(t *testing.T) {
+	mcpTool := &mcp.Tool{
+		Name:        "suggest_time",
+		Description: "Suggests time periods",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"preferences": map[string]interface{}{
+					"$ref": "#/$defs/Preferences",
+				},
+			},
+			Required: []string{"preferences"},
+			Defs: map[string]interface{}{
+				"Preferences": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"startHour": map[string]interface{}{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+
+	bifrostTool := convertMCPToolToBifrostSchema(mcpTool, defaultLogger)
+	require.NotNil(t, bifrostTool.Function)
+	require.NotNil(t, bifrostTool.Function.Parameters)
+	require.NotNil(t, bifrostTool.Function.Parameters.Defs, "$defs must be preserved on conversion")
+
+	data, err := json.Marshal(bifrostTool.Function.Parameters)
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, `"$defs"`, "marshalled schema must carry $defs")
+	assert.Contains(t, s, "Preferences", "definition name must be present")
+	assert.Contains(t, s, `"$ref"`, "the property $ref must still be present (resolution happens per-provider)")
+}

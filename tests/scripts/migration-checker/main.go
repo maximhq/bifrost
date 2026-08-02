@@ -367,6 +367,37 @@ func parseMigrationOrder(migrationsPath string) ([]MigrationAction, error) {
 					}
 				}
 			}
+
+			// Look for addColumnIfNotExists(tx, logger, &tables.X{}, "col") calls —
+			// the idempotent helper that replaced direct migrator.AddColumn(...)
+			// calls. Here the model is the 3rd arg and the column name the 4th.
+			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "addColumnIfNotExists" {
+				if len(call.Args) >= 4 {
+					if unary, ok := call.Args[2].(*ast.UnaryExpr); ok {
+						if comp, ok := unary.X.(*ast.CompositeLit); ok {
+							if sel, ok := comp.Type.(*ast.SelectorExpr); ok {
+								structName := sel.Sel.Name
+								if tableName, exists := tableMapping[structName]; exists {
+									colName := ""
+									if lit, ok := call.Args[3].(*ast.BasicLit); ok {
+										colName = strings.Trim(lit.Value, `"`)
+									}
+									pos := fset.Position(call.Pos())
+									actions = append(actions, MigrationAction{
+										MigrationID: currentMigration,
+										ActionType:  "AddColumn",
+										Table:       tableName,
+										Column:      colName,
+										Order:       order,
+										Line:        pos.Line,
+									})
+									order++
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 		return true
 	})

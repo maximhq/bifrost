@@ -1,0 +1,81 @@
+---
+title: "v1.5.7"
+description: "v1.5.7 changelog - 2026-05-30"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.5.7
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.5.7
+    docker run -p 8080:8080 maximhq/bifrost:v1.5.7
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.5.7">
+## 🔒 Security
+
+- **Go Dependency CVE Remediation** — Updated `golang.org/x` dependencies flagged by Docker Scout, clearing 20 advisories (severity up to 10.0): `crypto` v0.49.0 → v0.52.0, `net` v0.52.0 → v0.55.0, `sys` v0.42.0 → v0.45.0, `text` v0.35.0 → v0.37.0, `term` v0.41.0 → v0.43.0 (cli). Verified with `govulncheck` against the live Go vulnerability database: zero vulnerabilities remain in any module (#3900)
+- **Hardened Container Image** — Removed the standalone GNU `wget` package from the Alpine runtime image, eliminating CVE-2025-69194 (8.8); the `HEALTHCHECK` now uses the built-in busybox `wget` applet, with no functional change
+
+## 🐞 Fixed
+
+- **Ollama Streaming Auth** — Ollama streaming text and chat requests now forward the configured API key as an `Authorization: Bearer` header (#3906)
+- **SGL Streaming Auth** — SGL provider now sends the `Authorization` header on streaming requests (#3307) (thanks [@hensapir](https://github.com/hensapir)!)
+- **Governance & Logging APIs** — Removed the `from_memory` query parameter; virtual key and config list APIs now return consistent DB-backed results, with VK names batch-fetched in a single query (#3903)
+
+</Update>
+<Update label="Core" description="1.5.15">
+- fix: send Authorization Bearer header on Ollama streaming text and chat completion requests (#3906)
+- fix: SGL provider now sends Authorization header on streaming requests (#3307) (thanks [@hensapir](https://github.com/hensapir)!)
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="Framework" description="1.3.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="compat" description="0.1.14">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="governance" description="1.5.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="jsonparser" description="1.5.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="logging" description="1.5.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="maxim" description="1.6.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="mocker" description="1.5.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="otel" description="1.2.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="prompts" description="1.0.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="semanticcache" description="1.5.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>
+<Update label="telemetry" description="1.5.15">
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)
+
+</Update>

@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	core "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
-	mcpgo "github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -91,7 +91,7 @@ func TestConnectHook_FiresOnAddClient(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
 	cfg := inProcessClientConfig("connect_fires", buildInProcessServer(t))
-	require.NoError(t, manager.AddClient(cfg))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	pre := plugin.GetPreHookCalls()
 	post := plugin.GetPostHookCalls()
@@ -111,7 +111,7 @@ func TestConnectHook_PostHookPopulatesServerInfo(t *testing.T) {
 	plugin := NewTestConnectPlugin()
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	require.NoError(t, manager.AddClient(inProcessClientConfig("server_info", buildInProcessServer(t))))
+	require.NoError(t, manager.AddClient(context.Background(), inProcessClientConfig("server_info", buildInProcessServer(t))))
 
 	post := plugin.GetPostHookCalls()
 	require.Len(t, post, 1)
@@ -147,7 +147,7 @@ func TestConnectHook_PreHookShortCircuitError_FailsAddClient(t *testing.T) {
 	})
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	err := manager.AddClient(inProcessClientConfig("blocked_client", buildInProcessServer(t)))
+	err := manager.AddClient(context.Background(), inProcessClientConfig("blocked_client", buildInProcessServer(t)))
 	require.Error(t, err, "Plugin error short-circuit should fail AddClient")
 	assert.Contains(t, err.Error(), "blocked by governance")
 
@@ -176,7 +176,7 @@ func TestConnectHook_PreHookShortCircuitResponse_RegistersWithEmptyTools(t *test
 
 	// AddClient should succeed (no wire dial happens) — documented Connect-success
 	// short-circuit gotcha: client registered as connected with no live transport.
-	require.NoError(t, manager.AddClient(inProcessClientConfig("synthetic_client", buildInProcessServer(t))))
+	require.NoError(t, manager.AddClient(context.Background(), inProcessClientConfig("synthetic_client", buildInProcessServer(t))))
 
 	clients := manager.GetClients()
 	var found *schemas.MCPClientState
@@ -209,21 +209,21 @@ func TestConnectHook_AuthorizationHidden_HeadersAuth(t *testing.T) {
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	url := *schemas.NewEnvVar("http://example.invalid")
+	url := *schemas.NewSecretVar("http://example.invalid")
 	cfg := &schemas.MCPClientConfig{
 		ID:               "auth_strip-id",
 		Name:             "auth_strip",
 		ConnectionType:   schemas.MCPConnectionTypeHTTP,
 		ConnectionString: &url,
 		AuthType:         schemas.MCPAuthTypeHeaders,
-		Headers: map[string]schemas.EnvVar{
-			"Authorization": *schemas.NewEnvVar("Bearer super-secret-token"),
-			"X-Custom":      *schemas.NewEnvVar("plugin-visible"),
+		Headers: map[string]schemas.SecretVar{
+			"Authorization": *schemas.NewSecretVar("Bearer super-secret-token"),
+			"X-Custom":      *schemas.NewSecretVar("plugin-visible"),
 		},
 		ToolsToExecute: []string{"*"},
 	}
 	// Short-circuit returns an error → AddClient fails. That's expected.
-	_ = manager.AddClient(cfg)
+	_ = manager.AddClient(context.Background(), cfg)
 
 	calls := plugin.GetPreHookCalls()
 	require.NotEmpty(t, calls, "PreHook should have fired before short-circuit")
@@ -276,7 +276,7 @@ func TestListToolsHook_FiresOnAddClient(t *testing.T) {
 	plugin := NewTestListToolsPlugin()
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
-	require.NoError(t, manager.AddClient(inProcessClientConfig("list_fires", buildInProcessServer(t))))
+	require.NoError(t, manager.AddClient(context.Background(), inProcessClientConfig("list_fires", buildInProcessServer(t))))
 
 	pre := plugin.GetPreHookCalls()
 	post := plugin.GetPostHookCalls()
@@ -306,7 +306,7 @@ func TestListToolsHook_PostHookFilterAppliedToClientState(t *testing.T) {
 	})
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
-	require.NoError(t, manager.AddClient(inProcessClientConfig("list_filter", buildInProcessServer(t))))
+	require.NoError(t, manager.AddClient(context.Background(), inProcessClientConfig("list_filter", buildInProcessServer(t))))
 
 	// Verify the filtered set landed in the manager's stored ToolMap (not just the
 	// gate response). The connect path applies the gate result to clientState.ToolMap.
@@ -345,7 +345,7 @@ func TestListToolsHook_PreHookShortCircuitWithSyntheticTools(t *testing.T) {
 	plugin.SetShortCircuitResponse(synthetic)
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
-	require.NoError(t, manager.AddClient(inProcessClientConfig("list_synth", buildInProcessServer(t))))
+	require.NoError(t, manager.AddClient(context.Background(), inProcessClientConfig("list_synth", buildInProcessServer(t))))
 
 	clients := manager.GetClients()
 	var target *schemas.MCPClientState
@@ -363,30 +363,40 @@ func TestListToolsHook_PreHookShortCircuitWithSyntheticTools(t *testing.T) {
 	assert.False(t, hasEcho, "real server tools should not appear when PreHook short-circuited")
 }
 
-func TestListToolsHook_PreHookShortCircuitError_LeavesEmptyToolMap(t *testing.T) {
+// TestListToolsHook_InitialListToolsFailure_FailsConnect is the regression test for
+// issue #4314. A transport that connects+initializes but whose initial list_tools call
+// fails (here forced via a plugin error short-circuit) must NOT be registered as
+// Connected with an empty ToolMap. Previously the connect path swallowed the failure
+// and left a sticky "connected but serves zero tools" client that /api/mcp/clients
+// reported as healthy while tools/list returned nothing. The fix treats it as a
+// connection failure so the standard Disconnected + health-monitor reconnect path
+// retries a full connect+list.
+func TestListToolsHook_InitialListToolsFailure_FailsConnect(t *testing.T) {
 	t.Parallel()
 
 	plugin := NewTestListToolsPlugin()
 	plugin.SetShortCircuitError(&schemas.BifrostError{
 		IsBifrostError: false,
-		Error:          &schemas.ErrorField{Message: "list_tools blocked"},
+		Error:          &schemas.ErrorField{Message: "list_tools upstream timeout"},
 	})
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
-	// AddClient should still succeed — the connect path tolerates list_tools failure
-	// and falls back to empty tools (matching pre-plugin behavior).
-	require.NoError(t, manager.AddClient(inProcessClientConfig("list_err", buildInProcessServer(t))))
 
-	clients := manager.GetClients()
-	var target *schemas.MCPClientState
-	for i := range clients {
-		if clients[i].Name == "list_err" {
-			target = &clients[i]
-			break
-		}
+	err := manager.AddClient(context.Background(), inProcessClientConfig("list_err", buildInProcessServer(t)))
+	require.Error(t, err, "AddClient must fail when initial list_tools errors")
+	assert.Contains(t, err.Error(), "list_tools upstream timeout")
+
+	// AddClient cleans up the failed entry, so the client must not linger as a
+	// Connected-but-empty entry that would lie to /api/mcp/clients.
+	clientNames := make([]string, 0, len(manager.GetClients()))
+	for _, c := range manager.GetClients() {
+		clientNames = append(clientNames, c.Name)
 	}
-	require.NotNil(t, target)
-	assert.Empty(t, target.ToolMap, "list_tools error short-circuit should result in empty ToolMap")
+	assert.NotContains(t, clientNames, "list_err", "failed list_tools client must be removed")
+
+	// tools/list (served via GetToolPerClient) must not surface this client's tools.
+	served := manager.GetToolPerClient(context.Background())
+	assert.Empty(t, served["list_err"], "no tools should be served for a client that failed list_tools")
 }
 
 func TestListToolsHook_FiresOnConnectAndAgain(t *testing.T) {
@@ -397,7 +407,7 @@ func TestListToolsHook_FiresOnConnectAndAgain(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
 	cfg := inProcessClientConfig("list_reconnect", buildInProcessServer(t))
-	require.NoError(t, manager.AddClient(cfg))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
 	require.Len(t, plugin.GetPreHookCalls(), 1, "first AddClient should fire list_tools once")
 
 	// Reconnect: this tears down and re-establishes the client, firing list_tools again.
@@ -416,7 +426,7 @@ func TestPingHook_FiresViaHealthMonitor(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
 	cfg := inProcessClientConfig("ping_fires", buildInProcessServer(t))
-	require.NoError(t, manager.AddClient(cfg))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	// AddClient starts its own health monitor at 10s interval — far too slow for
 	// tests. Spin up a dedicated monitor at 10ms instead.
@@ -454,7 +464,7 @@ func TestPingHook_PreHookShortCircuitHealthy(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 
 	cfg := inProcessClientConfig("ping_healthy", buildInProcessServer(t))
-	require.NoError(t, manager.AddClient(cfg))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
@@ -488,7 +498,7 @@ func TestPingHook_PreHookShortCircuitError_DoesNotPanic(t *testing.T) {
 
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{plugin})
 	cfg := inProcessClientConfig("ping_err", buildInProcessServer(t))
-	require.NoError(t, manager.AddClient(cfg))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	monitor := mcp.NewClientHealthMonitor(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
@@ -517,7 +527,7 @@ func TestPingHook_DoesNotFireWhenPingUnavailable(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{pingPlugin, listPlugin})
 
 	cfg := inProcessClientConfig("ping_unavailable", buildInProcessServer(t))
-	require.NoError(t, manager.AddClient(cfg))
+	require.NoError(t, manager.AddClient(context.Background(), cfg))
 
 	// Reset the list-tools plugin so we ignore the AddClient-time invocation.
 	listPlugin.Reset()
@@ -550,7 +560,7 @@ func TestMCPGate_AllRequestTypesCarryClientName(t *testing.T) {
 	logPlugin := NewTestLoggingPlugin()
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{logPlugin})
 
-	require.NoError(t, manager.AddClient(inProcessClientConfig("client_name_test", buildInProcessServer(t))))
+	require.NoError(t, manager.AddClient(context.Background(), inProcessClientConfig("client_name_test", buildInProcessServer(t))))
 
 	// Force a list_tools via reconnect to make sure we see at least one of each kind.
 	require.NoError(t, manager.ReconnectClient("client_name_test-id"))
@@ -584,7 +594,7 @@ func TestMCPGate_NoPluginsConfigured_OpStillRuns(t *testing.T) {
 	// Even with no MCP plugins, the gate must transparently pass through.
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{})
 
-	require.NoError(t, manager.AddClient(inProcessClientConfig("no_plugins", buildInProcessServer(t))))
+	require.NoError(t, manager.AddClient(context.Background(), inProcessClientConfig("no_plugins", buildInProcessServer(t))))
 
 	clients := manager.GetClients()
 	var found bool

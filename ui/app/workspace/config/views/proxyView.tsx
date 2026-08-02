@@ -66,7 +66,7 @@ export default function ProxyView() {
 
 					<fieldset disabled={!hasSettingsUpdateAccess} className="space-y-4">
 						{/* Enable Proxy */}
-						<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
 							<div className="space-y-0.5">
 								<FormLabel className="text-sm font-medium">Enable Proxy</FormLabel>
 								<p className="text-muted-foreground text-sm">Enable global proxy for outbound HTTP requests.</p>
@@ -85,7 +85,7 @@ export default function ProxyView() {
 						</div>
 
 						{/* Proxy Configuration Section */}
-						<div className={cn("space-y-4 rounded-lg border p-4 transition-opacity", !watchedEnabled && "pointer-events-none opacity-50")}>
+						<div className={cn("space-y-4 rounded-sm border p-4 transition-opacity", !watchedEnabled && "pointer-events-none opacity-50")}>
 							<h3 className="text-lg font-medium">Proxy Configuration</h3>
 
 							{/* Proxy Type */}
@@ -147,7 +147,7 @@ export default function ProxyView() {
 							/>
 
 							{/* Authentication Section */}
-							<div className="bg-muted/20 space-y-4 rounded-md border p-4">
+							<div className="bg-muted/20 space-y-4 rounded-sm border p-4">
 								<h4 className="text-sm font-medium">Authentication (Optional)</h4>
 								<div className="grid grid-cols-2 gap-4">
 									<FormField
@@ -186,7 +186,7 @@ export default function ProxyView() {
 							</div>
 
 							{/* Advanced Settings */}
-							<div className="bg-muted/20 space-y-4 rounded-md border p-4">
+							<div className="bg-muted/20 space-y-4 rounded-sm border p-4">
 								<h4 className="text-sm font-medium">Advanced Settings</h4>
 
 								{/* No Proxy */}
@@ -288,7 +288,7 @@ export default function ProxyView() {
 						</div>
 
 						{/* Entity Enablement Section */}
-						<div className={cn("space-y-4 rounded-lg border p-4 transition-opacity", !watchedEnabled && "pointer-events-none opacity-50")}>
+						<div className={cn("space-y-4 rounded-sm border p-4 transition-opacity", !watchedEnabled && "pointer-events-none opacity-50")}>
 							<div className="space-y-1">
 								<h3 className="text-lg font-medium">Enable Proxy For</h3>
 								<p className="text-muted-foreground text-sm">Select which components should use the proxy for outbound requests.</p>
@@ -296,7 +296,7 @@ export default function ProxyView() {
 
 							{/* SCIM - Enterprise only */}
 							{IS_ENTERPRISE && (
-								<div className="flex items-center justify-between rounded-md border p-4">
+								<div className="flex items-center justify-between rounded-sm border p-4">
 									<div className="space-y-0.5">
 										<div className="flex items-center gap-2">
 											<FormLabel className="text-sm font-medium">SCIM</FormLabel>
@@ -319,7 +319,7 @@ export default function ProxyView() {
 							)}
 
 							{/* Inference - Coming Soon */}
-							<div className="flex items-center justify-between rounded-md border p-4 opacity-60">
+							<div className="flex items-center justify-between rounded-sm border p-4 opacity-60">
 								<div className="space-y-0.5">
 									<div className="flex items-center gap-2">
 										<FormLabel className="text-sm font-medium">Inference</FormLabel>
@@ -331,7 +331,7 @@ export default function ProxyView() {
 							</div>
 
 							{/* API - Coming Soon */}
-							<div className="flex items-center justify-between rounded-md border p-4 opacity-60">
+							<div className="flex items-center justify-between rounded-sm border p-4 opacity-60">
 								<div className="space-y-0.5">
 									<div className="flex items-center gap-2">
 										<FormLabel className="text-sm font-medium">API</FormLabel>

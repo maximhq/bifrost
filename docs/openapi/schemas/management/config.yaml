@@ -91,7 +91,7 @@ ClientConfig:
       items:
         type: string
       description: Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required.
-    mcp_external_base_url:
+    mcp_external_client_url:
       oneOf:
         - type: string
           description: Plain URL or env var reference (e.g. "env.MY_VAR")
@@ -105,9 +105,61 @@ ClientConfig:
               type: boolean
           additionalProperties: false
       description: >
-        Public base URL for OAuth callbacks and discovery metadata when Bifrost runs behind a
-        reverse proxy. Overrides the host derived from the incoming request. Supports env var
-        syntax ("env.MY_VAR"). Configurable via UI, API, or config.json.
+        Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to
+        upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is
+        reached via a different URL than its server-side metadata. Supports env var syntax
+        ("env.MY_VAR").
+    mcp_server_auth_mode:
+      type: string
+      enum: [headers, both, oauth]
+      default: headers
+      description: >
+        How /mcp authenticates inbound MCP clients. 'headers' (default): VK/api-key/session
+        headers only, discovery disabled. 'both': accepts header credentials and Bifrost-issued
+        JWTs, discovery enabled. 'oauth': Bifrost JWTs only — disables VK/header MCP access.
+    oauth2_server_config:
+      type: object
+      description: >
+        OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode
+        is 'both' or 'oauth'.
+      properties:
+        issuer_url:
+          oneOf:
+            - type: string
+              description: Plain URL or env var reference (e.g. "env.MY_VAR")
+            - type: object
+              properties:
+                value:
+                  type: string
+                env_var:
+                  type: string
+                from_env:
+                  type: boolean
+              additionalProperties: false
+          description: >
+            Stable public URL advertised as the OAuth2 AS issuer in discovery documents and the
+            JWT iss claim. Required for multi-host deployments; single-host can omit it (falls
+            back to the request Host header). Supports env var syntax ("env.MY_VAR").
+        auth_code_ttl:
+          type: integer
+          minimum: 1
+          maximum: 900
+          default: 300
+          description: Lifetime of the single-use authorization code in seconds (default 300, max 900 = 15 minutes).
+        access_token_ttl:
+          type: integer
+          minimum: 1
+          default: 600
+          description: Lifetime of the issued JWT Bearer token in seconds (default 600).
+        disable_vk_identity:
+          type: boolean
+          default: false
+          description: >
+            Require identity-provider login: virtual-key identity is removed from the consent
+            flow, and existing virtual-key-mode grants are rejected at /mcp and denied on refresh.
+            Only meaningful when mcp_server_auth_mode is 'oauth' and an identity provider is
+            configured. Anonymous session identity is governed separately by enforce_auth_on_inference.
+      additionalProperties: false
 
 FrameworkConfig:
   type: object
@@ -137,6 +189,8 @@ AuthConfig:
       type: boolean
     disable_auth_on_inference:
       type: boolean
+      deprecated: true
+      description: "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
 
 HeaderFilterConfig:
   type: object

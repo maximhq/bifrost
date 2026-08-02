@@ -153,6 +153,11 @@ func extractExactPath(ctx *fasthttp.RequestCtx) string {
 // It propagates the provider's HTTP status code and returns a JSON error body (not SSE format),
 // since no streaming has begun and clients should receive a standard error response.
 func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, bifrostErr *schemas.BifrostError) {
+	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
+	if bifrostErr == nil {
+		bifrostErr = newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError)
+	}
+
 	// Forward provider response headers from context so streaming error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
@@ -161,6 +166,8 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 		}
 	}
+	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
+	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
 	// Set the HTTP status code from the provider error
 	if bifrostErr.StatusCode != nil {
@@ -191,6 +198,11 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 // sendError sends an error response with the appropriate status code and JSON body.
 // It handles different error types (string, error interface, or arbitrary objects).
 func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, bifrostErr *schemas.BifrostError) {
+	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
+	if bifrostErr == nil {
+		bifrostErr = newBifrostErrorWithCode(nil, lib.ClientSafeInternalErrorMessage, fasthttp.StatusInternalServerError)
+	}
+
 	// Forward provider response headers from context so error responses include them
 	if bifrostCtx != nil {
 		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
@@ -199,11 +211,21 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 			}
 		}
 	}
+	// Routed identity after provider headers so a chained upstream's x-bifrost-* can't overwrite it.
+	lib.ApplyBifrostErrorResponseHeaders(ctx, bifrostCtx, bifrostErr.ExtraFields)
 
 	if bifrostErr.StatusCode != nil {
 		ctx.SetStatusCode(*bifrostErr.StatusCode)
+	} else if !bifrostErr.IsBifrostError {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		if bifrostErr.Error != nil &&
+			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
+				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		}
 	}
 	ctx.SetContentType("application/json")
 
@@ -220,60 +242,6 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 	}
 
 	ctx.SetBody(errorBody)
-}
-
-// HTTP response header names for the routed identity. Set on every successful
-// response from any integration so callers can recover the actual provider /
-// model that handled the request — even when the integration converts the
-// body to a provider-native shape (Anthropic, OpenAI, Bedrock) that has no
-// place to surface Bifrost's `extra_fields`.
-//
-// Header values are derived from BifrostResponseExtraFields (populated by
-// PopulateExtraFields at the end of every request path, including after
-// fallback / routing-rule resolution). FallbackIndex is read from the
-// BifrostContext because it isn't a field on the response struct.
-//
-// Naming follows the existing `x-bf-*` request-side convention (see
-// `x-bf-vk`, `x-bf-key-id`, etc.).
-const (
-	HeaderBifrostProvider       = "x-bifrost-provider"
-	HeaderBifrostOriginalModel  = "x-bifrost-original-model"
-	HeaderBifrostResolvedModel  = "x-bifrost-resolved-model"
-	HeaderBifrostFallbackIndex  = "x-bifrost-fallback-index"
-	HeaderBifrostRequestType    = "x-bifrost-request-type"
-)
-
-// applyBifrostResponseHeaders writes both the upstream provider response
-// headers (forwarded verbatim) and the bifrost-level `x-bifrost-*` routing
-// identity headers onto the fasthttp response. Empty fields are skipped so
-// the headers never appear with a blank value. Safe to call when the case
-// didn't populate `extra` — the zero value for ExtraFields produces no
-// headers.
-func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) {
-	for key, value := range extra.ProviderResponseHeaders {
-		ctx.Response.Header.Set(key, value)
-	}
-	if extra.Provider != "" {
-		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
-	}
-	if extra.OriginalModelRequested != "" {
-		ctx.Response.Header.Set(HeaderBifrostOriginalModel, extra.OriginalModelRequested)
-	}
-	if extra.ResolvedModelUsed != "" {
-		ctx.Response.Header.Set(HeaderBifrostResolvedModel, extra.ResolvedModelUsed)
-	}
-	if extra.RequestType != "" {
-		ctx.Response.Header.Set(HeaderBifrostRequestType, string(extra.RequestType))
-	}
-	// Fallback index lives on the request context, not the response struct.
-	// 0 = primary provider succeeded; non-zero = which fallback fired
-	// (1-indexed). Only emit when non-zero so the absence of the header is
-	// the unambiguous "no fallback fired" signal.
-	if bifrostCtx != nil {
-		if idx, ok := bifrostCtx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok && idx > 0 {
-			ctx.Response.Header.Set(HeaderBifrostFallbackIndex, strconv.Itoa(idx))
-		}
-	}
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
@@ -299,11 +267,16 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schema
 // tryStreamLargeResponse checks if large response mode was activated by the provider,
 // sets the transport marker, and streams the response directly to the client.
 // Returns true if the response was handled (caller should return).
-func (g *GenericRouter) tryStreamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) bool {
+// extra carries the routed identity of the response being streamed; callers
+// without one (pre-chunk streaming paths) pass the zero value, which emits nothing.
+func (g *GenericRouter) tryStreamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, extra schemas.BifrostResponseExtraFields) bool {
 	isLargeResponse, ok := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
 	if !ok || !isLargeResponse {
 		return false
 	}
+	// Routed-identity headers — large-response branches return early and skip
+	// the common footer that normally emits them.
+	lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, extra)
 	// Forward provider response headers before streaming — providers store them in
 	// context via BifrostContextKeyProviderResponseHeaders, but some early-return
 	// branches in the router skip the common footer that normally forwards them.
@@ -335,8 +308,8 @@ func (g *GenericRouter) streamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx
 	return true
 }
 
-// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest
-func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *schemas.BifrostRequest) error {
+// extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest.
+func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, req interface{}, bifrostReq *schemas.BifrostRequest) error {
 	// Check if the request has a fallbacks field ([]string)
 	fallbacks, err := g.extractFallbacksFromRequest(req)
 	if err != nil {

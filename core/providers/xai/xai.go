@@ -34,7 +34,7 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 		ReadTimeout:         requestTimeout,
 		WriteTimeout:        requestTimeout,
 		MaxConnsPerHost:     config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConnDuration: 30 * time.Second,
+		MaxIdleConnDuration: time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
@@ -42,7 +42,7 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
@@ -91,7 +91,7 @@ func (provider *XAIProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -113,6 +113,7 @@ func (provider *XAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -132,13 +133,14 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
 		ParseXAIError,
+		nil,
 		provider.logger,
 	)
 }
@@ -148,18 +150,14 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 // Uses xAI's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
-	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		request,
-		authHeader,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.XAI,
@@ -167,6 +165,7 @@ func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		nil,
 		ParseXAIError,
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -181,36 +180,35 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
 		ParseXAIError,
+		nil,
 		provider.logger,
 	)
 }
 
 // ResponsesStream performs a streaming responses request to the xAI API.
 func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
-		authHeader,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
 		ParseXAIError,
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -262,6 +260,7 @@ func (provider *XAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key sc
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		nil,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -376,6 +375,22 @@ func (provider *XAIProvider) FileContent(_ *schemas.BifrostContext, _ []schemas.
 
 func (provider *XAIProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// Compaction compacts a conversation context window using xAI's /v1/responses/compact endpoint.
+func (provider *XAIProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return openai.HandleOpenAICompactionRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses/compact"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		provider.logger,
+	)
 }
 
 // ContainerCreate is not supported by the xAI provider.

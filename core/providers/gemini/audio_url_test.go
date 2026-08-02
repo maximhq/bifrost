@@ -22,7 +22,8 @@ func TestToGeminiChatCompletionRequestDownloadsAudioURL(t *testing.T) {
 	defer server.Close()
 
 	format := "wav"
-	result, err := gemini.ToGeminiChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := gemini.ToGeminiChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Model: "gemini-2.0-flash",
 		Input: []schemas.ChatMessage{
 			{
@@ -57,7 +58,8 @@ func TestToGeminiResponsesRequestDownloadsAudioURL(t *testing.T) {
 	defer server.Close()
 
 	role := schemas.ResponsesInputMessageRoleUser
-	result, err := gemini.ToGeminiResponsesRequest(context.Background(), &schemas.BifrostResponsesRequest{
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := gemini.ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
 		Model: "gemini-2.0-flash",
 		Input: []schemas.ResponsesMessage{
 			{
@@ -86,7 +88,8 @@ func TestToGeminiChatCompletionRequestPropagatesAudioDownloadErrors(t *testing.T
 	// Guard active: an http URL to a non-loopback host should error and the
 	// error must propagate up through the conversion path.
 	format := "wav"
-	_, err := gemini.ToGeminiChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := gemini.ToGeminiChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Model: "gemini-2.0-flash",
 		Input: []schemas.ChatMessage{
 			{
