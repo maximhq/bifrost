@@ -75,6 +75,17 @@ Redaction mode decides where Bifrost applies the rewrite.
 
 For streaming output, runtime redaction checks buffered text segments before releasing their redacted content. Logs-only redaction does not delay client delivery. If the same matched rule set can also block, Bifrost holds the complete stream until the final guardrail decision; see [Streaming Output Guardrails](/enterprise/guardrails#streaming-output-guardrails).
 
+### LLM and MCP Payloads
+
+The same modes apply at both guardrail targets:
+
+| Target | Input redaction | Output redaction | Stored log fields protected |
+|--------|-----------------|------------------|-----------------------------|
+| LLM | Request content before the model call | Model response content | Request, response, and related error fields |
+| MCP | Parsed tool arguments before execution | Text-bearing tool results after execution | Arguments, result, and related error fields |
+
+For reversible MCP redaction, the MCP tool log stores phase-scoped `input` and `output` mappings just like an LLM log. A caller with `Logs:Reveal` can use those mappings on the MCP log detail view; callers without that permission receive only the placeholderized content.
+
 ### Runtime (`runtime`)
 
 Use `runtime` when sensitive text should not reach the model provider or the caller. Bifrost rewrites detected text in the live request or response and stores the already-redacted value in Bifrost logs.
@@ -141,7 +152,7 @@ Important details:
 - Data Access Control still applies when fetching or revealing a log.
 
 <Warning>
-If content logging is disabled, Bifrost does not persist request/response content or redaction reveal data for that log. In that setup, there is nothing to reveal later.
+If content logging is disabled, Bifrost does not persist LLM request/response or MCP argument/result content, or redaction reveal data for that log. In that setup, there is nothing to reveal later.
 </Warning>
 
 ## Connector Exports
