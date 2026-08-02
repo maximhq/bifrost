@@ -513,13 +513,21 @@ Code Mode tools can be auto-executed in [Agent Mode](./agent-mode), but with **a
 
 ### How Validation Works
 
-When `executeToolCode` is called in agent mode:
+Validation happens at two points, and only the second one is the actual security guarantee:
 
-1. Bifrost parses the Python code
-2. Extracts all `serverName.toolName()` calls
-3. Checks each call against `tools_to_auto_execute` for that server
-4. If ALL calls are allowed → auto-execute
-5. If ANY call is not allowed → return to user for approval
+1. **Pre-flight (heuristic, decides whether to ask before running).** When `executeToolCode` is
+   called in agent mode, Bifrost scans the generated code's source text for `serverName.toolName()`
+   calls and checks each against `tools_to_auto_execute` for that server. If every call it can
+   identify is allowed, the code runs immediately without prompting; otherwise it's returned to
+   the user for approval first. This is a best-effort scan over source text, not a full parse - it
+   can only recognize the literal `server.tool(...)` call shape.
+2. **At each tool call, while the code is running (authoritative).** Every time the running code
+   actually invokes a tool - however it was referenced, including indirection a text scan can't
+   see, like `getattr(server, name)(...)` or a dispatch table - Bifrost checks that specific tool
+   against `tools_to_auto_execute` again before making the call. A tool not on the list is refused
+   at that moment, regardless of how it was called or whether the pre-flight scan let the code run
+   without asking. This is what makes the guarantee below hold even for code the pre-flight step
+   couldn't fully analyze.
 
 **Example:**
 ```json

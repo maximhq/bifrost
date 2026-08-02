@@ -63,27 +63,52 @@ func setupCodeModeWithSTDIOServers(t *testing.T, serverNames ...string) (*mcp.MC
 			config.IsCodeModeClient = true
 			config.ID = "temperature-client" // Match test expectations
 			config.Name = "temperature"      // Use lowercase to match test code
-			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
+			// Wildcard, not just the meta-tools: callMCPTool enforces ToolsToAutoExecute
+			// on every real tool invocation inside generated code too (not just the
+			// outer executeToolCode call), so these functional "does tool calling work"
+			// tests need every tool authorized, same as an operator who trusts this
+			// fixture server would configure it.
+			config.ToolsToAutoExecute = []string{"*"}
 		case "go-test-server":
 			config = GetGoTestServerConfig(bifrostRoot)
 			config.ID = "goTestServer-client" // Match test expectations
 			config.Name = "goTestServer"      // Use camelCase to match test code
-			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
+			// Wildcard, not just the meta-tools: callMCPTool enforces ToolsToAutoExecute
+			// on every real tool invocation inside generated code too (not just the
+			// outer executeToolCode call), so these functional "does tool calling work"
+			// tests need every tool authorized, same as an operator who trusts this
+			// fixture server would configure it.
+			config.ToolsToAutoExecute = []string{"*"}
 		case "edge-case-server":
 			config = GetEdgeCaseServerConfig(bifrostRoot)
 			config.ID = "edgeCaseServer-client" // Match test expectations
 			config.Name = "edgeCaseServer"      // Use camelCase to match test code
-			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
+			// Wildcard, not just the meta-tools: callMCPTool enforces ToolsToAutoExecute
+			// on every real tool invocation inside generated code too (not just the
+			// outer executeToolCode call), so these functional "does tool calling work"
+			// tests need every tool authorized, same as an operator who trusts this
+			// fixture server would configure it.
+			config.ToolsToAutoExecute = []string{"*"}
 		case "error-test-server":
 			config = GetErrorTestServerConfig(bifrostRoot)
 			config.ID = "errorTestServer-client" // Match test expectations
 			config.Name = "errorTestServer"      // Use camelCase to match test code
-			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
+			// Wildcard, not just the meta-tools: callMCPTool enforces ToolsToAutoExecute
+			// on every real tool invocation inside generated code too (not just the
+			// outer executeToolCode call), so these functional "does tool calling work"
+			// tests need every tool authorized, same as an operator who trusts this
+			// fixture server would configure it.
+			config.ToolsToAutoExecute = []string{"*"}
 		case "parallel-test-server":
 			config = GetParallelTestServerConfig(bifrostRoot)
 			config.ID = "parallelTestServer-client" // Match test expectations
 			config.Name = "parallelTestServer"      // Use camelCase to match test code
-			config.ToolsToAutoExecute = []string{"executeToolCode", "listToolFiles", "readToolFile"}
+			// Wildcard, not just the meta-tools: callMCPTool enforces ToolsToAutoExecute
+			// on every real tool invocation inside generated code too (not just the
+			// outer executeToolCode call), so these functional "does tool calling work"
+			// tests need every tool authorized, same as an operator who trusts this
+			// fixture server would configure it.
+			config.ToolsToAutoExecute = []string{"*"}
 		case "test-tools-server":
 			// test-tools-server doesn't have a fixture, set up manually
 			examplesRoot := filepath.Join(bifrostRoot, "..", "examples")
@@ -104,7 +129,7 @@ func setupCodeModeWithSTDIOServers(t *testing.T, serverNames ...string) (*mcp.MC
 				},
 				IsCodeModeClient:   true,
 				ToolsToExecute:     []string{"*"},
-				ToolsToAutoExecute: []string{"executeToolCode", "listToolFiles", "readToolFile"},
+				ToolsToAutoExecute: []string{"*"},
 			}
 		default:
 			t.Fatalf("Unknown server: %s", serverName)

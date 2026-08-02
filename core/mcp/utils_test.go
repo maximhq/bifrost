@@ -210,3 +210,74 @@ func TestConvertMCPToolToBifrostSchema_PreservesDefs(t *testing.T) {
 	assert.Contains(t, s, "Preferences", "definition name must be present")
 	assert.Contains(t, s, `"$ref"`, "the property $ref must still be present (resolution happens per-provider)")
 }
+
+// TestCanAutoExecuteTool covers the allow-list check that is now the sole enforcement
+// point for whether Code Mode may run a tool without human approval (see the call site
+// in codemode/starlark/executecode.go's callMCPTool). A tool must be on BOTH
+// ToolsToExecute (executable at all) AND ToolsToAutoExecute (exempt from approval) -
+// missing from either denies auto-execute.
+func TestCanAutoExecuteTool(t *testing.T) {
+	cfg := func(toolsToExecute, toolsToAutoExecute schemas.WhiteList) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:               "video",
+			ToolsToExecute:     toolsToExecute,
+			ToolsToAutoExecute: toolsToAutoExecute,
+		}
+	}
+
+	tests := []struct {
+		name   string
+		tool   string
+		config *schemas.MCPClientConfig
+		want   bool
+	}{
+		{
+			name:   "tool on both allow-lists auto-executes",
+			tool:   "video-echo_message",
+			config: cfg(schemas.WhiteList{"echo_message", "delete_video"}, schemas.WhiteList{"echo_message"}),
+			want:   true,
+		},
+		{
+			name:   "tool executable but not on the auto-execute allow-list is denied - the delete_video case",
+			tool:   "video-delete_video",
+			config: cfg(schemas.WhiteList{"echo_message", "delete_video"}, schemas.WhiteList{"echo_message"}),
+			want:   false,
+		},
+		{
+			name:   "tool not executable at all is denied regardless of auto-execute list",
+			tool:   "video-delete_video",
+			config: cfg(schemas.WhiteList{"echo_message"}, schemas.WhiteList{"echo_message", "delete_video"}),
+			want:   false,
+		},
+		{
+			name:   "nil ToolsToAutoExecute denies everything",
+			tool:   "video-echo_message",
+			config: cfg(schemas.WhiteList{"*"}, nil),
+			want:   false,
+		},
+		{
+			name:   "empty ToolsToAutoExecute denies everything",
+			tool:   "video-echo_message",
+			config: cfg(schemas.WhiteList{"*"}, schemas.WhiteList{}),
+			want:   false,
+		},
+		{
+			name:   "wildcard ToolsToAutoExecute allows any executable tool",
+			tool:   "video-delete_video",
+			config: cfg(schemas.WhiteList{"*"}, schemas.WhiteList{"*"}),
+			want:   true,
+		},
+		{
+			name:   "nil config denies everything",
+			tool:   "video-echo_message",
+			config: nil,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, CanAutoExecuteTool(tt.tool, tt.config))
+		})
+	}
+}
