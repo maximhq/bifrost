@@ -388,6 +388,7 @@ const (
 	BifrostContextKeyTempTokenResourceID                 BifrostContextKey = "bifrost-temp-token-resource-id" // string (set by auth middleware alongside the scope - the resource_id the token is bound to, e.g. an OAuth flow ID for mcp_auth)
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
 	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *atomic.Int64 nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt; subtract from total to get Bifrost overhead
+	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"          // bool (set by auth middleware only in the fail-open branch, i.e. authConfig == nil || !authConfig.IsEnabled) - unlike IsLocalAdminContextKey (also true for genuinely authenticated sessions), this specifically marks requests that were let through WITHOUT any credential check, for handlers that must gate a dangerous capability even while the rest of the API stays open
 )
 
 const (
