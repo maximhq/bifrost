@@ -149,6 +149,13 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: secret("https://current.vllm.example.com")},
 		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: secret("https://current.ollama.example.com")},
 		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: secret("https://current.sgl.example.com")},
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			Credentials:  secretPtr("gigachat-credentials-current"),
+			AccessToken:  secretPtr("gigachat-access-token-current"),
+			CertFile:     "/secure/current-client.pem",
+			KeyFile:      "/secure/current-client.key",
+			CABundleFile: "/secure/current-ca.pem",
+		},
 	}
 	update := schemas.Key{
 		AzureKeyConfig: &schemas.AzureKeyConfig{
@@ -168,6 +175,13 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		VLLMKeyConfig:   &schemas.VLLMKeyConfig{URL: staleMask("vllm", "0007")},
 		OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: staleMask("olla", "0008")},
 		SGLKeyConfig:    &schemas.SGLKeyConfig{URL: staleMask("sgla", "0009")},
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			Credentials:  secretPtr("<REDACTED>"),
+			AccessToken:  secretPtr(staleMaskValue("giga", "0010")),
+			CertFile:     "<REDACTED>",
+			KeyFile:      "<REDACTED>",
+			CABundleFile: "<REDACTED>",
+		},
 	}
 
 	merged := merge(oldRaw, update)
@@ -185,6 +199,11 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 		{"vllm url", merged.VLLMKeyConfig.URL.GetValue(), oldRaw.VLLMKeyConfig.URL.GetValue()},
 		{"ollama url", merged.OllamaKeyConfig.URL.GetValue(), oldRaw.OllamaKeyConfig.URL.GetValue()},
 		{"sgl url", merged.SGLKeyConfig.URL.GetValue(), oldRaw.SGLKeyConfig.URL.GetValue()},
+		{"gigachat credentials", merged.GigaChatKeyConfig.Credentials.GetValue(), oldRaw.GigaChatKeyConfig.Credentials.GetValue()},
+		{"gigachat access token", merged.GigaChatKeyConfig.AccessToken.GetValue(), oldRaw.GigaChatKeyConfig.AccessToken.GetValue()},
+		{"gigachat cert file", merged.GigaChatKeyConfig.CertFile, oldRaw.GigaChatKeyConfig.CertFile},
+		{"gigachat key file", merged.GigaChatKeyConfig.KeyFile, oldRaw.GigaChatKeyConfig.KeyFile},
+		{"gigachat CA bundle file", merged.GigaChatKeyConfig.CABundleFile, oldRaw.GigaChatKeyConfig.CABundleFile},
 	}
 	for _, check := range checks {
 		if check.got != check.want {
@@ -196,6 +215,16 @@ func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
 	merged = merge(oldRaw, update)
 	if !merged.VLLMKeyConfig.URL.IsFromEnv() || merged.VLLMKeyConfig.URL.GetRawRef() != "env.NEW_VLLM_URL" {
 		t.Fatalf("expected nested env ref applied, got ref=%q", merged.VLLMKeyConfig.URL.GetRawRef())
+	}
+
+	update.GigaChatKeyConfig.Credentials = secretPtr("env.NEW_GIGACHAT_CREDENTIALS")
+	update.GigaChatKeyConfig.CertFile = "/secure/new-client.pem"
+	merged = merge(oldRaw, update)
+	if !merged.GigaChatKeyConfig.Credentials.IsFromEnv() || merged.GigaChatKeyConfig.Credentials.GetRawRef() != "env.NEW_GIGACHAT_CREDENTIALS" {
+		t.Fatalf("expected GigaChat env ref applied, got ref=%q", merged.GigaChatKeyConfig.Credentials.GetRawRef())
+	}
+	if merged.GigaChatKeyConfig.CertFile != "/secure/new-client.pem" {
+		t.Fatalf("expected new GigaChat cert file applied, got %q", merged.GigaChatKeyConfig.CertFile)
 	}
 }
 
@@ -232,6 +261,20 @@ func TestMergeUpdatedKey_RejectsMaskWithoutStoredCounterpart(t *testing.T) {
 			}},
 			update:  schemas.Key{VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: mask}},
 			wantErr: "vllm_key_config.url",
+		},
+		{
+			name:    "missing GigaChat config section",
+			oldRaw:  schemas.Key{},
+			update:  schemas.Key{GigaChatKeyConfig: &schemas.GigaChatKeyConfig{Credentials: schemas.NewSecretVar("<REDACTED>")}},
+			wantErr: "gigachat_key_config.credentials",
+		},
+		{
+			name: "missing GigaChat TLS file",
+			oldRaw: schemas.Key{GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+				CertFile: "/secure/current-client.pem",
+			}},
+			update:  schemas.Key{GigaChatKeyConfig: &schemas.GigaChatKeyConfig{KeyFile: "<REDACTED>"}},
+			wantErr: "gigachat_key_config.key_file",
 		},
 	}
 
