@@ -607,19 +607,13 @@ type ToolFunctionParameters struct {
 // NewRawToolFunctionParameters creates tool parameters backed by validated raw
 // JSON. Providers that serialize ToolFunctionParameters can forward the schema
 // without first decoding it into OrderedMaps and other intermediate values.
-// Non-empty schemas must declare a top-level object type; an empty object is
-// retained as the provider-neutral representation of a parameterless tool.
+// The JSON document must be an object; an empty object is retained as the
+// provider-neutral representation of a parameterless tool.
 // Provider-specific JSON Schema restrictions remain the provider's responsibility.
 func NewRawToolFunctionParameters(data []byte) (*ToolFunctionParameters, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || !json.Valid(trimmed) || trimmed[0] != '{' {
 		return nil, fmt.Errorf("invalid tool function parameters JSON")
-	}
-	if len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) > 0 {
-		schemaType := gjson.GetBytes(trimmed, "type")
-		if !schemaType.Exists() || schemaType.Type != gjson.String || schemaType.String() != "object" {
-			return nil, fmt.Errorf("tool function parameters schema type must be object")
-		}
 	}
 
 	return &ToolFunctionParameters{
