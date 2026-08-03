@@ -1985,7 +1985,7 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 		governanceEmbeddingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
 	if governanceWarmupObserverPlugin, ok := plugin.(governance.WarmupEmbedUsageObserverSetter); ok {
-		governanceWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.observeWarmupRoutingEmbedding)
+		governanceWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
 	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
@@ -2246,12 +2246,18 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	return nil
 }
 
-// observeWarmupRoutingEmbedding forwards semantic-routing warmup embedding
+// ObserveWarmupRoutingEmbedding forwards semantic-routing warmup embedding
 // usage from the governance plugin to the telemetry plugin's routing overhead
 // counters. The telemetry plugin is resolved per call (warmup is rare — boot
 // and config changes only) so a reloaded telemetry instance, with its fresh
 // registry, is picked up without re-wiring governance.
-func (s *BifrostHTTPServer) observeWarmupRoutingEmbedding(provider, model string, inputTokens int) {
+//
+// Exported because embedders that reimplement Bootstrap rather than calling it
+// must repeat this wiring themselves, and an unexported method is unreachable
+// from their package even through the embedded server. Warmup embeds carry no
+// request or response, so an embedder that misses this observer loses the usage
+// entirely — it cannot be recovered from the RoutingDebug path.
+func (s *BifrostHTTPServer) ObserveWarmupRoutingEmbedding(provider, model string, inputTokens int) {
 	plugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
 	if err != nil || plugin == nil {
 		return
@@ -2625,7 +2631,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// RoutingDebug stamp path that per-request classification embeds use.
 	governanceWarmupObserverPlugin, err := lib.FindPluginAs[governance.WarmupEmbedUsageObserverSetter](s.Config, s.getGovernancePluginName())
 	if err == nil && governanceWarmupObserverPlugin != nil {
-		governanceWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.observeWarmupRoutingEmbedding)
+		governanceWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
 	}
 
 	// Initialize Sidekiq runner for background jobs
