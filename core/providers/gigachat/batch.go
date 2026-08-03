@@ -432,6 +432,10 @@ func toBifrostGigaChatBatchOutputFileID(batch GigaChatBatch) *string {
 }
 
 func (provider *GigaChatProvider) readGigaChatBatchOutputFile(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest, fileID string) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if len(keys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no keys available to download GigaChat batch output file", nil)
+	}
+
 	fileRequest := &schemas.BifrostFileContentRequest{
 		Provider: provider.GetProviderKey(),
 		Model:    request.Model,

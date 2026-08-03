@@ -211,6 +211,7 @@ func TestGigaChatBatchesHTTP(t *testing.T) {
 	t.Run("PreservesResponsesEndpoint", testGigaChatBatchPreservesResponsesEndpoint)
 	t.Run("ResultsDownloadsOutputFile", testGigaChatBatchResultsDownloadsOutputFile)
 	t.Run("ResultsWithoutOutputFileID", testGigaChatBatchResultsWithoutOutputFileID)
+	t.Run("OutputFileRejectsEmptyKeys", testGigaChatBatchOutputFileRejectsEmptyKeys)
 	t.Run("UnsupportedEndpoint", testGigaChatBatchCreateUnsupportedEndpoint)
 	t.Run("UnsupportedCompletionWindow", testGigaChatBatchCreateUnsupportedCompletionWindow)
 }
@@ -851,6 +852,26 @@ func testGigaChatBatchResultsWithoutOutputFileID(t *testing.T) {
 		t.Fatalf("expected nil response, got %#v", response)
 	}
 	if bifrostErr == nil || !strings.Contains(bifrostErr.Error.Message, "did not return output_file_id or result_file_id") {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+}
+
+func testGigaChatBatchOutputFileRejectsEmptyKeys(t *testing.T) {
+	t.Parallel()
+
+	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+
+	response, bifrostErr := provider.readGigaChatBatchOutputFile(testBifrostContext(), nil, &schemas.BifrostBatchResultsRequest{
+		Provider: schemas.GigaChat,
+		BatchID:  "batch-1",
+	}, "result-file")
+	if response != nil {
+		t.Fatalf("expected nil response, got %#v", response)
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "no keys available") {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
 }
