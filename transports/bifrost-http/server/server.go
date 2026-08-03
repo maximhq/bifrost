@@ -2245,8 +2245,15 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 	return commonMiddlewares
 }
 
-func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config) {
+// shouldRun, when non-nil, is consulted once before the sweep starts;
+// returning false skips it entirely. Deployments running several instances
+// against one config store can use it to restrict the sweep to a single
+// instance. nil means always run.
+func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config, shouldRun func() bool) {
 	if config == nil || config.ConfigStore == nil {
+		return
+	}
+	if shouldRun != nil && !shouldRun() {
 		return
 	}
 
@@ -2615,7 +2622,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
-	startSkillsOrphanCleanupWorker(s.Ctx, s.Config)
+	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an
 	// upstream starts serving mid-uptime stays invisible until a restart or a
 	// key edit, since nothing else re-fetches list-models.
