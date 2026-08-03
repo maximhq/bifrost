@@ -570,7 +570,7 @@ export default function MCPClientSheet({
 							<div className="space-y-2">
 								<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 									{mcpClient.config.name}
-									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
+									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state.replace(/_/g, " ")}</Badge>
 								</SheetTitle>
 								<SheetDescription>
 									{mcpClient.state === "pending_verification"
