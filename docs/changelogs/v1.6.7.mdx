@@ -1,0 +1,233 @@
+---
+title: "v1.6.7"
+description: "v1.6.7 changelog - 2026-07-30"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.6.7
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.6.7
+    docker run -p 8080:8080 maximhq/bifrost:v1.6.7
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.6.7">
+## ✨ Features
+
+- **Virtual Key Budget Overrides**: Added temporary budget overrides for virtual keys across the database schema, governance store, admin APIs, and UI. An override adds `override_amount` on top of `max_limit` and runs either for a finite number of reset cycles or until explicitly removed, configured via the new `override_mode`, `override_cycles_total`, and `override_anchor_reset` fields.
+- **User Scope for Routing and Pricing**: Routing rules and pricing overrides can now be scoped to individual users, with a `user_id` CEL variable in routing rules, an enterprise user picker in the pricing overrides UI, and streaming request-type options in the routing rules UI.
+- **Virtual Keys `user_id` Filter**: Added a `user_id` filter to the virtual keys list (enterprise-only; OSS fails closed).
+- **Access Profile Config Schema**: `config.schema.json` now accepts `blacklisted_models` (a denylist that wins over `allowed_models`), a `weight` seed for weighted routing, and `model_budgets` for per-model budgets and rate limits on access profile provider configs. These keys previously failed schema validation because the object rejects unknown properties.
+- **Ranking Limit Control**: Added a `RankingLimit` filter with `all`/`limit` query params to cap or remove ranking row limits, and dashboard PDF/CSV exports now use uncapped snapshots.
+- **Dashboard Export Scope**: CSV and PDF exports now respect per-tab export scope instead of exporting a fixed view.
+- **Cache Hit Type Filter**: Added a `cache_hit_types` filter to dashboard URL state and query params.
+- **Async Entity Selectors**: Teams, customers, and virtual keys are now loaded through async `TeamSelector`/`CustomerSelector`/`VirtualKeySelector` components instead of preloading full lists, and the customer list returns a server-computed `virtual_key_count` rather than a full `VirtualKeys` preload.
+- **Background Model Catalog Refresh**: Each provider's list-models response is now re-fetched in the background on the new `live_models_sync_interval` (default 1 hour, `0` disables), so models an upstream starts serving after boot no longer stay invisible until restart. `RestartLiveModelRefresher` is exported for custom boot paths.
+- **Bedrock Mantle Count Tokens**: Added count-tokens API support for Bedrock Mantle.
+- **Responses Retrieve Stream**: Added a retrieve-stream method for the Responses API.
+- **Routing Info Headers**: Routing info headers are now emitted for streaming responses, inference and integration APIs, and error/passthrough paths.
+- **Stream Truncation Detection**: Added an `SSETruncation` interface and EOF handler support across all providers, so upstream stream death surfaces as an error instead of a clean `[DONE]`.
+- **Model Reasoning Metadata**: Added a `ModelReasoning` schema field and provider-qualified model ID resolution for model-parameters lookup, plus a required `model` query param and 404 response on `getModelParameters`.
+- **Bedrock Batch Role ARN**: Added `batch_role_arn` to Bedrock key config, a service role ARN passed to Bedrock batch jobs for S3 access that takes priority over any `role_arn` in the request.
+- **Connector Latency Data**: Bifrost latency and overhead duration are now exported to connectors.
+- **OTel Export Timeout**: Added an `export_timeout` setting (default 5s) bounding how long a slow or unreachable collector can hold an export goroutine, which previously had no timeout on gRPC exports.
+- **Database Connection Controls**: Added `conn_max_idle_time` (default 5m) to both the config and logs stores, `cache_ttl` (default 60s) for password-command credential resolution so the command no longer runs on every new physical connection, and `matview_refresh_timeout` bounding a single materialized view refresh pass.
+- **Matview Cached Tokens**: Added cached tokens to the materialized view and enabled matview refresh on the fly.
+- **SSO Additional Scopes**: `config.schema.json` now accepts `additionalScopes`, requesting extra OAuth scopes on top of the base `openid`/`profile`/`email`/`offline_access` set, for Custom Authorization Servers that gate claims such as `groups` behind a scope Bifrost does not request by default.
+- **Partitioned Sidekiq Claiming**: Added partitioned sidekiq job claiming with FIFO ordering per key.
+- **Lakera Guardrail**: Added Lakera as a guardrail integration with configuration docs and UI branding.
+- **Repello Argus Guardrail**: Added Repello Argus as a guardrail integration with configuration docs and UI branding.
+- **Team Customer Attachment**: `updateTeam` now accepts `customer_id`/`customer_ids` attachment and returns an `UpdateTeamResponse` schema.
+- **Provider Config Card**: Extracted the provider config accordion into a reusable `ProviderConfigCard` component with shared `budgetOutline` helpers.
+- **Copyable IDs**: Added a `CopyableId` component to customer, team, and virtual key detail sheets.
+- **Model Limit Deep Links**: The model limit edit sheet is now driven by a URL query param, with a fallback fetch for configs that are not on the current page.
+
+## 🐞 Fixed
+
+- **Empty Stream Nil Channel**: `*StreamRequest` now returns a closed non-nil channel for empty streams instead of `(nil, nil)`, which previously hung consumers on a nil-channel receive (thanks [@kharkevich](https://github.com/kharkevich)!)
+- **pprof Content-Type**: pprof endpoints now set `application/octet-stream` for scraper compatibility (thanks [@tcx4c70](https://github.com/tcx4c70)!)
+- **Tool Search Wire Shape**: Preserved the `tool_search` Responses API wire shape (thanks [@devonpmack](https://github.com/devonpmack)!)
+- **vLLM Responses Streaming**: vLLM responses-stream chunks and completion events are now forwarded instead of silently discarded, and stream truncation is handled correctly.
+- **Gemini Tool Schema Constraints**: Valid integer constraints in tool schemas are no longer rejected with a 400 INVALID_ARGUMENT.
+- **HuggingFace Model IDs**: Backfilled HuggingFace model IDs no longer duplicate the inference-provider segment.
+- **Log Count Accuracy**: The hybrid matview count no longer over-counts boundary buckets in paginated log search.
+- **Matview Scope Projection**: Added `customer_id`/`business_unit_id` to the matview `scopeProjection` so team-data DAC scope resolves without column errors.
+- **Matview Shape Gate Revert**: Reverted the matview read-path shape check that gated reads during rolling deploys.
+- **Multinode Override Counts**: Corrected override counts for multinode setups, resolving high CPU in governance rate-limit reset.
+- **Live Reload Model List**: Provider reload no longer wipes the live model catalog before refetching, so a transient list-models failure cannot empty it.
+- **Azure Responses API Version**: Removed the default preview api-version for GA Azure Responses endpoints.
+- **Bedrock Mantle Claude Models**: Structured outputs are now set to false for Claude models, and additional tools are merged into the tools list.
+- **Count Tokens**: Corrected count-tokens request building and dropped unsupported fields from Vertex count-tokens requests.
+- **GenAI API**: Fixed image search for the GenAI search tool, honored `IncludeServerSideToolInvocations`, and followed redirects for downloads in GenAI passthrough.
+- **Responses Tool Unmarshal**: Lifted the chat-completions function wrapper when unmarshaling Responses API tools.
+- **Complexity Extraction**: Governance complexity extraction now accepts `output_text` user blocks.
+- **Budget and Rate Limit Dumps**: Budget and rate limit dumps are now written in batches.
+- **MCP Tool Log Scope**: Query scope is now applied to single MCP tool log lookups.
+- **Connector Error Forwarding**: Fixed error forwarding to connectors and corrected connector UI redaction storage.
+- **Filter Data Cache**: Scoped the filterdata cache per caller and added item-budget admission control.
+- **Done Marker for Error Frames**: Corrected the `[DONE]` marker emitted for error frames.
+- **Replicate Image Generation**: Input images are now handled in image generation requests.
+- **SDK Compatibility**: `strict: null` is now converted to `false`.
+- **Model Router Cost**: Added handling for model router cost calculation.
+- **User Detail Budget**: The models/limits budget now shows in the user detail sheet.
+- **DB Connection Control**: Database connection limits are now applied across all cases.
+- **Workspace Page Padding**: Added `no-padding-parent` and consistent padding across workspace pages.
+- **Empty State Flash**: Pricing overrides and model limits views now show `FullPageLoader` on initial fetch instead of flashing an empty state.
+- **Chart Legend Ordering**: Replaced `pickTopSeries` with `computeDisplaySeries` so chart and legend series order stay in sync.
+- **Connector Form Whitespace**: Connector form fields now trim whitespace.
+- **Trial Expiry Parsing**: `parseTrialExpiry` now supports RFC3339 timestamps, and banner background colors were updated.
+- **Marketplace Copy URL**: Fixed the copy-URL action for the skills repo marketplace.
+- **Model Multiselect**: Added the enterprise-ui Tailwind source path and a `hideSearchIcon` prop to `ModelMultiselect`.
+- **Budget Delete Affordance**: Softened the budget line delete button color with a hover state.
+- **Deployment Override Selects**: Replaced boolean switches with tri-state selects for deployment-level overrides.
+
+## 🔧 Maintenance
+
+- **Go 1.26.5**: Upgraded the toolchain and all builder images to Go 1.26.5.
+- **Test Coverage**: Restored previously skipped framework and semanticcache tests, expanded the provider harness with count-tokens, response-header, and responses-lifecycle cases, and added OTel error-scenario coverage.
+
+## 🐙 Closed GitHub Issues
+
+- [#4215](https://github.com/maximhq/bifrost/issues/4215): HuggingFace models show provider ID twice in `/v1/models`, which breaks requests
+- [#4851](https://github.com/maximhq/bifrost/issues/4851): v1.6.2 and v1.6.3 governance rate-limit reset causes high CPU in `BumpRateLimitUsage`/`updateRateLimitReferences`
+- [#5329](https://github.com/maximhq/bifrost/issues/5329): `/api/logs` returns an incorrect `total_count` for time ranges of 24 hours or longer
+- [#5433](https://github.com/maximhq/bifrost/issues/5433): `/genai` endpoint rejects valid `minLength`/`maxLength` in tool schemas (400 INVALID_ARGUMENT)
+- [#5504](https://github.com/maximhq/bifrost/issues/5504): vLLM streaming Responses API hangs forever, chunks are silently discarded and the request never completes
+- [#5546](https://github.com/maximhq/bifrost/issues/5546): Upstream SSE stream death swallowed into a clean `[DONE]`, so dead streams appear successful
+- [#5551](https://github.com/maximhq/bifrost/issues/5551): `transports/bifrost-http/lib` test package does not compile on dev (`MockConfigStore` missing `UpdateBudgetOverride`)
+- [#5552](https://github.com/maximhq/bifrost/issues/5552): Refresh the live model catalog in the background (models added after boot stay invisible until restart)
+- [#5554](https://github.com/maximhq/bifrost/issues/5554): Provider reload wipes the live model catalog before refetching, so a transient list-models failure empties it
+- [#5555](https://github.com/maximhq/bifrost/issues/5555): `*StreamRequest` returns `(nil, nil)` for empty streams, so consumers hang forever on a nil-channel receive
+
+</Update>
+<Update label="Core" description="1.7.5">
+- feat: added count tokens API support for Bedrock Mantle
+- feat: added `SSETruncation` interface and EOF handler support across all providers so upstream stream death surfaces as an error instead of a clean `[DONE]`
+- feat: added responses retrieve stream method
+- feat: added routing info headers for streaming responses
+- feat: added `ModelReasoning` schema field and provider-qualified model ID resolution for model-parameters lookup
+- feat: added Bedrock batch role ARN to key config
+- feat: added Bifrost latency data to connectors
+- fix: corrected image search handling for the GenAI search tool
+- fix: corrected count tokens request building
+- fix: dropped unsupported fields from Vertex count tokens requests
+- fix: lifted the chat-completions function wrapper in Responses tool unmarshal
+- fix: merged additional tools into tools for Bedrock Mantle
+- fix: set structured outputs to false for Claude models on Bedrock Mantle
+- fix: corrected vLLM stream truncation
+- fix: converted `strict: null` to `false` for SDK compatibility
+- fix: followed redirects for downloads in GenAI passthrough
+- fix: honored the `IncludeServerSideToolInvocations` field in the GenAI API
+- fix: returned a closed non-nil channel for empty streams instead of `(nil, nil)` so consumers no longer hang on a nil-channel receive (thanks [@kharkevich](https://github.com/kharkevich)!)
+- fix: corrected routing info headers on streaming fallbacks
+- fix: corrected Replicate harness test and Gemini extra param handling
+- fix: avoided duplicating the inference-provider segment in backfilled HuggingFace model IDs
+- fix: removed the default preview api-version for GA Azure Responses endpoints
+- fix: forwarded vLLM responses-stream chunks and completion events instead of silently discarding them
+- fix: corrected error forwarding to connectors
+- fix: preserved the `tool_search` Responses API wire shape (thanks [@devonpmack](https://github.com/devonpmack)!)
+- fix: corrected Gemini tool schema integer constraint handling
+- fix: handled input images in image generation for Replicate
+- chore: upgraded Go to 1.26.5
+- chore: replaced deprecated HuggingFace model in core tests
+
+</Update>
+<Update label="Framework" description="1.5.5">
+- feat: added virtual key budget overrides across DB schema, governance store, and APIs
+- feat: added user scope kinds to pricing overrides
+- feat: added user scope and `user_id` CEL variable to routing rules
+- feat: added `user_id` filter to the virtual keys list (enterprise-only, OSS fails closed)
+- feat: added `RankingLimit` filter with `all`/`limit` query params to cap or remove ranking row limits
+- feat: replaced the full `VirtualKeys` preload with `virtual_key_count` on the paginated customer list
+- feat: added partitioned sidekiq job claiming with FIFO ordering per key
+- feat: added responses retrieve stream method
+- feat: added `ModelReasoning` schema field and provider-qualified model ID resolution for model-parameters lookup
+- feat: added Bedrock batch role ARN to key config
+- feat: added Bifrost latency data to connectors
+- feat: added cached tokens to the matview and allowed matview refresh on the fly
+- fix: added `customer_id`/`business_unit_id` to matview `scopeProjection` so team-data DAC scope resolves without column errors
+- fix: corrected hybrid matview count to prevent boundary bucket over-counting in paginated log search
+- fix: reverted the matview read-path shape check that gated reads during rolling deploys
+- fix: applied query scope to single MCP tool log lookup
+- fix: corrected override counts for multinode setups
+- fix: stopped live reload from wiping the model list before sync
+- fix: added handling for model router cost calculation
+- fix: showed models/limits budget in the user detail sheet
+- fix: preserved the `tool_search` Responses API wire shape (thanks [@devonpmack](https://github.com/devonpmack)!)
+- feat: added `conn_max_idle_time` to the config and logs stores so idle physical connections are closed on a bound rather than left to the idle cap alone
+- feat: added `cache_ttl` for password-command credential resolution so the command no longer runs on every new physical connection
+- feat: added `matview_refresh_timeout` bounding a single materialized view refresh pass, so one stuck refresh no longer leaves views permanently stale across replicas
+- feat: added `live_models_sync_interval` for background provider model-list refresh
+- fix: added OTel export timeouts
+- chore: upgraded Go to 1.26.5
+- chore: upgraded core to v1.7.5
+
+</Update>
+<Update label="compat" description="0.1.31">
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="governance" description="1.6.9">
+- feat: added streaming request type options to routing rules UI
+- feat: added user scope and `user_id` CEL variable to routing rules
+- feat: added budget override support to the governance store
+- feat: added responses retrieve stream method support
+- fix: batched writes for budget and rate limit dumps
+- fix: accepted `output_text` user blocks in complexity extraction
+- fix: corrected override counts for multinode setups, resolving high CPU in rate limit reset
+- fix: controlled DB connections for all cases
+- chore: upgraded Go to 1.26.5
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="jsonparser" description="1.5.32">
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="logging" description="1.6.5">
+- feat: added user scope kinds to pricing overrides
+- feat: added responses retrieve stream method support
+- fix: controlled DB connections for all cases
+- chore: upgraded Go to 1.26.5
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="maxim" description="1.6.32">
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="mocker" description="1.5.32">
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.13">
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="otel" description="1.4.4">
+- feat: added export timeouts to bound OTel export duration
+- feat: added Bifrost latency data to connectors
+- chore: refactored overhead duration export for connectors
+- chore: upgraded Go to 1.26.5
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="prompts" description="1.0.32">
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="semanticcache" description="1.5.32">
+- fix: restored previously skipped streaming and no-store test cases
+- chore: upgraded Go to 1.26.5
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>
+<Update label="telemetry" description="1.5.32">
+- chore: upgraded core to v1.7.5 and framework to v1.5.5
+
+</Update>

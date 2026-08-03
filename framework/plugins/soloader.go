@@ -3,20 +3,37 @@ package plugins
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"plugin"
 	"strings"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// SharedObjectPluginLoader is the loader for shared object plugins
-type SharedObjectPluginLoader struct{}
+// SharedObjectPluginLoader is the loader for shared object plugins. The zero value is a
+// valid loader whose plugin downloads use the default, non-allowlisted SSRF-hardened
+// client; use NewSharedObjectPluginLoader to configure an allowlist.
+type SharedObjectPluginLoader struct {
+	downloadClient *http.Client
+}
 
-func openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
+// NewSharedObjectPluginLoader constructs a loader whose plugin-download client is
+// additionally permitted to reach the hosts/CIDRs in allow. allow may be nil for the
+// default (all private/loopback/CGNAT/link-local targets blocked).
+func NewSharedObjectPluginLoader(allow *network.Allowlist) *SharedObjectPluginLoader {
+	return &SharedObjectPluginLoader{downloadClient: NewPluginDownloadClient(allow)}
+}
+
+func (l *SharedObjectPluginLoader) openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
 	// Checking if path is URL or file path
 	if strings.HasPrefix(dp.Path, "http") {
+		client := l.downloadClient
+		if client == nil {
+			client = NewPluginDownloadClient(nil) // zero-value loader: safe default
+		}
 		// Download the file
-		tempPath, err := DownloadPlugin(dp.Path, ".so")
+		tempPath, err := DownloadPlugin(dp.Path, ".so", client)
 		if err != nil {
 			return nil, err
 		}
@@ -38,7 +55,7 @@ func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.
 		Path: path,
 	}
 
-	pluginObj, err := openPlugin(dp)
+	pluginObj, err := l.openPlugin(dp)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +193,7 @@ func (l *SharedObjectPluginLoader) VerifyBasePlugin(path string) (string, error)
 	dp := &DynamicPlugin{
 		Path: path,
 	}
-	pluginObj, err := openPlugin(dp)
+	pluginObj, err := l.openPlugin(dp)
 	if err != nil {
 		return "", err
 	}

@@ -377,6 +377,10 @@ type ConfigStore interface {
 	GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error)
 	CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
 	UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
+	// SyncRoutingRules applies a batch of creates and updates atomically, deferring the
+	// unique-priority-per-scope check until all rules are written so that a valid permutation
+	// (e.g. swapping two rules' priorities) succeeds despite a transient intermediate collision.
+	SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Model config CRUD

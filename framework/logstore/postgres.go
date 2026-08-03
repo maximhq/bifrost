@@ -20,7 +20,9 @@ type PostgresConfig struct {
 	// material on the database instance — the matview path already has
 	// activity-gated short-circuiting (see matViewRefreshGate), so the longer
 	// interval mostly affects how quickly idle clusters notice the rolling
-	// 30-day filter window has aged.
+	// 30-day filter window has aged. Set "off" (or any non-positive duration)
+	// to disable materialized-view maintenance entirely: views are neither
+	// created nor refreshed and dashboard queries use the raw tables.
 	MatViewRefreshInterval string `json:"matview_refresh_interval,omitempty"`
 
 	// MatViewRefreshTimeout bounds a single refresh pass. A refresh holds a pooled
@@ -100,14 +102,23 @@ func resolveMatViewRefreshTimeout(raw string, interval time.Duration, logger sch
 
 // resolveMatViewRefreshInterval parses the configured duration string with
 // fallback + clamp. Logs a warning on a bad string so misconfig is noticed.
+// Returns 0 when maintenance is disabled ("off" or a non-positive duration).
 func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Duration {
 	if raw == "" {
 		return defaultMatViewRefreshInterval
+	}
+	if raw == "off" {
+		logger.Info("logstore: matview maintenance disabled via config")
+		return 0
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("logstore: invalid matview_refresh_interval %q (%s); using default %s", raw, err, defaultMatViewRefreshInterval))
 		return defaultMatViewRefreshInterval
+	}
+	if d <= 0 {
+		logger.Info("logstore: matview maintenance disabled via config")
+		return 0
 	}
 	if d < minMatViewRefreshInterval {
 		logger.Warn(fmt.Sprintf("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval))
@@ -215,7 +226,8 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return nil, err
 	}
 	logger.Info("logstore: runtime connection pool ready")
-	d := &RDBLogStore{db: db, logger: logger}
+	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
+	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0}
 
 	// Run all index builds sequentially in a single goroutine to prevent
 	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
@@ -260,14 +272,13 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 
 	// Create materialized views and start periodic refresh for dashboard queries.
 	go func() {
-		if db.Dialector.Name() != "postgres" {
+		if db.Dialector.Name() != "postgres" || refreshInterval <= 0 {
 			return
 		}
 		if err := ensureMatViews(context.Background(), db); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: matview creation failed: %s (dashboard queries will use raw tables)", err))
 			return
 		}
-		refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
 		refreshTimeout := resolveMatViewRefreshTimeout(config.MatViewRefreshTimeout, refreshInterval, logger)
 
 		// The initial refresh gets the same budget as a periodic tick; on a large

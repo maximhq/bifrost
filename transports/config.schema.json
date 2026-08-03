@@ -17,6 +17,13 @@
           "type": "integer",
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
+        },
+        "plugin_download_private_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted internal artifact hosts. Deploy-time only - read from config.json/environment at startup, never settable via the plugin admin API."
         }
       },
       "required": ["read_buffer_size"]
@@ -44,6 +51,11 @@
     },
     "auth_config": {
       "$ref": "#/$defs/auth_config"
+    },
+    "setup_token": {
+      "type": "string",
+      "pattern": "\\S",
+      "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. You can set the value as env.<ENV_VAR_NAME> to use an environment variable, or as vault.<path> to use a Vault secret reference. We also read the setup token from the BIFROST_SETUP_TOKEN environment variable. Identical across every node in a multi-node deployment (unlike a randomly generated value), so any node can authorize first-admin creation. Never persisted and never logged; if left unset, creating the first admin account is rejected until this is configured. Whitespace-only values are rejected."
     },
     "client": {
       "type": "object",
@@ -1879,8 +1891,8 @@
                   },
                   "matview_refresh_interval": {
                     "type": "string",
-                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Minimum 5s.",
-                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                    "description": "How often to refresh dashboard materialized views. Go duration string (e.g. '1m', '5m', '1h'). Default 1m. Raise this when matview refresh CPU cost is material on the database instance. Positive values below 5s are clamped up to 5s. Set 'off' or a zero duration (e.g. '0s') to disable materialized-view maintenance entirely; dashboard queries fall back to the raw tables.",
+                    "pattern": "^(off|[0-9]+(ns|us|µs|ms|s|m|h))$",
                     "default": "1m"
                   },
                   "matview_refresh_timeout": {
@@ -6319,6 +6331,12 @@
                 "type": "boolean",
                 "description": "Whether this rule is enabled"
               },
+              "target": {
+                "type": "string",
+                "enum": ["llm", "mcp"],
+                "default": "llm",
+                "description": "Execution target for the rule. Omitted values default to LLM guardrails."
+              },
               "cel_expression": {
                 "type": "string",
                 "description": "CEL (Common Expression Language) expression for rule evaluation"
@@ -6976,6 +6994,10 @@
         "virtual_key_id": {
           "type": "string",
           "description": "Virtual key ID (required for virtual_key* scopes)"
+        },
+        "user_id": {
+          "type": "string",
+          "description": "User ID (for user-scoped pricing overrides)"
         },
         "provider_id": {
           "type": "string",

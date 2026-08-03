@@ -105,6 +105,10 @@ var ignoreGoFields = map[string]string{
 	// scope_name is a non-persisted (gorm:"-"), API-only display label populated by the
 	// HTTP layer on read (the scope target's human-readable name); never config.json input.
 	"/properties/governance/properties/model_configs/items|scope_name": "response-only; populated on GET as the scope target's display name, not user-configurable via config.json",
+	// virtual_key_count is a non-persisted (gorm:"-"), derived count populated by the
+	// read paths so list responses can report it without loading the full VirtualKeys
+	// relation; never config.json input.
+	"/properties/governance/properties/customers/items|virtual_key_count": "response-only; derived count populated on read (TableCustomer.VirtualKeyCount), not user-configurable via config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are

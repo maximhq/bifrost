@@ -41703,7 +41703,7 @@
       "post": {
         "operationId": "createPlugin",
         "summary": "Create a new plugin",
-        "description": "Creates a new plugin with the specified configuration.",
+        "description": "Creates a new plugin with the specified configuration.\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
         "tags": [
           "Plugins"
         ],
@@ -41751,6 +41751,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A non-builtin path was supplied and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "409": {
             "description": "Plugin already exists",
@@ -41891,7 +41894,7 @@
       "put": {
         "operationId": "updatePlugin",
         "summary": "Update a plugin",
-        "description": "Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.\nThe response `actualName` field shows the plugin name from GetName() (used as the map key),\nwhich may differ from the display name (`name`).\n",
+        "description": "Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.\nThe response `actualName` field shows the plugin name from GetName() (used as the map key),\nwhich may differ from the display name (`name`).\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
         "tags": [
           "Plugins"
         ],
@@ -41950,6 +41953,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A non-builtin path was supplied and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "404": {
             "description": "Plugin not found",
@@ -61077,6 +61083,28 @@
                             "additionalProperties": true,
                             "description": "Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)"
                           },
+                          "plugin_logs": {
+                            "type": "string",
+                            "description": "JSON-serialized plugin log entries grouped by plugin name"
+                          },
+                          "redaction_mapping": {
+                            "type": "object",
+                            "properties": {
+                              "input": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              "output": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "description": "Phase-scoped placeholder-to-original-value mappings for reversible MCP redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
+                          },
                           "created_at": {
                             "type": "string",
                             "format": "date-time",
@@ -61311,6 +61339,28 @@
                       "type": "object",
                       "additionalProperties": true,
                       "description": "Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)"
+                    },
+                    "plugin_logs": {
+                      "type": "string",
+                      "description": "JSON-serialized plugin log entries grouped by plugin name"
+                    },
+                    "redaction_mapping": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "output": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Phase-scoped placeholder-to-original-value mappings for reversible MCP redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
                     },
                     "created_at": {
                       "type": "string",
@@ -78891,7 +78941,7 @@
           },
           "auth_config": {
             "type": "object",
-            "description": "Authentication configuration",
+            "description": "Absent when no admin account has been configured yet (first-time setup). Once an admin account exists, this is always present. Available starting in Bifrost 2.0.0-prerelease3; earlier versions always returned this field.",
             "properties": {
               "admin_username": {
                 "type": "string"
@@ -79216,25 +79266,46 @@
             }
           },
           "auth_config": {
-            "type": "object",
-            "description": "Authentication configuration",
-            "properties": {
-              "admin_username": {
-                "type": "string"
+            "allOf": [
+              {
+                "type": "object",
+                "description": "Authentication configuration",
+                "properties": {
+                  "admin_username": {
+                    "type": "string"
+                  },
+                  "admin_password": {
+                    "type": "string",
+                    "description": "Password (redacted as <redacted> in responses)"
+                  },
+                  "is_enabled": {
+                    "type": "boolean"
+                  },
+                  "disable_auth_on_inference": {
+                    "type": "boolean",
+                    "deprecated": true,
+                    "description": "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
+                  }
+                }
               },
-              "admin_password": {
-                "type": "string",
-                "description": "Password (redacted as <redacted> in responses)"
-              },
-              "is_enabled": {
-                "type": "boolean"
-              },
-              "disable_auth_on_inference": {
-                "type": "boolean",
-                "deprecated": true,
-                "description": "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
+              {
+                "type": "object",
+                "properties": {
+                  "setup_token": {
+                    "type": "string",
+                    "description": "Available starting in Bifrost 2.0.0-prerelease3. Bootstrap token, required only when this request creates the very first admin account (i.e. no admin account exists yet). Must match the setup token configured by the operator via setup_token in config.json (or the BIFROST_SETUP_TOKEN environment variable); never persisted or returned by GET /api/config. If the operator hasn't configured a setup token, requests that would create the first admin account are rejected until they do. Once an admin account exists, this field is ignored."
+                  }
+                }
               }
-            }
+            ]
+          }
+        },
+        "example": {
+          "auth_config": {
+            "admin_username": "admin",
+            "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+            "is_enabled": true,
+            "setup_token": "<your-setup-token>"
           }
         }
       },

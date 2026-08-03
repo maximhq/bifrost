@@ -19,13 +19,15 @@ import (
 // overridden. Any other call panics, surfacing an unexpected dependency.
 type fakeRecalcStore struct {
 	logstore.LogStore
-	logs           []logstore.Log // pre-sorted by (timestamp, id)
-	cost           map[string]float64
-	hasCost        map[string]bool
-	updateCount    map[string]int // successful BulkUpdateCost touches per id
-	searchCalls    int
-	bulkCalls      int
-	failBulkOnCall int // 1-based bulk call number to fail; 0 = never
+	logs              []logstore.Log // pre-sorted by (timestamp, id)
+	cost              map[string]float64
+	hasCost           map[string]bool
+	updateCount       map[string]int // successful BulkUpdateCost touches per id
+	searchCalls       int
+	bulkCalls         int
+	failBulkOnCall    int   // 1-based bulk call number to fail; 0 = never
+	hydrateChunkSizes []int // sizes handed to HydrateBillingChunk, in order
+	backfilled        []int // sizes handed to BulkBackfillBillingPayloads, in order
 }
 
 func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
@@ -35,6 +37,28 @@ func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
 		hasCost:     make(map[string]bool),
 		updateCount: make(map[string]int),
 	}
+}
+
+// SearchLogsForBilling is what the recalc job actually calls. The fake has nothing
+// offloaded to object storage, so it returns the same rows as SearchLogs — matching
+// RDBLogStore, where every pricing input is already present in the row.
+func (s *fakeRecalcStore) SearchLogsForBilling(ctx context.Context, f logstore.SearchFilters, p logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	return s.SearchLogs(ctx, f, p)
+}
+
+// HydrateBillingChunk records the chunk sizes it is handed so tests can assert the
+// caller never asks for more payloads at once than BillingHydrationChunkSize. Nothing
+// is offloaded here, so there is nothing to fetch.
+func (s *fakeRecalcStore) HydrateBillingChunk(_ context.Context, logs []*logstore.Log) (logstore.BillingHydrationResult, error) {
+	s.hydrateChunkSizes = append(s.hydrateChunkSizes, len(logs))
+	return logstore.BillingHydrationResult{}, nil
+}
+
+// BulkBackfillBillingPayloads should never be reached here: nothing is offloaded, so no
+// row is ever hydrated and there is nothing recovered to write back.
+func (s *fakeRecalcStore) BulkBackfillBillingPayloads(_ context.Context, updates map[string]logstore.BillingPayloadBackfill) error {
+	s.backfilled = append(s.backfilled, len(updates))
+	return nil
 }
 
 func (s *fakeRecalcStore) SearchLogs(_ context.Context, f logstore.SearchFilters, p logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -373,5 +397,47 @@ func TestRunCostRecalcJob_EmptyWindow(t *testing.T) {
 	}
 	if len(checkpoints) != 0 {
 		t.Errorf("expected no checkpoints for an empty window, got %d", len(checkpoints))
+	}
+}
+
+// TestRunCostRecalcJob_HydratesInBoundedChunks pins the memory bound.
+//
+// A hydrated row holds its whole offloaded payload — potentially full message
+// histories and raw request/response bodies — so a recompute must never ask for a
+// whole batch of them at once. The job walks the batch in BillingHydrationChunkSize
+// slices and releases each before advancing, which keeps peak payload memory flat no
+// matter how large the batch or the recompute window is.
+func TestRunCostRecalcJob_HydratesInBoundedChunks(t *testing.T) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	const rows = 10
+	logs := make([]logstore.Log, 0, rows)
+	for i := range rows {
+		logs = append(logs, positiveLog(fmt.Sprintf("chunk-%02d", i), base.Add(time.Duration(i)*time.Second)))
+	}
+	store := newFakeRecalcStore(logs)
+	p := newRecalcPlugin(t, store)
+
+	final, _, err := runJob(t, p, CostRecalcJobMeta{Filters: window(base)})
+	if err != nil {
+		t.Fatalf("RunCostRecalcJob() error = %v", err)
+	}
+	if final.Updated != rows {
+		t.Fatalf("expected all %d rows priced, got Updated=%d", rows, final.Updated)
+	}
+
+	if len(store.hydrateChunkSizes) == 0 {
+		t.Fatal("expected the job to hydrate through HydrateBillingChunk, but it never called it")
+	}
+	total := 0
+	for _, size := range store.hydrateChunkSizes {
+		if size > logstore.BillingHydrationChunkSize {
+			t.Fatalf("hydration chunk of %d exceeds BillingHydrationChunkSize=%d; peak payload memory would scale with batch size, got chunks %v",
+				size, logstore.BillingHydrationChunkSize, store.hydrateChunkSizes)
+		}
+		total += size
+	}
+	if total != rows {
+		t.Fatalf("chunks covered %d rows, want every one of %d: %v", total, rows, store.hydrateChunkSizes)
 	}
 }
