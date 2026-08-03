@@ -2086,7 +2086,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 						} else if maxTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
 							// Fallback: convert budget_tokens to effort
 							minBudgetTokens := 0
-							defaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+							defaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
 							if request.InferenceConfig != nil && request.InferenceConfig.MaxTokens != nil {
 								defaultMaxTokens = *request.InferenceConfig.MaxTokens
 							}
@@ -2314,7 +2314,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					tokenBudget = anthropic.MinimumReasoningMaxTokens
 				}
 				if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-					if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
+					if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 							"type": "adaptive",
 						})
@@ -2334,7 +2334,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					}
 				} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 					minBudgetTokens := MinimumReasoningMaxTokens
-					modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+					modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
 					defaultMaxTokens := modelDefaultMaxTokens
 					if inferenceConfig.MaxTokens != nil {
 						defaultMaxTokens = *inferenceConfig.MaxTokens
@@ -2393,7 +2393,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 					} else if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-						if anthropic.SupportsAdaptiveThinking(capModel) {
+						if anthropic.SupportsAdaptiveThinking(bifrostReq.Provider, capModel) {
 							// Opus 4.6+: adaptive thinking + output_config.effort
 							effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 							thinkingConfig := map[string]any{
@@ -2406,14 +2406,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 								} else {
 									thinkingConfig["display"] = "summarized"
 								}
-							} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
+							} else if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 								thinkingConfig["display"] = "summarized"
 							}
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 							setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 						} else {
 							// Opus 4.5 and older Anthropic models: budget_tokens thinking
-							modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+							modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
 							defaultMaxTokens := modelDefaultMaxTokens
 							if inferenceConfig.MaxTokens != nil {
 								defaultMaxTokens = *inferenceConfig.MaxTokens
@@ -2430,7 +2430,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							})
 						}
 					} else {
-						modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+						modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
 						defaultMaxTokens := modelDefaultMaxTokens
 						if inferenceConfig.MaxTokens != nil {
 							defaultMaxTokens = *inferenceConfig.MaxTokens

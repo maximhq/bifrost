@@ -207,7 +207,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 						modelForTokens = r.String()
 					}
 				}
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(modelForTokens, AnthropicDefaultMaxTokens))
+				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
@@ -471,7 +471,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 					modelForTokens = r.String()
 				}
 			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(modelForTokens, AnthropicDefaultMaxTokens))
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
 			if err != nil {
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}

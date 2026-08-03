@@ -164,8 +164,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 // applyModelParameters parses the raw model-parameters JSON and updates:
 //   - supportedResponseTypes (per-model normalized output types)
 //   - supportedParams (per-model accepted request parameter names)
-//   - the provider-utils ModelParams cache (max_output_tokens,
-//     vertex_multi_region_only)
+//   - the provider-utils model capability cache and its alias index
 //
 // Models with no useful info contribute nothing — the indexes are wholly
 // replaced under mu.Lock so readers see either the pre- or post-sync state,
@@ -173,14 +172,23 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 // bootstrap callers can distinguish "DB had rows but all malformed" from
 // "DB had usable rows".
 func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int {
-	modelParamsEntries := make(map[string]providerUtils.ModelParams, len(paramsData))
 	newResponseTypes := make(map[string][]string, len(paramsData))
 	newParamsIndex := make(map[string][]string, len(paramsData))
+	// One capability record per datasheet row, keyed by (row key, provider).
+	// Rows are never merged: a region- or date-qualified row can't overwrite
+	// another row's ceiling, which is what collapsing onto base_model did.
+	records := make(map[string]*schemas.ModelCapabilities, len(paramsData))
+	recordSource := make(map[string]string, len(paramsData)) // cache key → raw row key that won it
+	// base_model → the single row key a bare or dated model resolves to.
+	aliases := make(map[string]string, len(paramsData))
 	applied := 0
 
 	for model, rawData := range paramsData {
-		var parsed modelParametersParseResult
-		if err := json.Unmarshal(rawData, &parsed); err != nil {
+		// One parse per row. ModelCapabilities covers the whole row: the flags
+		// providers read on the request path, and the endpoint/parameter surface
+		// the derived indexes below are built from.
+		var caps schemas.ModelCapabilities
+		if err := json.Unmarshal(rawData, &caps); err != nil {
 			if s.logger != nil {
 				s.logger.Warn("model-parameters-sync: skipping malformed parameters for model %s: %v", model, err)
 			}
@@ -188,14 +196,14 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 		}
 		applied++
 
-		outputs := make([]string, 0, len(parsed.SupportedEndpoints))
-		for _, endpoint := range parsed.SupportedEndpoints {
+		outputs := make([]string, 0, len(caps.SupportedEndpoints))
+		for _, endpoint := range caps.SupportedEndpoints {
 			if normalized := normalizeEndpointToOutputType(endpoint); normalized != "" && !slices.Contains(outputs, normalized) {
 				outputs = append(outputs, normalized)
 			}
 		}
-		if parsed.Mode != nil {
-			if normalized := normalizeModeToOutputType(*parsed.Mode); normalized != "" && !slices.Contains(outputs, normalized) {
+		if caps.Mode != nil {
+			if normalized := normalizeModeToOutputType(*caps.Mode); normalized != "" && !slices.Contains(outputs, normalized) {
 				outputs = append(outputs, normalized)
 			}
 		}
@@ -218,18 +226,39 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 			newResponseTypes[model] = outputs
 		}
 
-		if supported := extractSupportedParams(&parsed); len(supported) > 0 {
+		if supported := extractSupportedParams(&caps); len(supported) > 0 {
 			newParamsIndex[model] = supported
 		}
 
-		var p struct {
-			MaxOutputTokens *int `json:"max_output_tokens"`
+		providerName := gjson.GetBytes(rawData, "provider").String()
+		if IsEmptyModelCapabilities(&caps) || providerName == "" {
+			continue
 		}
-		if err := json.Unmarshal(rawData, &p); err == nil && (p.MaxOutputTokens != nil || parsed.VertexMultiRegionOnly != nil) {
-			modelParamsEntries[model] = providerUtils.ModelParams{
-				MaxOutputTokens:         p.MaxOutputTokens,
-				IsVertexMultiRegionOnly: parsed.VertexMultiRegionOnly,
-			}
+		provider := schemas.ModelProvider(normalizeProvider(providerName))
+		rowKey := extractModelName(model)
+		cacheKey := providerUtils.CapabilityCacheKey(rowKey, provider)
+
+		// A handful of rows collapse onto the same key once the prefix is gone
+		// (image-size variants, "bedrock/"-prefixed duplicates). Lowest raw key
+		// wins so the winner is the same on every pod, matching how
+		// capabilityEntryForFamilyUnsafe picks from sorted candidates.
+		if source, ok := recordSource[cacheKey]; !ok || model < source {
+			record := caps
+			records[cacheKey] = &record
+			recordSource[cacheKey] = model
+		}
+
+		// Rows whose base name still differs from their key — Bedrock dotted
+		// ids, Vertex "@version" — need a pointer from the base so bare names
+		// resolve. Points at one real row rather than merging fields, so a
+		// record is never a blend of two models.
+		base := gjson.GetBytes(rawData, "base_model").String()
+		if base == "" || base == rowKey {
+			continue
+		}
+		aliasKey := providerUtils.CapabilityCacheKey(base, provider)
+		if existing, ok := aliases[aliasKey]; !ok || rowKey < existing {
+			aliases[aliasKey] = rowKey
 		}
 	}
 
@@ -238,8 +267,21 @@ func (s *Store) applyModelParameters(paramsData map[string]json.RawMessage) int 
 	s.supportedParams = newParamsIndex
 	s.mu.Unlock()
 
-	if len(modelParamsEntries) > 0 {
-		providerUtils.BulkSetModelParams(modelParamsEntries)
+	// Publish the alias index first, then invalidate: any entry cached against
+	// the previous sheet — hits and tombstones alike — must be re-resolved.
+	// Skipped when nothing parsed, since an empty or wholly-malformed feed must
+	// not wipe a good cache; every pod reloads from here on the gossip hook.
+	if applied > 0 {
+		providerUtils.SetModelCapabilitiesAliases(aliases)
+		providerUtils.InvalidateCapabilities()
+		// With no miss handler nothing can refill an evicted entry, so the cache
+		// is the only copy of the data: drop the bound and seed the full set.
+		if !providerUtils.HasCacheMissHandler() {
+			providerUtils.SetCapabilitiesCacheCapacity(0)
+			providerUtils.BulkSetModelCapabilities(records)
+		}
+	} else if s.logger != nil {
+		s.logger.Warn("model-parameters-sync: no parseable records, keeping existing model capabilities")
 	}
 	return applied
 }

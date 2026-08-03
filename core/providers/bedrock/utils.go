@@ -311,7 +311,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				tokenBudget = anthropic.MinimumReasoningMaxTokens
 			}
 			if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
+				if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type": "adaptive",
 					})
@@ -331,7 +331,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				}
 			} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 				minBudgetTokens := MinimumReasoningMaxTokens
-				modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+				modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
 				defaultMaxTokens := modelDefaultMaxTokens
 				if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
 					defaultMaxTokens = *bedrockReq.InferenceConfig.MaxTokens
@@ -373,7 +373,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				})
 			}
 		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-			modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
+			modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
 			maxTokens := modelDefaultMaxTokens
 			if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
 				maxTokens = *bedrockReq.InferenceConfig.MaxTokens
@@ -413,7 +413,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-				if anthropic.SupportsAdaptiveThinking(capModel) {
+				if anthropic.SupportsAdaptiveThinking(bifrostReq.Provider, capModel) {
 					// Opus 4.6+: adaptive thinking + output_config.effort
 					effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
 					thinkingConfig := map[string]any{
@@ -421,7 +421,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					}
 					if bifrostReq.Params.Reasoning.Display != nil {
 						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
-					} else if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
+					} else if anthropic.IsAdaptiveOnlyThinkingModel(bifrostReq.Provider, capModel) {
 						thinkingConfig["display"] = "summarized"
 					}
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)

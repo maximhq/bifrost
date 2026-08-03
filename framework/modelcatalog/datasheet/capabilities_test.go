@@ -234,25 +234,23 @@ func capabilityBoolPtr(v bool) *bool { return &v }
 // yield both web_search (responses-path tool) and web_search_options (chat-path
 // param), so the compat plugin's drop checks match either way.
 func TestExtractSupportedParams_WebSearch(t *testing.T) {
-	webSearchParam := []struct {
-		ID string `json:"id"`
-	}{{ID: "web_search"}}
+	webSearchParam := []schemas.ModelParameterDescriptor{{ID: "web_search"}}
 
 	cases := []struct {
 		name   string
-		parsed *modelParametersParseResult
+		parsed *schemas.ModelCapabilities
 	}{
 		{
 			name:   "web_search model parameter",
-			parsed: &modelParametersParseResult{ModelParameters: webSearchParam},
+			parsed: &schemas.ModelCapabilities{ModelParameters: webSearchParam},
 		},
 		{
 			name:   "supports_web_search flag",
-			parsed: &modelParametersParseResult{SupportsWebSearch: capabilityBoolPtr(true)},
+			parsed: &schemas.ModelCapabilities{SupportsWebSearch: capabilityBoolPtr(true)},
 		},
 		{
 			name: "both set",
-			parsed: &modelParametersParseResult{
+			parsed: &schemas.ModelCapabilities{
 				ModelParameters:   webSearchParam,
 				SupportsWebSearch: capabilityBoolPtr(true),
 			},
@@ -275,7 +273,7 @@ func TestExtractSupportedParams_WebSearch(t *testing.T) {
 // the datasheet declares no web-search support, so the tool is still stripped
 // for models that genuinely lack it.
 func TestExtractSupportedParams_WebSearchAbsent(t *testing.T) {
-	got := extractSupportedParams(&modelParametersParseResult{SupportsWebSearch: capabilityBoolPtr(false)})
+	got := extractSupportedParams(&schemas.ModelCapabilities{SupportsWebSearch: capabilityBoolPtr(false)})
 	for _, unexpected := range []string{"web_search", "web_search_options"} {
 		if slices.Contains(got, unexpected) {
 			t.Errorf("expected supported params to omit %q, got %v", unexpected, got)

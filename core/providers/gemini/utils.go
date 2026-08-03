@@ -260,7 +260,7 @@ func validateThinkingBudget(model string, budget int) error {
 	return nil
 }
 
-func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters() *schemas.ResponsesParameters {
+func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters(provider schemas.ModelProvider) *schemas.ResponsesParameters {
 	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
@@ -292,7 +292,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		}
 
 		// Determine max tokens for conversions
-		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(r.Model, DefaultCompletionMaxTokens)
+		maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, r.Model, DefaultCompletionMaxTokens)
 		if config.MaxOutputTokens > 0 {
 			maxTokens = int(config.MaxOutputTokens)
 		}
@@ -1162,7 +1162,7 @@ func ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage *schemas.ResponsesR
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
-func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, model string) (GenerationConfig, error) {
+func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, provider schemas.ModelProvider, model string) (GenerationConfig, error) {
 	config := GenerationConfig{}
 
 	// Add response modalities if specified
@@ -1235,7 +1235,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 				level := effortToThinkingLevel(*params.Reasoning.Effort, model)
 				config.ThinkingConfig.ThinkingLevel = &level
 			} else {
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(model, DefaultCompletionMaxTokens)
+				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(provider, model, DefaultCompletionMaxTokens)
 				if config.MaxOutputTokens > 0 {
 					maxTokens = int(config.MaxOutputTokens)
 				}
