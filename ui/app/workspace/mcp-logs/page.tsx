@@ -10,6 +10,7 @@ import {
 	useGetMCPHistogramQuery,
 	useGetMCPLogsQuery,
 	useGetMCPLogsStatsQuery,
+	useGetUserAgentMappingsQuery,
 } from "@/lib/store";
 import { useLazyGetMCPLogsQuery } from "@/lib/store/apis/mcpLogsApi";
 import type { MCPToolLogEntry, MCPToolLogFilters, Pagination } from "@/lib/types/logs";
@@ -33,6 +34,7 @@ export default function MCPLogsPage() {
 	const [showEmptyState, setShowEmptyState] = useState(false);
 	const hasCheckedEmptyState = useRef(false);
 	const hasDeleteAccess = useRbac(RbacResource.MCPLogs, RbacOperation.Delete);
+	const hasRevealAccess = useRbac(RbacResource.Logs, RbacOperation.Reveal);
 
 	const [deleteLogs] = useDeleteMCPLogsMutation();
 	// Lazy query kept only for handleLogNavigate (fetches adjacent pages on demand)
@@ -327,7 +329,18 @@ export default function MCPLogsPage() {
 		[statsData],
 	);
 
-	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
+	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
+	const customAppIcons = useMemo(() => {
+		const icons: Record<string, string> = {};
+		for (const mapping of userAgentMappingsData?.mappings ?? []) {
+			if (mapping.app && mapping.logo && mapping.logo_mime) {
+				icons[mapping.app] = `data:${mapping.logo_mime};base64,${mapping.logo}`;
+			}
+		}
+		return icons;
+	}, [userAgentMappingsData?.mappings]);
+
+	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess, customAppIcons), [customAppIcons, handleDelete, hasDeleteAccess]);
 
 	const columnIds = useMemo(
 		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
@@ -512,6 +525,7 @@ export default function MCPLogsPage() {
 						open={selectedLogId !== null}
 						onOpenChange={(open) => !open && setUrlState({ selected_log: "" }, { history: "replace" })}
 						handleDelete={hasDeleteAccess ? handleDelete : undefined}
+						canReveal={hasRevealAccess}
 						onNavigate={handleLogNavigate}
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}

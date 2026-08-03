@@ -14,7 +14,7 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
 | Responses API | ✅ | ✅ | `/v1/responses` |
-| Responses Lifecycle | ✅ | - | `/v1/responses/{response_id}` |
+| Responses Lifecycle | ✅ | ✅ | `/v1/responses/{response_id}` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
 | Speech (TTS) | ✅ | ✅ | `/v1/audio/speech` |
@@ -229,8 +229,9 @@ GET `/v1/responses/{response_id}` - Retrieve a stored response ([docs](https://p
 | `include` | array | ❌ | Additional fields to include (repeat the parameter for multiple values) |
 | `starting_after` | int | ❌ | Sequence number of the event after which to start the response |
 | `include_obfuscation` | bool | ❌ | Whether to include obfuscation on the response |
+| `stream` | bool | ❌ | When `true`, replays the stored response as SSE events |
 
-**Response:** The full response object, same shape as `POST /v1/responses`.
+**Response:** The full response object, same shape as `POST /v1/responses`. With `stream=true`, the same SSE event stream as `POST /v1/responses` with `stream: true`.
 
 ### Delete Response
 

@@ -1,7 +1,8 @@
+import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage, useGetModelConfigsQuery, useGetProvidersQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitsTable from "./modelLimitsTable";
 
@@ -43,6 +44,9 @@ export default function ModelLimitsView() {
 		},
 	);
 
+	const hasLoadedOnceRef = useRef(false);
+	if (modelConfigsData || modelConfigsError) hasLoadedOnceRef.current = true;
+
 	const totalCount = modelConfigsData?.total_count ?? 0;
 
 	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
@@ -57,6 +61,14 @@ export default function ModelLimitsView() {
 			toast.error(`Failed to load model configs: ${getErrorMessage(modelConfigsError)}`);
 		}
 	}, [modelConfigsError]);
+
+	// The table chrome renders "Loading limits..." while the first request is in
+	// flight, then collapses to the full-page empty state once it resolves to zero
+	// rows — a visible flash. Hold a plain loader until the first response lands.
+	// Subsequent filter/page fetches keep the table so the chrome doesn't jump.
+	if (isModelConfigsLoading && !hasLoadedOnceRef.current) {
+		return <FullPageLoader />;
+	}
 
 	return (
 		<ModelLimitsTable

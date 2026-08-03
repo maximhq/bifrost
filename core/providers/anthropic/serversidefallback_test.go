@@ -1331,7 +1331,7 @@ func TestFallbackEntrySpeed_InjectsFastModeBetaHeader(t *testing.T) {
 			Model:     "claude-fable-5",
 			MaxTokens: 64,
 			Messages:  []AnthropicMessage{{Role: "user", Content: AnthropicContent{ContentStr: schemas.Ptr("hi")}}},
-			Fallbacks: []AnthropicFallbackEntry{{Native: &entry}},
+			Fallbacks: &AnthropicFallbacks{Entries: []AnthropicFallbackEntry{{Native: &entry}}},
 		}
 	}
 	hasFastMode := func(t *testing.T, req *AnthropicMessageRequest, provider schemas.ModelProvider) bool {
@@ -1415,5 +1415,148 @@ func TestFallbacksArray_RoutedByEntryShape(t *testing.T) {
 				t.Errorf("native fallbacks forwarded = %v, want %v", gotNative, tc.wantNative)
 			}
 		})
+	}
+}
+
+// TestFallbacksDefault_RoundTrip pins the Opus 5 fallbacks:"default" form: it parses
+// as a preset (not an array), fallbacksDefaultRouting() reports it, and it re-marshals
+// back to the bare string rather than an array.
+func TestFallbacksDefault_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	body := `{"model":"claude-opus-5","max_tokens":64,` +
+		`"messages":[{"role":"user","content":"hi"}],"fallbacks":"default"}`
+	var req AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if req.Fallbacks == nil || req.Fallbacks.Preset != "default" || len(req.Fallbacks.Entries) != 0 {
+		t.Fatalf("expected preset=\"default\" with no entries, got %+v", req.Fallbacks)
+	}
+	if !req.fallbacksDefaultRouting() {
+		t.Error("fallbacksDefaultRouting() = false, want true")
+	}
+
+	out, err := sonic.Marshal(&req)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if fb := gjson.GetBytes(out, "fallbacks"); fb.Type != gjson.String || fb.String() != "default" {
+		t.Errorf(`re-marshalled fallbacks = %s, want "default"`, fb.Raw)
+	}
+}
+
+// TestFallbacksDefault_IntegrationRoundTrip reproduces the /anthropic/v1/messages
+// typed path (AnthropicMessageRequest → ToBifrostResponsesRequest → rebuild): the
+// "default" preset must survive the Bifrost round-trip and re-emit with the superset
+// beta header, otherwise Anthropic 400s ("fallbacks: Input should be a valid array").
+func TestFallbacksDefault_IntegrationRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	body := `{"model":"claude-opus-5","max_tokens":1024,"fallbacks":"default",` +
+		`"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"xhigh"},` +
+		`"thinking":{"type":"adaptive"}}`
+	var req AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	// AnthropicMessageRequest → BifrostResponsesRequest must preserve the preset.
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	if got, _ := bifrostReq.Params.ExtraParams["fallbacks"].(string); got != "default" {
+		t.Fatalf(`bifrost ExtraParams["fallbacks"] = %#v, want "default"`, bifrostReq.Params.ExtraParams["fallbacks"])
+	}
+
+	// Rebuild → the typed field is restored...
+	rebuilt, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("rebuild failed: %v", err)
+	}
+	if !rebuilt.fallbacksDefaultRouting() {
+		t.Fatalf("rebuilt.fallbacksDefaultRouting() = false, want true (Fallbacks=%+v)", rebuilt.Fallbacks)
+	}
+
+	// ...it re-marshals to the bare string...
+	out, err := sonic.Marshal(rebuilt)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if fb := gjson.GetBytes(out, "fallbacks"); fb.Type != gjson.String || fb.String() != "default" {
+		t.Errorf(`rebuilt fallbacks = %s, want "default"`, fb.Raw)
+	}
+
+	// ...and the superset beta header is injected (this is what was missing).
+	if err := AddMissingBetaHeadersToContext(ctx, rebuilt, schemas.Anthropic); err != nil {
+		t.Fatalf("AddMissingBetaHeadersToContext failed: %v", err)
+	}
+	hdrs, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !slices.Contains(hdrs[AnthropicBetaHeader], AnthropicServerSideFallbackDefaultBetaHeader) {
+		t.Errorf("expected %q injected, got %v", AnthropicServerSideFallbackDefaultBetaHeader, hdrs[AnthropicBetaHeader])
+	}
+}
+
+// TestFallbacksDefault_BetaHeader verifies default routing drives the superset
+// -2026-07-01 beta header (not -06-01) on Anthropic, and is gated off where
+// server-side fallback is unsupported.
+func TestFallbacksDefault_BetaHeader(t *testing.T) {
+	t.Parallel()
+
+	newReq := func() *AnthropicMessageRequest {
+		return &AnthropicMessageRequest{
+			Model:     "claude-opus-5",
+			MaxTokens: 64,
+			Messages:  []AnthropicMessage{{Role: "user", Content: AnthropicContent{ContentStr: schemas.Ptr("hi")}}},
+			Fallbacks: &AnthropicFallbacks{Preset: "default"},
+		}
+	}
+	has := func(t *testing.T, provider schemas.ModelProvider, header string) bool {
+		t.Helper()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		if err := AddMissingBetaHeadersToContext(ctx, newReq(), provider); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		hdrs, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+		return slices.Contains(hdrs[AnthropicBetaHeader], header)
+	}
+
+	if !has(t, schemas.Anthropic, AnthropicServerSideFallbackDefaultBetaHeader) {
+		t.Errorf("expected %q on Anthropic", AnthropicServerSideFallbackDefaultBetaHeader)
+	}
+	if has(t, schemas.Anthropic, AnthropicServerSideFallbackBetaHeader) {
+		t.Error("did not expect the -06-01 header for default routing")
+	}
+	if has(t, schemas.Vertex, AnthropicServerSideFallbackDefaultBetaHeader) {
+		t.Error("did not expect the default-routing header on Vertex (server-side fallback unsupported)")
+	}
+}
+
+// TestStripBifrostFallbacks_DefaultString verifies the "default" string form survives
+// body stripping on providers that support server-side fallback and is dropped
+// fail-closed elsewhere (matching the native-object gating).
+func TestStripBifrostFallbacks_DefaultString(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"claude-opus-5","fallbacks":"default"}`)
+
+	got, err := stripBifrostFallbacksFromBody(body, schemas.Anthropic)
+	if err != nil {
+		t.Fatalf("strip (anthropic) failed: %v", err)
+	}
+	if fb := gjson.GetBytes(got, "fallbacks"); fb.Type != gjson.String || fb.String() != "default" {
+		t.Errorf("anthropic: fallbacks = %s, want kept \"default\"", fb.Raw)
+	}
+
+	for _, p := range []schemas.ModelProvider{schemas.Bedrock, schemas.Vertex} {
+		got, err := stripBifrostFallbacksFromBody(body, p)
+		if err != nil {
+			t.Fatalf("strip (%s) failed: %v", p, err)
+		}
+		if gjson.GetBytes(got, "fallbacks").Exists() {
+			t.Errorf("%s: expected fallbacks stripped, got %s", p, got)
+		}
 	}
 }

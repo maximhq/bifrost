@@ -17,17 +17,78 @@ description: "v2.0.0-prerelease1 changelog - 2026-07-07"
 </Tabs>
 
 <Update label="Bifrost(HTTP)" description="2.0.0-prerelease1">
+> This prerelease is based on [v1.6.3](https://docs.getbifrost.ai/changelogs/v1.6.3) - see that changelog for the full baseline.
 
-<Note>
-This prerelease is based on [v1.6.3](/changelogs/v1.6.3) - see that changelog for the full baseline.
-</Note>
+## ✨ Features
 
-- feat: ChatGPT passthrough route on the OpenAI integration with dedicated request handling
-- feat: track user agents on LLM and MCP logs, with custom user-agent mapping and dashboard dimension rankings
-- feat: MCP tool logs observed by the Bifrost Edge agent can now be ingested with device, app key, decision, and source attribution
-- feat: fallback pages for Bifrost Edge control views (config, devices, inventory) backed by governance resolver support
-- feat: agent handover page with seeded end-to-end data support
-- fix: stopped `/api/devices` bypassing auth via the `/api/dev` prefix
-- fix: surface the AWS exception type (`X-Amzn-Errortype`) on non-streaming Bedrock error responses instead of dropping it
+- **ChatGPT Passthrough** - Added a ChatGPT passthrough route on the OpenAI integration with dedicated request handling
+- **User-Agent Tracking** - Track user agents on LLM and MCP logs, with custom user-agent mapping and dashboard dimension rankings
+- **Edge Agent MCP Log Ingestion** - MCP tool logs observed by the Bifrost Edge agent can now be ingested with device, app key, decision, and source attribution
+- **Edge Fallback Pages** - Added fallback pages for Bifrost Edge control views (config, devices, inventory) backed by governance resolver support
+- **Agent Handover View** - Added an agent handover page with seeded end-to-end data support
+
+## 🐞 Fixed
+
+- **API Auth Bypass** - Stopped `/api/devices` bypassing auth via the `/api/dev` prefix
+- **Bedrock Error Types** - Surface the AWS exception type (`X-Amzn-Errortype`) on non-streaming Bedrock error responses instead of dropping it
+
+</Update>
+<Update label="Core" description="1.7.0">
+- feat: added ChatGPT passthrough support to the OpenAI provider
+- feat: added user-agent tracking schemas with custom user-agent mapping
+- feat: MCP tool execution plugin pipeline improvements
+- fix: surface AWS exception types on Bedrock non-streaming error responses
+
+</Update>
+<Update label="Framework" description="1.5.0">
+- feat: added user-agent tracking columns, materialized views, and migrations to the log store
+- feat: added endpoint-agent columns (device_id, app_key, decision, source) to mcp_tool_logs for Edge agent log ingestion
+- chore: upgraded core to v1.7.0
+
+</Update>
+<Update label="compat" description="0.1.26">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="governance" description="1.6.4">
+- feat: added resolver support for Bifrost Edge fallback pages
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="jsonparser" description="1.5.27">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="logging" description="1.6.0">
+- feat: added user-agent tracking to LLM and MCP logs
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="maxim" description="1.6.27">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="mocker" description="1.5.27">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="modelcatalogresolver" description="1.0.8">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="otel" description="1.3.4">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="prompts" description="1.0.27">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="semanticcache" description="1.5.27">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
+
+</Update>
+<Update label="telemetry" description="1.5.27">
+- chore: upgraded core to v1.7.0 and framework to v1.5.0
 
 </Update>

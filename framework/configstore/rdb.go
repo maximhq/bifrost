@@ -2686,6 +2686,9 @@ func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filters Pricin
 	if filters.ScopeKind != nil {
 		q = q.Where("scope_kind = ?", *filters.ScopeKind)
 	}
+	if filters.UserID != nil {
+		q = q.Where("user_id = ?", *filters.UserID)
+	}
 	if filters.VirtualKeyID != nil {
 		q = q.Where("virtual_key_id = ?", *filters.VirtualKeyID)
 	}
@@ -2710,6 +2713,9 @@ func (s *RDBConfigStore) GetPricingOverridesPaginated(ctx context.Context, param
 	}
 	if params.ScopeKind != nil {
 		baseQuery = baseQuery.Where("scope_kind = ?", *params.ScopeKind)
+	}
+	if params.UserID != nil {
+		baseQuery = baseQuery.Where("user_id = ?", *params.UserID)
 	}
 	if params.VirtualKeyID != nil {
 		baseQuery = baseQuery.Where("virtual_key_id = ?", *params.VirtualKeyID)
@@ -3063,12 +3069,60 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 		}
 		return prefix + name
 	}
+	return preloadCustomerRelationsWithoutVirtualKeys(db, prefix).
+		Preload(relation("VirtualKeys"))
+}
+
+// preloadCustomerRelationsWithoutVirtualKeys preloads every customer relation
+// except VirtualKeys. The paginated list path uses this and reports
+// VirtualKeyCount instead, so a customer with thousands of keys doesn't drag
+// them all into a page of 25 rows.
+func preloadCustomerRelationsWithoutVirtualKeys(db *gorm.DB, prefix string) *gorm.DB {
+	relation := func(name string) string {
+		if prefix == "" {
+			return name
+		}
+		return prefix + name
+	}
 	return db.
 		Preload(relation("Teams")).
 		Preload(relation("Teams.Budgets")).
 		Preload(relation("Budgets")).
-		Preload(relation("RateLimit")).
-		Preload(relation("VirtualKeys"))
+		Preload(relation("RateLimit"))
+}
+
+// attachCustomerVirtualKeyCounts populates VirtualKeyCount on each customer
+// using a single grouped count, avoiding an N+1 over the customers in a page.
+// The customers passed in have already been narrowed by any QueryScope on ctx,
+// so counting their keys unscoped exposes nothing the caller can't already see.
+func (s *RDBConfigStore) attachCustomerVirtualKeyCounts(ctx context.Context, customers []tables.TableCustomer) error {
+	if len(customers) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(customers))
+	for i := range customers {
+		ids = append(ids, customers[i].ID)
+	}
+	var rows []struct {
+		CustomerID string
+		Count      int
+	}
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableVirtualKey{}).
+		Select("customer_id, COUNT(*) AS count").
+		Where("customer_id IN ?", ids).
+		Group("customer_id").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	countByCustomer := make(map[string]int, len(rows))
+	for _, row := range rows {
+		countByCustomer[row.CustomerID] = row.Count
+	}
+	for i := range customers {
+		customers[i].VirtualKeyCount = countByCustomer[customers[i].ID]
+	}
+	return nil
 }
 
 // preloadVirtualKeyBaseRelations preloads the base relationships for a virtual key.
@@ -3218,14 +3272,26 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 	// on what the caller is allowed to see.
 	baseQuery := s.ScopedDB(ctx).Model(&tables.TableVirtualKey{})
 
-	// Virtual keys are either customer-scoped or team-scoped, never both.
-	// When both filters are provided, use OR to match keys belonging to either.
-	if params.CustomerID != "" && params.TeamID != "" {
-		baseQuery = baseQuery.Where("(customer_id = ? OR team_id = ?)", params.CustomerID, params.TeamID)
-	} else if params.CustomerID != "" {
-		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
-	} else if params.TeamID != "" {
-		baseQuery = baseQuery.Where("team_id = ?", params.TeamID)
+	// A virtual key is assigned to at most one of customer / team / user, so
+	// combining assignment filters ORs them rather than narrowing to nothing.
+	// UserID has no meaning in the OSS build (the VK↔user link lives in an
+	// enterprise table), so it fails closed instead of silently widening the
+	// result set; the enterprise store overrides this method to honour it.
+	var assignmentClauses []string
+	var assignmentArgs []interface{}
+	if params.CustomerID != "" {
+		assignmentClauses = append(assignmentClauses, "customer_id = ?")
+		assignmentArgs = append(assignmentArgs, params.CustomerID)
+	}
+	if params.TeamID != "" {
+		assignmentClauses = append(assignmentClauses, "team_id = ?")
+		assignmentArgs = append(assignmentArgs, params.TeamID)
+	}
+	if params.UserID != "" {
+		assignmentClauses = append(assignmentClauses, "1 = 0")
+	}
+	if len(assignmentClauses) > 0 {
+		baseQuery = baseQuery.Where("("+strings.Join(assignmentClauses, " OR ")+")", assignmentArgs...)
 	}
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -4128,6 +4194,9 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 		Find(&customers).Error; err != nil {
 		return nil, err
 	}
+	for i := range customers {
+		customers[i].VirtualKeyCount = len(customers[i].VirtualKeys)
+	}
 	return customers, nil
 }
 
@@ -4157,10 +4226,13 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 		offset = 0
 	}
 	var customers []tables.TableCustomer
-	if err := preloadCustomerRelations(baseQuery, "").
+	if err := preloadCustomerRelationsWithoutVirtualKeys(baseQuery, "").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&customers).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachCustomerVirtualKeyCounts(ctx, customers); err != nil {
 		return nil, 0, err
 	}
 	return customers, totalCount, nil
@@ -4181,6 +4253,7 @@ func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.Ta
 		}
 		return nil, err
 	}
+	customer.VirtualKeyCount = len(customer.VirtualKeys)
 	return &customer, nil
 }
 
@@ -4461,11 +4534,70 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 			}
 			return err
 		}
+		// Overrides are managed by the dedicated override path, not UpdateBudget;
+		// carry them forward so partial updates can't wipe an active override.
+		// The grant columns must travel with the derived remaining count: dropping
+		// the anchor would leave a cycles override with no lifecycle, which
+		// validateOverride rejects outright.
+		budget.OverrideAmount = existing.OverrideAmount
+		budget.OverrideMode = existing.OverrideMode
+		budget.OverrideCyclesRemaining = existing.OverrideCyclesRemaining
+		budget.OverrideCyclesTotal = existing.OverrideCyclesTotal
+		budget.OverrideAnchorReset = existing.OverrideAnchorReset
 	}
 	if err := txDB.WithContext(ctx).Save(budget).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
+}
+
+// UpdateBudgetOverride atomically updates only override columns so concurrent usage changes are preserved.
+//
+// The grant is anchored at the budget's current window boundary rather than at
+// the persisted last_reset. Those differ by up to one reset-ticker interval,
+// because a node advances last_reset in memory before the next dump flushes it,
+// and anchoring one window behind would silently grant an extra window.
+func (s *RDBConfigStore) UpdateBudgetOverride(ctx context.Context, id string, amount float64, mode tables.BudgetOverrideMode, cyclesTotal int, calendarAligned bool, tx ...*gorm.DB) (*tables.TableBudget, error) {
+	if len(tx) == 0 {
+		var updated *tables.TableBudget
+		err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			var err error
+			updated, err = s.UpdateBudgetOverride(ctx, id, amount, mode, cyclesTotal, calendarAligned, transaction)
+			return err
+		})
+		return updated, err
+	}
+
+	txDB := tx[0].WithContext(ctx)
+	var budget tables.TableBudget
+	if err := dbForUpdate(txDB).First(&budget, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	// IsCalendarAligned is not persisted on the budget row and a bare First does
+	// not fire the owner's AfterFind, so the caller has to supply it.
+	budget.IsCalendarAligned = calendarAligned
+	if err := budget.SetOverrideAt(amount, mode, cyclesTotal, budget.WindowStart(time.Now())); err != nil {
+		return nil, err
+	}
+	if err := txDB.Session(&gorm.Session{SkipHooks: true}).Model(&tables.TableBudget{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"override_amount":           budget.OverrideAmount,
+			"override_mode":             budget.OverrideMode,
+			"override_cycles_remaining": budget.OverrideCyclesRemaining,
+			"override_cycles_total":     budget.OverrideCyclesTotal,
+			"override_anchor_reset":     budget.OverrideAnchorReset,
+			"updated_at":                time.Now(),
+		}).Error; err != nil {
+		return nil, s.parseGormError(err)
+	}
+	if err := txDB.First(&budget, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &budget, nil
 }
 
 // DeleteBudget deletes a budget from the database.
@@ -4778,6 +4910,117 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 	}))
 }
 
+// SyncRoutingRules applies a batch of routing rule creates and updates atomically, deferring the
+// unique-priority-per-scope check until every rule is written. This lets a valid permutation (e.g.
+// swapping two rules' priorities) succeed despite a transient intermediate collision, while a
+// genuine end-state duplicate still errors. Used by config-file reloads that apply many rules at once.
+func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error {
+	database := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		database = tx[0]
+	}
+
+	// Validate scopeID is required for non-global scope (same guard as CreateRoutingRule/UpdateRoutingRule).
+	for _, list := range [][]tables.TableRoutingRule{toAdd, toUpdate} {
+		for i := range list {
+			if list[i].Scope != "" && list[i].Scope != "global" && list[i].ScopeID == nil {
+				return fmt.Errorf("scopeID is required for non-global scope '%s'", list[i].Scope)
+			}
+		}
+	}
+
+	type scopeRef struct {
+		scope   string
+		scopeID *string
+	}
+
+	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		seen := make(map[string]bool)
+		scopes := make([]scopeRef, 0, len(toAdd)+len(toUpdate))
+		record := func(rule *tables.TableRoutingRule) {
+			key := rule.Scope
+			if rule.ScopeID != nil {
+				key += "\x00" + *rule.ScopeID
+			}
+			if !seen[key] {
+				seen[key] = true
+				scopes = append(scopes, scopeRef{scope: rule.Scope, scopeID: rule.ScopeID})
+			}
+		}
+
+		putTargets := func(rule *tables.TableRoutingRule) error {
+			for i := range rule.Targets {
+				rule.Targets[i].RuleID = rule.ID
+				if err := tx.Create(&rule.Targets[i]).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		// Insert new rules.
+		for i := range toAdd {
+			rule := &toAdd[i]
+			targets := rule.Targets
+			rule.Targets = nil
+			if err := tx.Omit("Targets").Create(rule).Error; err != nil {
+				return err
+			}
+			rule.Targets = targets
+			if err := putTargets(rule); err != nil {
+				return err
+			}
+			record(rule)
+		}
+
+		// Update changed rules and replace their targets.
+		for i := range toUpdate {
+			rule := &toUpdate[i]
+			var existing tables.TableRoutingRule
+			if err := dbForUpdate(tx).First(&existing, "id = ?", rule.ID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrNotFound
+				}
+				return err
+			}
+			targets := rule.Targets
+			rule.Targets = nil
+			if err := tx.Omit("Targets").Save(rule).Error; err != nil {
+				return err
+			}
+			rule.Targets = targets
+			if err := tx.Where("rule_id = ?", rule.ID).Delete(&tables.TableRoutingTarget{}).Error; err != nil {
+				return err
+			}
+			if err := putTargets(rule); err != nil {
+				return err
+			}
+			record(rule)
+		}
+
+		// Deferred invariant: no two rules may share a priority within a scope's final state.
+		for _, sc := range scopes {
+			q := tx.Model(&tables.TableRoutingRule{}).Where("scope = ?", sc.scope)
+			if sc.scopeID != nil {
+				q = q.Where("scope_id = ?", *sc.scopeID)
+			} else {
+				q = q.Where("scope_id IS NULL")
+			}
+			var dup []int
+			if err := q.Group("priority").Having("COUNT(*) > 1").Pluck("priority", &dup).Error; err != nil {
+				return err
+			}
+			if len(dup) > 0 {
+				if sc.scopeID != nil {
+					return fmt.Errorf("routing rule with priority %d already exists for scope '%s' with scopeID '%s'", dup[0], sc.scope, *sc.scopeID)
+				}
+				return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", dup[0], sc.scope)
+			}
+		}
+		return nil
+	}))
+}
+
 // DeleteRoutingRule deletes a routing rule and its targets from the database.
 func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error {
 	database := s.DB()
@@ -4873,6 +5116,9 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	}
 	if params.Scope != "" {
 		baseQuery = baseQuery.Where("scope = ?", params.Scope)
+	}
+	if params.ScopeID != "" {
+		baseQuery = baseQuery.Where("scope_id = ?", params.ScopeID)
 	}
 	if params.Provider != "" {
 		baseQuery = baseQuery.Where("provider = ?", params.Provider)

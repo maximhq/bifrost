@@ -216,7 +216,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						rate_limit: rateLimitPayload,
 					},
 				}).unwrap();
-				toast.success("Model limit updated successfully");
+				toast.success("Limit updated successfully");
 			} else {
 				await createModelConfig({
 					model_name: data.modelName,
@@ -241,7 +241,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 								}
 							: undefined,
 				}).unwrap();
-				toast.success("Model limit created successfully");
+				toast.success("Limit created successfully");
 			}
 
 			onSave();
@@ -263,9 +263,9 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				data-testid="model-limit-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0 px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
-					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>
+					<SheetTitle>{isEditing ? "Edit Limit" : "Create Limit"}</SheetTitle>
 					<SheetDescription>
-						{isEditing ? "Update budget and rate limit configuration." : "Set up budget and rate limits for a model."}
+						{isEditing ? "Update budget and rate limit configuration." : "Set up budget and rate limits for a scope."}
 					</SheetDescription>
 				</SheetHeader>
 

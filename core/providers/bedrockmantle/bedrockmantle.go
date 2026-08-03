@@ -528,10 +528,7 @@ func (provider *BedrockMantleProvider) BatchResults(_ *schemas.BifrostContext, _
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
 }
 
-// CountTokens is not supported by the Bedrock Mantle provider.
-func (provider *BedrockMantleProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
-}
+// CountTokens is implemented in counttokens.go (native-Anthropic count_tokens path).
 
 // Compaction is not supported by the Bedrock Mantle provider.
 func (provider *BedrockMantleProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {

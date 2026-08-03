@@ -41,7 +41,12 @@ func newTestAsyncExecutor(t *testing.T) *AsyncJobExecutor {
 	t.Helper()
 	ctx := context.Background()
 
-	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: ":memory:"}, asyncTestLogger{})
+	// File-backed store: some tests below poll the job row from the test
+	// goroutine while executeJob writes from another, and a :memory: DSN
+	// gives each pooled connection its own database.
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{
+		Path: filepath.Join(t.TempDir(), "asyncjob.db"),
+	}, asyncTestLogger{})
 	require.NoError(t, err)
 	t.Cleanup(func() { store.Close(ctx) })
 
@@ -57,7 +62,7 @@ func newTestAsyncExecutor(t *testing.T) *AsyncJobExecutor {
 // waitForJobCompletion polls until the operation callback has been invoked.
 func waitForJobCompletion(t *testing.T, done *atomic.Bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if done.Load() {
 			return
@@ -73,7 +78,7 @@ func waitForJobCompletion(t *testing.T, done *atomic.Bool) {
 // Processing is intermediate and must not be treated as terminal.
 func waitForJobStatus(t *testing.T, store LogStore, jobID string) *AsyncJob {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		job, err := store.FindAsyncJobByID(context.Background(), jobID)
 		if err == nil && (job.Status == schemas.AsyncJobStatusCompleted || job.Status == schemas.AsyncJobStatusFailed) {
@@ -255,7 +260,7 @@ func (r *recordingWebhookDispatcher) enqueued() []AsyncJob {
 // terminal job status alone does not guarantee it already fired.
 func waitForWebhookEnqueue(t *testing.T, dispatcher *recordingWebhookDispatcher, n int) []AsyncJob {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if jobs := dispatcher.enqueued(); len(jobs) >= n {
 			return jobs

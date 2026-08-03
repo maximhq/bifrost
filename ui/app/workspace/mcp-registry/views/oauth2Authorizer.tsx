@@ -394,7 +394,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 					{status === "success" && (
 						<InfoBox variant="success" icon={<CheckCircle2 className="size-4" />}>
 							<p className="font-medium">Finishing setup and syncing available tools.</p>
-							<p className="text-xs opacity-80">You can close this dialog — setup will complete in the background.</p>
+							<p className="text-xs opacity-80">You can close this dialog; setup will complete in the background.</p>
 						</InfoBox>
 					)}
 

@@ -2976,8 +2976,8 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 	// And if still we don't get role ARN
 	if roleArn == "" {
-		provider.logger.Error("role_arn is required for Bedrock batch API (provide in extra_params)")
-		return nil, providerUtils.NewBifrostOperationError("role_arn is required for Bedrock batch API (provide in extra_params)", nil)
+		provider.logger.Error("role_arn is required for Bedrock batch API (send it in extra_params or set batch_role_arn in the key config)")
+		return nil, providerUtils.NewBifrostOperationError("role_arn is required for Bedrock batch API (send it in extra_params or set batch_role_arn in the key config)", nil)
 	}
 	// Get output S3 URI from extra params
 	outputS3Uri := ""
