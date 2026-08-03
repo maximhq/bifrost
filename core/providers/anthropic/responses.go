@@ -5168,8 +5168,8 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 		case AnthropicContentBlockTypeThinking:
 			if block.Thinking != nil {
 				bifrostMsg := schemas.ResponsesMessage{
-					ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					ID:   new("rs_" + providerUtils.GetRandomString(50)),
+					Type: new(schemas.ResponsesMessageTypeReasoning),
 					Role: role,
 					Content: &schemas.ResponsesMessageContent{
 						ContentBlocks: []schemas.ResponsesMessageContentBlock{
@@ -5188,8 +5188,8 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			// Handle redacted thinking (encrypted content)
 			if block.Data != nil {
 				bifrostMsg := schemas.ResponsesMessage{
-					ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					ID:   new("rs_" + providerUtils.GetRandomString(50)),
+					Type: new(schemas.ResponsesMessageTypeReasoning),
 					ResponsesReasoning: &schemas.ResponsesReasoning{
 						Summary:          []schemas.ResponsesReasoningSummary{},
 						EncryptedContent: block.Data,
@@ -5532,8 +5532,8 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 		case AnthropicContentBlockTypeRedactedThinking:
 			if block.Data != nil {
 				bifrostMsg := schemas.ResponsesMessage{
-					ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					ID:   new("rs_" + providerUtils.GetRandomString(50)),
+					Type: new(schemas.ResponsesMessageTypeReasoning),
 					ResponsesReasoning: &schemas.ResponsesReasoning{
 						Summary:          []schemas.ResponsesReasoningSummary{},
 						EncryptedContent: block.Data,
@@ -5881,8 +5881,8 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 	// This ensures reasoning comes before any text/tool blocks (Bedrock compatibility)
 	if len(reasoningContentBlocks) > 0 {
 		reasoningMessage := schemas.ResponsesMessage{
-			ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
-			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ID:   new("rs_" + providerUtils.GetRandomString(50)),
+			Type: new(schemas.ResponsesMessageTypeReasoning),
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{},
 			},

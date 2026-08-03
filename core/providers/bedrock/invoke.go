@@ -138,6 +138,125 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// UnmarshalJSON implements custom JSON unmarshalling for BedrockContentBlock.
+// Bedrock's InvokeModel route passes Claude's native Anthropic Messages format
+// straight through, so content blocks may arrive in Anthropic's type-discriminated
+// shape (e.g. {"type":"tool_use","id",...}) instead of Converse's field-name-
+// discriminated shape ({"toolUse":{"toolUseId",...}}). A plain struct-tag unmarshal
+// leaves every field nil in that case without erroring. This detects the Anthropic
+// shape via its "type" field (absent from every valid Converse-shaped block) and
+// normalizes it into the Converse-shaped fields below; Converse-shaped and
+// plain-text input is left byte-for-byte equivalent to the previous behavior.
+func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
+	type Alias BedrockContentBlock
+	aux := &struct {
+		Type   *string `json:"type,omitempty"`
+		Source *struct {
+			MediaType string `json:"media_type,omitempty"`
+			Data      string `json:"data,omitempty"`
+		} `json:"source,omitempty"`
+		ID        *string         `json:"id,omitempty"`
+		Name      *string         `json:"name,omitempty"`
+		Input     json.RawMessage `json:"input,omitempty"`
+		ToolUseID *string         `json:"tool_use_id,omitempty"`
+		Content   json.RawMessage `json:"content,omitempty"`
+		IsError   *bool           `json:"is_error,omitempty"`
+		Thinking  *string         `json:"thinking,omitempty"`
+		Signature *string         `json:"signature,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(b),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if aux.Type == nil {
+		// Already Converse-shaped (or a coincidentally-matching plain-text block).
+		return nil
+	}
+
+	switch *aux.Type {
+	case "image":
+		if aux.Source == nil || aux.Source.Data == "" {
+			return nil
+		}
+		format := "jpeg"
+		switch aux.Source.MediaType {
+		case "image/png":
+			format = "png"
+		case "image/gif":
+			format = "gif"
+		case "image/webp":
+			format = "webp"
+		}
+		imgData := aux.Source.Data
+		b.Image = &BedrockImageSource{
+			Format: format,
+			Source: BedrockImageSourceData{Bytes: &imgData},
+		}
+	case "tool_use":
+		if aux.ID == nil || aux.Name == nil {
+			return nil
+		}
+		b.ToolUse = &BedrockToolUse{
+			ToolUseID: *aux.ID,
+			Name:      *aux.Name,
+			Input:     aux.Input,
+		}
+	case "tool_result":
+		if aux.ToolUseID == nil {
+			return nil
+		}
+		content, err := normalizeAnthropicToolResultContent(aux.Content)
+		if err != nil {
+			return err
+		}
+		b.ToolResult = &BedrockToolResult{
+			ToolUseID: *aux.ToolUseID,
+			Content:   content,
+		}
+		if aux.IsError != nil && *aux.IsError {
+			b.ToolResult.Status = schemas.Ptr("error")
+		}
+	case "thinking":
+		if aux.Thinking == nil {
+			return nil
+		}
+		b.ReasoningContent = &BedrockReasoningContent{
+			ReasoningText: &BedrockReasoningContentText{
+				Text:      aux.Thinking,
+				Signature: aux.Signature,
+			},
+		}
+	}
+
+	return nil
+}
+
+// normalizeAnthropicToolResultContent decodes an Anthropic-native tool_result's
+// "content" field, which per Anthropic's API is either a plain string or an
+// array of content blocks. Array elements are decoded as []BedrockContentBlock,
+// so a nested image or tool_use inside a tool_result is normalized recursively
+// via BedrockContentBlock.UnmarshalJSON above.
+func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentBlock, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	var asString string
+	if err := sonic.Unmarshal(raw, &asString); err == nil {
+		return []BedrockContentBlock{{Text: &asString}}, nil
+	}
+
+	var blocks []BedrockContentBlock
+	if err := sonic.Unmarshal(raw, &blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
 // DetectInvokeRequestType determines the request type from raw JSON body and model ID
 // without full deserialization, keeping detection logic colocated with conversion methods.
 func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
