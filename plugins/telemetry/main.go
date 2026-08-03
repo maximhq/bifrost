@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,11 @@ const (
 	mcpStartTimeKey      schemas.BifrostContextKey = "bf-prom-mcp-start-time"
 	mcpClientNameKey     schemas.BifrostContextKey = "bf-prom-mcp-client-name"
 	mcpToolNameKey       schemas.BifrostContextKey = "bf-prom-mcp-tool-name"
+
+	// Overhead is measured across the transport hooks rather than the LLM hooks,
+	// so the window matches the OTEL root span. See recordOverhead.
+	transportStartTimeKey schemas.BifrostContextKey = "bf-prom-transport-start-time"
+	overheadLabelsKey     schemas.BifrostContextKey = "bf-prom-overhead-labels"
 )
 
 // PushGatewayConfig holds the configuration for pushing metrics to a Prometheus Push Gateway.
@@ -160,6 +166,7 @@ type PrometheusPlugin struct {
 	HTTPResponseSizeBytes          *prometheus.HistogramVec
 	UpstreamRequestsTotal          *prometheus.CounterVec
 	UpstreamLatencySeconds         *prometheus.HistogramVec
+	OverheadLatencySeconds         *prometheus.HistogramVec
 	SuccessRequestsTotal           *prometheus.CounterVec
 	ErrorRequestsTotal             *prometheus.CounterVec
 	InputTokensTotal               *prometheus.CounterVec
@@ -213,6 +220,17 @@ var (
 	upstreamLatencyBuckets = []float64{
 		.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5,
 		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
+	}
+
+	// overheadLatencyBuckets: Bifrost's own processing cost, i.e. total minus time
+	// blocked on upstream sockets. A different scale entirely from upstream latency —
+	// healthy values are sub-millisecond to low tens of ms, dominated by request and
+	// response marshalling. Reusing upstreamLatencyBuckets would pile almost every
+	// request into the first two buckets and make regressions invisible. The long
+	// tail up to 30s exists to catch queue saturation and pathological payloads.
+	overheadLatencyBuckets = []float64{
+		.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1,
+		.25, .5, 1, 2.5, 5, 10, 30,
 	}
 
 	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
@@ -387,6 +405,18 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(append(defaultBifrostLabels, "is_success"), filteredCustomLabels...),
 	)
 
+	// Labelled without is_success: unlike upstream latency, overhead is dominated by
+	// payload marshalling and is not expected to differ between success and failure,
+	// and a failed request often has no response to marshal at all.
+	bifrostOverheadLatencySeconds := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_overhead_latency_seconds",
+			Help:    "Latency added by Bifrost itself: total request time minus time blocked on upstream providers.",
+			Buckets: overheadLatencyBuckets,
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
 	bifrostSuccessRequestsTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "bifrost_success_requests_total",
@@ -550,6 +580,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		HTTPResponseSizeBytes:          httpResponseSizeBytes,
 		UpstreamRequestsTotal:          bifrostUpstreamRequestsTotal,
 		UpstreamLatencySeconds:         bifrostUpstreamLatencySeconds,
+		OverheadLatencySeconds:         bifrostOverheadLatencySeconds,
 		SuccessRequestsTotal:           bifrostSuccessRequestsTotal,
 		ErrorRequestsTotal:             bifrostErrorRequestsTotal,
 		InputTokensTotal:               bifrostInputTokensTotal,
@@ -656,12 +687,41 @@ func (p *PrometheusPlugin) RedactConfig(raw map[string]any) (map[string]any, err
 
 // HTTPTransportPreHook is not used for this plugin
 func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	ctx.SetValue(transportStartTimeKey, time.Now())
 	return nil, nil
 }
 
-// HTTPTransportPostHook is not used for this plugin
+// HTTPTransportPostHook records Bifrost's own overhead.
+//
+// This is the widest window the plugin can see — the middleware order is
+// Tracing.pre → TransportInterceptor.pre → handler → TransportInterceptor.post
+// → Tracing.defer — so it brackets request parsing, the full core pipeline and
+// response marshalling, matching what OTEL derives from the root span. Measuring
+// across PreLLMHook/PostLLMHook instead would miss the transport work, and
+// marshalling a large response body is a real part of the cost.
+//
+// Running here also makes the observation once-per-request rather than
+// once-per-attempt, so a retried request no longer contributes several times.
 func (p *PrometheusPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	start, ok := ctx.Value(transportStartTimeKey).(time.Time)
+	if !ok {
+		return nil
+	}
+	p.recordOverhead(ctx, time.Since(start))
 	return nil
+}
+
+// recordOverhead observes total-minus-upstream against the labels the LLM hook
+// resolved. Silent when either is missing: no accumulator means upstream was
+// never measured, and reporting the full duration as overhead would be wrong.
+func (p *PrometheusPlugin) recordOverhead(ctx *schemas.BifrostContext, total time.Duration) {
+	labels, ok := ctx.Value(overheadLabelsKey).([]string)
+	if !ok || len(labels) == 0 {
+		return
+	}
+	if overhead, ok := schemas.CalculateOverhead(ctx, total); ok {
+		p.OverheadLatencySeconds.WithLabelValues(labels...).Observe(overhead.Seconds())
+	}
 }
 
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
@@ -918,6 +978,13 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
+	// Labels for HTTPTransportPostHook, which observes overhead. Written before
+	// the goroutine launches so the transport hook can't race it; on a retry the
+	// final attempt's labels win.
+	if isStreamFinal {
+		ctx.SetValue(overheadLabelsKey, slices.Clone(promLabelValues))
+	}
+
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
 	go func() {
 		// For streaming requests, handle per-token metrics for intermediate chunks
@@ -975,6 +1042,11 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		latencyLabelValues = append(latencyLabelValues, strconv.FormatBool(bifrostErr == nil))            // is_success
 		latencyLabelValues = append(latencyLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 		p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
+
+		// SDK caller — no transport hooks, so this window is all there is.
+		if _, viaTransport := ctx.Value(transportStartTimeKey).(time.Time); !viaTransport {
+			p.recordOverhead(ctx, time.Since(startTime))
+		}
 
 		// Record cost using the dedicated cost counter
 		if cost > 0 {

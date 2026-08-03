@@ -150,6 +150,8 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 					kvStr(schemas.AttrBifrostRequestID, requestID),
 				)
 			}
+			// Overhead is stamped on the snapshot's root span by the tracer, so it
+			// flows through convertAttributesToKeyValues above like any other attr.
 			if len(p.instanceAttrs) > 0 {
 				otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
 			}
