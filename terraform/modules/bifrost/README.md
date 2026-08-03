@@ -98,9 +98,7 @@ provider "kubernetes" {
 
 Invalid combinations (e.g. `cloud_provider = "aws"` with `service = "gke"`) are rejected at plan time with a clear error message.
 
-<blockquote>
-<strong>Preview:</strong> these targets have maintained Terraform implementations and mocked plan tests, but are not continuously deployed to live cloud accounts. Validate the generated plan, networking, IAM, persistence, and rollback in a non-production account before adoption.
-</blockquote>
+> **Preview:** these targets have maintained Terraform implementations and mocked plan tests, but are not continuously deployed to live cloud accounts. Validate the generated plan, networking, IAM, persistence, and rollback in a non-production account before adoption.
 
 ## Configuration Merging
 

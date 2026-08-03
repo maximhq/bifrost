@@ -22,7 +22,7 @@ The Helm configuration is validated in the repository. The complete guide is not
 | PostgreSQL | Any reachable PostgreSQL satisfying the shared contract; it may run inside or outside AWS |
 | External access | Any compatible Gateway API, ingress, Service `LoadBalancer`, or external proxy |
 | Enterprise mesh | Kubernetes pod discovery plus bidirectional `10101/TCP+UDP` and `10102/TCP` between Bifrost pods |
-| Image pull | Public Docker Hub for OSS, or the Enterprise registry/mirror identity supplied for the customer |
+| Image pull | Public Docker Hub for OSS, or the Enterprise registry/mirror identity supplied for the customer through [Enterprise AWS](/deployment-guides/enterprise/aws) |
 
 ## Deploy Bifrost
 
@@ -47,6 +47,8 @@ Continue only after the nodes report `Ready`.
 ### Step 2: Create secrets and Helm values
 
 The following commands prompt for sensitive values so they are not written into the values file:
+
+The encryption key protects persisted credentials. Create it once, keep it unchanged after Bifrost writes encrypted data, and use the same value for every replica. Replacing the key makes existing encrypted values unreadable.
 
 ```bash
 kubectl create namespace bifrost \
@@ -211,17 +213,21 @@ Expected: HTTP `200` and a response containing `"status":"ok"`.
 Use this option when the cluster has EKS Auto Mode load balancing or AWS Load Balancer Controller configured:
 
 ```bash
-kubectl annotate service bifrost \
-  --namespace bifrost \
-  service.beta.kubernetes.io/aws-load-balancer-type=external \
-  service.beta.kubernetes.io/aws-load-balancer-nlb-target-type=ip \
-  service.beta.kubernetes.io/aws-load-balancer-scheme=internet-facing \
-  --overwrite
+cat >> bifrost-values.yaml <<'EOF'
 
-kubectl patch service bifrost \
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+EOF
+
+helm upgrade bifrost bifrost/bifrost \
   --namespace bifrost \
-  --type merge \
-  --patch '{"spec":{"type":"LoadBalancer"}}'
+  --values bifrost-values.yaml \
+  --atomic \
+  --timeout 15m
 
 kubectl get service bifrost --namespace bifrost --watch
 ```
