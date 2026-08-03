@@ -1,0 +1,158 @@
+---
+title: "Requesty"
+description: "Requesty API conversion guide - OpenAI-compatible AI gateway/router, 400+ models, streaming, tool calling, and embeddings"
+icon: "r"
+---
+
+## Overview
+
+Requesty is an **OpenAI-compatible AI gateway** routing requests across 400+ models from 30+ providers through a single endpoint. Bifrost delegates all functionality to the OpenAI provider implementation with standard parameter filtering. Key characteristics:
+- **OpenAI-compatible chat completions** - Standard chat, streaming, and tool calling supported
+- **Embeddings support** - Unlike some router providers, Requesty exposes an OpenAI-compatible embeddings endpoint
+- **Model naming** - Uses `provider/model` format (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-5`); call Requesty's `/v1/models` for the current list rather than hardcoding versions
+- **No text completion (legacy) API** - Requesty does not expose the legacy `/v1/completions` endpoint
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Text Completions | ❌ | ❌ | - |
+| List Models | ✅ | - | `/v1/models` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions (legacy), Image Generation, Speech, Transcriptions, Files, and Batch are not implemented in this provider. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure Requesty as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Requesty** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Requesty**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.REQUESTY_API_KEY`). Get a key from [app.requesty.ai](https://app.requesty.ai/api-keys).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "requesty": {
+      "keys": [
+        {
+          "name": "requesty-key-1",
+          "value": "env.REQUESTY_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Requesty:
+    return []schemas.Key{{
+        Name:   "requesty-key-1",
+        Value:  *schemas.NewSecretVar("env.REQUESTY_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Requesty supports standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Requesty supports standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Model Naming
+
+Unlike single-vendor providers, Requesty requires the upstream vendor prefix in the model name itself (e.g. `openai/gpt-4o`, `anthropic/claude-sonnet-4-5`, `google/gemini-2.5-pro`). This is passed through as-is; Bifrost does not remap or validate it against Requesty's model catalog.
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API format to Chat Completions internally, then converts response back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+Same parameter support as Chat Completions with response format differences (output items instead of message content).
+
+---
+
+# 3. Embeddings
+
+Requesty exposes an OpenAI-compatible `/v1/embeddings` endpoint, routed via the shared OpenAI embedding handler. Standard OpenAI embedding parameters (`model`, `input`, `dimensions`) are supported; see [OpenAI Embeddings](/providers/supported-providers/openai#embeddings) for full parameter behavior.
+
+---
+
+# 4. List Models
+
+Lists available models from Requesty's `/v1/models` endpoint.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completion (legacy) | Not exposed by Requesty's API |
+| Image Generation | Not implemented in this provider |
+| Speech/TTS | Not implemented in this provider |
+| Transcription/STT | Not implemented in this provider |
+| Batch Operations | Not implemented in this provider |
+| File Management | Not implemented in this provider |
+
+---
+
+## Caveats
+
+<Accordion title="Model name requires provider prefix">
+**Severity**: Low
+**Behavior**: Requesty rejects model names that omit the upstream vendor prefix (e.g. `gpt-4o` alone will fail; `openai/gpt-4o` is required).
+**Impact**: Users migrating a config from a direct OpenAI setup need to update model names to include the vendor prefix.
+**Code**: Passed through as-is in `ChatCompletion`/`ChatCompletionStream` - no remapping performed.
+</Accordion>
+
+<Accordion title="EU data residency uses a different base URL entirely">
+**Severity**: Low
+**Behavior**: Requesty's EU-resident endpoint (`https://router.eu.requesty.ai`) is a separate base URL, not a header or query parameter.
+**Impact**: Users needing EU data residency must override `network_config.base_url` for this provider rather than relying on a config flag.
+</Accordion>
