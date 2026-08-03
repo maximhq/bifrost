@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,14 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+// modelArkTaskIDPattern matches ModelArk's video task ID shape, e.g.
+// "cgt-20260507095207-ktz64". taskID below has already been through
+// StripVideoIDProviderSuffix, which URL-decodes it exactly once, so this
+// allowlist runs on the decoded value: it blocks a raw "/", "?", or "." from
+// reaching the request path, and it also rejects a "%" left over from
+// double-encoding (one decode of "%252e" yields "%2e", which fails here).
+var modelArkTaskIDPattern = regexp.MustCompile(`^cgt-[0-9a-z-]{1,128}$`)
 
 // ModelArkProvider implements the Provider interface for BytePlus ModelArk's API.
 type ModelArkProvider struct {
@@ -38,6 +47,7 @@ func NewModelArkProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		MaxConnWaitTimeout:  requestTimeout,
 		MaxConnDuration:     time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:    fasthttp.FIFO,
+		MaxResponseBodySize: maxVideoDownloadBytes,
 	}
 
 	// Configure proxy if provided
@@ -261,6 +271,9 @@ func (provider *ModelArkProvider) VideoGeneration(ctx *schemas.BifrostContext, k
 func (provider *ModelArkProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	taskID := providerUtils.StripVideoIDProviderSuffix(bifrostReq.ID, providerName)
+	if !modelArkTaskIDPattern.MatchString(taskID) {
+		return nil, providerUtils.NewBifrostOperationError("invalid task id format", nil)
+	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)

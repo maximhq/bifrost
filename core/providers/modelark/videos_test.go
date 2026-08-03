@@ -133,6 +133,10 @@ func TestResolutionFromSize(t *testing.T) {
 		{"empty", "", "", false},
 		{"no_separator", "square", "", false},
 		{"non_numeric_height", "1280xtall", "", false},
+		{"non_numeric_tier", "top", "", false},
+		{"negative_height_via_x", "1280x-720", "", false},
+		{"negative_tier", "-720p", "", false},
+		{"zero_height_via_x", "1280x0", "", false},
 	}
 
 	for _, tt := range tests {
