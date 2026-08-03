@@ -43,11 +43,21 @@ func (h *SessionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
 		SendJSON(ctx, map[string]any{
-			"is_auth_enabled": false,
-			"has_valid_token": false,
-			"auth_type":       "none",
+			"is_auth_enabled":         false,
+			"has_valid_token":         false,
+			"auth_type":               "none",
+			"inference_auth_enforced": false,
 		})
 		return
+	}
+	// inference_auth_enforced reports enforce_auth_on_inference - a separate toggle from
+	// dashboard auth (this endpoint's main subject) that gates /v1/* instead of the
+	// dashboard/admin API. Surfaced here so a locked dashboard doesn't look like the whole
+	// gateway is secured when this second, easily-missed control is still off; see
+	// GHSA-9vcc-9mmm-556x.
+	inferenceAuthEnforced := false
+	if clientConfig, err := h.configStore.GetClientConfig(ctx); err == nil && clientConfig != nil {
+		inferenceAuthEnforced = clientConfig.EnforceAuthOnInference
 	}
 	authConfig, err := h.configStore.GetAuthConfig(ctx)
 	if err != nil {
@@ -56,9 +66,10 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 	}
 	if authConfig == nil {
 		SendJSON(ctx, map[string]any{
-			"is_auth_enabled": false,
-			"has_valid_token": false,
-			"auth_type":       "none",
+			"is_auth_enabled":         false,
+			"has_valid_token":         false,
+			"auth_type":               "none",
+			"inference_auth_enforced": inferenceAuthEnforced,
 		})
 		return
 	}
@@ -78,9 +89,10 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	SendJSON(ctx, map[string]any{
-		"is_auth_enabled": authConfig.IsEnabled,
-		"has_valid_token": hasValidToken,
-		"auth_type":       dashboardAuthType(authConfig.IsEnabled),
+		"is_auth_enabled":         authConfig.IsEnabled,
+		"has_valid_token":         hasValidToken,
+		"auth_type":               dashboardAuthType(authConfig.IsEnabled),
+		"inference_auth_enforced": inferenceAuthEnforced,
 	})
 }
 

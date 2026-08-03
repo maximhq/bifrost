@@ -29,8 +29,20 @@ IsAuthEnabledResponse:
   properties:
     is_auth_enabled:
       type: boolean
+      description: Whether dashboard/admin session authentication is enabled.
     has_valid_token:
       type: boolean
+    auth_type:
+      type: string
+      enum: [none, password]
+      description: Dashboard session auth mode.
+    inference_auth_enforced:
+      type: boolean
+      description: >-
+        Whether enforce_auth_on_inference is on - a separate control from is_auth_enabled
+        that gates the /v1/* inference surface with a required virtual key. A locked
+        dashboard (is_auth_enabled: true) does not by itself protect inference; check this
+        field too.
 
 LogoutResponse:
   type: object

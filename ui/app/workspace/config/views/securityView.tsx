@@ -364,6 +364,17 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
 					/>
 				</div>
+				{authConfig.is_enabled && !localConfig.enforce_auth_on_inference && (
+					<Alert variant="destructive" data-testid="inference-auth-off-warning">
+						<AlertTriangle className="h-4 w-4" />
+						<AlertDescription>
+							The dashboard is password protected, but this is a separate control: anyone who can reach this gateway can
+							still call inference endpoints (e.g. chat completions) with no credential at all, spending your provider
+							budget and reading provider-side state your key has access to. Turn this on unless you've deliberately
+							chosen to leave inference open.
+						</AlertDescription>
+					</Alert>
+				)}
 				{/* Dual Credential Conflict Behavior */}
 				{IS_ENTERPRISE && (
 					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
