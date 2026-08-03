@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -151,6 +151,31 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 	else \
 		$(ECHO) "$(YELLOW)CI environment detected, skipping junit-viewer installation$(NC)"; \
 	fi
+
+install-microsocks: ## Install microsocks SOCKS5 proxy for local testing (if not already installed)
+	@which microsocks > /dev/null || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing microsocks via Homebrew...$(NC)" && brew install microsocks) || ($(ECHO) "$(RED)Error: microsocks not found and Homebrew is unavailable. Install manually: https://github.com/rofl0r/microsocks$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)microsocks is ready$(NC)"
+
+socks5-proxy: install-microsocks ## Run a local SOCKS5 proxy for testing provider proxy_config (Usage: make socks5-proxy [PORT=1080] [HOST=127.0.0.1])
+	@PROXY_PORT=$${PORT:-1080}; \
+	PROXY_HOST=$${HOST:-127.0.0.1}; \
+	$(ECHO) "$(GREEN)Starting SOCKS5 proxy on $$PROXY_HOST:$$PROXY_PORT (no auth, logs each connection, Ctrl+C to stop)...$(NC)"; \
+	$(ECHO) "$(YELLOW)Point a provider's proxy_config at socks5://$$PROXY_HOST:$$PROXY_PORT to test$(NC)"; \
+	microsocks -i $$PROXY_HOST -p $$PROXY_PORT
+
+install-tinyproxy: ## Install tinyproxy HTTP proxy for local testing (if not already installed)
+	@which tinyproxy > /dev/null || (command -v brew > /dev/null && $(ECHO) "$(YELLOW)Installing tinyproxy via Homebrew...$(NC)" && brew install tinyproxy) || ($(ECHO) "$(RED)Error: tinyproxy not found and Homebrew is unavailable. Install manually: https://github.com/tinyproxy/tinyproxy$(NC)" && exit 1)
+	@$(ECHO) "$(GREEN)tinyproxy is ready$(NC)"
+
+http-proxy: install-tinyproxy ## Run a local HTTP proxy for testing provider proxy_config (Usage: make http-proxy [PORT=8888] [HOST=127.0.0.1])
+	@PROXY_PORT=$${PORT:-8888}; \
+	PROXY_HOST=$${HOST:-127.0.0.1}; \
+	CONF=$$(mktemp -t bifrost-tinyproxy); \
+	trap 'rm -f "$$CONF"' EXIT INT TERM; \
+	printf 'Port %s\nListen %s\nTimeout 600\nAllow 127.0.0.1\nAllow ::1\nLogLevel Info\n' "$$PROXY_PORT" "$$PROXY_HOST" > "$$CONF"; \
+	$(ECHO) "$(GREEN)Starting HTTP proxy on $$PROXY_HOST:$$PROXY_PORT (no auth, logs each connection, Ctrl+C to stop)...$(NC)"; \
+	$(ECHO) "$(YELLOW)Point a provider's proxy_config at http://$$PROXY_HOST:$$PROXY_PORT to test$(NC)"; \
+	tinyproxy -d -c "$$CONF"
 
 dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment (UI + API with proxy)
 	@$(EXPOSE_ENV); \

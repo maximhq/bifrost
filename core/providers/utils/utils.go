@@ -28,6 +28,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
+	ws "github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -608,6 +609,64 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	return client
+}
+
+// ConfigureWebSocketProxy sets up a proxy for a WebSocket dialer based on the provided configuration.
+// It supports HTTP, SOCKS5, and environment-based proxy configurations, mirroring ConfigureProxy above.
+// Unlike ConfigureProxy (which fails fast by swapping in an always-erroring fasthttp.DialFunc on a
+// client that's built once and reused silently), this returns an error directly: callers resolve proxy
+// configuration fresh on every dial, so a returned error surfaces immediately instead of on first use.
+//
+// ws.Dialer.Proxy dispatches on the resolved proxy URL's scheme internally (HTTP CONNECT tunneling for
+// "http", golang.org/x/net/proxy.FromURL — which handles "socks5" — for everything else), so unlike the
+// fasthttp path there is no need for separate HTTP vs SOCKS5 dialer constructors.
+func ConfigureWebSocketProxy(dialer *ws.Dialer, proxyConfig *schemas.ProxyConfig) (*ws.Dialer, error) {
+	if proxyConfig == nil {
+		return dialer, nil
+	}
+
+	switch proxyConfig.Type {
+	case schemas.NoProxy:
+		return dialer, nil
+	case schemas.HTTPProxy, schemas.Socks5Proxy:
+		if proxyConfig.URL != nil && proxyConfig.URL.IsFromSecret() && proxyConfig.URL.GetValue() == "" {
+			return nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.url", proxyConfig.URL.GetRawRef())
+		}
+		proxyURLValue := proxyConfig.URL.GetValue()
+		if proxyURLValue == "" {
+			getLogger().Warn("Warning: proxy URL is required for setting up WebSocket proxy")
+			return dialer, nil
+		}
+		parsedURL, err := url.Parse(proxyURLValue)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy configuration: invalid proxy URL: %w", err)
+		}
+		proxyUsername := proxyConfig.Username.GetValue()
+		proxyPassword := proxyConfig.Password.GetValue()
+		if proxyUsername != "" && proxyPassword != "" {
+			parsedURL.User = url.UserPassword(proxyUsername, proxyPassword)
+		}
+		dialer.Proxy = http.ProxyURL(parsedURL)
+	case schemas.EnvProxy:
+		dialer.Proxy = http.ProxyFromEnvironment
+	default:
+		return nil, fmt.Errorf("invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
+	}
+
+	if proxyConfig.CACertPEM != nil && proxyConfig.CACertPEM.IsFromSecret() && proxyConfig.CACertPEM.GetValue() == "" {
+		return nil, fmt.Errorf("invalid proxy configuration: %s references %q but it resolved to an empty value", "proxy.ca_cert_pem", proxyConfig.CACertPEM.GetRawRef())
+	}
+	proxyCACertPEM := proxyConfig.CACertPEM.GetValue()
+	if proxyCACertPEM != "" {
+		tlsConfig, err := createTLSConfigWithCA(proxyCACertPEM)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy configuration: invalid proxy CA certificate: %w", err)
+		} else {
+			dialer.TLSClientConfig = tlsConfig
+		}
+	}
+
+	return dialer, nil
 }
 
 // createTLSConfigWithCA creates a TLS configuration with a custom CA certificate
