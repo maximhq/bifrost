@@ -258,6 +258,117 @@ func TestFailSidekiqJob(t *testing.T) {
 	require.NotNil(t, got.CompletedAt)
 }
 
+func TestCancelSidekiqJob(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+
+	t.Run("pending job is cancelled before it ever runs", func(t *testing.T) {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "p1", Kind: "k"}))
+
+		cancelled, err := store.CancelSidekiqJob(ctx, "p1")
+		require.NoError(t, err)
+		assert.True(t, cancelled)
+
+		got := getJob(t, store, "p1")
+		assert.Equal(t, tables.SidekiqStatusCancelled, got.Status)
+		require.NotNil(t, got.CompletedAt)
+	})
+
+	t.Run("running job is cancelled regardless of owner", func(t *testing.T) {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "r1", Kind: "k"}))
+		_, err := store.ClaimSidekiqJob(ctx, "r1", "owner-A", time.Now().Add(-time.Minute))
+		require.NoError(t, err)
+
+		// The cancel arrives on a node that does not own the job — it must still apply.
+		cancelled, err := store.CancelSidekiqJob(ctx, "r1")
+		require.NoError(t, err)
+		assert.True(t, cancelled)
+		assert.Equal(t, tables.SidekiqStatusCancelled, getJob(t, store, "r1").Status)
+
+		// The owner learns of it through its heartbeat, which is fenced on running.
+		alive, err := store.HeartbeatSidekiqJob(ctx, "r1", "owner-A")
+		require.NoError(t, err)
+		assert.False(t, alive, "heartbeat must report lost ownership so the owner stops")
+	})
+
+	t.Run("cancelled job is neither claimable nor reapable", func(t *testing.T) {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "c1", Kind: "k"}))
+		_, err := store.ClaimSidekiqJob(ctx, "c1", "owner-A", time.Now().Add(-time.Minute))
+		require.NoError(t, err)
+		_, err = store.CancelSidekiqJob(ctx, "c1")
+		require.NoError(t, err)
+		setUpdatedAt(t, store, "c1", time.Now().Add(-30*time.Minute))
+
+		claimable, err := store.ListClaimableSidekiqJobs(ctx, time.Now().Add(-15*time.Minute))
+		require.NoError(t, err)
+		for _, j := range claimable {
+			assert.NotEqual(t, "c1", j.ID, "a cancelled job must not be re-claimed")
+		}
+
+		reaped, err := store.MarkStaleSidekiqJobsFailed(ctx, time.Now().Add(-15*time.Minute))
+		require.NoError(t, err)
+		assert.Zero(t, reaped, "a cancelled job must not be reaped as stale")
+		assert.Equal(t, tables.SidekiqStatusCancelled, getJob(t, store, "c1").Status)
+
+		inFlight, err := store.GetInFlightSidekiqJobByKind(ctx, "k")
+		require.NoError(t, err)
+		if inFlight != nil {
+			assert.NotEqual(t, "c1", inFlight.ID, "a cancelled job must not count as in-flight")
+		}
+	})
+
+	t.Run("terminal and unknown jobs are no-ops", func(t *testing.T) {
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "d1", Kind: "k"}))
+		_, err := store.ClaimSidekiqJob(ctx, "d1", "owner-A", time.Now().Add(-time.Minute))
+		require.NoError(t, err)
+		require.NoError(t, store.CompleteSidekiqJob(ctx, "d1", "owner-A", `{"done":true}`))
+
+		cancelled, err := store.CancelSidekiqJob(ctx, "d1")
+		require.NoError(t, err)
+		assert.False(t, cancelled, "completing wins a race against a cancel click")
+		assert.Equal(t, tables.SidekiqStatusCompleted, getJob(t, store, "d1").Status)
+
+		cancelled, err = store.CancelSidekiqJob(ctx, "does-not-exist")
+		require.NoError(t, err)
+		assert.False(t, cancelled)
+	})
+}
+
+func TestFinalizeCancelledSidekiqJob(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+
+	newCancelledJob := func(t *testing.T, id string) {
+		t.Helper()
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: id, Kind: "k", Metadata: `{"processed":3}`}))
+		_, err := store.ClaimSidekiqJob(ctx, id, "owner-A", time.Now().Add(-time.Minute))
+		require.NoError(t, err)
+		_, err = store.CancelSidekiqJob(ctx, id)
+		require.NoError(t, err)
+	}
+
+	t.Run("stores the partial progress without disturbing the status", func(t *testing.T) {
+		newCancelledJob(t, "f1")
+		require.NoError(t, store.FinalizeCancelledSidekiqJob(ctx, "f1", "owner-A", `{"processed":9}`))
+
+		got := getJob(t, store, "f1")
+		assert.Equal(t, `{"processed":9}`, got.Metadata)
+		assert.Equal(t, tables.SidekiqStatusCancelled, got.Status, "finalizing must not change the status")
+	})
+
+	t.Run("empty metadata leaves the last checkpoint alone", func(t *testing.T) {
+		newCancelledJob(t, "f2")
+		require.NoError(t, store.FinalizeCancelledSidekiqJob(ctx, "f2", "owner-A", ""))
+		assert.Equal(t, `{"processed":3}`, getJob(t, store, "f2").Metadata)
+	})
+
+	t.Run("a non-owner cannot write counters", func(t *testing.T) {
+		newCancelledJob(t, "f3")
+		require.NoError(t, store.FinalizeCancelledSidekiqJob(ctx, "f3", "owner-B", `{"processed":99}`))
+		assert.Equal(t, `{"processed":3}`, getJob(t, store, "f3").Metadata, "fenced on runner_id")
+	})
+}
+
 func TestFailSidekiqJobEmptyMetadataPreservesExisting(t *testing.T) {
 	store := setupSidekiqTestStore(t)
 	ctx := context.Background()
