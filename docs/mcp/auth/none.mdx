@@ -103,9 +103,16 @@ STDIO connections must use `auth_type: "none"`:
 </Tab>
 <Tab title="API">
 
+<Note>
+  `auth_type: "none"` for a STDIO client is about the upstream connection, not Bifrost's own admin
+  API — creating one still requires an authenticated admin session; see the note in
+  [Connecting to Servers](/mcp/connecting-to-servers#add-stdio-client).
+</Note>
+
 ```bash
 curl -X POST http://localhost:8080/api/mcp/client \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-session-token>" \
   -d '{
     "name": "filesystem",
     "connection_type": "stdio",

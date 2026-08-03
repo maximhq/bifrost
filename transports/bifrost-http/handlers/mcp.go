@@ -621,6 +621,20 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// A stdio MCP client makes Bifrost exec() an admin-supplied command/args as the
+	// gateway process. That's intentional admin functionality, but only for a caller who
+	// actually authenticated - never for a request that was let through because dashboard
+	// auth is unconfigured/disabled. Registering one via this network API in that state is
+	// equivalent to unauthenticated remote code execution, so it's refused even though the
+	// rest of the management API stays open for the zero-config experience. Stdio clients
+	// can still be provisioned by an operator with host/filesystem access via config.json.
+	if req.ConnectionType == string(schemas.MCPConnectionTypeSTDIO) {
+		if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
+			SendError(ctx, fasthttp.StatusForbidden, "Registering a stdio MCP client requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication, or provision this client via config.json instead.")
+			return
+		}
+	}
+
 	// Generate a unique client ID if not provided
 	if req.ClientID == "" {
 		req.ClientID = uuid.New().String()

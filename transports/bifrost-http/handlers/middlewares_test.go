@@ -690,6 +690,53 @@ func TestAuthMiddleware_EnabledAuthConfig_NoAuth(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_AuthBypassedFlag_SetOnlyWhenAuthUnconfiguredOrDisabled tests that
+// BifrostContextKeyAuthBypassed - the signal handlers use to refuse especially dangerous
+// actions like registering a stdio MCP client - is set true exactly when a request is let
+// through with no credential check (nil or disabled auth config), and never set true when
+// auth is enabled but the request was correctly rejected for lacking credentials.
+func TestAuthMiddleware_AuthBypassedFlag_SetOnlyWhenAuthUnconfiguredOrDisabled(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	assertBypassed := func(t *testing.T, am *AuthMiddleware, wantBypassed bool) {
+		t.Helper()
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/api/some-endpoint")
+
+		handler := am.APIMiddleware()(func(ctx *fasthttp.RequestCtx) {})
+		handler(ctx)
+
+		bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+		if bypassed != wantBypassed {
+			t.Errorf("BifrostContextKeyAuthBypassed = %v, want %v", bypassed, wantBypassed)
+		}
+	}
+
+	t.Run("nil auth config", func(t *testing.T) {
+		assertBypassed(t, &AuthMiddleware{}, true)
+	})
+
+	t.Run("disabled auth config", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		am.UpdateAuthConfig(&configstore.AuthConfig{
+			AdminUserName: schemas.NewSecretVar("admin"),
+			AdminPassword: schemas.NewSecretVar("hashedpassword"),
+			IsEnabled:     false,
+		})
+		assertBypassed(t, am, true)
+	})
+
+	t.Run("enabled auth config, request rejected for missing credentials", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		am.UpdateAuthConfig(&configstore.AuthConfig{
+			AdminUserName: schemas.NewSecretVar("admin"),
+			AdminPassword: schemas.NewSecretVar("hashedpassword"),
+			IsEnabled:     true,
+		})
+		assertBypassed(t, am, false)
+	})
+}
+
 func TestAuthMiddleware_SkillsPublicServeManagementSplit(t *testing.T) {
 	SetLogger(&mockLogger{})
 

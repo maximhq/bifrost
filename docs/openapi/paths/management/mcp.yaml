@@ -170,6 +170,10 @@ client:
     description: |
       Adds a new MCP client with the specified configuration.
       Note: tool_pricing is not available when creating a new client as tools are fetched after client creation.
+      Registering a `connection_type: stdio` client requires a genuinely authenticated admin
+      session — it is refused with 403 if dashboard authentication is disabled or unconfigured,
+      even though other management endpoints remain reachable in that state. Non-stdio clients
+      are unaffected.
     tags:
       - MCP
     requestBody:
@@ -189,6 +193,10 @@ client:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          connection_type is "stdio" and dashboard authentication is disabled or unconfigured
+          (the request was not genuinely authenticated)
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
