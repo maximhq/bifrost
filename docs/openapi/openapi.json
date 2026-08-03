@@ -52960,6 +52960,162 @@
         }
       }
     },
+    "/api/users/{target_user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override": {
+      "put": {
+        "operationId": "updateUserAccessProfileBudgetOverride",
+        "summary": "Set a user's access-profile budget override",
+        "description": "Sets or replaces the spending override on one budget of a single user's copy of an access profile.\nThe override is additive — while it is active the budget is enforced against\n`max_limit + override_amount` — and it leaves the budget's base limit, current usage, and reset\nschedule untouched. Only this user is affected; the access profile template and every other user\nassigned to it keep their original limits.\n\nUse `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows\n(the current window counts as the first), or `mode: forever` to keep the override until it is deleted.\nA finite grant is anchored to the profile's reset window — calendar-aligned profiles anchor at the\ncalendar period start — so every node in a cluster derives the same number of remaining cycles.\nThe change is propagated cluster-wide and survives access-profile cloning and propagation.\n\nRequires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy\nof the profile, not on the shared template.\n",
+        "tags": [
+          "Access Profiles"
+        ],
+        "parameters": [
+          {
+            "name": "target_user_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the user whose access-profile budget is being overridden",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the access profile assigned to the user",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of a budget on the user's copy of the access profile",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BudgetOverrideRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override applied successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetOverrideResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User access profile or budget not found, or the profile is outside the caller's access scope"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteUserAccessProfileBudgetOverride",
+        "summary": "Remove a user's access-profile budget override",
+        "description": "Removes any active override from the user's budget, so it is enforced against its base `max_limit`\nagain. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a\ncleared grant cannot be re-derived. Safe to call on a budget that has no override.\n\nRequires the `AccessProfiles.Update` permission.\n",
+        "tags": [
+          "Access Profiles"
+        ],
+        "parameters": [
+          {
+            "name": "target_user_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the user whose access-profile budget override is being removed",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the access profile assigned to the user",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of a budget on the user's copy of the access profile",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override removed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetOverrideResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User access profile or budget not found, or the profile is outside the caller's access scope"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys": {
       "post": {
         "operationId": "addUserAccessProfileVirtualKey",
