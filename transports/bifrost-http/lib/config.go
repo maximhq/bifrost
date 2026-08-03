@@ -166,7 +166,14 @@ type ConfigData struct {
 	Client        *configstore.ClientConfig `json:"client"`
 	EncryptionKey *schemas.SecretVar        `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
-	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
+	AuthConfig *configstore.AuthConfig `json:"auth_config,omitempty"`
+	// SetupToken is the operator-provisioned bootstrap secret required to create the
+	// very first admin account (see AuthMiddleware.bootstrapToken). It is never
+	// persisted to the config store — only read from this file (or, when absent here,
+	// the BIFROST_SETUP_TOKEN env var) — so every node in a multi-node deployment reads
+	// the same value from its own identical config/env rather than relying on a
+	// per-process generated value.
+	SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
 	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -425,6 +432,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Client            *configstore.ClientConfig             `json:"client"`
 		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
+		SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
 		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
@@ -451,6 +459,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Server = temp.Server
 	cd.EncryptionKey = temp.EncryptionKey
 	cd.AuthConfig = temp.AuthConfig
+	cd.SetupToken = temp.SetupToken
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
 	cd.Webhooks = temp.Webhooks
@@ -556,6 +565,11 @@ type Config struct {
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
+
+	// SetupToken is the resolved operator-provisioned bootstrap secret (see
+	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
+	// configured one. Never persisted — read fresh from config/env on every boot.
+	SetupToken string
 
 	// webhookEndpoints serves webhook endpoint config to the request path and
 	// the delivery worker without database reads. Guarded by muWebhooks;
@@ -920,6 +934,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 1a. Vault config acknowledgement (initialization handled by enterprise layer)
 	initVault(&configData)
+	// 1b. Bootstrap setup token (from config file or BIFROST_SETUP_TOKEN env var)
+	config.SetupToken = resolveSetupToken(&configData)
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
@@ -4582,6 +4598,23 @@ func initEncryption(configData *ConfigData) error {
 // initVault is a no-op stub at the OSS level.
 // Vault initialization is performed by the enterprise layer via config_store.vault_store.
 func initVault(_ *ConfigData) {}
+
+// resolveSetupToken resolves the bootstrap setup token required to create the very
+// first admin account from config data or the BIFROST_SETUP_TOKEN environment
+// variable. Returns "" when neither is set — callers must then fail closed rather
+// than fall back to generating and logging a token, since a per-process generated
+// value would differ across nodes in a multi-node deployment. Whitespace-only
+// values are treated as unset so an accidental " " doesn't become a guessable token.
+func resolveSetupToken(configData *ConfigData) string {
+	configured := ""
+	if configData.SetupToken != nil {
+		configured = strings.TrimSpace(configData.SetupToken.GetValue())
+	}
+	if configured == "" {
+		return strings.TrimSpace(os.Getenv("BIFROST_SETUP_TOKEN"))
+	}
+	return configured
+}
 
 // syncEncryption encrypts all plaintext rows in the config store if encryption is enabled.
 // Called during bootup after encryption key is initialized and all config data has been loaded.

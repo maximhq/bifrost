@@ -76,6 +76,7 @@ type ServerCallbacks interface {
 	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
+	ValidateSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	// Pricing related callbacks
 	UpdateSyncConfig(ctx context.Context) error
@@ -1012,8 +1013,21 @@ func (s *BifrostHTTPServer) UpdateAuthConfig(ctx context.Context, authConfig *co
 		} else {
 			s.AuthMiddleware.UpdateAuthConfig(updatedAuthConfig)
 		}
+		// The first admin account now exists (or already did) — permanently
+		// invalidate the bootstrap setup token. No-op if already cleared.
+		s.AuthMiddleware.ClearBootstrapToken()
 	}
 	return nil
+}
+
+// ValidateSetupToken reports whether token is a valid one-time bootstrap setup token,
+// as required to create the very first admin account (see AuthMiddleware.bootstrapToken).
+// Once an admin account exists, this always returns true — the gate closes permanently.
+func (s *BifrostHTTPServer) ValidateSetupToken(token string) bool {
+	if s.AuthMiddleware == nil {
+		return true
+	}
+	return s.AuthMiddleware.CheckBootstrapToken(token)
 }
 
 // UpdateDropExcessRequests updates excess requests config
@@ -2248,7 +2262,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.Config.MCPHeadersProvider != nil {
 			s.Config.MCPHeadersProvider.SetTempTokenService(s.TempTokens)
 		}
-		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens)
+		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens, s.Config.SetupToken)
 		if err != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
