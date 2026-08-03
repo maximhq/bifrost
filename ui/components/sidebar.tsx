@@ -1130,7 +1130,6 @@ export default function AppSidebar() {
 			hasPromptRepositoryAccess,
 			hasSkillsRepositoryAccess,
 			hasAccessProfilesAccess,
-			hasAccessProfilesAccess,
 			hasFeatureFlagsAccess,
 			hasDevicesAccess,
 			hasInventoryAccess,
