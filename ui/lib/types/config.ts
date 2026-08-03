@@ -208,6 +208,32 @@ export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
+export interface GigaChatKeyConfig {
+	credentials?: SecretVar;
+	scope?: string;
+	user?: SecretVar;
+	password?: SecretVar;
+	access_token?: SecretVar;
+	auth_url?: string;
+	base_url?: string;
+	cert_file?: string;
+	key_file?: string;
+	ca_bundle_file?: string;
+}
+
+export const DefaultGigaChatKeyConfig: GigaChatKeyConfig = {
+	credentials: { value: "", ref: "" },
+	scope: "GIGACHAT_API_PERS",
+	user: { value: "", ref: "" },
+	password: { value: "", ref: "" },
+	access_token: { value: "", ref: "" },
+	auth_url: "",
+	base_url: "",
+	cert_file: "",
+	key_file: "",
+	ca_bundle_file: "",
+} as const satisfies Required<GigaChatKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -228,6 +254,7 @@ export interface ModelProviderKey {
 	replicate_key_config?: ReplicateKeyConfig;
 	ollama_key_config?: OllamaKeyConfig;
 	sgl_key_config?: SGLKeyConfig;
+	gigachat_key_config?: GigaChatKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
