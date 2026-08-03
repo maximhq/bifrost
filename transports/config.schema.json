@@ -17,6 +17,13 @@
           "type": "integer",
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
+        },
+        "plugin_download_private_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted internal artifact hosts. Deploy-time only - read from config.json/environment at startup, never settable via the plugin admin API."
         }
       },
       "required": ["read_buffer_size"]

@@ -74,6 +74,115 @@ func buildUpdateRequest(t *testing.T, body any) *fasthttp.RequestCtx {
 	return ctx
 }
 
+// buildCreateRequest creates a POST /api/plugins fasthttp context.
+func buildCreateRequest(t *testing.T, body any) *fasthttp.RequestCtx {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetBody(raw)
+	return ctx
+}
+
+// TestCreatePlugin_RejectsCustomPathWhenAuthBypassed verifies that POST /api/plugins
+// refuses to create a custom (non-builtin) plugin with a Path - the .so that would get
+// dlopen()'d - when the request was let through by the auth middleware's fail-open
+// bypass (dashboard auth disabled/unconfigured), and that no DB write happens.
+func TestCreatePlugin_RejectsCustomPathWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &capturePluginsStore{}
+	h := &PluginsHandler{
+		pluginsLoader: noopPluginsLoader{},
+		configStore:   store,
+	}
+
+	path := "/tmp/evil.so"
+	ctx := buildCreateRequest(t, map[string]any{
+		"name":    "my-custom-test-plugin",
+		"enabled": true,
+		"path":    path,
+	})
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.createPlugin(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if store.existingPlugin != nil {
+		t.Error("CreatePlugin should not have been called on the config store")
+	}
+}
+
+// TestCreatePlugin_AllowsCustomPathWhenNotBypassed verifies the same request succeeds
+// for a genuinely authenticated caller (BifrostContextKeyAuthBypassed not set).
+func TestCreatePlugin_AllowsCustomPathWhenNotBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &capturePluginsStore{}
+	h := &PluginsHandler{
+		pluginsLoader: noopPluginsLoader{},
+		configStore:   store,
+	}
+
+	path := "/opt/bifrost/plugins/trusted.so"
+	ctx := buildCreateRequest(t, map[string]any{
+		"name":    "my-custom-test-plugin",
+		"enabled": false,
+		"path":    path,
+	})
+
+	h.createPlugin(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if store.existingPlugin == nil {
+		t.Fatal("CreatePlugin was not called on the config store")
+	}
+	if store.existingPlugin.Path == nil || *store.existingPlugin.Path != path {
+		t.Errorf("stored plugin path = %v, want %v", store.existingPlugin.Path, path)
+	}
+}
+
+// TestUpdatePlugin_RejectsCustomPathWhenAuthBypassed verifies the matching guard on
+// PUT /api/plugins/{name}.
+func TestUpdatePlugin_RejectsCustomPathWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := &capturePluginsStore{
+		existingPlugin: &configstoreTables.TablePlugin{
+			Name:     "my-custom-test-plugin",
+			Enabled:  false,
+			IsCustom: true,
+		},
+	}
+	h := &PluginsHandler{
+		pluginsLoader: noopPluginsLoader{},
+		configStore:   store,
+	}
+
+	ctx := buildUpdateRequest(t, map[string]any{
+		"enabled": true,
+		"path":    "/tmp/evil.so",
+	})
+	ctx.SetUserValue("name", "my-custom-test-plugin")
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+
+	h.updatePlugin(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if store.capturedConfig != nil || store.capturedEnabled {
+		t.Error("UpdatePlugin should not have been called on the config store")
+	}
+}
+
 // TestUpdatePlugin_ConfigMerge verifies that updatePlugin merges the incoming
 // config over the existing DB config, preserving fields the caller did not send.
 // This is critical for the plugin_span_filter field: the OTEL config form in the
