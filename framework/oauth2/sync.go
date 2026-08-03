@@ -41,6 +41,11 @@ type OAuthTokenRefreshWorker struct {
 	// an atomic pointer because the worker goroutine reads it while the
 	// serving layer installs it after the worker has already started.
 	onTokenRefreshed atomic.Pointer[func(mcpClientID, authMode string)]
+
+	// shouldRefresh, when set, gates whether a sweep tick actually queries and
+	// refreshes tokens (see SetShouldRefreshGate's doc comment). Stored as an
+	// atomic pointer for the same reason as onTokenRefreshed.
+	shouldRefresh atomic.Pointer[func(ctx context.Context) bool]
 }
 
 // NewOAuthTokenRefreshWorker creates a new token refresh worker
@@ -78,6 +83,23 @@ func (w *OAuthTokenRefreshWorker) SetOnTokenRefreshed(cb func(mcpClientID, authM
 		return
 	}
 	w.onTokenRefreshed.Store(&cb)
+}
+
+// SetShouldRefreshGate installs a predicate consulted at the start of every
+// sweep tick; a tick proceeds only when the gate is unset or returns true.
+// Lets a deployment with multiple workers sharing the same token store
+// restrict sweeps to one at a time, avoiding concurrent refreshes of the
+// same token. Safe to call at any time, including while the worker is
+// running; passing nil restores the default (always run).
+func (w *OAuthTokenRefreshWorker) SetShouldRefreshGate(gate func(ctx context.Context) bool) {
+	if w == nil {
+		return
+	}
+	if gate == nil {
+		w.shouldRefresh.Store(nil)
+		return
+	}
+	w.shouldRefresh.Store(&gate)
 }
 
 // Start begins the token refresh worker in a background goroutine
@@ -125,6 +147,9 @@ func (w *OAuthTokenRefreshWorker) run(ctx context.Context) {
 
 // refreshExpiredTokens queries and refreshes tokens that are expiring soon
 func (w *OAuthTokenRefreshWorker) refreshExpiredTokens(ctx context.Context) {
+	if gate := w.shouldRefresh.Load(); gate != nil && !(*gate)(ctx) {
+		return
+	}
 	expiryThreshold := time.Now().Add(w.lookAheadWindow)
 
 	// Get tokens expiring before the threshold, restricted to the configured
