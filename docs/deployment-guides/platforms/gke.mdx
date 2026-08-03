@@ -47,6 +47,8 @@ For a zonal cluster, replace `--region` with `--zone` and set the corresponding 
 
 ### Step 2: Create secrets and Helm values
 
+The encryption key protects persisted credentials. Create it once, keep it unchanged after Bifrost writes encrypted data, and use the same value for every replica. Replacing the key makes existing encrypted values unreadable.
+
 ```bash
 kubectl create namespace bifrost \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -206,10 +208,17 @@ curl --fail --show-error http://127.0.0.1:8080/health
 <Tab title="With a load balancer">
 
 ```bash
-kubectl patch service bifrost \
+cat >> bifrost-values.yaml <<'EOF'
+
+service:
+  type: LoadBalancer
+EOF
+
+helm upgrade bifrost bifrost/bifrost \
   --namespace bifrost \
-  --type merge \
-  --patch '{"spec":{"type":"LoadBalancer"}}'
+  --values bifrost-values.yaml \
+  --atomic \
+  --timeout 15m
 
 kubectl get service bifrost --namespace bifrost --watch
 ```
