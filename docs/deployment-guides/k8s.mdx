@@ -1,98 +1,1691 @@
 ---
-title: "Terraform"
-description: "Deploy Bifrost with the official Terraform module across AWS, GCP, Azure, and Kubernetes"
-icon: "code"
+title: "Terraform + k8s"
+description: "Deploy Bifrost as a service in Kubernetes clusters across AWS, Azure, and GCP using Terraform"
+icon: "cloud"
 ---
 
-The Bifrost Terraform module can create resources for ECS, EKS, GKE, Cloud Run, AKS, Azure Container Instances, or an existing Kubernetes cluster. Use [Bifrost Deployment Requirements](/deployment-guides/runtime-contract) to choose the storage, secrets, networking, and replica configuration passed to the module.
+Deploy Bifrost on Kubernetes using Terraform. This guide breaks down the deployment into individual components for better understanding.
 
-<Warning>
-Terraform support means the repository contains a module and mocked provider tests. It does not mean every target is continuously deployed into a live cloud account. Check the [deployment support matrix](/deployment-guides/overview) before treating a target as production-qualified.
-</Warning>
-
-## Supported module targets
-
-| Cloud | `service` | Intended deployment |
-|---|---|---|
-| AWS | `ecs` | ECS Fargate; local task storage is ephemeral, so durable use needs persistent `/app/data` or external PostgreSQL |
-| AWS | `eks` | EKS and Kubernetes resources; the module currently creates a PVC for every deployment; HPA |
-| GCP | `gke` | GKE and Kubernetes resources; the module currently creates a PVC for every deployment; HPA |
-| GCP | `cloud-run` | Cloud Run v2; durable use needs external stores and OSS DB-managed config must remain at one instance |
-| Azure | `aks` | AKS and Kubernetes resources; the module currently creates a PVC for every deployment; HPA |
-| Azure | `aci` | Single public Azure Container Instance for evaluation; module filesystem is ephemeral and the module does not terminate TLS |
-| Kubernetes | `deployment` | Existing Kubernetes cluster; the module currently creates a PVC for every deployment; HPA and Ingress |
-
-## Deployment steps
-
-The example below deploys the Terraform module to ECS. The repository also contains complete examples for GKE, AKS, and an existing Kubernetes cluster under `terraform/examples`. EKS, Cloud Run, and ACI are supported module targets but do not currently have separate example directories.
-
-### Step 1: Copy the example
-
-```bash
-git clone https://github.com/maximhq/bifrost.git
-cd bifrost/terraform/examples/aws-ecs
-cp terraform.tfvars.example terraform.tfvars
-```
-
-### Step 2: Configure Bifrost
-
-Create `config.json` using the [PostgreSQL example](/deployment-guides/runtime-contract#postgresql). In `terraform.tfvars`, uncomment `config_json_file`, replace the existing `config_store`, `logs_store`, and sample `providers_config` blocks with `null`, and set the deployment values as follows:
-
+<Note>
+Bifrost also provides a ready-to-use Terraform module that handles all the infrastructure setup for you.
+You can use it directly from GitHub:
 ```hcl
-region           = "<AWS_REGION>"
-image_tag        = "<BIFROST_VERSION>"
-config_json_file = "./config.json"
-config_store      = null
-logs_store        = null
-providers_config  = null
+module "bifrost" {
+  source         = "github.com/maximhq/bifrost//terraform/modules/bifrost?ref=terraform/v0.1.0"
+  cloud_provider = "aws"          # "aws" | "gcp" | "azure" | "kubernetes"
+  service        = "eks"          # AWS: "ecs" | "eks", GCP: "gke" | "cloud-run", Azure: "aks" | "aci", K8s: "deployment"
+  region         = "us-east-1"
+  image_tag      = "latest"
+}
+```
+See the [Terraform module README](https://github.com/maximhq/bifrost/tree/main/terraform) for full documentation and examples.
+</Note>
 
-desired_count        = 1
-create_load_balancer = true
-enable_autoscaling   = false
+<Note>
+If you are using Postgres/MySQL for config and log store, you can skip the Volume configuration and permission changes sections.
+</Note>
+
+<Note>
+If you use PostgreSQL for `config_store` or `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
+<Tabs>
+<Tab title="AWS">
+
+## 1. Volume Configuration
+
+Create an EBS volume, persistent volume, and persistent volume claim for Bifrost data storage.
+
+```terraform
+locals {
+  service_name = "bifrost-service"
+}
+
+resource "aws_ebs_volume" "bifrost_disk" {
+  availability_zone = "${var.region}${var.main_zone}"
+  size              = var.volume_size_gb
+  type              = "gp3"
+  encrypted         = true
+
+  tags = {
+    Name = "bifrost-disk"
+  }
+
+  lifecycle {
+    ignore_changes = [tags]
+  }
+}
+
+resource "kubernetes_persistent_volume" "bifrost_volume" {
+  metadata {
+    name = "bifrost-volume"
+  }
+  spec {
+    capacity = {
+      storage = "${var.volume_size_gb}Gi"
+    }
+    access_modes                     = ["ReadWriteOnce"]
+    persistent_volume_reclaim_policy = "Retain"
+    storage_class_name               = "gp3"
+    persistent_volume_source {
+      aws_elastic_block_store {
+        volume_id = aws_ebs_volume.bifrost_disk.id
+        fs_type   = "ext4"
+      }
+    }
+  }
+  depends_on = [aws_ebs_volume.bifrost_disk]
+
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
+  metadata {
+    name      = "bifrost-volume-claim"
+    namespace = var.namespace
+  }
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "${var.volume_size_gb}Gi"
+      }
+    }
+    storage_class_name = "gp3"
+    volume_name        = "bifrost-volume"
+  }
+  depends_on = [kubernetes_persistent_volume.bifrost_volume]
+}
 ```
 
-Replace every angle-bracket placeholder. Setting the three override variables to `null` is important: non-null Terraform variables take precedence over the corresponding sections in `config.json`. Add real provider configuration to `config.json` or replace `providers_config = null` with the provider map you intend to deploy.
+## 2. Configuration Secret
 
-The supplied example defaults to SQLite and multiple replicas; do not retain that combination. Bifrost does not need durable `/app/data` storage when both stores use PostgreSQL, although the current EKS, GKE, AKS, and generic Kubernetes Terraform submodules still create a PVC. Review that extra resource in the plan.
+Create a Kubernetes secret to store Bifrost configuration with Postgres backend.
 
-### Step 3: Review and apply
+<Note>
+This configuration uses Postgres for both config store and logs store. The secret is mounted as a file at `/app/data/config.json` in the container.
+</Note>
 
-The checked-out example uses the module from the same repository. If you copy the module block into another repository, pin its `source` to a released Terraform tag. Keep `image_tag` pinned to the Bifrost version you tested.
+```terraform
+resource "kubernetes_secret" "bifrost_config" {
+  metadata {
+    name      = "bifrost-config"
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+  }
 
-```bash
-terraform init
-terraform validate
-terraform plan -out=bifrost.tfplan
-terraform apply bifrost.tfplan
+  data = {
+    "config.json" = jsonencode({
+      "config_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      },
+      "logs_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      }
+    })
+  }
+
+  type = "Opaque"
+  depends_on = [kubernetes_namespace.bifrost_namespace]
+}
 ```
 
-Do not apply until the plan contains only resources that your team intends Terraform to manage.
+## 3. Deployment Configuration
 
-### Step 4: Verify
+Create the Bifrost deployment with proper security contexts and volume mounts.
 
-```bash
-terraform output
-curl --fail --show-error "https://<BIFROST_HOST>/health"
+<Note>
+**Volume Permissions**: The deployment includes an init container that sets proper ownership (1000:1000) and permissions (755) on the mounted volume. This ensures the Bifrost container can read/write to the volume.
+- `fs_group: 1000` sets the volume's group ownership
+- `run_as_user: 1000` runs the container as non-root user
+- Init container runs as root to fix permissions before the main container starts
+</Note>
+
+```terraform
+resource "kubernetes_deployment" "bifrost_deployment" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+      env = var.env
+    }
+  }
+
+  spec {
+    replicas = var.replica_count
+
+    selector {
+      match_labels = {
+        app = local.service_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = local.service_name
+          env = var.env
+        }
+      }
+
+      spec {
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        init_container {
+          name    = "fix-permissions"
+          image   = "busybox:latest"
+          command = ["sh", "-c", "chown -R 1000:1000 /app/data && chmod -R 755 /app/data"]
+
+          security_context {
+            run_as_user = 0
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+        }
+
+        container {
+          name  = "bifrost-service"
+          image = "maximhq/bifrost:${var.image_tag}"
+
+          port {
+            container_port = 8080
+            name           = "http"
+          }
+
+          security_context {
+            run_as_user                = 1000
+            run_as_group               = 1000
+            run_as_non_root            = true
+            allow_privilege_escalation = false
+          }
+
+          resources {
+            requests = {
+              cpu    = "250m"
+              memory = "512Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+
+          volume_mount {
+            name       = "config-volume"
+            mount_path = "/app/data/config.json"
+            sub_path   = "config.json"
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+
+        volume {
+          name = "bifrost-volume"
+          persistent_volume_claim {
+            claim_name = "bifrost-volume-claim"
+          }
+        }
+
+        volume {
+          name = "config-volume"
+          secret {
+            secret_name = kubernetes_secret.bifrost_config.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+  depends_on = [kubernetes_secret.bifrost_config, kubernetes_persistent_volume_claim.bifrost_volume_claim]
+}
 ```
 
-Use `terraform destroy` only when you intend to remove every resource owned by this example state.
+## 4. Service Configuration
 
-## Secrets and Terraform state
+Create a Kubernetes service to expose the Bifrost deployment.
 
-Terraform stores resource attributes in state. Passing provider keys, database passwords, an encryption key, or a complete `config.json` through Terraform can therefore place those values in state even when the cloud resource is a secret manager.
+```terraform
+resource "kubernetes_service" "bifrost_service" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+    }
+  }
 
-For production:
+  spec {
+    selector = {
+      app = local.service_name
+    }
 
-- Use an encrypted remote state backend with locking, versioning, and a narrow IAM policy.
-- Restrict access to plans and CI logs.
-- Prefer workload identity and secret references where the target supports them.
-- Rotate any credential that was exposed through an unsecured local state file.
-- Never commit `terraform.tfstate`, plan files, or populated variable files.
+    port {
+      name        = "http"
+      port        = 80
+      target_port = 8080
+      protocol    = "TCP"
+    }
 
-## Persistence rules
+    type = "ClusterIP"
+  }
+}
+```
 
-- SQLite requires one replica and persistent storage mounted at `/app/data`.
-- A deployment using PostgreSQL for both stores does not need persistent Bifrost `/app/data` storage. The current Kubernetes Terraform submodules still create a PVC, so account for that resource until conditional PVC creation is implemented.
-- Serverless or ephemeral targets require external PostgreSQL for durable configuration and logs.
-- Multiple OSS replicas must use the [file-only multinode pattern](/deployment-guides/how-to/multinode); DB-backed configuration changes do not propagate between OSS processes.
-- The chart's embedded PostgreSQL and a single cloud database instance are not automatically highly available.
+## Complete Configuration
+
+Here's the complete Terraform configuration combining all components:
+
+```terraform
+locals {
+  service_name = "bifrost-service"
+}
+
+# Volume Configuration
+resource "aws_ebs_volume" "bifrost_disk" {
+  availability_zone = "${var.region}${var.main_zone}"
+  size              = var.volume_size_gb
+  type              = "gp3"
+  encrypted         = true
+
+  tags = {
+    Name = "bifrost-disk"
+  }
+
+  lifecycle {
+    ignore_changes = [tags]
+  }
+}
+
+resource "kubernetes_persistent_volume" "bifrost_volume" {
+  metadata {
+    name = "bifrost-volume"
+  }
+  spec {
+    capacity = {
+      storage = "${var.volume_size_gb}Gi"
+    }
+    access_modes                     = ["ReadWriteOnce"]
+    persistent_volume_reclaim_policy = "Retain"
+    storage_class_name               = "gp3"
+    persistent_volume_source {
+      aws_elastic_block_store {
+        volume_id = aws_ebs_volume.bifrost_disk.id
+        fs_type   = "ext4"
+      }
+    }
+  }
+  depends_on = [aws_ebs_volume.bifrost_disk]
+
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
+  metadata {
+    name      = "bifrost-volume-claim"
+    namespace = var.namespace
+  }
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "${var.volume_size_gb}Gi"
+      }
+    }
+    storage_class_name = "gp3"
+    volume_name        = "bifrost-volume"
+  }
+  depends_on = [kubernetes_persistent_volume.bifrost_volume]
+}
+
+# Configuration Secret
+resource "kubernetes_secret" "bifrost_config" {
+  metadata {
+    name      = "bifrost-config"
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+  }
+
+  data = {
+    "config.json" = jsonencode({
+      "config_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      },
+      "logs_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      }
+    })
+  }
+
+  type = "Opaque"
+  depends_on = [kubernetes_namespace.bifrost_namespace]
+}
+
+# Deployment Configuration
+resource "kubernetes_deployment" "bifrost_deployment" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+      env = var.env
+    }
+  }
+
+  spec {
+    replicas = var.replica_count
+
+    selector {
+      match_labels = {
+        app = local.service_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = local.service_name
+          env = var.env
+        }
+      }
+
+      spec {
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        init_container {
+          name    = "fix-permissions"
+          image   = "busybox:latest"
+          command = ["sh", "-c", "chown -R 1000:1000 /app/data && chmod -R 755 /app/data"]
+
+          security_context {
+            run_as_user = 0
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+        }
+
+        container {
+          name  = "bifrost-service"
+          image = "maximhq/bifrost:${var.image_tag}"
+
+          port {
+            container_port = 8080
+            name           = "http"
+          }
+
+          security_context {
+            run_as_user                = 1000
+            run_as_group               = 1000
+            run_as_non_root            = true
+            allow_privilege_escalation = false
+          }
+
+          resources {
+            requests = {
+              cpu    = "250m"
+              memory = "512Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+
+          volume_mount {
+            name       = "config-volume"
+            mount_path = "/app/data/config.json"
+            sub_path   = "config.json"
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+
+        volume {
+          name = "bifrost-volume"
+          persistent_volume_claim {
+            claim_name = "bifrost-volume-claim"
+          }
+        }
+
+        volume {
+          name = "config-volume"
+          secret {
+            secret_name = kubernetes_secret.bifrost_config.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+  depends_on = [kubernetes_secret.bifrost_config, kubernetes_persistent_volume_claim.bifrost_volume_claim]
+}
+
+# Service Configuration
+resource "kubernetes_service" "bifrost_service" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+    }
+  }
+
+  spec {
+    selector = {
+      app = local.service_name
+    }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = 8080
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Azure">
+
+## 1. Volume Configuration
+
+Create an Azure managed disk, persistent volume, and persistent volume claim for Bifrost data storage.
+
+```terraform
+locals {
+  service_name = "bifrost-service"
+}
+
+resource "azurerm_managed_disk" "bifrost_disk" {
+  name                 = "bifrost-disk"
+  location             = var.region
+  resource_group_name  = var.resource_group_name
+  storage_account_type = "Premium_LRS"
+  create_option        = "Empty"
+  disk_size_gb         = var.volume_size_gb
+
+  lifecycle {
+    ignore_changes = [tags]
+  }
+}
+
+resource "kubernetes_persistent_volume" "bifrost_volume" {
+  metadata {
+    name = "bifrost-volume"
+  }
+  spec {
+    capacity = {
+      storage = "${var.volume_size_gb}Gi"
+    }
+    access_modes                     = ["ReadWriteOnce"]
+    persistent_volume_reclaim_policy = "Retain"
+    storage_class_name               = "managed-premium"
+    persistent_volume_source {
+      azure_disk {
+        disk_name     = azurerm_managed_disk.bifrost_disk.name
+        data_disk_uri = azurerm_managed_disk.bifrost_disk.id
+        kind          = "Managed"
+      }
+    }
+  }
+  depends_on = [azurerm_managed_disk.bifrost_disk]
+
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
+  metadata {
+    name      = "bifrost-volume-claim"
+    namespace = var.namespace
+  }
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "${var.volume_size_gb}Gi"
+      }
+    }
+    storage_class_name = "managed-premium"
+    volume_name        = "bifrost-volume"
+  }
+  depends_on = [kubernetes_persistent_volume.bifrost_volume]
+}
+```
+
+## 2. Configuration Secret
+
+Create a Kubernetes secret to store Bifrost configuration with Postgres backend.
+
+<Note>
+This configuration uses Postgres for both config store and logs store. The secret is mounted as a file at `/app/data/config.json` in the container.
+</Note>
+
+```terraform
+resource "kubernetes_secret" "bifrost_config" {
+  metadata {
+    name      = "bifrost-config"
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+  }
+
+  data = {
+    "config.json" = jsonencode({
+      "config_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      },
+      "logs_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      }
+    })
+  }
+
+  type = "Opaque"
+  depends_on = [kubernetes_namespace.bifrost_namespace]
+}
+```
+
+## 3. Deployment Configuration
+
+Create the Bifrost deployment with proper security contexts and volume mounts.
+
+<Note>
+**Volume Permissions**: The deployment includes an init container that sets proper ownership (1000:1000) and permissions (755) on the mounted volume. This ensures the Bifrost container can read/write to the volume.
+- `fs_group: 1000` sets the volume's group ownership
+- `run_as_user: 1000` runs the container as non-root user
+- Init container runs as root to fix permissions before the main container starts
+</Note>
+
+```terraform
+resource "kubernetes_deployment" "bifrost_deployment" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+      env = var.env
+    }
+  }
+
+  spec {
+    replicas = var.replica_count
+
+    selector {
+      match_labels = {
+        app = local.service_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = local.service_name
+          env = var.env
+        }
+      }
+
+      spec {
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        init_container {
+          name    = "fix-permissions"
+          image   = "busybox:latest"
+          command = ["sh", "-c", "chown -R 1000:1000 /app/data && chmod -R 755 /app/data"]
+
+          security_context {
+            run_as_user = 0
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+        }
+
+        container {
+          name  = "bifrost-service"
+          image = "maximhq/bifrost:${var.image_tag}"
+
+          port {
+            container_port = 8080
+            name           = "http"
+          }
+
+          security_context {
+            run_as_user                = 1000
+            run_as_group               = 1000
+            run_as_non_root            = true
+            allow_privilege_escalation = false
+          }
+
+          resources {
+            requests = {
+              cpu    = "250m"
+              memory = "512Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+
+          volume_mount {
+            name       = "config-volume"
+            mount_path = "/app/data/config.json"
+            sub_path   = "config.json"
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+
+        volume {
+          name = "bifrost-volume"
+          persistent_volume_claim {
+            claim_name = "bifrost-volume-claim"
+          }
+        }
+
+        volume {
+          name = "config-volume"
+          secret {
+            secret_name = kubernetes_secret.bifrost_config.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+  depends_on = [kubernetes_secret.bifrost_config, kubernetes_persistent_volume_claim.bifrost_volume_claim]
+}
+```
+
+## 4. Service Configuration
+
+Create a Kubernetes service to expose the Bifrost deployment.
+
+```terraform
+resource "kubernetes_service" "bifrost_service" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+    }
+  }
+
+  spec {
+    selector = {
+      app = local.service_name
+    }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = 8080
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
+  }
+}
+```
+
+## Complete Configuration
+
+Here's the complete Terraform configuration combining all components:
+
+```terraform
+locals {
+  service_name = "bifrost-service"
+}
+
+# Volume Configuration
+resource "azurerm_managed_disk" "bifrost_disk" {
+  name                 = "bifrost-disk"
+  location             = var.region
+  resource_group_name  = var.resource_group_name
+  storage_account_type = "Premium_LRS"
+  create_option        = "Empty"
+  disk_size_gb         = var.volume_size_gb
+
+  lifecycle {
+    ignore_changes = [tags]
+  }
+}
+
+resource "kubernetes_persistent_volume" "bifrost_volume" {
+  metadata {
+    name = "bifrost-volume"
+  }
+  spec {
+    capacity = {
+      storage = "${var.volume_size_gb}Gi"
+    }
+    access_modes                     = ["ReadWriteOnce"]
+    persistent_volume_reclaim_policy = "Retain"
+    storage_class_name               = "managed-premium"
+    persistent_volume_source {
+      azure_disk {
+        disk_name     = azurerm_managed_disk.bifrost_disk.name
+        data_disk_uri = azurerm_managed_disk.bifrost_disk.id
+        kind          = "Managed"
+      }
+    }
+  }
+  depends_on = [azurerm_managed_disk.bifrost_disk]
+
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
+  metadata {
+    name      = "bifrost-volume-claim"
+    namespace = var.namespace
+  }
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "${var.volume_size_gb}Gi"
+      }
+    }
+    storage_class_name = "managed-premium"
+    volume_name        = "bifrost-volume"
+  }
+  depends_on = [kubernetes_persistent_volume.bifrost_volume]
+}
+
+# Configuration Secret
+resource "kubernetes_secret" "bifrost_config" {
+  metadata {
+    name      = "bifrost-config"
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+  }
+
+  data = {
+    "config.json" = jsonencode({
+      "config_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      },
+      "logs_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      }
+    })
+  }
+
+  type = "Opaque"
+  depends_on = [kubernetes_namespace.bifrost_namespace]
+}
+
+# Deployment Configuration
+resource "kubernetes_deployment" "bifrost_deployment" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+      env = var.env
+    }
+  }
+
+  spec {
+    replicas = var.replica_count
+
+    selector {
+      match_labels = {
+        app = local.service_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = local.service_name
+          env = var.env
+        }
+      }
+
+      spec {
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        init_container {
+          name    = "fix-permissions"
+          image   = "busybox:latest"
+          command = ["sh", "-c", "chown -R 1000:1000 /app/data && chmod -R 755 /app/data"]
+
+          security_context {
+            run_as_user = 0
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+        }
+
+        container {
+          name  = "bifrost-service"
+          image = "maximhq/bifrost:${var.image_tag}"
+
+          port {
+            container_port = 8080
+            name           = "http"
+          }
+
+          security_context {
+            run_as_user                = 1000
+            run_as_group               = 1000
+            run_as_non_root            = true
+            allow_privilege_escalation = false
+          }
+
+          resources {
+            requests = {
+              cpu    = "250m"
+              memory = "512Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+
+          volume_mount {
+            name       = "config-volume"
+            mount_path = "/app/data/config.json"
+            sub_path   = "config.json"
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+
+        volume {
+          name = "bifrost-volume"
+          persistent_volume_claim {
+            claim_name = "bifrost-volume-claim"
+          }
+        }
+
+        volume {
+          name = "config-volume"
+          secret {
+            secret_name = kubernetes_secret.bifrost_config.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+  depends_on = [kubernetes_secret.bifrost_config, kubernetes_persistent_volume_claim.bifrost_volume_claim]
+}
+
+# Service Configuration
+resource "kubernetes_service" "bifrost_service" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+    }
+  }
+
+  spec {
+    selector = {
+      app = local.service_name
+    }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = 8080
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
+  }
+}
+```
+
+</Tab>
+
+<Tab title="GCP">
+
+## 1. Volume Configuration
+
+Create a GCP persistent disk, persistent volume, and persistent volume claim for Bifrost data storage.
+
+```terraform
+locals {
+  service_name = "bifrost-service"
+}
+
+resource "google_compute_disk" "bifrost_disk" {
+  name = "bifrost-disk"
+  size = var.volume_size_gb
+  type = "pd-ssd"
+  zone = "${var.region}-${var.main_zone}"
+
+  lifecycle {
+    ignore_changes = [labels]
+  }
+}
+
+resource "kubernetes_persistent_volume" "bifrost_volume" {
+  metadata {
+    name = "bifrost-volume"
+  }
+  spec {
+    capacity = {
+      storage = "${var.volume_size_gb}Gi"
+    }
+    access_modes                     = ["ReadWriteOnce"]
+    persistent_volume_reclaim_policy = "Retain"
+    storage_class_name               = "premium-rwo"
+    persistent_volume_source {
+      gce_persistent_disk {
+        pd_name = "bifrost-disk"
+      }
+    }
+  }
+  depends_on = [google_compute_disk.bifrost_disk]
+
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
+  metadata {
+    name      = "bifrost-volume-claim"
+    namespace = var.namespace
+  }
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "${var.volume_size_gb}Gi"
+      }
+    }
+    storage_class_name = "premium-rwo"
+    volume_name        = "bifrost-volume"
+  }
+  depends_on = [kubernetes_persistent_volume.bifrost_volume]
+}
+```
+
+## 2. Configuration Secret
+
+Create a Kubernetes secret to store Bifrost configuration with Postgres backend.
+
+<Note>
+This configuration uses Postgres for both config store and logs store. The secret is mounted as a file at `/app/data/config.json` in the container.
+</Note>
+
+```terraform
+resource "kubernetes_secret" "bifrost_config" {
+  metadata {
+    name      = "bifrost-config"
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+  }
+
+  data = {
+    "config.json" = jsonencode({
+      "config_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      },
+      "logs_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      }
+    })
+  }
+
+  type = "Opaque"
+  depends_on = [kubernetes_namespace.bifrost_namespace]
+}
+```
+
+## 3. Deployment Configuration
+
+Create the Bifrost deployment with proper security contexts and volume mounts.
+
+<Note>
+**Volume Permissions**: The deployment includes an init container that sets proper ownership (1000:1000) and permissions (755) on the mounted volume. This ensures the Bifrost container can read/write to the volume.
+- `fs_group: 1000` sets the volume's group ownership
+- `run_as_user: 1000` runs the container as non-root user
+- Init container runs as root to fix permissions before the main container starts
+</Note>
+
+```terraform
+resource "kubernetes_deployment" "bifrost_deployment" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+      env = var.env
+    }
+  }
+
+  spec {
+    replicas = var.replica_count
+
+    selector {
+      match_labels = {
+        app = local.service_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = local.service_name
+          env = var.env
+        }
+      }
+
+      spec {
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        init_container {
+          name    = "fix-permissions"
+          image   = "busybox:latest"
+          command = ["sh", "-c", "chown -R 1000:1000 /app/data && chmod -R 755 /app/data"]
+
+          security_context {
+            run_as_user = 0
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+        }
+
+        container {
+          name  = "bifrost-service"
+          image = "maximhq/bifrost:${var.image_tag}"
+
+          port {
+            container_port = 8080
+            name           = "http"
+          }
+
+          security_context {
+            run_as_user                = 1000
+            run_as_group               = 1000
+            run_as_non_root            = true
+            allow_privilege_escalation = false
+          }
+
+          resources {
+            requests = {
+              cpu    = "250m"
+              memory = "512Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+
+          volume_mount {
+            name       = "config-volume"
+            mount_path = "/app/data/config.json"
+            sub_path   = "config.json"
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+
+        volume {
+          name = "bifrost-volume"
+          persistent_volume_claim {
+            claim_name = "bifrost-volume-claim"
+          }
+        }
+
+        volume {
+          name = "config-volume"
+          secret {
+            secret_name = kubernetes_secret.bifrost_config.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+  depends_on = [kubernetes_secret.bifrost_config, kubernetes_persistent_volume_claim.bifrost_volume_claim]
+}
+```
+
+## 4. Service Configuration
+
+Create a Kubernetes service to expose the Bifrost deployment.
+
+```terraform
+resource "kubernetes_service" "bifrost_service" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+    }
+  }
+
+  spec {
+    selector = {
+      app = local.service_name
+    }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = 8080
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
+  }
+}
+```
+
+## Complete Configuration
+
+Here's the complete Terraform configuration combining all components:
+
+```terraform
+locals {
+  service_name = "bifrost-service"
+}
+
+# Volume Configuration
+resource "google_compute_disk" "bifrost_disk" {
+  name = "bifrost-disk"
+  size = var.volume_size_gb
+  type = "pd-ssd"
+  zone = "${var.region}-${var.main_zone}"
+
+  lifecycle {
+    ignore_changes = [labels]
+  }
+}
+
+resource "kubernetes_persistent_volume" "bifrost_volume" {
+  metadata {
+    name = "bifrost-volume"
+  }
+  spec {
+    capacity = {
+      storage = "${var.volume_size_gb}Gi"
+    }
+    access_modes                     = ["ReadWriteOnce"]
+    persistent_volume_reclaim_policy = "Retain"
+    storage_class_name               = "premium-rwo"
+    persistent_volume_source {
+      gce_persistent_disk {
+        pd_name = "bifrost-disk"
+      }
+    }
+  }
+  depends_on = [google_compute_disk.bifrost_disk]
+
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+resource "kubernetes_persistent_volume_claim" "bifrost_volume_claim" {
+  metadata {
+    name      = "bifrost-volume-claim"
+    namespace = var.namespace
+  }
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "${var.volume_size_gb}Gi"
+      }
+    }
+    storage_class_name = "premium-rwo"
+    volume_name        = "bifrost-volume"
+  }
+  depends_on = [kubernetes_persistent_volume.bifrost_volume]
+}
+
+# Configuration Secret
+resource "kubernetes_secret" "bifrost_config" {
+  metadata {
+    name      = "bifrost-config"
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+  }
+
+  data = {
+    "config.json" = jsonencode({
+      "config_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      },
+      "logs_store" : {
+        "enabled" : true,
+        "type" : "postgres",
+        "config" : {
+          "host" : "${var.pg_host}",
+          "port" : "${var.pg_port}",
+          "user" : "${var.pg_user}",
+          "password" : "${var.pg_password}",
+          "db_name" : "${var.pg_database}",
+          "ssl_mode": "disable"
+        }
+      }
+    })
+  }
+
+  type = "Opaque"
+  depends_on = [kubernetes_namespace.bifrost_namespace]
+}
+
+# Deployment Configuration
+resource "kubernetes_deployment" "bifrost_deployment" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+      env = var.env
+    }
+  }
+
+  spec {
+    replicas = var.replica_count
+
+    selector {
+      match_labels = {
+        app = local.service_name
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = local.service_name
+          env = var.env
+        }
+      }
+
+      spec {
+        security_context {
+          fs_group               = 1000
+          fs_group_change_policy = "OnRootMismatch"
+        }
+
+        init_container {
+          name    = "fix-permissions"
+          image   = "busybox:latest"
+          command = ["sh", "-c", "chown -R 1000:1000 /app/data && chmod -R 755 /app/data"]
+
+          security_context {
+            run_as_user = 0
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+        }
+
+        container {
+          name  = "bifrost-service"
+          image = "maximhq/bifrost:${var.image_tag}"
+
+          port {
+            container_port = 8080
+            name           = "http"
+          }
+
+          security_context {
+            run_as_user                = 1000
+            run_as_group               = 1000
+            run_as_non_root            = true
+            allow_privilege_escalation = false
+          }
+
+          resources {
+            requests = {
+              cpu    = "250m"
+              memory = "512Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "1Gi"
+            }
+          }
+
+          volume_mount {
+            name       = "bifrost-volume"
+            mount_path = "/app/data"
+          }
+
+          volume_mount {
+            name       = "config-volume"
+            mount_path = "/app/data/config.json"
+            sub_path   = "config.json"
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+            timeout_seconds       = 3
+            failure_threshold     = 3
+          }
+        }
+
+        volume {
+          name = "bifrost-volume"
+          persistent_volume_claim {
+            claim_name = "bifrost-volume-claim"
+          }
+        }
+
+        volume {
+          name = "config-volume"
+          secret {
+            secret_name = kubernetes_secret.bifrost_config.metadata[0].name
+          }
+        }
+      }
+    }
+  }
+  depends_on = [kubernetes_secret.bifrost_config, kubernetes_persistent_volume_claim.bifrost_volume_claim]
+}
+
+# Service Configuration
+resource "kubernetes_service" "bifrost_service" {
+  metadata {
+    name      = local.service_name
+    namespace = kubernetes_namespace.bifrost_namespace.metadata[0].name
+    labels = {
+      app = local.service_name
+    }
+  }
+
+  spec {
+    selector = {
+      app = local.service_name
+    }
+
+    port {
+      name        = "http"
+      port        = 80
+      target_port = 8080
+      protocol    = "TCP"
+    }
+
+    type = "ClusterIP"
+  }
+}
+```
+
+</Tab>
+</Tabs>
