@@ -1770,6 +1770,46 @@ func TestRequestDecompressionMiddleware_DecompressedSizeLimit(t *testing.T) {
 	}
 }
 
+// TestRequestDecompressionMiddleware_ZstdOversizedWindowRejected reproduces
+// the reported memory-bomb PoC end to end through the actual middleware: a
+// ~9-byte zstd frame whose header declares a 512 MiB window, decoding to zero
+// bytes. RequestDecompressionMiddleware runs before routing and auth, so
+// without a bound on the decoder, this pre-allocates ~512 MiB per request
+// regardless of MaxRequestBodySizeMB - that limit only bounds decompressed
+// OUTPUT via io.LimitedReader, which never sees a byte here. The request must
+// be rejected, not merely produce a small/empty body.
+func TestRequestDecompressionMiddleware_ZstdOversizedWindowRejected(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	// zstd magic (28 b5 2f fd) + Frame_Header_Descriptor (00) +
+	// Window_Descriptor (98 -> 512 MiB window) + empty last raw block (01 00 00).
+	maliciousFrame := []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x98, 0x01, 0x00, 0x00}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "zstd")
+	ctx.Request.SetBodyRaw(maliciousFrame)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for an oversized-window zstd frame")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+}
+
 func TestRequestDecompressionMiddleware_EmptyBodyWithContentEncoding(t *testing.T) {
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{
