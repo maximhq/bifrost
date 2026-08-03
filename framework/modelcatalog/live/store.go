@@ -13,10 +13,17 @@
 //
 // Entries are per process and are never persisted, so every node refreshes its
 // own copy rather than electing one refresher.
+//
+// Entries carry each provider's models in full, not just their identifiers,
+// because the store also backs schemas.ListModelsCatalog: when a refresher is
+// keeping it current, GET /v1/models is answered from here rather than by
+// querying every provider per request, and that answer has to match what a
+// live call would have returned.
 package live
 
 import (
 	"slices"
+	"strings"
 	"sync"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -33,7 +40,23 @@ type Key struct {
 
 // Entry is a single cached response.
 type Entry struct {
-	Models []string
+	// Models is the provider's list-models response for this key, already
+	// filtered to this provider and deduplicated. Kept in full rather than
+	// reduced to identifiers so a cache hit can serve /v1/models with the same
+	// fields a live call would return (alias, owned_by, context_length,
+	// pricing, ...).
+	Models []schemas.Model
+	// IDs is the routing view of the same entry: the identifiers callers match
+	// against when resolving a model to a provider.
+	//
+	// Deliberately supplied by the caller rather than derived from Models. The
+	// two are not the same projection: routing strips the owning provider's own
+	// prefix ("openai/gpt-4o" cached under openai routes as "gpt-4o") while
+	// leaving foreign prefixes intact, because cross-provider resolution keys
+	// off them ("openai/gpt-oss-120b" listed by groq must stay prefixed).
+	// Models keeps every identifier exactly as the provider reported it, since
+	// that is what a cache hit has to hand back to /v1/models.
+	IDs []string
 }
 
 type Store struct {
@@ -63,15 +86,20 @@ func New(logger schemas.Logger) *Store {
 	}
 }
 
-// Upsert stores a successful fetch unconditionally. Use it for writes with no
-// in-flight window to lose a race in (seeding, tests); anything that fetches
-// from an upstream first should go through Generation + UpsertIfCurrent.
-func (s *Store) Upsert(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string) {
-	cp := make([]string, len(models))
-	copy(cp, models)
+// Upsert stores a successful fetch.
+//
+// models is the provider's response, already narrowed to this provider and
+// deduplicated, with identifiers left as reported. ids is the routing
+// projection of the same fetch; see Entry.IDs for why it is passed in rather
+// than derived. The two need not be the same length.
+func (s *Store) Upsert(provider schemas.ModelProvider, keyID string, unfiltered bool, models []schemas.Model, ids []string) {
+	modelsCopy := make([]schemas.Model, len(models))
+	copy(modelsCopy, models)
+	idsCopy := make([]string, len(ids))
+	copy(idsCopy, ids)
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
-	s.entries[k] = Entry{Models: cp}
+	s.entries[k] = Entry{Models: modelsCopy, IDs: idsCopy}
 	s.mu.Unlock()
 }
 
@@ -86,22 +114,29 @@ func (s *Store) Generation(provider schemas.ModelProvider) uint64 {
 // UpsertIfCurrent stores a fetch only if nothing invalidated the provider
 // since gen was read, and reports whether it wrote.
 //
+// models and ids carry the same two projections Upsert takes, and for the same
+// reason: an entry written with only one of them would answer either /v1/models
+// or routing with an empty set. See Entry for why the two are not derivable
+// from each other.
+//
 // This is what keeps a deleted or disabled key's models from being resurrected
 // by a fetch that outlived it. The background refresher works from a key
 // snapshot taken at the top of a pass; by the time list-models answers, the key
 // may be gone. Its Invalidate already ran, and no later pass re-fetches or
 // prunes a key that is no longer configured, so an unguarded commit would
 // advertise that key's models until the process restarted.
-func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string, gen uint64) bool {
-	cp := make([]string, len(models))
-	copy(cp, models)
+func (s *Store) UpsertIfCurrent(provider schemas.ModelProvider, keyID string, unfiltered bool, models []schemas.Model, ids []string, gen uint64) bool {
+	modelsCopy := make([]schemas.Model, len(models))
+	copy(modelsCopy, models)
+	idsCopy := make([]string, len(ids))
+	copy(idsCopy, ids)
 	k := Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.gen[provider] != gen {
 		return false
 	}
-	s.entries[k] = Entry{Models: cp}
+	s.entries[k] = Entry{Models: modelsCopy, IDs: idsCopy}
 	return true
 }
 
@@ -174,13 +209,82 @@ func (s *Store) RetainKeys(provider schemas.ModelProvider, keep map[string]struc
 // sorted. Filtered entries are pre-gated so this is the effective allowed set
 // across the provider's keys.
 func (s *Store) ModelsForProvider(provider schemas.ModelProvider) []string {
-	return s.unionForProvider(provider, false)
+	return s.unionForProvider(provider, nil, false)
 }
 
 // UnfilteredModelsForProvider returns the union of unfiltered entries — the
 // raw provider catalog with no key-level gating applied.
 func (s *Store) UnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
-	return s.unionForProvider(provider, true)
+	return s.unionForProvider(provider, nil, true)
+}
+
+// IDsForKeys is ModelsForProvider narrowed to a subset of the provider's keys:
+// the routing view of just those keys' entries, sorted and deduplicated.
+//
+// Needed because the provider-wide union answers "what can this gateway route
+// to the provider", which is the wrong question for a call already scoped to
+// one key. Reconciling a key-scoped list-models response against the union
+// would append models only some *other* key is allowed to serve, and — since
+// that reconciled response is what the refresher caches under the scoped key —
+// write the broadened set back over the very allowlist that excluded them.
+//
+// keyIDs is read-only. An empty keyIDs looks up the "" sentinel that keyless
+// providers cache under, matching FullModelsFor rather than falling back to the
+// provider-wide union.
+func (s *Store) IDsForKeys(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) []string {
+	lookup := keyIDs
+	if len(lookup) == 0 {
+		lookup = []string{""}
+	}
+	keep := make(map[string]struct{}, len(lookup))
+	for _, id := range lookup {
+		keep[id] = struct{}{}
+	}
+	return s.unionForProvider(provider, keep, unfiltered)
+}
+
+// FullModelsFor returns the models cached for the provider across the given
+// keys, deduplicated by identifier and sorted, plus whether any of those keys
+// had an entry at all.
+//
+// The bool is the cache-hit signal and is deliberately distinct from an empty
+// slice: a provider that legitimately serves no models is a hit with zero
+// results, whereas a key that has never been fetched is a miss that must fall
+// through to the provider.
+//
+// keyIDs is read-only. An empty keyIDs looks up the "" sentinel that keyless
+// providers cache under.
+func (s *Store) FullModelsFor(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]schemas.Model, bool) {
+	lookup := keyIDs
+	if len(lookup) == 0 {
+		lookup = []string{""}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	hit := false
+	seen := make(map[string]struct{})
+	out := make([]schemas.Model, 0)
+	for _, keyID := range lookup {
+		e, ok := s.entries[Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}]
+		if !ok {
+			continue
+		}
+		hit = true
+		for _, m := range e.Models {
+			if _, dup := seen[m.ID]; dup {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	if !hit {
+		return nil, false
+	}
+	slices.SortFunc(out, func(a, b schemas.Model) int { return strings.Compare(a.ID, b.ID) })
+	return out, true
 }
 
 // Snapshot returns a defensive copy of every entry for diagnostics. Slices
@@ -190,16 +294,21 @@ func (s *Store) Snapshot() map[Key]Entry {
 	defer s.mu.RUnlock()
 	out := make(map[Key]Entry, len(s.entries))
 	for k, e := range s.entries {
-		cp := make([]string, len(e.Models))
-		copy(cp, e.Models)
-		out[k] = Entry{Models: cp}
+		models := make([]schemas.Model, len(e.Models))
+		copy(models, e.Models)
+		ids := make([]string, len(e.IDs))
+		copy(ids, e.IDs)
+		out[k] = Entry{Models: models, IDs: ids}
 	}
 	return out
 }
 
 // unionForProvider returns the sorted, deduplicated set of models across all
-// entries matching the given provider and unfiltered flag.
-func (s *Store) unionForProvider(provider schemas.ModelProvider, unfiltered bool) []string {
+// entries matching the given provider and unfiltered flag. A nil keep set means
+// every key; a non-nil one narrows to exactly its members (an empty non-nil set
+// therefore matches nothing, which is the honest answer for "these keys" when
+// the caller named none).
+func (s *Store) unionForProvider(provider schemas.ModelProvider, keep map[string]struct{}, unfiltered bool) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	seen := make(map[string]struct{})
@@ -207,8 +316,13 @@ func (s *Store) unionForProvider(provider schemas.ModelProvider, unfiltered bool
 		if k.Provider != provider || k.Unfiltered != unfiltered {
 			continue
 		}
-		for _, m := range e.Models {
-			seen[m] = struct{}{}
+		if keep != nil {
+			if _, ok := keep[k.KeyID]; !ok {
+				continue
+			}
+		}
+		for _, id := range e.IDs {
+			seen[id] = struct{}{}
 		}
 	}
 	out := make([]string, 0, len(seen))

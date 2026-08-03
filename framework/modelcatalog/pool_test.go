@@ -379,3 +379,116 @@ func TestUpsertLiveFromResponseIfCurrent_NilRespIsNoop(t *testing.T) {
 		t.Errorf("after nil-resp guarded upsert = %v, want [gpt-4o] (entry must survive)", got)
 	}
 }
+
+// respWith builds a list-models response carrying the given model IDs.
+func respWith(ids ...string) *schemas.BifrostListModelsResponse {
+	data := make([]schemas.Model, len(ids))
+	for i, id := range ids {
+		owner := "test-owner"
+		data[i] = schemas.Model{ID: id, OwnedBy: &owner}
+	}
+	return &schemas.BifrostListModelsResponse{Data: data}
+}
+
+func lookupIDs(t *testing.T, mc *ModelCatalog, provider schemas.ModelProvider, keyIDs []string) []string {
+	t.Helper()
+	models, ok := mc.LookupLiveModels(provider, keyIDs, false)
+	if !ok {
+		t.Fatalf("expected a cache hit for %s %v", provider, keyIDs)
+	}
+	ids := make([]string, len(models))
+	for i, m := range models {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+// TestLookupLiveModels_ReflectsNewlyServedModels is the scenario the whole
+// feature exists for: a provider starts serving a model after boot, discovery
+// re-fetches, and the next lookup must return the new model rather than the
+// snapshot it replaced.
+func TestLookupLiveModels_ReflectsNewlyServedModels(t *testing.T) {
+	mc := NewTestCatalog(nil)
+
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, respWith("gpt-4o", "o1"))
+	if got := lookupIDs(t, mc, schemas.OpenAI, []string{"k1"}); !slices.Equal(got, []string{"gpt-4o", "o1"}) {
+		t.Fatalf("initial lookup = %v, want [gpt-4o o1]", got)
+	}
+
+	// The provider now serves an extra model; discovery re-fetches.
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, respWith("gpt-4o", "o1", "gpt-5"))
+	if got := lookupIDs(t, mc, schemas.OpenAI, []string{"k1"}); !slices.Equal(got, []string{"gpt-4o", "gpt-5", "o1"}) {
+		t.Errorf("after refresh = %v, want the new model included", got)
+	}
+
+	// Models withdrawn upstream must disappear too: the entry is replaced
+	// wholesale, not merged, or a removed model would stay routable forever.
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, respWith("gpt-5"))
+	if got := lookupIDs(t, mc, schemas.OpenAI, []string{"k1"}); !slices.Equal(got, []string{"gpt-5"}) {
+		t.Errorf("after withdrawal = %v, want [gpt-5] only", got)
+	}
+}
+
+// A key edit invalidates that key's entries. Until discovery re-fetches, the
+// lookup must miss so the caller queries the provider instead of being handed
+// models computed against the previous configuration.
+func TestLookupLiveModels_InvalidateThenRefetch(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, respWith("gpt-4o"))
+
+	mc.InvalidateLive(schemas.OpenAI, "k1")
+	if _, ok := mc.LookupLiveModels(schemas.OpenAI, []string{"k1"}, false); ok {
+		t.Error("expected a miss after InvalidateLive, so the caller falls through to the provider")
+	}
+
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, respWith("gpt-4o", "gpt-4o-mini"))
+	if got := lookupIDs(t, mc, schemas.OpenAI, []string{"k1"}); !slices.Equal(got, []string{"gpt-4o", "gpt-4o-mini"}) {
+		t.Errorf("after refetch = %v, want both models", got)
+	}
+}
+
+// Deleting one key must not blank the provider: the surviving keys' entries
+// still describe models that are routable.
+func TestLookupLiveModels_InvalidateOneKeyKeepsOthers(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, respWith("gpt-4o"))
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k2", false, respWith("o1"))
+
+	mc.InvalidateLive(schemas.OpenAI, "k1")
+
+	if got := lookupIDs(t, mc, schemas.OpenAI, []string{"k1", "k2"}); !slices.Equal(got, []string{"o1"}) {
+		t.Errorf("after deleting k1 = %v, want [o1] from the surviving key", got)
+	}
+}
+
+func TestLookupLiveModels_ProviderRemovalDropsEverything(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, respWith("gpt-4o"))
+	mc.UpsertLiveFromResponse(schemas.Anthropic, "k2", false, respWith("claude-sonnet-4-5"))
+
+	mc.InvalidateLiveProvider(schemas.OpenAI)
+
+	if _, ok := mc.LookupLiveModels(schemas.OpenAI, []string{"k1"}, false); ok {
+		t.Error("expected a miss for the removed provider")
+	}
+	if _, ok := mc.LookupLiveModels(schemas.Anthropic, []string{"k2"}, false); !ok {
+		t.Error("expected the untouched provider to still hit")
+	}
+}
+
+// The cache must hand back what the provider reported, not the routing-shaped
+// identifier. These diverge whenever a model carries its provider's prefix.
+func TestLookupLiveModels_ServesProviderIDsNotRoutingIDs(t *testing.T) {
+	mc := NewTestCatalog(nil)
+	mc.UpsertLiveFromResponse(schemas.OpenAI, "k1", false, respWith("openai/gpt-4o"))
+
+	// Routing sees the prefix stripped...
+	if got := mc.GetModelsForProvider(schemas.OpenAI); !slices.Contains(got, "gpt-4o") {
+		t.Errorf("routing view = %v, want the bare name", got)
+	}
+	// ...while the cache serves the identifier the provider actually returned.
+	if got := lookupIDs(t, mc, schemas.OpenAI, []string{"k1"}); !slices.Equal(got, []string{"openai/gpt-4o"}) {
+		t.Errorf("cache view = %v, want [openai/gpt-4o] as reported", got)
+
+	}
+}

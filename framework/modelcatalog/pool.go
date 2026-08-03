@@ -8,13 +8,23 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// UpsertLive caches one (provider, keyID, unfiltered) list-models response.
+// UpsertLive caches one (provider, keyID, unfiltered) entry from bare model
+// names. Convenience wrapper for callers that have no provider metadata to
+// store; an entry written this way carries identifiers only, so serving it back
+// through the list-models cache yields models with just an ID set.
 func (mc *ModelCatalog) UpsertLive(provider schemas.ModelProvider, keyID string, unfiltered bool, models []string) {
-	mc.live.Upsert(provider, keyID, unfiltered, models)
+	full := make([]schemas.Model, len(models))
+	for i, m := range models {
+		full[i] = schemas.Model{ID: m}
+	}
+	// Identifiers pass through untouched: callers of this form already hold
+	// routing-shaped names, and re-parsing would strip foreign prefixes that
+	// cross-provider resolution depends on.
+	mc.live.Upsert(provider, keyID, unfiltered, full, models)
 }
 
-// UpsertLiveFromResponse extracts model IDs from a BifrostListModelsResponse
-// (parsing "provider/model" prefixes, filtering by provider match,
+// UpsertLiveFromResponse narrows a BifrostListModelsResponse to the provider's
+// own models (parsing "provider/model" prefixes, filtering by provider match,
 // deduplicating) and pushes them into the live cache. A nil resp is a no-op
 // so callers can't accidentally clear an existing cache entry by handing in
 // a missing response.
@@ -22,7 +32,36 @@ func (mc *ModelCatalog) UpsertLiveFromResponse(provider schemas.ModelProvider, k
 	if resp == nil {
 		return
 	}
-	mc.live.Upsert(provider, keyID, unfiltered, extractModelIDs(resp, provider))
+	mc.live.Upsert(provider, keyID, unfiltered, extractProviderModels(resp, provider), extractModelIDs(resp, provider))
+}
+
+// LookupLiveModels returns the cached list-models result for the provider
+// across the given keys, and whether the lookup hit. It is the read side of
+// schemas.ListModelsCatalog, letting the core pipeline answer a list-models
+// call from cache instead of the network.
+func (mc *ModelCatalog) LookupLiveModels(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]schemas.Model, bool) {
+	return mc.live.FullModelsFor(provider, keyIDs, unfiltered)
+}
+
+// RoutableModelsForProvider returns every model the gateway would route to the
+// provider through the given keys: the same composition routing resolves
+// against, so a list-models response reconciled with it advertises exactly what
+// will be accepted.
+//
+// Deliberately the composed view rather than the live entries alone. It also
+// covers delisted-but-callable models, providers whose list-models is a known
+// partial view, and identifiers that only key configuration knows about.
+//
+// keyIDs is read-only and mirrors the scoping of the call being reconciled: a
+// request pinned to one key must be reconciled against that key alone, or the
+// reply advertises models a sibling key's allow-list permits and this one does
+// not. Empty keyIDs means the provider-wide view, which is what an unscoped
+// request and the list-models failure fallback both want.
+func (mc *ModelCatalog) RoutableModelsForProvider(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) []string {
+	if unfiltered {
+		return mc.unfilteredModelsForProvider(provider, keyIDs)
+	}
+	return mc.modelsForProvider(provider, keyIDs)
 }
 
 // LiveGeneration returns the live cache's invalidation counter for the
@@ -42,7 +81,7 @@ func (mc *ModelCatalog) UpsertLiveFromResponseIfCurrent(provider schemas.ModelPr
 	if resp == nil {
 		return false
 	}
-	return mc.live.UpsertIfCurrent(provider, keyID, unfiltered, extractModelIDs(resp, provider), gen)
+	return mc.live.UpsertIfCurrent(provider, keyID, unfiltered, extractProviderModels(resp, provider), extractModelIDs(resp, provider), gen)
 }
 
 // InvalidateLive drops both filtered + unfiltered live entries for one key.
@@ -116,15 +155,20 @@ func (mc *ModelCatalog) ConfiguredProviders() []schemas.ModelProvider {
 	return mc.keyconf.Providers()
 }
 
-// extractModelIDs flattens a list-models response into bare model
-// identifiers, filtering entries whose ID prefix doesn't match the
-// requested provider.
-func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.ModelProvider) []string {
+// extractProviderModels narrows a list-models response to the models the
+// requested provider owns, dropping entries whose ID prefix names a different
+// provider and collapsing duplicates by bare model name.
+//
+// Models are returned whole rather than as identifiers: the live store keeps
+// them so a cache hit can reproduce a live /v1/models response field for
+// field, and dropping to identifiers here would discard alias, owned_by,
+// context_length, pricing and everything else the provider reported.
+func extractProviderModels(resp *schemas.BifrostListModelsResponse, provider schemas.ModelProvider) []schemas.Model {
 	if resp == nil {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(resp.Data))
-	out := make([]string, 0, len(resp.Data))
+	out := make([]schemas.Model, 0, len(resp.Data))
 	for _, m := range resp.Data {
 		parsedProvider, parsedModel := schemas.ParseModelString(m.ID, "")
 		if parsedProvider != "" && parsedProvider != provider {
@@ -134,7 +178,21 @@ func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.M
 			continue
 		}
 		seen[parsedModel] = struct{}{}
-		out = append(out, parsedModel)
+		out = append(out, m)
+	}
+	return out
+}
+
+// extractModelIDs is the bare-identifier projection of extractProviderModels,
+// kept so callers that only need names do not have to repeat the parse.
+func extractModelIDs(resp *schemas.BifrostListModelsResponse, provider schemas.ModelProvider) []string {
+	models := extractProviderModels(resp, provider)
+	if models == nil {
+		return nil
+	}
+	out := make([]string, len(models))
+	for i, m := range models {
+		_, out[i] = schemas.ParseModelString(m.ID, "")
 	}
 	return out
 }

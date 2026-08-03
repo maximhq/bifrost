@@ -36,11 +36,12 @@ type ModelsManager interface {
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 	// RefreshLiveModelsForKey re-fetches list-models for a single key on
 	// demand. Returns ErrRefreshInProgress when the provider is already being
-	// refreshed.
+	// refreshed, ErrListModelsDisabled when the provider cannot be refreshed at
+	// all, and an upstream failure when the cache was left unchanged.
 	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 	// RefreshLiveModelsForAllKeys re-fetches list-models across every enabled
-	// key of the provider on demand. Returns ErrRefreshInProgress when the
-	// provider is already being refreshed.
+	// key of the provider on demand. Same error contract as
+	// RefreshLiveModelsForKey; per-key failures are joined and labelled.
 	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
 }
 
@@ -49,6 +50,12 @@ type ModelsManager interface {
 // the UI refresh button collapse into the in-flight pass rather than each
 // spawning their own (enabled keys x 2) burst of upstream calls.
 var ErrRefreshInProgress = errors.New("model refresh already in progress for this provider")
+
+// ErrListModelsDisabled is returned when the provider has list_models turned off
+// via allowed_requests, so there is no upstream call to make and a refresh can
+// never do anything. Distinguished from an upstream failure because retrying
+// will not help: the fix is a configuration change, not a second press.
+var ErrListModelsDisabled = errors.New("list_models is disabled for this provider")
 
 // ModelPricingAttributesEntry is the wire shape for PUT /api/models/catalog.
 // (model, provider) is the natural key on governance_model_pricing.

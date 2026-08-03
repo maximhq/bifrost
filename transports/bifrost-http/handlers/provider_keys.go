@@ -338,6 +338,12 @@ func (h *ProviderHandler) refreshProviderModels(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
 			return
 		}
+		if errors.Is(err, ErrListModelsDisabled) {
+			// A configuration state, not a server fault: retrying cannot
+			// succeed until list_models is re-enabled for the provider.
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to refresh models: %v", err))
 		return
 	}
@@ -380,6 +386,12 @@ func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
 
 	if err := h.modelsManager.RefreshLiveModelsForKey(ctx, provider, keyID); err != nil {
 		if errors.Is(err, ErrRefreshInProgress) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
+		if errors.Is(err, ErrListModelsDisabled) {
+			// A configuration state, not a server fault: retrying cannot
+			// succeed until list_models is re-enabled for the provider.
 			SendError(ctx, fasthttp.StatusConflict, err.Error())
 			return
 		}

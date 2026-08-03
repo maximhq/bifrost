@@ -150,6 +150,42 @@ func (s *Store) AllowedFor(provider schemas.ModelProvider) schemas.WhiteList {
 	return slices.Clone(st.allowed)
 }
 
+// GatesForKeys returns the same two aggregates AllowedFor and BlacklistedFor
+// produce, but computed over only the named keys.
+//
+// Callers scoped to a single key need this because the provider-wide aggregates
+// answer "what can any key serve": the allow-list is a union across keys and
+// the blacklist an intersection, so both widen as keys are added. Judging a
+// key-scoped request against them lets one key's allowances leak into another
+// key's answer.
+//
+// keyIDs is read-only. An empty keyIDs, an unknown provider, or a provider with
+// no per-key entries at all (keyless custom providers, whose aggregates are not
+// derived from keys in the first place) all fall back to the provider-wide
+// aggregates, which for those cases are the correct answer rather than a
+// widening of it.
+func (s *Store) GatesForKeys(provider schemas.ModelProvider, keyIDs []string) (schemas.WhiteList, schemas.BlackList) {
+	st := s.load(provider)
+	if st == nil {
+		return nil, nil
+	}
+	if len(keyIDs) == 0 || len(st.entries) == 0 {
+		return slices.Clone(st.allowed), slices.Clone(st.blacklisted)
+	}
+	want := make(map[string]struct{}, len(keyIDs))
+	for _, id := range keyIDs {
+		want[id] = struct{}{}
+	}
+	subset := make([]KeyEntry, 0, len(keyIDs))
+	for _, e := range st.entries {
+		if _, ok := want[e.KeyID]; ok {
+			subset = append(subset, e)
+		}
+	}
+	g := aggregateGates(subset, false)
+	return g.allowed, g.blacklisted
+}
+
 // BlacklistedFor returns the intersection of enabled keys' BlacklistedModels.
 // A model is provider-wide blocked only when *every* enabled key blacklists
 // it — matching the LB semantics that a model is only fully unavailable when
@@ -271,27 +307,8 @@ func (s *Store) load(provider schemas.ModelProvider) *providerState {
 // Safe to call without holding s.mu — it only reads its parameters and
 // s.logger, and writes only to local variables.
 func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *providerState {
-	var (
-		allModelsAllowed bool
-		enabledKeysCount int
-		allowed schemas.WhiteList
-		// blacklistAgg accumulates the cross-key blacklist intersection. Keyed by
-		// lowercased model for case-insensitive counting; name holds the original
-		// casing of the first key that blacklisted it, so the emitted blacklist
-		// preserves casing like allowed does.
-		blacklistAgg = make(map[string]struct {
-			count int
-			name  string
-		})
-		aliasIndex = make(map[string]AliasOwner)
-		entries          = make([]KeyEntry, 0, len(keys))
-	)
-
-	// Keyless non-standard providers (custom providers configured without keys)
-	// are unrestricted — there's no allow-list to derive from.
-	if len(keys) == 0 && !bifrost.IsStandardProvider(provider) {
-		allModelsAllowed = true
-	}
+	aliasIndex := make(map[string]AliasOwner)
+	entries := make([]KeyEntry, 0, len(keys))
 
 	for _, key := range keys {
 		enabled := key.Enabled == nil || *key.Enabled
@@ -305,30 +322,6 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 
 		if !enabled || key.BlacklistedModels.IsBlockAll() {
 			continue
-		}
-		enabledKeysCount++
-
-		for _, m := range key.BlacklistedModels {
-			lower := strings.ToLower(m)
-			agg := blacklistAgg[lower]
-			if agg.count == 0 {
-				agg.name = m
-			}
-			agg.count++
-			blacklistAgg[lower] = agg
-		}
-
-		if key.Models.IsUnrestricted() {
-			allModelsAllowed = true
-		} else {
-			for _, m := range key.Models {
-				if key.BlacklistedModels.IsBlocked(m) {
-					continue
-				}
-				if !allowed.Contains(m) {
-					allowed = append(allowed, m)
-				}
-			}
 		}
 
 		for aliasName, cfg := range key.Aliases {
@@ -347,25 +340,97 @@ func (s *Store) buildState(provider schemas.ModelProvider, keys []schemas.Key) *
 		}
 	}
 
-	if enabledKeysCount == 0 && !allModelsAllowed {
+	// Keyless non-standard providers (custom providers configured without keys)
+	// are unrestricted — there's no allow-list to derive from.
+	g := aggregateGates(entries, len(keys) == 0 && !bifrost.IsStandardProvider(provider))
+
+	if g.enabledKeys == 0 && !g.unrestricted {
 		return nil
-	}
-
-	if allModelsAllowed {
-		allowed = schemas.WhiteList{"*"}
-	}
-
-	var blacklisted schemas.BlackList
-	for _, agg := range blacklistAgg {
-		if agg.count == enabledKeysCount {
-			blacklisted = append(blacklisted, agg.name)
-		}
 	}
 
 	return &providerState{
 		entries:     entries,
-		allowed:     allowed,
-		blacklisted: blacklisted,
+		allowed:     g.allowed,
+		blacklisted: g.blacklisted,
 		aliasIndex:  aliasIndex,
 	}
+}
+
+// keyGates is the pair of aggregates derived from a set of key entries, plus
+// the two counters callers need to interpret them: enabledKeys distinguishes
+// "no key can serve anything" from "every key allows everything", and
+// unrestricted records that the allow-list is the ["*"] wildcard rather than an
+// enumerated union.
+type keyGates struct {
+	allowed      schemas.WhiteList
+	blacklisted  schemas.BlackList
+	enabledKeys  int
+	unrestricted bool
+}
+
+// aggregateGates applies the aggregation rules over a set of key entries: skip
+// disabled keys and full blacklists, union allowed minus per-key blacklisted,
+// and intersect blacklists across the enabled keys.
+//
+// The intersection is why the entry set matters so much: a model is reported
+// blocked only when *every* enabled key in the set blacklists it, so widening
+// the set can only unblock models and narrowing it can only block more. That is
+// correct for routing (which may pick any key) and wrong for a call already
+// pinned to one key — hence GatesForKeys.
+//
+// seedUnrestricted starts the wildcard flag true for callers whose provider is
+// unrestricted for reasons not visible in the entries, i.e. keyless custom
+// providers with no keys to derive an allow-list from.
+//
+// Pure: reads only its arguments.
+func aggregateGates(entries []KeyEntry, seedUnrestricted bool) keyGates {
+	g := keyGates{unrestricted: seedUnrestricted}
+	// blacklistAgg accumulates the cross-key blacklist intersection. Keyed by
+	// lowercased model for case-insensitive counting; name holds the original
+	// casing of the first key that blacklisted it, so the emitted blacklist
+	// preserves casing like allowed does.
+	blacklistAgg := make(map[string]struct {
+		count int
+		name  string
+	})
+
+	for _, e := range entries {
+		if !e.Enabled || e.Blacklisted.IsBlockAll() {
+			continue
+		}
+		g.enabledKeys++
+
+		for _, m := range e.Blacklisted {
+			lower := strings.ToLower(m)
+			agg := blacklistAgg[lower]
+			if agg.count == 0 {
+				agg.name = m
+			}
+			agg.count++
+			blacklistAgg[lower] = agg
+		}
+
+		if e.Allowed.IsUnrestricted() {
+			g.unrestricted = true
+			continue
+		}
+		for _, m := range e.Allowed {
+			if e.Blacklisted.IsBlocked(m) {
+				continue
+			}
+			if !g.allowed.Contains(m) {
+				g.allowed = append(g.allowed, m)
+			}
+		}
+	}
+
+	if g.unrestricted {
+		g.allowed = schemas.WhiteList{"*"}
+	}
+	for _, agg := range blacklistAgg {
+		if agg.count == g.enabledKeys {
+			g.blacklisted = append(g.blacklisted, agg.name)
+		}
+	}
+	return g
 }

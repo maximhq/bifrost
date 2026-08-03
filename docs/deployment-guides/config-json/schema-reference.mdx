@@ -255,6 +255,56 @@ Set it to `0` to turn the timer off entirely. Model discovery then happens only
 at startup and on key edits, and you can trigger it on demand from the
 **Providers** page.
 
+### How this affects `GET /v1/models`
+
+While the timer is on, `/v1/models` is answered from the refreshed catalog
+instead of querying every provider on each request. That matters most for the
+no-provider form, which otherwise fans out to every configured provider and
+pages through each one.
+
+Responses carry the same fields either way: the catalog stores each provider's
+reply in full, and the request still runs through the normal pipeline, so
+per-virtual-key filtering, logging and tracing behave exactly as they did
+before.
+
+Add `?refresh=true` to force a live fetch and bypass the catalog for that
+request:
+
+```bash
+curl "$BIFROST_URL/v1/models?refresh=true"
+```
+
+Setting `live_models_sync_interval` to `0` stops the catalog answering requests:
+every `/v1/models` call queries providers directly again. Reconciliation below
+still applies.
+
+### `/v1/models` matches what the gateway will route
+
+Every response is reconciled against the model set the gateway would actually
+route to each provider, so the listing and the routable set agree. This adds
+models a provider under-reports, which happens routinely:
+
+- Models that are delisted but still callable
+- Providers whose `list models` is a known partial view, such as Perplexity
+- Identifiers introduced by key configuration, such as aliases
+
+If a provider's `list models` call fails, that provider is answered from the
+same routable set rather than being dropped from the response. Discovery retries
+on the next interval, so the entry heals on its own. Without this a caller is
+told a model does not exist and is then served it on the very next request.
+
+The reconciled additions carry only an identifier from the provider's point of
+view; pricing, context length and the other datasheet fields are filled in from
+the model catalog as usual.
+
+<Note>
+The catalog lives in each node's memory, so in a multi-node deployment each node
+maintains its own copy on its own interval. Key edits are broadcast across the
+cluster, so every node re-runs discovery for the affected key rather than waiting
+for its next interval. Use `?refresh=true` when you need to bypass the catalog for
+a single request regardless.
+</Note>
+
 ---
 
 ## `websocket`

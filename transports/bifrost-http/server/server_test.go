@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
@@ -1019,5 +1022,418 @@ func TestMarshalPluginConfig_WithComplexType(t *testing.T) {
 	}
 	if result.Nested.Name != "nested-config" {
 		t.Errorf("Expected nested name=nested-config, got %s", result.Nested.Name)
+	}
+}
+
+// TestSyncListModelsCache_GatedOnRefresherEnabled pins the safety invariant
+// behind serving /v1/models from the catalog.
+//
+// Answering outright is only valid while something is refreshing the catalog.
+// With the refresher off its only writers are boot and key edits, so serving
+// from it would pin every response to the boot-time snapshot. Reconciliation
+// stays on either way: it only ever adds models the gateway is currently
+// willing to route, which cannot go stale in that sense.
+func TestSyncListModelsCache_GatedOnRefresherEnabled(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{
+		Client: &bifrost.Bifrost{},
+		Config: &lib.Config{ModelCatalog: modelcatalog.NewTestCatalog(nil)},
+	}
+
+	server.syncListModelsCache(time.Hour)
+	if !server.Client.ServesListModelsFromCatalog() {
+		t.Fatal("expected requests to be servable from the catalog while the refresher is enabled")
+	}
+
+	server.syncListModelsCache(0)
+	if server.Client.ServesListModelsFromCatalog() {
+		t.Fatal("expected serving from the catalog to stop when the refresher is disabled")
+	}
+	// The catalog itself must remain, or a failing provider would drop out of
+	// /v1/models entirely and responses would stop being reconciled.
+	if !server.Client.HasListModelsCatalog() {
+		t.Fatal("expected the catalog to stay installed for reconciliation and fallback")
+	}
+
+	// Re-enabling must restore serving, so a config edit takes effect without a
+	// restart in either direction.
+	server.syncListModelsCache(15 * time.Minute)
+	if !server.Client.ServesListModelsFromCatalog() {
+		t.Fatal("expected serving from the catalog to resume when the refresher is re-enabled")
+	}
+}
+
+// Without a model catalog there is nothing to consult, so list-models must fall
+// back to being a plain provider passthrough.
+func TestSyncListModelsCache_NoCatalogMeansNoCache(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{Client: &bifrost.Bifrost{}, Config: &lib.Config{}}
+	server.syncListModelsCache(time.Hour)
+	if server.Client.HasListModelsCatalog() {
+		t.Fatal("expected no catalog to be installed without a model catalog")
+	}
+}
+
+// TestStopLiveModelRefresher_WithdrawsCache covers the shutdown ordering: once
+// the refresher is stopped nothing keeps the catalog current, so the cache must
+// not outlive it.
+func TestStopLiveModelRefresher_WithdrawsCache(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{
+		Client: &bifrost.Bifrost{},
+		Config: &lib.Config{ModelCatalog: modelcatalog.NewTestCatalog(nil)},
+	}
+	server.syncListModelsCache(time.Hour)
+
+	server.stopLiveModelRefresher()
+
+	if server.Client.ServesListModelsFromCatalog() {
+		t.Fatal("expected serving from the catalog to stop when the refresher stops")
+	}
+}
+
+// TestResyncLiveModelsForKey_DisabledKeyInvalidatesWithoutFetch covers the
+// invalidate-before-refetch ordering. A disabled key is never fetched, so if
+// resync did not drop its entries first, models computed against the old
+// configuration would keep being served.
+func TestResyncLiveModelsForKey_DisabledKeyInvalidatesWithoutFetch(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog.UpsertLive("custom-provider", "key-1", false, []string{"stale-model"})
+
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ModelCatalog: catalog,
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"custom-provider": {Keys: []schemas.Key{{ID: "key-1", Enabled: schemas.Ptr(false)}}},
+			},
+		},
+	}
+
+	// s.Client is nil: a fetch would panic, so reaching the end proves none was
+	// scheduled for the disabled key.
+	if err := server.ResyncLiveModelsForKey(context.Background(), "custom-provider", "key-1"); err != nil {
+		t.Fatalf("ResyncLiveModelsForKey returned unexpected error: %v", err)
+	}
+
+	if _, ok := catalog.LookupLiveModels("custom-provider", []string{"key-1"}, false); ok {
+		t.Error("expected the disabled key's stale entries to be invalidated")
+	}
+}
+
+// A key deleted on a peer arrives here as an ID that is no longer in config.
+// Its entries must go, and nothing should be fetched for it.
+func TestResyncLiveModelsForKey_DeletedKeyInvalidatesWithoutFetch(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog.UpsertLive("custom-provider", "key-gone", false, []string{"stale-model"})
+	catalog.UpsertLive("custom-provider", "key-kept", false, []string{"live-model"})
+
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ModelCatalog: catalog,
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				// key-gone is absent: it was deleted.
+				"custom-provider": {Keys: []schemas.Key{{ID: "key-kept"}}},
+			},
+		},
+	}
+
+	if err := server.ResyncLiveModelsForKey(context.Background(), "custom-provider", "key-gone"); err != nil {
+		t.Fatalf("ResyncLiveModelsForKey returned unexpected error: %v", err)
+	}
+
+	if _, ok := catalog.LookupLiveModels("custom-provider", []string{"key-gone"}, false); ok {
+		t.Error("expected the deleted key's entries to be invalidated")
+	}
+	// The surviving key is untouched: one key going away must not blank the
+	// provider for the others.
+	if _, ok := catalog.LookupLiveModels("custom-provider", []string{"key-kept"}, false); !ok {
+		t.Error("expected the surviving key's entries to be left in place")
+	}
+}
+
+func TestResyncLiveModelsForKey_UnknownProviderErrors(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			Providers:    map[schemas.ModelProvider]configstore.ProviderConfig{},
+		},
+	}
+
+	if err := server.ResyncLiveModelsForKey(context.Background(), "nope", "key-1"); err == nil {
+		t.Fatal("expected an error for a provider that is not configured")
+	}
+}
+
+// TestLiveModelsCacheAdapter_MatchesInterfaceContract exercises the real
+// adapter against a real catalog. The core-side tests use a fake, so without
+// this nothing checks that the actual implementation honours the part of the
+// contract that matters most: a miss and an empty hit are different answers,
+// and only a miss may send the caller upstream.
+func TestLiveModelsCacheAdapter_MatchesInterfaceContract(t *testing.T) {
+	catalog := modelcatalog.NewTestCatalog(nil)
+	var cache schemas.ListModelsCatalog = liveModelsCache{catalog: catalog}
+
+	if _, ok := cache.CachedModels("openai", []string{"k1"}, false); ok {
+		t.Error("expected a miss before anything is cached")
+	}
+
+	catalog.UpsertLive("openai", "k1", false, []string{"gpt-4o", "o1"})
+
+	models, ok := cache.CachedModels("openai", []string{"k1"}, false)
+	if !ok {
+		t.Fatal("expected a hit once the key is cached")
+	}
+	if len(models) != 2 {
+		t.Fatalf("got %d models, want 2", len(models))
+	}
+
+	// Filtered and unfiltered are separate views; the gated entry must not
+	// answer a request for the raw catalog.
+	if _, ok := cache.CachedModels("openai", []string{"k1"}, true); ok {
+		t.Error("expected an unfiltered lookup to miss when only the filtered view is cached")
+	}
+
+	// A key that was never fetched must miss even when a sibling key on the
+	// same provider is cached, or it would inherit the sibling's models.
+	if _, ok := cache.CachedModels("openai", []string{"k2"}, false); ok {
+		t.Error("expected an uncached sibling key to miss")
+	}
+}
+
+// RoutableModels is what makes /v1/models agree with routing, so it must return
+// the same composition GetModelsForProvider does rather than the live entries
+// alone.
+func TestLiveModelsCacheAdapter_RoutableModelsMatchesRouting(t *testing.T) {
+	catalog := modelcatalog.NewTestCatalog(nil)
+	var cache schemas.ListModelsCatalog = liveModelsCache{catalog: catalog}
+
+	catalog.UpsertLive("openai", "k1", false, []string{"gpt-4o", "o1"})
+
+	routable := cache.RoutableModels("openai", nil, false)
+	if !slices.Equal(routable, catalog.GetModelsForProvider("openai")) {
+		t.Errorf("RoutableModels = %v, want the routing view %v", routable, catalog.GetModelsForProvider("openai"))
+	}
+
+	unfiltered := cache.RoutableModels("openai", nil, true)
+	if !slices.Equal(unfiltered, catalog.GetUnfilteredModelsForProvider("openai")) {
+		t.Errorf("RoutableModels(unfiltered) = %v, want %v", unfiltered, catalog.GetUnfilteredModelsForProvider("openai"))
+	}
+}
+
+// TestLiveModelsCacheAdapter_RoutableModelsScopesToKeys is the adapter-level
+// half of the per-key reconciliation fix: naming a key must narrow the answer to
+// that key's entries, not return the provider-wide union under a key-scoped
+// call.
+func TestLiveModelsCacheAdapter_RoutableModelsScopesToKeys(t *testing.T) {
+	catalog := modelcatalog.NewTestCatalog(nil)
+	var cache schemas.ListModelsCatalog = liveModelsCache{catalog: catalog}
+
+	catalog.UpsertLive("openai", "k1", false, []string{"gpt-4o"})
+	catalog.UpsertLive("openai", "k2", false, []string{"o1"})
+
+	if got := cache.RoutableModels("openai", []string{"k1"}, false); !slices.Equal(got, []string{"gpt-4o"}) {
+		t.Errorf("RoutableModels scoped to k1 = %v, want [gpt-4o] (k2's models must not leak)", got)
+	}
+	if got := cache.RoutableModels("openai", []string{"k2"}, false); !slices.Equal(got, []string{"o1"}) {
+		t.Errorf("RoutableModels scoped to k2 = %v, want [o1]", got)
+	}
+	// Unscoped still sees the union — that is what an unscoped request wants.
+	if got := cache.RoutableModels("openai", nil, false); !slices.Equal(got, []string{"gpt-4o", "o1"}) {
+		t.Errorf("unscoped RoutableModels = %v, want the union [gpt-4o o1]", got)
+	}
+}
+
+// refreshTestServer builds a server whose provider has list_models disabled, so
+// FetchAndStoreLiveForKey returns at its allowed-requests guard before touching
+// the client. That keeps these tests on the real refresh path while stopping
+// short of the network, which a zero-value client cannot serve.
+//
+// The guard now reports ErrListModelsDisabled rather than a silent success, so
+// these tests assert that sentinel wherever the fetch is actually reached. Their
+// subject is the slot handling around it, not the fetch's outcome.
+func refreshTestServer(keys ...schemas.Key) *BifrostHTTPServer {
+	return &BifrostHTTPServer{
+		Client: &bifrost.Bifrost{},
+		Config: &lib.Config{
+			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"custom-provider": {
+					CustomProviderConfig: &schemas.CustomProviderConfig{
+						// Zero value: every operation false, list_models included.
+						AllowedRequests: &schemas.AllowedRequests{},
+					},
+					Keys: keys,
+				},
+			},
+		},
+	}
+}
+
+// TestApplyLiveModelsRefresh_EmptyKeyIDRefreshesWholeProvider covers the keyID
+// overload: "" means every enabled key, not the keyless sentinel.
+func TestApplyLiveModelsRefresh_EmptyKeyIDRefreshesWholeProvider(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := refreshTestServer(schemas.Key{ID: "key-1"}, schemas.Key{ID: "key-2"})
+
+	// Both keys are reached and both report the disabled guard, joined and
+	// labelled per key — which is exactly the evidence that the pass fanned out
+	// rather than stopping at the first key.
+	err := server.applyLiveModelsRefresh(context.Background(), "custom-provider", "")
+	if !errors.Is(err, handlers.ErrListModelsDisabled) {
+		t.Fatalf("got %v, want ErrListModelsDisabled from every key", err)
+	}
+	for _, keyID := range []string{"key-1", "key-2"} {
+		if !strings.Contains(err.Error(), keyID) {
+			t.Errorf("error %q does not name %s; the pass may not have reached it", err, keyID)
+		}
+	}
+
+	// The slot must be released even though the fetch short-circuited, or one
+	// refresh would wedge the provider for every later one. An all-keys claim is
+	// the strictest probe: it conflicts with any leftover per-key entry too, so
+	// succeeding here proves nothing was left behind.
+	release, ok := server.beginAllKeysRefresh("custom-provider")
+	if !ok {
+		t.Fatal("expected the refresh slot to be released after the pass completed")
+	}
+	release()
+}
+
+// The in-flight guard has to hold for the peer-callable form too: a broadcast
+// arriving while a local refresh is running must collapse onto it rather than
+// launching a second (enabled keys x 2) fan-out.
+func TestApplyLiveModelsRefresh_HonoursInFlightGuard(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := refreshTestServer(schemas.Key{ID: "key-1"})
+
+	// Hold the slot as an in-progress refresh would. An all-keys pass is what
+	// blocks a single key: two distinct keys are allowed to run concurrently, so
+	// claiming a sibling key would not exercise the guard at all.
+	release, ok := server.beginAllKeysRefresh("custom-provider")
+	if !ok {
+		t.Fatal("expected to claim the refresh slot")
+	}
+
+	if err := server.applyLiveModelsRefresh(context.Background(), "custom-provider", "key-1"); !errors.Is(err, handlers.ErrRefreshInProgress) {
+		t.Fatalf("got %v, want ErrRefreshInProgress while a refresh is in flight", err)
+	}
+
+	release()
+	// Refreshable again means the guard no longer fires: the call now reaches
+	// the fetch and reports the provider's own disabled state instead.
+	if err := server.applyLiveModelsRefresh(context.Background(), "custom-provider", "key-1"); errors.Is(err, handlers.ErrRefreshInProgress) {
+		t.Fatal("expected the provider to be refreshable again after release")
+	} else if !errors.Is(err, handlers.ErrListModelsDisabled) {
+		t.Fatalf("got %v, want the refresh to reach the fetch", err)
+	}
+}
+
+// One provider's refresh must not block another's: the guard is per provider,
+// not global.
+func TestApplyLiveModelsRefresh_GuardIsPerProvider(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := refreshTestServer(schemas.Key{ID: "key-1"})
+	server.Config.Providers["other-provider"] = configstore.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{}},
+		Keys:                 []schemas.Key{{ID: "key-x"}},
+	}
+
+	release, ok := server.beginAllKeysRefresh("custom-provider")
+	if !ok {
+		t.Fatal("expected to claim the refresh slot")
+	}
+	defer release()
+
+	// Not blocked means it got past the guard to the fetch, which then reports
+	// that provider's own disabled list_models.
+	if err := server.applyLiveModelsRefresh(context.Background(), "other-provider", ""); errors.Is(err, handlers.ErrRefreshInProgress) {
+		t.Fatal("a different provider must not be blocked by the in-flight guard")
+	} else if !errors.Is(err, handlers.ErrListModelsDisabled) {
+		t.Fatalf("got %v, want the refresh to reach the fetch", err)
+	}
+}
+
+// The public forms are the broadcast seam a clustered build overrides; they
+// must still do the local work, or overriding them would drop the refresh on
+// the node that originated it.
+func TestRefreshLiveModels_PublicFormsDelegateToApply(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	// Reaching the fetch is the thing being tested: ErrListModelsDisabled can
+	// only come from applyLiveModelsRefresh's own path, so seeing it proves the
+	// public form delegated rather than no-opping.
+	if err := refreshTestServer(schemas.Key{ID: "key-1"}).
+		RefreshLiveModelsForKey(context.Background(), "custom-provider", "key-1"); !errors.Is(err, handlers.ErrListModelsDisabled) {
+		t.Errorf("RefreshLiveModelsForKey = %v, want it to reach the local refresh", err)
+	}
+	if err := refreshTestServer(schemas.Key{ID: "key-1"}).
+		RefreshLiveModelsForAllKeys(context.Background(), "custom-provider"); !errors.Is(err, handlers.ErrListModelsDisabled) {
+		t.Errorf("RefreshLiveModelsForAllKeys = %v, want it to reach the local refresh", err)
+	}
+	if err := refreshTestServer().RefreshLiveModelsForAllKeys(context.Background(), "nope"); err == nil {
+		t.Error("expected an error for a provider that is not configured")
+	}
+}
+
+// An unknown provider must fail before the refresh slot is claimed, so a bad
+// request cannot wedge a legitimate refresh.
+func TestApplyLiveModelsRefresh_UnknownProviderErrorsWithoutClaimingSlot(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := refreshTestServer()
+
+	if err := server.applyLiveModelsRefresh(context.Background(), "nope", ""); err == nil {
+		t.Fatal("expected an error for a provider that is not configured")
+	}
+
+	release, ok := server.beginAllKeysRefresh("nope")
+	if !ok {
+		t.Fatal("expected the refresh slot to be free after a failed lookup")
+	}
+	release()
+}
+
+func TestApplyLiveModelsRefresh_UninitializedCatalogErrors(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{Config: &lib.Config{}}
+	if err := server.applyLiveModelsRefresh(context.Background(), "openai", ""); err == nil {
+		t.Fatal("expected an error when the catalog and client are not initialized")
 	}
 }

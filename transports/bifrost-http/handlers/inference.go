@@ -842,17 +842,27 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 	pageToken := string(ctx.QueryArgs().Peek("page_token"))
 
+	// refresh=true forces a live provider fetch instead of answering from the
+	// model catalog. The catalog is refreshed on a background interval, so this
+	// is the escape hatch for picking up a model mid-interval, or for confirming
+	// what a provider is serving right now.
+	if refresh := string(ctx.QueryArgs().Peek("refresh")); refresh == "true" || refresh == "1" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeySkipListModelsCache, true)
+	}
+
 	bifrostListModelsReq := &schemas.BifrostListModelsRequest{
 		Provider:  schemas.ModelProvider(provider),
 		PageSize:  pageSize,
 		PageToken: pageToken,
 	}
 
-	// Pass-through unknown query params for provider-specific features
+	// Pass-through unknown query params for provider-specific features.
+	// "refresh" is excluded alongside the other params this handler consumes:
+	// forwarding it would send an unrecognised query parameter upstream.
 	extraParams := map[string]interface{}{}
 	for k, v := range ctx.QueryArgs().All() {
 		s := string(k)
-		if s != "provider" && s != "page_size" && s != "page_token" {
+		if s != "provider" && s != "page_size" && s != "page_token" && s != "refresh" {
 			extraParams[s] = string(v)
 		}
 	}
@@ -878,11 +888,65 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	enrichListModelsResponse(resp, h.config.ModelCatalog)
+	// Applied after enrichment, never before: enrichment is what gives a model
+	// its context length, pricing and the rest, so anything still bare here is
+	// something the gateway genuinely knows nothing about.
+	dropModelsWithoutMetadata(resp)
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// dropModelsWithoutMetadata removes entries that carry nothing but an
+// identifier.
+//
+// A bare entry tells a caller a model exists while giving them nothing to act
+// on: no context length to size a request against, no pricing to budget with,
+// no capabilities to branch on. Listing it invites a request that may not be
+// servable. Entries reach this state when a name is known only from routing
+// configuration and neither the provider nor the pricing datasheet recognises
+// it, which usually means the name is stale.
+func dropModelsWithoutMetadata(resp *schemas.BifrostListModelsResponse) {
+	if resp == nil || len(resp.Data) == 0 {
+		return
+	}
+	kept := resp.Data[:0]
+	for _, m := range resp.Data {
+		if hasModelMetadata(m) {
+			kept = append(kept, m)
+		}
+	}
+	resp.Data = kept
+}
+
+// hasModelMetadata reports whether anything beyond the identifier is known.
+// Any single populated field is enough: providers and the datasheet describe
+// models unevenly, so requiring a particular one would discard models that are
+// perfectly usable.
+func hasModelMetadata(m schemas.Model) bool {
+	return m.Name != nil ||
+		m.NormalizedName != nil ||
+		m.CanonicalSlug != nil ||
+		m.Description != nil ||
+		m.Alias != nil ||
+		m.OwnedBy != nil ||
+		m.Created != nil ||
+		m.ContextLength != nil ||
+		m.MaxInputTokens != nil ||
+		m.MaxOutputTokens != nil ||
+		m.Architecture != nil ||
+		m.Pricing != nil ||
+		m.TopProvider != nil ||
+		m.PerRequestLimits != nil ||
+		m.DefaultParameters != nil ||
+		m.Reasoning != nil ||
+		m.HuggingFaceID != nil ||
+		len(m.SupportedParameters) > 0 ||
+		len(m.SupportedMethods) > 0 ||
+		len(m.AdditionalAttributes) > 0 ||
+		m.IsDeprecated
 }
 
 func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *modelcatalog.ModelCatalog) {
