@@ -423,6 +423,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_customer_calendar_aligned_column"}, run: migrationAddCustomerCalendarAlignedColumn},
 	{IDs: []string{"add_customer_budgets_to_budgets_table"}, run: migrationAddCustomerBudgetsToBudgetsTable},
 	{IDs: []string{"add_model_config_budgets_fk_constraint"}, run: migrationAddModelConfigBudgetsFKConstraint},
+	{IDs: []string{"add_model_config_rate_limits"}, run: migrationAddModelConfigRateLimits},
 	{IDs: []string{"add_mcp_library_table"}, run: migrationAddMCPLibraryTable},
 	{IDs: []string{"add_mcp_library_config_columns"}, run: migrationAddMCPLibraryConfigColumns},
 	{IDs: []string{"add_mcp_library_source_columns"}, run: migrationAddMCPLibrarySourceColumns},
@@ -465,6 +466,59 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_admin_auth_mode_indexes"}, run: migrationAddMCPAdminAuthModeIndexes},
 	{IDs: []string{"add_mcp_client_token_exchange_json_column"}, run: migrationAddMCPClientTokenExchangeJSONColumn},
 	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
+}
+
+// migrationAddModelConfigRateLimits adds the ownership and metric columns used
+// by model-level multi-rule rate limits and creates the model-config cascade FK.
+// Legacy rows remain valid: they have a nil ModelConfigID and an empty Metric.
+func migrationAddModelConfigRateLimits(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_model_config_rate_limits"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, "model_config_id"); err != nil {
+				return fmt.Errorf("failed to add model_config_id to rate limits: %w", err)
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, "metric"); err != nil {
+				return fmt.Errorf("failed to add metric to rate limits: %w", err)
+			}
+
+			// Remove only genuinely orphaned new-format rows before adding the
+			// constraint. Legacy rows referenced through one of the existing
+			// singular owner columns are deliberately preserved.
+			if err := tx.Exec(`
+				DELETE FROM governance_rate_limits
+				WHERE model_config_id IS NOT NULL
+				  AND model_config_id NOT IN (SELECT id FROM governance_model_configs)
+				  AND id NOT IN (SELECT rate_limit_id FROM governance_model_configs WHERE rate_limit_id IS NOT NULL)
+				  AND id NOT IN (SELECT rate_limit_id FROM config_providers WHERE rate_limit_id IS NOT NULL)
+				  AND id NOT IN (SELECT rate_limit_id FROM governance_virtual_keys WHERE rate_limit_id IS NOT NULL)
+				  AND id NOT IN (SELECT rate_limit_id FROM governance_virtual_key_provider_configs WHERE rate_limit_id IS NOT NULL)
+				  AND id NOT IN (SELECT rate_limit_id FROM governance_teams WHERE rate_limit_id IS NOT NULL)
+				  AND id NOT IN (SELECT rate_limit_id FROM governance_customers WHERE rate_limit_id IS NOT NULL)
+			`).Error; err != nil {
+				return fmt.Errorf("failed to clean orphaned model-config rate limits: %w", err)
+			}
+
+			mg := tx.Migrator()
+			if !mg.HasConstraint(&tables.TableModelConfig{}, "RateLimits") {
+				if err := mg.CreateConstraint(&tables.TableModelConfig{}, "RateLimits"); err != nil {
+					return fmt.Errorf("failed to create model-config rate-limit FK: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_model_config_rate_limits is non-rollbackable: dropping ownership columns would lose multi-rule associations")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_model_config_rate_limits migration: %w", err)
+	}
+	return nil
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.

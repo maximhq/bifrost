@@ -5509,7 +5509,7 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 
 	for {
 		var page []tables.TableModelConfig
-		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit")
+		query := s.DB().WithContext(ctx).Preload("Budgets").Preload("RateLimits").Preload("Budget").Preload("RateLimit")
 		if hasCursor {
 			query = query.Where("governance_model_configs.id > ?", lastID)
 		}
@@ -5537,7 +5537,7 @@ func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, 
 		return nil, nil
 	}
 	var modelConfigs []tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("RateLimits").Preload("Budget").Preload("RateLimit").
 		Where("scope = ? AND scope_id IN ?", scope, scopeIDs).
 		Find(&modelConfigs).Error; err != nil {
 		return nil, err
@@ -5549,7 +5549,7 @@ func (s *RDBConfigStore) GetModelConfigsByScopeAndScopeIDs(ctx context.Context, 
 func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
 	var modelConfigs []tables.TableModelConfig
 	if err := s.DB().WithContext(ctx).
-		Preload("Budgets").Preload("Budget").Preload("RateLimit").
+		Preload("Budgets").Preload("RateLimits").Preload("Budget").Preload("RateLimit").
 		Where("scope = ? AND model_name = ? AND provider IS NOT NULL", tables.ModelConfigScopeGlobal, tables.ModelConfigAllModels).
 		Find(&modelConfigs).Error; err != nil {
 		return nil, err
@@ -5597,6 +5597,7 @@ func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params Mo
 	if err := baseQuery.
 		Preload("Budgets").
 		Preload("Budget").
+		Preload("RateLimits").
 		Preload("RateLimit").
 		Order("created_at DESC, id DESC").
 		Offset(offset).
@@ -5622,7 +5623,7 @@ func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scope
 	} else {
 		query = query.Where("provider IS NULL")
 	}
-	if err := query.Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig).Error; err != nil {
+	if err := query.Preload("Budgets").Preload("RateLimits").Preload("Budget").Preload("RateLimit").First(&modelConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -5634,13 +5635,56 @@ func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scope
 // GetModelConfigByID retrieves a specific model config from the database by ID.
 func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("RateLimits").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	return &modelConfig, nil
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+// deleteRateLimitIfUnreferenced removes a legacy singular rate-limit row only
+// when no known governance owner still points at it. Model-owned multi-rule
+// rows are deleted by ModelConfigID before this helper is called.
+func deleteRateLimitIfUnreferenced(tx *gorm.DB, rateLimitID string) error {
+	if rateLimitID == "" {
+		return nil
+	}
+	var references int64
+	if err := tx.Raw(`
+		SELECT COUNT(*) FROM (
+			SELECT rate_limit_id FROM governance_model_configs WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM config_providers WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_virtual_keys WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_virtual_key_provider_configs WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_teams WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_customers WHERE rate_limit_id IS NOT NULL
+		) AS rate_limit_refs
+		WHERE rate_limit_id = ?
+	`, rateLimitID).Scan(&references).Error; err != nil {
+		return fmt.Errorf("failed to check rate limit %q references: %w", rateLimitID, err)
+	}
+	if references > 0 {
+		return nil
+	}
+	return tx.Delete(&tables.TableRateLimit{}, "id = ?", rateLimitID).Error
 }
 
 // deleteModelConfigsWhere deletes every model config matching the given condition,
@@ -5660,7 +5704,7 @@ func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*ta
 // their owned rows, matching DeleteModelConfig's order.
 func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm.DB, query string, args ...any) error {
 	var modelConfigs []tables.TableModelConfig
-	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").Order("id").Where(query, args...).Find(&modelConfigs).Error; err != nil {
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").Preload("RateLimits").Order("id").Where(query, args...).Find(&modelConfigs).Error; err != nil {
 		return err
 	}
 	if len(modelConfigs) == 0 {
@@ -5681,6 +5725,9 @@ func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm
 		if modelConfigs[i].RateLimitID != nil {
 			rateLimitIDs = append(rateLimitIDs, *modelConfigs[i].RateLimitID)
 		}
+		for j := range modelConfigs[i].RateLimits {
+			rateLimitIDs = append(rateLimitIDs, modelConfigs[i].RateLimits[j].ID)
+		}
 	}
 
 	if err := txDB.WithContext(ctx).Where("id IN ?", mcIDs).Delete(&tables.TableModelConfig{}).Error; err != nil {
@@ -5692,8 +5739,13 @@ func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm
 		}
 	}
 	if len(rateLimitIDs) > 0 {
-		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id IN ?", rateLimitIDs).Error; err != nil {
+		if err := txDB.WithContext(ctx).Where("model_config_id IN ?", mcIDs).Delete(&tables.TableRateLimit{}).Error; err != nil {
 			return err
+		}
+		for _, rateLimitID := range uniqueStrings(rateLimitIDs) {
+			if err := deleteRateLimitIfUnreferenced(txDB.WithContext(ctx), rateLimitID); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -5835,7 +5887,7 @@ func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ..
 	txDB := tx[0]
 	// Fetch the model config with its owned budgets to collect all IDs to clean up.
 	var modelConfig tables.TableModelConfig
-	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").First(&modelConfig, "id = ?", id).Error; err != nil {
+	if err := dbForUpdate(txDB.WithContext(ctx)).Preload("Budgets").Preload("RateLimits").First(&modelConfig, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
@@ -5850,7 +5902,13 @@ func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ..
 	if modelConfig.BudgetID != nil {
 		budgetIDs = append(budgetIDs, *modelConfig.BudgetID)
 	}
-	rateLimitID := modelConfig.RateLimitID
+	rateLimitIDs := make([]string, 0, len(modelConfig.RateLimits)+1)
+	for i := range modelConfig.RateLimits {
+		rateLimitIDs = append(rateLimitIDs, modelConfig.RateLimits[i].ID)
+	}
+	if modelConfig.RateLimitID != nil {
+		rateLimitIDs = append(rateLimitIDs, *modelConfig.RateLimitID)
+	}
 	// Delete the model config first
 	if err := txDB.WithContext(ctx).Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -5865,9 +5923,13 @@ func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ..
 			return err
 		}
 	}
-	// Delete the rate limit if it exists
-	if rateLimitID != nil {
-		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+	// Delete owned multi-rules, then remove a legacy singular row only when no
+	// other governance owner still references it.
+	if err := txDB.WithContext(ctx).Where("model_config_id = ?", id).Delete(&tables.TableRateLimit{}).Error; err != nil {
+		return err
+	}
+	for _, rateLimitID := range uniqueStrings(rateLimitIDs) {
+		if err := deleteRateLimitIfUnreferenced(txDB.WithContext(ctx), rateLimitID); err != nil {
 			return err
 		}
 	}
@@ -5906,7 +5968,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	if err := s.DB().WithContext(ctx).Find(&rateLimits).Error; err != nil {
 		return nil, err
 	}
-	if err := s.DB().WithContext(ctx).Find(&modelConfigs).Error; err != nil {
+	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("RateLimits").Preload("Budget").Preload("RateLimit").Find(&modelConfigs).Error; err != nil {
 		return nil, err
 	}
 	if err := s.DB().WithContext(ctx).Find(&providers).Error; err != nil {

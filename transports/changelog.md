@@ -2,6 +2,7 @@
 
 - **WebSocket Proxy Support** — Realtime and Responses WebSocket connections now route through the configured provider-level proxy (HTTP, SOCKS5, env-based) instead of always dialing direct
 - **Configurable SCIM Buffer Sizes** — Added `WithFasthttpBufferSizes` option to `HTTPClientFactory` so IdP token endpoints returning headers larger than the 4KB default no longer fail SCIM/OAuth clients
+- **Model Multi-Window Rate Limits** — Model-level rate-limit APIs, config schema support, and Model Limits UI for independent RPM/RPD/TPM/TPD rules
 
 ## 🐞 Fixed
 
@@ -31,3 +32,6 @@
 ## 🔧 Maintenance
 
 - **Dependency Upgrades** — Bumped core to v1.7.6, framework to v1.5.6, and governance to v1.6.10; all other plugins bumped to pick up the cascade (compat v0.1.32, jsonparser v1.5.33, logging v1.6.6, maxim v1.6.33, mocker v1.5.33, modelcatalogresolver v1.0.14, otel v1.4.5, prompts v1.0.33, semanticcache v1.5.33, telemetry v1.5.33)
+- [#5074](https://github.com/maximhq/bifrost/issues/5074) - Fallback routing model selection is truncating model names
+- [#5108](https://github.com/maximhq/bifrost/issues/5108) - Bedrock Converse: reasoning_config/thinking silently dropped on cross-provider translation, fallbacks lose extended thinking
+- [#5308](https://github.com/maximhq/bifrost/issues/5308) - Responses API image blocks missing required "detail" field when converted from non-OpenAI providers

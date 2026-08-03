@@ -86,6 +86,10 @@ RateLimit:
   properties:
     id:
       type: string
+    metric:
+      type: string
+      enum: [tokens, requests]
+      description: Single metric for a model-owned rule. Omitted for legacy paired rows.
     token_max_limit:
       type: integer
       format: int64
@@ -224,6 +228,28 @@ UpdateRateLimitRequest:
       format: int64
     request_reset_duration:
       type: string
+
+ModelRateLimitRuleRequest:
+  type: object
+  description: One model-owned request or token rate-limit rule
+  required:
+    - metric
+    - max_limit
+    - reset_duration
+  properties:
+    id:
+      type: string
+      description: Existing model-owned rule ID; returned rules include this ID for updates.
+    metric:
+      type: string
+      enum: [tokens, requests]
+    max_limit:
+      type: integer
+      format: int64
+      minimum: 1
+    reset_duration:
+      type: string
+      description: Positive duration such as 1m, 1h, or 1d.
 
 VirtualKeyProviderConfig:
   type: object
@@ -1386,6 +1412,11 @@ ModelConfig:
     rate_limit:
       $ref: '#/RateLimit'
       description: Rate limit configuration for this model
+    rate_limits:
+      type: array
+      description: All single-metric model rules. Each metric/reset-duration pair must be unique.
+      items:
+        $ref: '#/RateLimit'
     created_at:
       type: string
       format: date-time
@@ -1444,6 +1475,11 @@ CreateModelConfigRequest:
     rate_limit:
       $ref: '#/CreateRateLimitRequest'
       description: Rate limit configuration
+    rate_limits:
+      type: array
+      description: Single-metric model rules. Mutually exclusive with rate_limit.
+      items:
+        $ref: '#/ModelRateLimitRuleRequest'
 
 UpdateModelConfigRequest:
   type: object
@@ -1463,6 +1499,11 @@ UpdateModelConfigRequest:
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
       description: Rate limit configuration
+    rate_limits:
+      type: array
+      description: Full desired set of single-metric model rules. Send [] to clear all; omit to leave unchanged. Mutually exclusive with rate_limit.
+      items:
+        $ref: '#/ModelRateLimitRuleRequest'
 
 # Provider Governance
 

@@ -32,7 +32,12 @@ test.describe('Model Limits', () => {
     const limitData = createModelLimitData({
       provider: 'openai',
       budget: { maxLimit: 5, resetDuration: '1M' },
-      rateLimit: { tokenMaxLimit: 500, requestMaxLimit: 20 },
+      rateLimits: [
+        { metric: 'requests', maxLimit: 15, resetDuration: '1m' },
+        { metric: 'requests', maxLimit: 1500, resetDuration: '1d' },
+        { metric: 'tokens', maxLimit: 500, resetDuration: '1m' },
+        { metric: 'tokens', maxLimit: 10000, resetDuration: '1d' },
+      ],
     })
 
     const modelName = await modelLimitsPage.createModelLimit(limitData)
@@ -40,6 +45,7 @@ test.describe('Model Limits', () => {
 
     const exists = await modelLimitsPage.modelLimitExists(modelName, limitData.provider)
     expect(exists).toBe(true)
+    expect(await modelLimitsPage.modelRateLimitRuleCount(modelName, limitData.provider)).toBe(4)
   })
 
   test('should edit a model limit budget and rate limit', async ({ modelLimitsPage }) => {
@@ -50,7 +56,12 @@ test.describe('Model Limits', () => {
 
     await modelLimitsPage.editModelLimit(modelName, limitData.provider, {
       budget: { maxLimit: 20 },
-      rateLimit: { tokenMaxLimit: 2000, requestMaxLimit: 100 },
+      rateLimits: [
+        { metric: 'requests', maxLimit: 15, resetDuration: '1m' },
+        { metric: 'requests', maxLimit: 1500, resetDuration: '1d' },
+        { metric: 'tokens', maxLimit: 2000, resetDuration: '1m' },
+        { metric: 'tokens', maxLimit: 10000, resetDuration: '1d' },
+      ],
     })
 
     const exists = await modelLimitsPage.modelLimitExists(modelName, limitData.provider)

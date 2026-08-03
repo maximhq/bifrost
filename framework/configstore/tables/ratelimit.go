@@ -11,6 +11,14 @@ import (
 type TableRateLimit struct {
 	ID string `gorm:"primaryKey;type:varchar(255)" json:"id"`
 
+	// ModelConfigID is set only for the multi-rule model-limits representation.
+	// Other governance entities continue to use their existing singular foreign
+	// key fields on the owning table.
+	ModelConfigID *string `gorm:"type:varchar(255);index" json:"-"`
+	// Metric identifies a model-owned rule. Legacy rate-limit rows leave this
+	// empty and may continue to contain both token and request limits.
+	Metric string `gorm:"type:varchar(20);index" json:"metric,omitempty"`
+
 	// Token limits with flexible duration
 	TokenMaxLimit      *int64    `gorm:"default:null" json:"token_max_limit,omitempty"`          // Maximum tokens allowed
 	TokenResetDuration *string   `gorm:"type:varchar(50)" json:"token_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y"
@@ -46,6 +54,17 @@ func (TableRateLimit) TableName() string { return "governance_rate_limits" }
 
 // BeforeSave hook for RateLimit to validate reset duration formats
 func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
+	if rl.ModelConfigID != nil {
+		if !IsValidModelRateLimitMetric(rl.Metric) {
+			return fmt.Errorf("invalid model rate limit metric: %s", rl.Metric)
+		}
+		if rl.Metric == ModelRateLimitMetricTokens && (rl.RequestMaxLimit != nil || rl.RequestResetDuration != nil) {
+			return fmt.Errorf("token model rate limit cannot contain request fields")
+		}
+		if rl.Metric == ModelRateLimitMetricRequests && (rl.TokenMaxLimit != nil || rl.TokenResetDuration != nil) {
+			return fmt.Errorf("request model rate limit cannot contain token fields")
+		}
+	}
 	// Validate token reset duration if provided
 	if rl.TokenResetDuration != nil {
 		if d, err := ParseDuration(*rl.TokenResetDuration); err != nil {
@@ -84,4 +103,15 @@ func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
 	}
 
 	return nil
+}
+
+const (
+	ModelRateLimitMetricTokens   = "tokens"
+	ModelRateLimitMetricRequests = "requests"
+)
+
+// IsValidModelRateLimitMetric reports whether metric is supported by the
+// model-limits multi-rule API.
+func IsValidModelRateLimitMetric(metric string) bool {
+	return metric == ModelRateLimitMetricTokens || metric == ModelRateLimitMetricRequests
 }

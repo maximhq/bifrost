@@ -1,1 +1,4 @@
 - perf: bulk virtual key provider replacement and direct VK lookup to eliminate per-provider round trips in the governance store (#5844)
+- feat: validate routing CEL expressions at write time in create/update handlers
+- chore: upgraded core to v1.7.2 and framework to v1.5.2
+- feat: enforce independent model-level request/token rate-limit rules across multiple reset windows

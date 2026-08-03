@@ -180,7 +180,7 @@ Attach a rate limit to a virtual key via `virtual_keys[].rate_limit_id`, or to a
         "model_name": "gpt-4o",
         "provider": "openai",
         "budget_id": "budget-production",
-        "rate_limit_id": "rl-platform-hourly"
+        "rate_limit_ids": ["rl-platform-rpm", "rl-platform-rpd"]
       },
       {
         "id": "mc-openai-provider",
@@ -209,7 +209,10 @@ Attach a rate limit to a virtual key via `virtual_keys[].rate_limit_id`, or to a
 | `scope` | No | `"global"` (default, all traffic) or `"virtual_key"` (one VK) |
 | `scope_id` | Conditional | Required when `scope` is `"virtual_key"` — the virtual key `id` |
 | `budget_id` | No | References a `governance.budgets` entry |
-| `rate_limit_id` | No | References a `governance.rate_limits` entry |
+| `rate_limit_id` | No | Deprecated single reference to a legacy paired `governance.rate_limits` entry |
+| `rate_limit_ids` | No | List of single-metric rate-limit IDs. Do not combine with `rate_limit_id`; an empty list clears model-owned links. |
+
+For model limits, define one row per metric/window in `governance.rate_limits`. Set `metric` to `requests` or `tokens`; the row must contain only the corresponding `request_*` or `token_*` fields. This supports combinations such as `15 RPM + 1,500 RPD + TPM + TPD`. Existing legacy `rate_limit_id` rows remain supported.
 
 ---
 

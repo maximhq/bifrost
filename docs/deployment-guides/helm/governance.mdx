@@ -268,7 +268,10 @@ Apply budgets and rate limits at the model level. Each entry is keyed on `model_
 | `scope` | `"global"` | `"global"` (all traffic) or `"virtual_key"` (one VK) |
 | `scope_id` | — | Required when `scope` is `"virtual_key"` — the virtual key ID |
 | `budget_id` | — | References a `governance.budgets` entry |
-| `rate_limit_id` | — | References a `governance.rate_limits` entry |
+| `rate_limit_id` | — | Deprecated single reference to a legacy paired `governance.rate_limits` entry |
+| `rate_limit_ids` | — | List of single-metric rate-limit IDs; do not combine with `rate_limit_id` |
+
+Model limits can attach multiple single-metric rate-limit rows, each with a different window. Use `metric: requests` or `metric: tokens` in the referenced `governance.rate_limits` rows to express RPM/RPD/TPM/TPD combinations.
 
 ```yaml
 bifrost:
