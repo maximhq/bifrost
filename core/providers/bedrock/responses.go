@@ -3803,6 +3803,41 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 	}
 	bedrockMessages = mergedMessages
 
+	// Merging rescues a document block that has a text sibling elsewhere in the
+	// same role's turn, but a message that never had one (or whose only text
+	// block was empty) is still document-only at this point. Insert a
+	// placeholder so it still validates ("A text block must be included when
+	// using documents").
+	for i := range bedrockMessages {
+		if !hasBedrockDocumentBlock(bedrockMessages[i].Content) {
+			continue
+		}
+		content := bedrockMessages[i].Content
+		filtered := content[:0]
+		hasUsableText := false
+		for _, b := range content {
+			if b.Text != nil {
+				if strings.TrimSpace(*b.Text) == "" {
+					continue
+				}
+				hasUsableText = true
+			}
+			filtered = append(filtered, b)
+		}
+		content = filtered
+		if !hasUsableText {
+			at := leadingBedrockReasoningBlockCount(content)
+			withPlaceholder := make([]BedrockContentBlock, 0, len(content)+1)
+			withPlaceholder = append(withPlaceholder, content[:at]...)
+			withPlaceholder = append(withPlaceholder, BedrockContentBlock{
+				Text: schemas.Ptr(bedrockDocumentPlaceholderText),
+			})
+			withPlaceholder = append(withPlaceholder, content[at:]...)
+			content = withPlaceholder
+		}
+		bedrockMessages[i].Content = content
+	}
+
 	return bedrockMessages, systemMessages, nil
 }
 
