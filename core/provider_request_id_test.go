@@ -48,6 +48,32 @@ func TestExecuteRequestWithRetriesCapturesProviderRequestID(t *testing.T) {
 	}
 }
 
+func TestExecuteRequestWithRetriesCapturesProviderRequestIDWhileRestrictedWritesBlocked(t *testing.T) {
+	ctx := newProviderRequestIDTestContext()
+	ctx.BlockRestrictedWrites()
+	defer ctx.UnblockRestrictedWrites()
+	config := providerRequestIDTestConfig(0)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	result, err := executeRequestWithRetries(ctx, config, func(_ schemas.Key) (string, *schemas.BifrostError) {
+		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, map[string]string{"X-Request-ID": "req-overlap"})
+		return "ok", nil
+	}, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-test", nil, logger)
+	if err != nil || result != "ok" {
+		t.Fatalf("executeRequestWithRetries() = (%q, %v), want (ok, nil)", result, err)
+	}
+	if got := GetStringFromContext(ctx, schemas.BifrostContextKeyProviderRequestID); got != "req-overlap" {
+		t.Fatalf("current provider request ID = %q, want req-overlap", got)
+	}
+	if got := GetStringFromContext(ctx, schemas.BifrostContextKeyProviderRequestIDHeader); got != "x-request-id" {
+		t.Fatalf("provider request ID header = %q, want x-request-id", got)
+	}
+	trail, _ := ctx.Value(schemas.BifrostContextKeyProviderRequestIDTrail).([]schemas.ProviderRequestIDRecord)
+	if len(trail) != 1 || trail[0].RequestID != "req-overlap" {
+		t.Fatalf("unexpected provider request ID trail: %#v", trail)
+	}
+}
+
 func TestExecuteRequestWithRetriesCapturesCustomProviderRequestIDHeader(t *testing.T) {
 	ctx := newProviderRequestIDTestContext()
 	config := providerRequestIDTestConfig(0)

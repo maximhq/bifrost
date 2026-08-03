@@ -387,6 +387,81 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 	bc.setReservedValue(BifrostContextKeyRoutingInfo, ri)
 }
 
+// ResetProviderRequestIDState clears request-scoped provider request ID metadata
+// and optionally initializes an empty retry trail. It bypasses the restricted-
+// writes guard because streaming post-hooks can overlap the orchestrator while
+// holding that guard. Bifrost-internal (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) ResetProviderRequestIDState(initializeTrail bool) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.ResetProviderRequestIDState(initializeTrail)
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	bc.userValues[BifrostContextKeyProviderRequestID] = nil
+	bc.userValues[BifrostContextKeyProviderRequestIDHeader] = nil
+	if initializeTrail {
+		bc.userValues[BifrostContextKeyProviderRequestIDTrail] = []ProviderRequestIDRecord{}
+	} else {
+		bc.userValues[BifrostContextKeyProviderRequestIDTrail] = nil
+	}
+}
+
+// ClearCurrentProviderRequestID clears only the terminal/current attempt fields,
+// preserving the retry trail. Bifrost-internal (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) ClearCurrentProviderRequestID() {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.ClearCurrentProviderRequestID()
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	bc.userValues[BifrostContextKeyProviderRequestID] = nil
+	bc.userValues[BifrostContextKeyProviderRequestIDHeader] = nil
+}
+
+// SetCurrentProviderRequestID stores the terminal/current attempt request ID and
+// header atomically. Bifrost-internal (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) SetCurrentProviderRequestID(requestID, headerName string) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.SetCurrentProviderRequestID(requestID, headerName)
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	bc.userValues[BifrostContextKeyProviderRequestID] = requestID
+	bc.userValues[BifrostContextKeyProviderRequestIDHeader] = headerName
+}
+
+// AppendProviderRequestIDRecord appends one captured HTTP attempt to the retry
+// trail. It copies the existing slice before publishing the new value so readers
+// in overlapping streaming post-hooks never observe a mutated backing array.
+// Bifrost-internal (set by core - DO NOT SET THIS MANUALLY).
+func (bc *BifrostContext) AppendProviderRequestIDRecord(record ProviderRequestIDRecord) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.AppendProviderRequestIDRecord(record)
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	existing, _ := bc.userValues[BifrostContextKeyProviderRequestIDTrail].([]ProviderRequestIDRecord)
+	next := make([]ProviderRequestIDRecord, len(existing), len(existing)+1)
+	copy(next, existing)
+	bc.userValues[BifrostContextKeyProviderRequestIDTrail] = append(next, record)
+}
+
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
 func (bc *BifrostContext) ClearValue(key any) {

@@ -510,6 +510,7 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 		"region": "us-east",
 	})
 	ctx.SetValue(schemas.BifrostIsAsyncRequest, true)
+	trail := setProviderRequestIDContext(ctx, "provider-error-no-pending", "x-request-id")
 
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
@@ -554,6 +555,7 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	if got := logEntry.MetadataParsed["isAsyncRequest"]; got != true {
 		t.Fatalf("expected async metadata true, got %#v", got)
 	}
+	assertProviderRequestIDLogFields(t, logEntry, "provider-error-no-pending", "x-request-id", trail)
 }
 
 func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {

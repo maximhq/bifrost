@@ -5868,9 +5868,7 @@ func executeRequestWithRetries[T any](
 ) (result T, bifrostError *schemas.BifrostError) {
 	// These values are request-scoped outputs. Clear them even when capture is
 	// disabled so a reused BifrostContext cannot leak metadata from a prior request.
-	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestID)
-	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestIDHeader)
-	ctx.ClearValue(schemas.BifrostContextKeyProviderRequestIDTrail)
+	ctx.ResetProviderRequestIDState(false)
 
 	providerRequestIDHeader, providerRequestIDConfigErr := schemas.ResolveProviderRequestIDHeader(providerKey, config)
 	if providerRequestIDConfigErr != nil {
@@ -5878,7 +5876,7 @@ func executeRequestWithRetries[T any](
 	}
 	captureProviderRequestID := providerRequestIDHeader != ""
 	if captureProviderRequestID {
-		ctx.SetValue(schemas.BifrostContextKeyProviderRequestIDTrail, []schemas.ProviderRequestIDRecord{})
+		ctx.ResetProviderRequestIDState(true)
 	}
 
 	var attempts int
@@ -5928,8 +5926,7 @@ func executeRequestWithRetries[T any](
 
 		if captureProviderRequestID {
 			ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
-			ctx.ClearValue(schemas.BifrostContextKeyProviderRequestID)
-			ctx.ClearValue(schemas.BifrostContextKeyProviderRequestIDHeader)
+			ctx.ClearCurrentProviderRequestID()
 		}
 
 		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
@@ -6253,8 +6250,7 @@ func executeRequestWithRetries[T any](
 			if headers, ok := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
 				capturedProviderRequestID = providerUtils.ExtractProviderRequestIDWithLogger(headers, providerRequestIDHeader, logger)
 				if capturedProviderRequestID != "" {
-					ctx.SetValue(schemas.BifrostContextKeyProviderRequestID, capturedProviderRequestID)
-					ctx.SetValue(schemas.BifrostContextKeyProviderRequestIDHeader, providerRequestIDHeader)
+					ctx.SetCurrentProviderRequestID(capturedProviderRequestID, providerRequestIDHeader)
 				}
 			}
 		}
@@ -6303,7 +6299,7 @@ func executeRequestWithRetries[T any](
 				status := *bifrostError.StatusCode
 				statusCode = &status
 			}
-			schemas.AppendToContextList(ctx, schemas.BifrostContextKeyProviderRequestIDTrail, schemas.ProviderRequestIDRecord{
+			ctx.AppendProviderRequestIDRecord(schemas.ProviderRequestIDRecord{
 				Attempt: attempts, Provider: providerKey, RequestID: capturedProviderRequestID, HeaderName: providerRequestIDHeader, StatusCode: statusCode,
 			})
 		}
