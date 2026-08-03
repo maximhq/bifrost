@@ -290,20 +290,30 @@ func (mc *ModelCatalog) IsSameModel(model1, model2 string) bool {
 	return mc.datasheet.IsSameModel(model1, model2)
 }
 
-// RefineModelForProvider refines a model identifier for providers that need
-// a leading "provider/" segment (Groq, Replicate). Returns the original
+// RefineModelForProvider refines a model identifier for providers whose
+// catalog names carry a leading "provider/" segment (Groq, Replicate,
+// Perplexity, OpenRouter), resolving a bare request like "gpt-oss-120b" to
+// the provider's catalog slug ("openai/gpt-oss-120b"). Returns the original
 // model unchanged when no refinement applies, or an error when multiple
 // catalog candidates match ambiguously.
+//
+// Idempotent: a model that already carries a known provider prefix is the
+// refined form itself — routing plugins may refine the same request more
+// than once, so it is returned unchanged without a catalog scan. The one
+// exception is a model carrying the TARGET provider's own prefix (e.g. a
+// fallback entry built from another provider's refined form, or a
+// double-prefixed input): the prefix is stripped and the bare remainder
+// re-refined, so canonical own-prefixed names ("perplexity/sonar",
+// "openrouter/auto") round-trip through the catalog scan unchanged.
 func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, model string) (string, error) {
-	switch provider {
-	case schemas.Groq:
-		if strings.Contains(model, "gpt-") {
-			return "openai/" + model, nil
+	if prefixProvider, modelPart := schemas.ParseModelString(model, ""); prefixProvider != "" {
+		if prefixProvider == provider {
+			return mc.RefineModelForProvider(provider, modelPart)
 		}
-		return mc.refineNestedProviderModel(provider, model)
-	case schemas.Replicate:
-		return mc.refineNestedProviderModel(provider, model)
-	case schemas.Perplexity:
+		return model, nil
+	}
+	switch provider {
+	case schemas.Groq, schemas.Replicate, schemas.Perplexity, schemas.OpenRouter:
 		return mc.refineNestedProviderModel(provider, model)
 	}
 	return model, nil

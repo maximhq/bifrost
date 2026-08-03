@@ -188,6 +188,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Runware,
 		schemas.Fireworks,
 		schemas.Sarvam,
+		schemas.Wafer,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -483,6 +484,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.MINIMAX_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Wafer:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.WAFER_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -830,6 +840,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Minimax:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Wafer:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,

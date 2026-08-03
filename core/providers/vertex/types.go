@@ -3,6 +3,7 @@ package vertex
 import (
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
@@ -241,8 +242,10 @@ type VertexValidationError struct {
 // VertexCountTokensResponse models the response payload for Vertex's Gemini-style countTokens.
 // Vertex uses camelCase unlike other request json body.
 type VertexCountTokensResponse struct {
-	TotalTokens             int32 `json:"totalTokens,omitempty"`
-	CachedContentTokenCount int32 `json:"cachedContentTokenCount,omitempty"`
+	TotalTokens             int32                        `json:"totalTokens,omitempty"`
+	TotalBillableCharacters int32                        `json:"totalBillableCharacters,omitempty"`
+	CachedContentTokenCount int32                        `json:"cachedContentTokenCount,omitempty"`
+	PromptTokensDetails     []*gemini.ModalityTokenCount `json:"promptTokensDetails,omitempty"`
 }
 
 // ================================ Batch Prediction API Types ================================

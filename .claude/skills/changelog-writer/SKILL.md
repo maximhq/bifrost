@@ -51,55 +51,62 @@ echo "transports: $(cat transports/version)"
 for d in plugins/*/; do echo "$(basename $d): $(cat ${d}version)"; done
 ```
 
-Read the latest changelog file to understand the previous release state:
+To understand the previous release state, use the latest released tags (do NOT use docs/changelogs file mtimes — that directory also holds helm-, cli-, edge-, ent-, and prerelease files):
 
 ```bash
-# Find the latest docs changelog to determine the last released version
-ls -1t docs/changelogs/*.mdx | head -1
+for prefix in core framework transports; do
+  git tag -l "$prefix/v*" --sort=-v:refname | head -1
+done
 ```
 
-Then read that file to know the previous versions of all modules.
+If a docs changelog for that transport version exists (`docs/changelogs/v<version>.mdx`), read it to know the previous versions of all modules.
 
 ### Step 2: Identify Changes Since Last Release
 
-Use git log to find commits since the last release tag or since the last changelog was written:
+**The base for change detection is always determined per module from git — never from docs/changelogs filenames or file mtimes.** (docs/changelogs contains helm-, cli-, edge-, ent-, and prerelease mdx files, so "newest mdx" does not identify the last release.)
+
+For each module, resolve the base commit in this priority order:
 
 ```bash
-# Get the transport version from the latest changelog (it matches the release version)
-LAST_VERSION=$(ls -1t docs/changelogs/*.mdx | head -1 | sed 's/.*\/v/v/' | sed 's/.mdx//')
-echo "Last release: $LAST_VERSION"
+# 1. Latest released tag for the module, by version sort (NOT mtime, NOT alphabetical):
+TAG=$(git tag -l "core/v*" --sort=-v:refname | head -1)   # framework/v*, transports/v*, plugins tags likewise
 
-# Check if a git tag exists
-git tag -l "$LAST_VERSION" "v*"
-
-# Get commits since last release
-# If tag exists:
-git log ${LAST_VERSION}..HEAD --oneline --no-merges
-
-# If no tag, use date-based or commit-based approach:
-# Find the commit that added the last changelog
-git log --oneline --all -- "docs/changelogs/$(ls -1t docs/changelogs/*.mdx | head -1 | xargs basename)" | head -1
+# 2. Module tags may be cut on release branches. If the tag is not an ancestor
+#    of HEAD, fall back to the last commit that modified the module's version
+#    file on the current branch:
+if git merge-base --is-ancestor "$TAG" HEAD; then
+  BASE=$TAG
+else
+  BASE=$(git log -1 --format=%H -- core/version)
+fi
+echo "core base: $BASE"
 ```
 
-For each module, identify which files changed:
+Then apply the hard rule: **if `git diff ${BASE}..HEAD -- <module>/` is non-empty (ignoring only the module's own `changelog.md` and `version` files), that module MUST get a version bump.** No exceptions, no heuristics.
 
 ```bash
 # Changes in core
-git diff --name-only ${BASE}..HEAD -- core/
+git diff --name-only ${BASE}..HEAD -- core/ ':(exclude)core/changelog.md' ':(exclude)core/version'
 
 # Changes in framework
-git diff --name-only ${BASE}..HEAD -- framework/
+git diff --name-only ${BASE}..HEAD -- framework/ ':(exclude)framework/changelog.md' ':(exclude)framework/version'
 
 # Changes in each plugin
 for d in plugins/*/; do
-  CHANGES=$(git diff --name-only ${BASE}..HEAD -- "$d" | wc -l)
+  CHANGES=$(git diff --name-only ${BASE}..HEAD -- "$d" ":(exclude)${d}changelog.md" ":(exclude)${d}version" | wc -l)
   if [ "$CHANGES" -gt 0 ]; then
     echo "$(basename $d): $CHANGES files changed"
   fi
 done
 
 # Changes in transports
-git diff --name-only ${BASE}..HEAD -- transports/
+git diff --name-only ${BASE}..HEAD -- transports/ ':(exclude)transports/changelog.md' ':(exclude)transports/version'
+```
+
+List the commits in the window for changelog writing:
+
+```bash
+git log ${BASE}..HEAD --oneline --no-merges -- <module>/
 ```
 
 ### Step 3: Classify Changes and Determine Bump Types

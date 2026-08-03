@@ -1,2 +1,0 @@
-- fix: send status code on OTEL metrics
-- chore: upgraded core to v1.6.4 and framework to v1.4.4

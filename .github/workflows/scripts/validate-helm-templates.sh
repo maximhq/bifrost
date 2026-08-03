@@ -426,15 +426,20 @@ echo ""
 echo -e "${CYAN}🔒 7/7 - Validating OpenShift-compatible Security Contexts...${NC}"
 echo "----------------------------------------------------------------"
 
-test_name="default Bifrost pod does not set runAsUser (SCC assigns UID)"
+# Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet can only
+# verify runAsNonRoot when the chart pins runAsUser. The default render must
+# carry runAsUser: 1000; OpenShift users unset it with explicit nulls (tested
+# below).
+test_name="default Bifrost pod sets runAsUser: 1000 (kubelet runAsNonRoot verification)"
 if helm template bifrost ./helm-charts/bifrost \
   --set image.tag=v1.0.0 \
+  -s templates/stateful.yaml \
   > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '^[[:space:]]*runAsUser:' /tmp/helm-template-output.yaml; then
-    report_result "$test_name" 1
-    echo -e "${YELLOW}  runAsUser found in default render (must stay unset so OpenShift can assign a UID)${NC}"
-  else
+  if grep -Eq '^[[:space:]]*runAsUser:[[:space:]]*1000$' /tmp/helm-template-output.yaml; then
     report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  runAsUser: 1000 missing from default render (pre-v1.6.4 images have non-numeric USER, so runAsNonRoot fails without it)${NC}"
   fi
 else
   report_result "$test_name" 1
@@ -443,17 +448,39 @@ else
 fi
 
 # Postgres mode renders a Deployment (not the sqlite StatefulSet); assert the
-# pinned-UID regression can't sneak in on that code path either.
-test_name="postgres-mode Bifrost pod does not set runAsUser (SCC assigns UID)"
+# UID pin holds on that code path too.
+test_name="postgres-mode Bifrost pod sets runAsUser: 1000 (kubelet runAsNonRoot verification)"
 if helm template bifrost ./helm-charts/bifrost \
   --set image.tag=v1.0.0 \
   --set storage.mode=postgres \
   --set postgresql.enabled=true \
   --set postgresql.auth.password=testpass \
+  -s templates/deployment.yaml \
   > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '^[[:space:]]*runAsUser:' /tmp/helm-template-output.yaml; then
+  if grep -Eq '^[[:space:]]*runAsUser:[[:space:]]*1000$' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 0
+  else
     report_result "$test_name" 1
-    echo -e "${YELLOW}  runAsUser found in postgres render (must stay unset so OpenShift can assign a UID)${NC}"
+    echo -e "${YELLOW}  runAsUser: 1000 missing from postgres render (pre-v1.6.4 images have non-numeric USER, so runAsNonRoot fails without it)${NC}"
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
+
+# OpenShift path: explicit nulls must unset the UID pins so the SCC can
+# assign an arbitrary UID.
+test_name="OpenShift override (runAsUser/fsGroup null) removes UID pins"
+if helm template bifrost ./helm-charts/bifrost \
+  --set image.tag=v1.0.0 \
+  --set podSecurityContext.runAsUser=null \
+  --set podSecurityContext.fsGroup=null \
+  --set securityContext.runAsUser=null \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -Eq '^[[:space:]]*(runAsUser|fsGroup):' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  runAsUser/fsGroup still rendered with null overrides (OpenShift SCC cannot assign a UID)${NC}"
   else
     report_result "$test_name" 0
   fi

@@ -1,16 +1,3 @@
-- feat: add durable background-job `sidekiq` table, store methods, and runner with recovery and reaper
-- feat: pass created-by user ID and runner ID through sidekiq job lifecycle, add `GetInFlightSidekiqJobByKind` to config store interface
-- feat: show canonical model names in dashboard model rankings (thanks [@satyamkrishna](https://github.com/satyamkrishna)!)
-- feat: redact trace content before connector export with transient redaction data field
-- feat: force single-region config in Vertex key config
-- fix: persist Responses stream usage when providers omit or reuse sequence numbers (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: fold streamed output_text.annotation.added events into the accumulated responses message so citations survive in logging, observability, and cache (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: keep the streaming finish_reason in the accumulated response when a provider forwards it on a content chunk (thanks [@fus3r](https://github.com/fus3r)!)
-- fix: sweep orphaned deferred spans in trace store TTL cleanup (thanks [@citrocat](https://github.com/citrocat)!)
-- fix: rebuild token usage from denormalized columns in hybrid log list (thanks [@G-XD](https://github.com/G-XD)!)
-- fix: repair bare wildcard allowed_models rows that break admin provider updates (thanks [@eyeveil](https://github.com/eyeveil)!)
-- fix: use AutoMigrate and add `runner_id`/`created_by_user_id` columns to sidekiq table migration
-- fix: match model filter on canonical_model_name and restore routing info for cost recalculation
-- fix: forward ScopedDB from HybridLogStore
-- fix: race conditions in tracer span locks
-- chore: upgrade ClickHouse client library
+## 🐞 Fixed
+
+- **SSRF Hardening on Plugin Downloads (breaking)**: Custom plugin (`.so`) downloads now go through an SSRF-hardened HTTP client - the download is refused if the URL resolves to a loopback, private (RFC 1918), CGNAT, link-local, or otherwise non-public address, including on every server restart since already-configured plugins are re-verified at boot. Deployments hosting a plugin on an internal/private-network URL must add that host to the new `server.plugin_download_private_allowlist` config (see the `transports` changelog) or switch to a local file path.

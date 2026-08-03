@@ -253,6 +253,10 @@ GetConfigResponse:
       $ref: '#/FrameworkConfig'
     auth_config:
       $ref: '#/AuthConfig'
+      description: >-
+        Absent when no admin account has been configured yet (first-time setup).
+        Once an admin account exists, this is always present. Available starting
+        in Bifrost 2.0.0-prerelease3; earlier versions always returned this field.
     is_db_connected:
       type: boolean
     is_cache_connected:
@@ -273,4 +277,25 @@ UpdateConfigRequest:
     framework_config:
       $ref: '#/FrameworkConfig'
     auth_config:
-      $ref: '#/AuthConfig'
+      allOf:
+        - $ref: '#/AuthConfig'
+        - type: object
+          properties:
+            setup_token:
+              type: string
+              description: >-
+                Available starting in Bifrost 2.0.0-prerelease3. Bootstrap token,
+                required only when this request creates the very first admin
+                account (i.e. no admin account exists yet). Must match the setup
+                token configured by the operator via setup_token in config.json
+                (or the BIFROST_SETUP_TOKEN environment variable); never
+                persisted or returned by GET /api/config. If the operator hasn't
+                configured a setup token, requests that would create the first
+                admin account are rejected until they do. Once an admin account
+                exists, this field is ignored.
+  example:
+    auth_config:
+      admin_username: admin
+      admin_password: env.BIFROST_ADMIN_PASSWORD
+      is_enabled: true
+      setup_token: <your-setup-token>

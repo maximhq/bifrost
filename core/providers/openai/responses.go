@@ -35,6 +35,51 @@ func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	}
 }
 
+// ResponsesFeatureSupport describes which OpenAI Responses wire extensions an
+// OpenAI-compatible backend accepts. Providers absent from ProviderFeatures keep
+// everything (safe default for custom providers), matching the Anthropic matrix.
+type ResponsesFeatureSupport struct {
+	// AdditionalToolsItem reports whether the backend accepts codex
+	// `additional_tools` input items; when false their tools are hoisted into
+	// the top-level tools param instead.
+	AdditionalToolsItem bool
+}
+
+// ProviderFeatures maps each OpenAI-compatible provider to its supported
+// Responses wire extensions. Only providers with a known deviation are listed.
+var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
+	schemas.OpenAI: {AdditionalToolsItem: true},
+	// Bedrock Mantle validates `input` against the standard union and rejects
+	// additional_tools with "Invalid 'input': value did not match any expected
+	// variant", but accepts the same tools at the top level.
+	schemas.Bedrock:       {AdditionalToolsItem: false},
+	schemas.BedrockMantle: {AdditionalToolsItem: false},
+}
+
+// supportsAdditionalToolsItem reports whether provider accepts codex
+// additional_tools input items. Unlisted providers are assumed to.
+func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
+	features, ok := ProviderFeatures[provider]
+	if !ok {
+		return true
+	}
+	return features.AdditionalToolsItem
+}
+
+// hoistAdditionalTools decodes the tools carried by a codex additional_tools item.
+// The entries are ResponsesTool-shaped but live in the item's preserved raw bytes,
+// so they are decoded here rather than read off the typed message.
+func hoistAdditionalTools(message schemas.ResponsesMessage) []schemas.ResponsesTool {
+	if len(message.AdditionalTools) == 0 {
+		return nil
+	}
+	var tools []schemas.ResponsesTool
+	if err := schemas.Unmarshal(message.AdditionalTools, &tools); err != nil {
+		return nil
+	}
+	return tools
+}
+
 // ToOpenAIResponsesRequest converts a Bifrost responses request to OpenAI format
 func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) *OpenAIResponsesRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -46,26 +91,37 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
-	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks
+	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks,
+	// nor Anthropic's server-side fallback boundary markers, which are dropped outright.
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
+	// Tools lifted out of codex additional_tools items for providers that reject them.
+	var hoistedTools []schemas.ResponsesTool
+	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
 	for _, message := range bifrostReq.Input {
-		// First, check if message has compaction content blocks and convert them to text
+		if !keepAdditionalTools && message.Type != nil &&
+			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
+			hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
+			continue
+		}
+		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
-			hasCompaction := false
+			needsRewrite := false
 			for _, block := range message.Content.ContentBlocks {
-				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
-					hasCompaction = true
+				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction ||
+					block.Type == schemas.ResponsesOutputMessageContentTypeFallback {
+					needsRewrite = true
 					break
 				}
 			}
 
-			if hasCompaction {
+			if needsRewrite {
 				// Create a new message with converted content blocks
 				newMessage := message
 				newContentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content.ContentBlocks))
 
 				for _, block := range message.Content.ContentBlocks {
-					if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
+					switch block.Type {
+					case schemas.ResponsesOutputMessageContentTypeCompaction:
 						// Convert compaction block to text block
 						if block.ResponsesOutputMessageContentCompaction != nil && block.ResponsesOutputMessageContentCompaction.Summary != "" {
 							newContentBlocks = append(newContentBlocks, schemas.ResponsesMessageContentBlock{
@@ -74,8 +130,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 							})
 						}
 						// If summary is empty, skip the block entirely
-					} else {
-						// Keep non-compaction blocks as-is
+					case schemas.ResponsesOutputMessageContentTypeFallback:
+						// Anthropic-only server-side fallback boundary marker. Unlike
+						// compaction it carries no user content (only from/to model
+						// names), so drop it rather than rendering it as text.
+					default:
+						// Keep every other block as-is
 						newContentBlocks = append(newContentBlocks, block)
 					}
 				}
@@ -87,11 +147,17 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					}
 					message = newMessage
 				} else {
-					// If all blocks were compaction with empty summaries, skip message
+					// Nothing survived (empty-summary compaction and/or fallback markers)
 					continue
 				}
 			}
 		}
+
+		// OpenAI's Responses schema requires "detail" on input_image items, and strict
+		// downstream validators (e.g. vLLM importing the official OpenAI types) reject
+		// requests without it. Blocks converted from non-OpenAI surfaces (Anthropic,
+		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
+		message = defaultImageDetail(message)
 
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures smuggled into
 		// call_id as "<baseID>_ts_<sig>") from tool call IDs, but only when the id exceeds
@@ -301,27 +367,40 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.TopP = nil
 			}
 		}
-
-		// Normalize function tool parameters for deterministic JSON serialization.
-		// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
-		if len(req.Tools) > 0 {
-			normalizedTools := make([]schemas.ResponsesTool, len(req.Tools))
-			copy(normalizedTools, req.Tools)
-			for i, tool := range normalizedTools {
-				if tool.Type == schemas.ResponsesToolTypeFunction &&
-					tool.ResponsesToolFunction != nil &&
-					tool.ResponsesToolFunction.Parameters != nil {
-					funcCopy := *tool.ResponsesToolFunction
-					funcCopy.Parameters = tool.ResponsesToolFunction.Parameters.Normalized()
-					normalizedTools[i].ResponsesToolFunction = &funcCopy
-				}
-			}
-			req.Tools = normalizedTools
-		}
-
-		// Filter out tools that OpenAI doesn't support
-		req.filterUnsupportedTools()
 	}
+
+	// Append tools hoisted out of additional_tools items. Runs after the params
+	// assignment above, which would otherwise clobber Tools, and before the
+	// normalization below so hoisted function tools get the same treatment.
+	if len(hoistedTools) > 0 {
+		req.Tools = append(append(make([]schemas.ResponsesTool, 0, len(req.Tools)+len(hoistedTools)), req.Tools...), hoistedTools...)
+	}
+
+	// Normalize function tool parameters for deterministic JSON serialization, and
+	// default a nil strict to false — OpenAI resolves null to false anyway, while
+	// strict-pydantic upstreams (e.g. sglang) reject the explicit null outright.
+	// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
+	if len(req.Tools) > 0 {
+		normalizedTools := make([]schemas.ResponsesTool, len(req.Tools))
+		copy(normalizedTools, req.Tools)
+		for i, tool := range normalizedTools {
+			if tool.Type == schemas.ResponsesToolTypeFunction &&
+				tool.ResponsesToolFunction != nil {
+				funcCopy := *tool.ResponsesToolFunction
+				if funcCopy.Parameters != nil {
+					funcCopy.Parameters = funcCopy.Parameters.Normalized()
+				}
+				if funcCopy.Strict == nil {
+					funcCopy.Strict = new(false)
+				}
+				normalizedTools[i].ResponsesToolFunction = &funcCopy
+			}
+		}
+		req.Tools = normalizedTools
+	}
+
+	// Filter out tools that OpenAI doesn't support
+	req.filterUnsupportedTools()
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
@@ -330,6 +409,47 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 }
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
+// defaultImageDetail fills "auto" into any input_image content block missing the
+// detail field. Clones content on write — the Content pointer and the image block
+// pointers inside it are shared with the caller's input.
+func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
+		return message
+	}
+
+	needsDetail := func(block schemas.ResponsesMessageContentBlock) bool {
+		return block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
+			block.ResponsesInputMessageContentBlockImage != nil &&
+			block.ResponsesInputMessageContentBlockImage.Detail == nil
+	}
+
+	fixNeeded := false
+	for _, block := range message.Content.ContentBlocks {
+		if needsDetail(block) {
+			fixNeeded = true
+			break
+		}
+	}
+	if !fixNeeded {
+		return message
+	}
+
+	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
+	copy(newBlocks, message.Content.ContentBlocks)
+	for i, block := range newBlocks {
+		if needsDetail(block) {
+			imageCopy := *block.ResponsesInputMessageContentBlockImage
+			imageCopy.Detail = schemas.Ptr("auto")
+			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
+		}
+	}
+
+	contentCopy := *message.Content
+	contentCopy.ContentBlocks = newBlocks
+	message.Content = &contentCopy
+	return message
+}
+
 func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 	if len(resp.Tools) == 0 {
 		return

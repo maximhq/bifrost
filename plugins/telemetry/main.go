@@ -31,6 +31,9 @@ const (
 const (
 	startTimeKey         schemas.BifrostContextKey = "bf-prom-start-time"
 	activeRequestTypeKey schemas.BifrostContextKey = "bf-prom-active-req-type"
+	mcpStartTimeKey      schemas.BifrostContextKey = "bf-prom-mcp-start-time"
+	mcpClientNameKey     schemas.BifrostContextKey = "bf-prom-mcp-client-name"
+	mcpToolNameKey       schemas.BifrostContextKey = "bf-prom-mcp-tool-name"
 )
 
 // PushGatewayConfig holds the configuration for pushing metrics to a Prometheus Push Gateway.
@@ -173,10 +176,12 @@ type PrometheusPlugin struct {
 	KeyRotationEventsTotal         *prometheus.CounterVec
 	ActiveRequests                 *prometheus.GaugeVec
 	ProviderKeyUp                  *prometheus.GaugeVec
+	MCPToolDuration                *prometheus.HistogramVec
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
 	defaultBifrostLabels []string
+	defaultMCPLabels     []string
 
 	// Push gateway fields
 	pushConfig *PushGatewayConfig
@@ -226,6 +231,13 @@ var (
 	}
 )
 
+// Compile-time checks that PrometheusPlugin implements the hook interfaces it
+// registers metrics for (MCP hooks are auto-discovered by rebuildInterfaceCaches).
+var (
+	_ schemas.LLMPlugin = (*PrometheusPlugin)(nil)
+	_ schemas.MCPPlugin = (*PrometheusPlugin)(nil)
+)
+
 // Init creates a new PrometheusPlugin with initialized metrics.
 // defaultBifrostLabelNames is the canonical set of Prometheus labels attached to
 // bifrost.* metrics. It is a package var (not an Init local) so the connector-
@@ -251,6 +263,28 @@ var defaultBifrostLabelNames = []string{
 	"business_unit_id",
 	"business_unit_name",
 }
+
+// defaultMCPLabelNames is the label set for bifrost_mcp_* metrics: the MCP semconv
+// dimensions available in the hook plus the governance identity. No network_transport
+// (core stamps it on the span, not context) and no provider/model.
+var defaultMCPLabelNames = []string{
+	"mcp_client",
+	"mcp_tool_name",
+	"mcp_method",
+	"error_type",
+	"virtual_key_id",
+	"virtual_key_name",
+	"team_id",
+	"team_name",
+	"customer_id",
+	"customer_name",
+	"business_unit_id",
+	"business_unit_name",
+}
+
+// mcpOperationDurationBuckets: the OTel MCP semconv boundaries, matching plugins/otel
+// so both exporters report the same quantiles for the same operation.
+var mcpOperationDurationBuckets = []float64{0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300}
 
 func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
 	if config == nil {
@@ -287,7 +321,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
 		for _, label := range config.CustomLabels {
-			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) {
+			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) && !containsLabel(defaultMCPLabelNames, label) {
 				filteredCustomLabels = append(filteredCustomLabels, label)
 			} else {
 				logger.Info("custom label %s is already a default label, it will be ignored", label)
@@ -491,6 +525,18 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		[]string{"provider", "key_id", "key_name"},
 	)
 
+	// Mirrors the OTel semconv metric mcp.client.operation.duration. _count gives
+	// tool-call volume and error_type the error rate, so no separate MCP counters.
+	defaultMCPLabels := append([]string(nil), defaultMCPLabelNames...)
+	bifrostMCPToolDuration := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_mcp_client_operation_duration_seconds",
+			Help:    "Duration of an MCP tool call as observed by Bifrost (the MCP client).",
+			Buckets: mcpOperationDurationBuckets,
+		},
+		append(defaultMCPLabels, filteredCustomLabels...),
+	)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
@@ -520,9 +566,11 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		KeyRotationEventsTotal:         bifrostKeyRotationEventsTotal,
 		ActiveRequests:                 bifrostActiveRequests,
 		ProviderKeyUp:                  bifrostProviderKeyUp,
+		MCPToolDuration:                bifrostMCPToolDuration,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
+		defaultMCPLabels:               defaultMCPLabels,
 	}
 
 	// Default /metrics scraping to on when the config omits the field — preserves
@@ -635,6 +683,116 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	return req, nil, nil
 }
 
+// applyCustomLabels resolves each configured custom label into labelValues.
+// Resolution order (first match wins):
+//  1. x-bf-dim-* headers (canonical; BifrostContextKeyDimensions)
+//  2. x-bf-prom-* headers (deprecated; kept for backward compatibility)
+//  3. Direct BifrostContextKey lookup (Go SDK usage — documented API)
+func (p *PrometheusPlugin) applyCustomLabels(ctx *schemas.BifrostContext, labelValues map[string]string) {
+	dims, _ := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+	requestHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	for _, key := range p.customLabels {
+		if dims != nil {
+			if v, ok := dims[key]; ok {
+				labelValues[key] = v
+				continue
+			}
+		}
+		if requestHeaders != nil {
+			if v, ok := requestHeaders["x-bf-prom-"+key]; ok {
+				labelValues[key] = v
+				continue
+			}
+		}
+		if value := ctx.Value(schemas.BifrostContextKey(key)); value != nil {
+			if strValue, ok := value.(string); ok {
+				labelValues[key] = strValue
+			}
+		}
+	}
+}
+
+// PreMCPHook stashes the tool-call start time so PostMCPHook has a wall-time
+// fallback on the error path (where the response — and its latency — is absent).
+func (p *PrometheusPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	if ctx != nil && req != nil && req.RequestType.IsExecuteTool() {
+		ctx.SetValue(mcpStartTimeKey, time.Now())
+		// Stash identity so the error path (resp == nil) still has tool/client
+		// for codemode filtering and metric labels.
+		ctx.SetValue(mcpClientNameKey, req.ClientName)
+		ctx.SetValue(mcpToolNameKey, req.GetToolName())
+	}
+	return req, nil, nil
+}
+
+// PostMCPHook records the MCP tool-call duration. Only execute-tool calls are
+// recorded (codemode tools skipped); ping/list_tools are lifecycle, not tool calls.
+// The gate stamps MCPRequestType on both the success response and the error.
+func (p *PrometheusPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error) {
+	if ctx == nil {
+		return resp, bifrostErr, nil
+	}
+	mcpReqType := schemas.MCPRequestType("")
+	toolName, clientName := "", ""
+	if resp != nil {
+		mcpReqType = resp.ExtraFields.MCPRequestType
+		toolName = resp.ExtraFields.ToolName
+		clientName = resp.ExtraFields.ClientName
+	} else if bifrostErr != nil {
+		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
+		// No response on the error path — recover identity stashed in PreMCPHook.
+		clientName = bifrost.GetStringFromContext(ctx, mcpClientNameKey)
+		toolName = bifrost.GetStringFromContext(ctx, mcpToolNameKey)
+	}
+	if !mcpReqType.IsExecuteTool() || bifrost.IsCodemodeTool(toolName) {
+		return resp, bifrostErr, nil
+	}
+
+	// Prefer the wire tool-call latency; fall back to wall-time on the error path.
+	var durationSeconds float64
+	if resp != nil && resp.ExtraFields.Latency > 0 {
+		durationSeconds = float64(resp.ExtraFields.Latency) / 1000.0
+	} else if start, ok := ctx.Value(mcpStartTimeKey).(time.Time); ok {
+		durationSeconds = time.Since(start).Seconds()
+	}
+
+	errorType := ""
+	if bifrostErr != nil {
+		errorType = mcpErrorType(bifrostErr)
+	}
+
+	labelValues := map[string]string{
+		"mcp_client":         clientName,
+		"mcp_tool_name":      toolName,
+		"mcp_method":         mcpReqType.OTelMethodName(),
+		"error_type":         errorType,
+		"virtual_key_id":     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
+		"virtual_key_name":   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
+		"team_id":            bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID),
+		"team_name":          bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName),
+		"customer_id":        bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID),
+		"customer_name":      bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
+		"business_unit_id":   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID),
+		"business_unit_name": bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName),
+	}
+	p.applyCustomLabels(ctx, labelValues)
+
+	promLabelValues := getPrometheusLabelValues(append(p.defaultMCPLabels, p.customLabels...), labelValues)
+	p.MCPToolDuration.WithLabelValues(promLabelValues...).Observe(durationSeconds)
+
+	return resp, bifrostErr, nil
+}
+
+// mcpErrorType classifies an MCP tool-call failure into a low-cardinality error_type.
+// Coarse by design: timeout/tool_error granularity (which the OTel/Datadog span path
+// derives from error.type) would require core's error sentinels here.
+func mcpErrorType(bifrostErr *schemas.BifrostError) string {
+	if bifrostErr != nil && bifrostErr.ExtraFields.MCPAuthRequired != nil {
+		return "auth_required"
+	}
+	return "_OTHER"
+}
+
 // extractProviderCacheTokens returns provider-side prompt-cache token counts from a
 // response's usage: cache-read (cached) input tokens, cache-write (creation) input tokens,
 // and the Anthropic-only 5m/1h TTL breakdown of the write total. Chat/text-completion carry
@@ -741,33 +899,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine.
-	// Resolution order (first match wins):
-	//   1. x-bf-dim-* headers (canonical; set by HTTP transport as BifrostContextKeyDimensions)
-	//   2. x-bf-prom-* headers (deprecated; kept for backward compatibility)
-	//   3. Direct BifrostContextKey lookup (Go SDK usage — documented API)
-	dims, _ := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
-	requestHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	for _, key := range p.customLabels {
-		if dims != nil {
-			if v, ok := dims[key]; ok {
-				labelValues[key] = v
-				continue
-			}
-		}
-		// support for to be deprecated x-bf-prom-* headers
-		if requestHeaders != nil {
-			if v, ok := requestHeaders["x-bf-prom-"+key]; ok {
-				labelValues[key] = v
-				continue
-			}
-		}
-		// fallback: direct context key (Go SDK usage, documented API)
-		if value := ctx.Value(schemas.BifrostContextKey(key)); value != nil {
-			if strValue, ok := value.(string); ok {
-				labelValues[key] = strValue
-			}
-		}
-	}
+	p.applyCustomLabels(ctx, labelValues)
 
 	// Get label values in the correct order (cache_type will be handled separately for cache hits)
 	promLabelValues := getPrometheusLabelValues(append(p.defaultBifrostLabels, p.customLabels...), labelValues)

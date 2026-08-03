@@ -232,7 +232,7 @@ export default function AttributeSheet({ model, onClose }: AttributeSheetProps) 
 								value={description}
 								onChange={(e) => setDescription(e.target.value)}
 								rows={4}
-								placeholder="A short description of this model — shown anywhere additional_attributes.description is consumed."
+								placeholder="A short description of this model, shown anywhere additional_attributes.description is consumed."
 								data-testid="model-catalog-description-textarea"
 							/>
 						</div>

@@ -265,6 +265,19 @@ type UpdateBudgetRequest struct {
 	ResetDuration *string  `json:"reset_duration,omitempty"`
 }
 
+// BudgetOverrideRequest replaces the active override on one budget.
+type BudgetOverrideRequest struct {
+	Amount float64                              `json:"amount"`
+	Mode   configstoreTables.BudgetOverrideMode `json:"mode"`
+	Cycles int                                  `json:"cycles,omitempty"`
+}
+
+// BudgetOverrideResponse returns the persisted budget and its additive effective limit.
+type BudgetOverrideResponse struct {
+	Budget            *configstoreTables.TableBudget `json:"budget"`
+	EffectiveMaxLimit float64                        `json:"effective_max_limit"`
+}
+
 // RoutingTarget represents a single weighted routing target within a rule.
 // All fields except Weight are optional; nil means "use the incoming request's value".
 // Weights across all targets in a rule must sum to 1 (e.g. 0.7 + 0.3 = 1.0).
@@ -733,6 +746,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 		}
 	}
 
+
 	// Resulting budget count: the desired set if provided, else the existing set.
 	finalBudgetCount := len(mc.Budgets)
 	if d.budgetsProvided {
@@ -997,6 +1011,8 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.getVirtualKey, middlewares...))
 	r.PUT("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.updateVirtualKey, middlewares...))
 	r.POST("/api/governance/virtual-keys/{vk_id}/rotate", lib.ChainMiddlewares(h.rotateVirtualKey, middlewares...))
+	r.PUT("/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override", lib.ChainMiddlewares(h.updateVirtualKeyBudgetOverride, middlewares...))
+	r.DELETE("/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override", lib.ChainMiddlewares(h.deleteVirtualKeyBudgetOverride, middlewares...))
 	r.DELETE("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.deleteVirtualKey, middlewares...))
 
 	// Team CRUD operations
@@ -1136,6 +1152,16 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
+		// The in-memory cache holds no VK↔user assignments (GovernanceData.Users carries
+		// only budget/rate-limit ids), so a user_id filter cannot be applied here. Reject
+		// the combination rather than silently dropping the filter: the database path
+		// fails closed on user_id, and returning every cached key instead would be the
+		// exact inverse of that contract. The other filters keep their long-standing
+		// ignored-under-from_memory behaviour.
+		if len(ctx.QueryArgs().Peek("user_id")) > 0 {
+			SendError(ctx, 400, "user_id filter is not supported with from_memory=true; omit from_memory to filter virtual keys by user")
+			return
+		}
 		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
@@ -1174,6 +1200,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
+	userID := string(ctx.QueryArgs().Peek("user_id"))
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
@@ -1181,12 +1208,13 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
 			CustomerID:                         customerID,
 			TeamID:                             teamID,
+			UserID:                             userID,
 			SortBy:                             sortBy,
 			Order:                              order,
 			Export:                             isExport,
@@ -1512,6 +1540,98 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key": vk,
+	})
+}
+
+// loadVirtualKeyBudget resolves only budgets owned by the virtual key's scoped model configs.
+func (h *GovernanceHandler) loadVirtualKeyBudget(ctx context.Context, vkID, budgetID string) (*configstoreTables.TableBudget, error) {
+	if _, err := h.configStore.GetVirtualKey(ctx, vkID); err != nil {
+		return nil, err
+	}
+	modelConfigs, err := h.configStore.GetModelConfigsByScopeAndScopeIDs(
+		ctx,
+		configstoreTables.ModelConfigScopeVirtualKey,
+		[]string{vkID},
+	)
+	if err != nil {
+		return nil, err
+	}
+	for i := range modelConfigs {
+		for j := range modelConfigs[i].Budgets {
+			if modelConfigs[i].Budgets[j].ID == budgetID {
+				return &modelConfigs[i].Budgets[j], nil
+			}
+		}
+	}
+	return nil, configstore.ErrNotFound
+}
+
+// updateVirtualKeyBudgetOverride handles PUT for a standalone virtual-key budget override.
+func (h *GovernanceHandler) updateVirtualKeyBudgetOverride(ctx *fasthttp.RequestCtx) {
+	h.mutateVirtualKeyBudgetOverride(ctx, false)
+}
+
+// deleteVirtualKeyBudgetOverride handles DELETE for a standalone virtual-key budget override.
+func (h *GovernanceHandler) deleteVirtualKeyBudgetOverride(ctx *fasthttp.RequestCtx) {
+	h.mutateVirtualKeyBudgetOverride(ctx, true)
+}
+
+// mutateVirtualKeyBudgetOverride replaces or clears an override without changing base budget configuration or usage.
+func (h *GovernanceHandler) mutateVirtualKeyBudgetOverride(ctx *fasthttp.RequestCtx, clear bool) {
+	vkID := ctx.UserValue("vk_id").(string)
+	budgetID := ctx.UserValue("budget_id").(string)
+	budget, err := h.loadVirtualKeyBudget(ctx, vkID, budgetID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "virtual key or budget not found")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to retrieve virtual key budget")
+		return
+	}
+
+	if clear {
+		budget.ClearOverride()
+	} else {
+		var req BudgetOverrideRequest
+		if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := budget.SetOverride(req.Amount, req.Mode, req.Cycles); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	// IsCalendarAligned was stamped onto the budget by the virtual key's AfterFind
+	// during loadVirtualKeyBudget, and the store needs it to anchor a finite grant
+	// on the same lattice the budget actually resets on.
+	budget, err = h.configStore.UpdateBudgetOverride(
+		ctx,
+		budget.ID,
+		budget.OverrideAmount,
+		budget.OverrideMode,
+		budget.OverrideCyclesRemaining,
+		budget.IsCalendarAligned,
+	)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "budget not found")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to update budget override")
+		return
+	}
+	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vkID); err != nil {
+		logger.Error("failed to reload virtual key after budget override: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "budget override saved but virtual key reload failed")
+		return
+	}
+
+	SendJSON(ctx, BudgetOverrideResponse{
+		Budget:            budget,
+		EffectiveMaxLimit: budget.EffectiveMaxLimit(),
 	})
 }
 
@@ -3011,6 +3131,7 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 		}
 		search := string(ctx.QueryArgs().Peek("search"))
 		scopeFilter := string(ctx.QueryArgs().Peek("scope"))
+		scopeIDFilter := string(ctx.QueryArgs().Peek("scope_id"))
 		providerFilter := string(ctx.QueryArgs().Peek("provider"))
 		// Deep-copy into a value slice: top-level struct copy + nested pointer/slice fields
 		// so we never alias or mutate live governance state during serialization.
@@ -3024,6 +3145,11 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			}
 			if scopeFilter != "" && mc.Scope != scopeFilter {
 				continue
+			}
+			if scopeIDFilter != "" {
+				if mc.ScopeID == nil || *mc.ScopeID != scopeIDFilter {
+					continue
+				}
 			}
 			if providerFilter != "" {
 				if mc.Provider == nil || *mc.Provider != providerFilter {
@@ -3086,13 +3212,15 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	offsetStr := string(ctx.QueryArgs().Peek("offset"))
 	search := string(ctx.QueryArgs().Peek("search"))
 	scope := string(ctx.QueryArgs().Peek("scope"))
+	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
 	provider := string(ctx.QueryArgs().Peek("provider"))
 
-	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || provider != "" {
+	if limitStr != "" || offsetStr != "" || search != "" || scope != "" || scopeID != "" || provider != "" {
 		// Paginated path
 		params := configstore.ModelConfigsQueryParams{
 			Search:   search,
 			Scope:    scope,
+			ScopeID:  scopeID,
 			Provider: provider,
 		}
 		if limitStr != "" {
@@ -4004,6 +4132,11 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, err.Error())
 		return
 	}
+	// Reject malformed CEL at write time instead of it silently failing at first evaluation.
+	if err := governance.ValidateRoutingCELExpression(req.CelExpression); err != nil {
+		SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
+		return
+	}
 
 	// Set defaults and normalize scope/scope_id
 	scope := req.Scope
@@ -4022,6 +4155,9 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		req.ScopeID = nil // normalize: global rules must not have scope_id
 	} else if req.ScopeID == nil || *req.ScopeID == "" {
 		SendError(ctx, 400, "scope_id field is required when scope is not global")
+		return
+	} else if err := h.validateRoutingScopeID(ctx, scope, *req.ScopeID); err != nil {
+		sendRoutingScopeIDValidationError(ctx, err)
 		return
 	}
 
@@ -4116,6 +4252,12 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		rule.ChainRule = *req.ChainRule
 	}
 	if req.CelExpression != nil {
+		// Validate only when the field is supplied, so unrelated updates (e.g. toggling
+		// enabled) never start failing on a pre-existing malformed expression.
+		if err := governance.ValidateRoutingCELExpression(*req.CelExpression); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
+			return
+		}
 		rule.CelExpression = *req.CelExpression
 	}
 	if req.Targets != nil {
@@ -4169,6 +4311,13 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	} else if rule.ScopeID == nil || *rule.ScopeID == "" {
 		SendError(ctx, 400, "scope_id field is required when scope is not global")
 		return
+	} else if req.Scope != nil || req.ScopeID != nil {
+		// Only re-validate when scope or scope_id actually changed in this request;
+		// avoids re-checking on every unrelated update (e.g. toggling enabled).
+		if err := h.validateRoutingScopeID(ctx, rule.Scope, *rule.ScopeID); err != nil {
+			sendRoutingScopeIDValidationError(ctx, err)
+			return
+		}
 	}
 
 	// Update in database
@@ -4222,6 +4371,7 @@ func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 type CreatePricingOverrideRequest struct {
 	Name          string                      `json:"name"`
 	ScopeKind     modelcatalog.ScopeKind      `json:"scope_kind"`
+	UserID        *string                     `json:"user_id,omitempty"`
 	VirtualKeyID  *string                     `json:"virtual_key_id,omitempty"`
 	ProviderID    *string                     `json:"provider_id,omitempty"`
 	ProviderKeyID *string                     `json:"provider_key_id,omitempty"`
@@ -4259,6 +4409,7 @@ func (n *nullableString) UnmarshalJSON(b []byte) error {
 type UpdatePricingOverrideRequest struct {
 	Name          *string                      `json:"name,omitempty"`
 	ScopeKind     *modelcatalog.ScopeKind      `json:"scope_kind,omitempty"`
+	UserID        nullableString               `json:"user_id"`
 	VirtualKeyID  nullableString               `json:"virtual_key_id"`
 	ProviderID    nullableString               `json:"provider_id"`
 	ProviderKeyID nullableString               `json:"provider_key_id"`
@@ -4270,9 +4421,12 @@ type UpdatePricingOverrideRequest struct {
 
 func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
 	// Parse filter parameters
-	var scopeKind, virtualKeyID, providerID, providerKeyID *string
+	var scopeKind, userID, virtualKeyID, providerID, providerKeyID *string
 	if v := strings.TrimSpace(string(ctx.QueryArgs().Peek("scope_kind"))); v != "" {
 		scopeKind = &v
+	}
+	if v := strings.TrimSpace(string(ctx.QueryArgs().Peek("user_id"))); v != "" {
+		userID = &v
 	}
 	if v := strings.TrimSpace(string(ctx.QueryArgs().Peek("virtual_key_id"))); v != "" {
 		virtualKeyID = &v
@@ -4293,6 +4447,7 @@ func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
 		params := configstore.PricingOverridesQueryParams{
 			Search:        search,
 			ScopeKind:     scopeKind,
+			UserID:        userID,
 			VirtualKeyID:  virtualKeyID,
 			ProviderID:    providerID,
 			ProviderKeyID: providerKeyID,
@@ -4342,6 +4497,7 @@ func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
 	// Non-paginated path: return all matching overrides (backward compatible)
 	filters := configstore.PricingOverrideFilters{
 		ScopeKind:     scopeKind,
+		UserID:        userID,
 		VirtualKeyID:  virtualKeyID,
 		ProviderID:    providerID,
 		ProviderKeyID: providerKeyID,
@@ -4377,6 +4533,7 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 
 	shape := modelcatalog.PricingOverride{
 		ScopeKind:     req.ScopeKind,
+		UserID:        req.UserID,
 		VirtualKeyID:  req.VirtualKeyID,
 		ProviderID:    req.ProviderID,
 		ProviderKeyID: req.ProviderKeyID,
@@ -4400,6 +4557,7 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 		ID:               uuid.NewString(),
 		Name:             name,
 		ScopeKind:        string(req.ScopeKind),
+		UserID:           normalizeOptionalString(req.UserID),
 		VirtualKeyID:     normalizeOptionalString(req.VirtualKeyID),
 		ProviderID:       normalizeOptionalString(req.ProviderID),
 		ProviderKeyID:    normalizeOptionalString(req.ProviderKeyID),
@@ -4451,6 +4609,7 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 	// Merge request fields onto the existing record; omitted fields keep their current values.
 	merged := modelcatalog.PricingOverride{
 		ScopeKind:     modelcatalog.ScopeKind(existing.ScopeKind),
+		UserID:        existing.UserID,
 		VirtualKeyID:  existing.VirtualKeyID,
 		ProviderID:    existing.ProviderID,
 		ProviderKeyID: existing.ProviderKeyID,
@@ -4462,9 +4621,13 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 		merged.ScopeKind = *req.ScopeKind
 		// Changing scope_kind resets all scope IDs; only what the request
 		// explicitly provides will be kept.
+		merged.UserID = nil
 		merged.VirtualKeyID = nil
 		merged.ProviderID = nil
 		merged.ProviderKeyID = nil
+	}
+	if req.UserID.Set {
+		merged.UserID = req.UserID.Value
 	}
 	if req.VirtualKeyID.Set {
 		merged.VirtualKeyID = req.VirtualKeyID.Value
@@ -4515,6 +4678,7 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 		ID:               id,
 		Name:             nameStr,
 		ScopeKind:        string(merged.ScopeKind),
+		UserID:           normalizeOptionalString(merged.UserID),
 		VirtualKeyID:     normalizeOptionalString(merged.VirtualKeyID),
 		ProviderID:       normalizeOptionalString(merged.ProviderID),
 		ProviderKeyID:    normalizeOptionalString(merged.ProviderKeyID),
@@ -4589,6 +4753,60 @@ var validRoutingScopes = map[string]bool{
 	"team":        true,
 	"customer":    true,
 	"virtual_key": true,
+	"user":        true,
+}
+
+// errRoutingScopeIDNotFound marks a validateRoutingScopeID failure as a genuine
+// "entity doesn't exist" rejection, as opposed to a store error (DB down, timeout,
+// context cancellation). Callers use errors.Is to tell the two apart: the former
+// is a 400 (bad request data), the latter a 500 (server couldn't verify).
+var errRoutingScopeIDNotFound = errors.New("routing rule scope_id not found")
+
+// validateRoutingScopeID checks that scopeID resolves to an existing entity of the
+// given scope type. A rule whose scope_id doesn't resolve silently matches zero
+// requests (the routing engine caches rules keyed by the real entity ID), so this
+// must be rejected at write time rather than left to fail invisibly at eval time.
+func (h *GovernanceHandler) validateRoutingScopeID(ctx context.Context, scope string, scopeID string) error {
+	switch scope {
+	case "virtual_key":
+		if _, err := h.configStore.GetVirtualKey(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("virtual key '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify virtual key: %w", err)
+		}
+	case "team":
+		if _, err := h.configStore.GetTeam(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("team '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify team: %w", err)
+		}
+	case "customer":
+		if _, err := h.configStore.GetCustomer(ctx, scopeID); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("customer '%s' not found: %w", scopeID, errRoutingScopeIDNotFound)
+			}
+			return fmt.Errorf("failed to verify customer: %w", err)
+		}
+	case "user":
+		// User ids live outside the config store (they arrive on requests via
+		// the resolved identity context), so existence cannot be verified
+		// here; the id is matched at eval time against the calling user.
+	}
+	return nil
+}
+
+// sendRoutingScopeIDValidationError maps a validateRoutingScopeID error to the
+// right HTTP status: 400 when scope_id genuinely doesn't resolve, 500 when the
+// store itself failed and existence couldn't be determined.
+func sendRoutingScopeIDValidationError(ctx *fasthttp.RequestCtx, err error) {
+	if errors.Is(err, errRoutingScopeIDNotFound) {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+	logger.Error("failed to validate routing rule scope_id: %v", err)
+	SendError(ctx, 500, "Failed to verify scope_id")
 }
 
 // validateRoutingScope validates that the scope value is one of the allowed values
@@ -4597,7 +4815,7 @@ func validateRoutingScope(scope string) error {
 		return nil // Empty scope will default to "global" later
 	}
 	if !validRoutingScopes[scope] {
-		return fmt.Errorf("invalid scope %q: must be one of: global, team, customer, virtual_key", scope)
+		return fmt.Errorf("invalid scope %q: must be one of: global, team, customer, virtual_key, user", scope)
 	}
 	return nil
 }

@@ -327,7 +327,54 @@ bifrost:
           sampling_rate: 100
 ```
 
-GraySwan requests automatically include sanitized incoming request headers in GraySwan `metadata.headers`; no extra Helm value is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
+Gray Swan requests automatically include sanitized incoming request headers in Gray Swan `metadata.headers`; no extra Helm value is required. Credential-bearing headers such as `authorization`, `x-api-key`, API-key variants, cookies, and `grayswan-api-key` are excluded, while non-sensitive context headers such as `x-request-id`, `traceparent`, `x-tenant-id`, `content-type`, and `content-length` are included when present.
+
+</Tab>
+<Tab title="Lakera Guard">
+
+Calls Lakera Guard's `POST /v2/guard` endpoint with an OpenAI-style conversation. The Lakera project selects the policy; Bifrost controls whether a flagged result blocks, is recorded, or is redacted from supported payload spans.
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 7
+        provider_name: "lakera"
+        policy_name: "lakera-production"
+        enabled: true
+        timeout: 30
+        config:
+          api_key: "env.LAKERA_GUARD_API_KEY"
+          project_id: "project-1234567890"
+          base_url: "https://api.lakera.ai"
+          action: "redact"
+          redaction_strategy: "replace"
+          redaction_mode: "runtime_reversible"
+```
+
+`base_url` is optional and defaults to `https://api.lakera.ai`. For `action: "redact"`, Lakera supplies supported message-content spans and Bifrost performs the transformation. See [Lakera Guard](/integrations/guardrails/lakera) for request compatibility and fail-closed behavior.
+
+</Tab>
+<Tab title="Repello Argus">
+
+Calls Repello Argus prompt and response analysis endpoints. The configured Argus asset owns the enabled policies and their `block` or `flag` actions.
+
+```yaml
+bifrost:
+  guardrails:
+    providers:
+      - id: 8
+        provider_name: "repelloai-argus"
+        policy_name: "repello-argus-production"
+        enabled: true
+        timeout: 30
+        config:
+          api_key: "env.REPELLO_ARGUS_API_KEY"
+          asset_id: "asset-12345678"
+          base_url: "https://argusapi.repello.ai/sdk/v1"
+```
+
+`base_url` is optional and defaults to `https://argusapi.repello.ai/sdk/v1`. Repello `blocked` verdicts intervene, while `flagged` verdicts are recorded and allowed. See [Repello Argus](/integrations/guardrails/repello-argus) for setup, streaming behavior, and supported content.
 
 </Tab>
 </Tabs>
@@ -463,6 +510,27 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
 | `timeout` | No | **Plain only** | Execution timeout in seconds |
 
+### Lakera Guard
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Lakera API key |
+| `project_id` | Yes | **Plain only** | Lakera project ID whose assigned policy controls screening |
+| `base_url` | No | Yes | Lakera API base. Defaults to `https://api.lakera.ai` |
+| `action` | No | **Plain only** | `block` \| `detect_only` \| `redact` (default: `block`) |
+| `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
+| `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
+| `timeout` | No | **Plain only** | Provider-level execution timeout in seconds |
+
+### Repello Argus
+
+| Field | Required | env.* supported | Notes |
+|-------|----------|-----------------|-------|
+| `api_key` | Yes | Yes | Repello Argus API key |
+| `asset_id` | Yes | **Plain only** | Argus asset ID whose configured policies control evaluation |
+| `base_url` | No | Yes | Argus SDK API base URL. Defaults to `https://argusapi.repello.ai/sdk/v1` |
+| `timeout` | No | **Plain only** | Provider execution timeout in seconds |
+
 ### Regex
 
 | Field | Required | env.\* supported | Notes |
@@ -486,17 +554,35 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 
 ## Rules
 
-Rules are CEL expressions that fire when their condition is met. Available CEL variables:
+Rules are CEL expressions that fire when their condition is met. Set `target` to `"llm"` or `"mcp"` to select the request boundary the rule guards. The target defaults to `"llm"` when omitted.
+
+All targets expose these request identity variables:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `headers` | `map<string,string>` | HTTP request headers |
+| `virtual_key` | `string` | Virtual key ID |
+| `customer` | `string` | Customer ID |
+| `team` | `string` | Team ID |
+| `user` | `string` | User ID |
+
+LLM rules additionally expose:
 
 | Variable | Type | Description |
 |----------|------|-------------|
 | `model` | `string` | Model name from the request |
 | `provider` | `string` | Provider name (e.g. `"openai"`) |
-| `headers` | `map<string,string>` | HTTP request headers |
 | `params` | `map<string,string>` | Query parameters |
-| `customer` | `string` | Customer ID |
-| `team` | `string` | Team ID |
-| `user` | `string` | User ID |
+
+MCP rules additionally expose:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `mcp_client` | `string` | Name of the MCP client executing the tool |
+| `mcp_tool` | `string` | Name of the MCP tool being executed |
+| `mcp_arguments` | `map<string,dyn>` | Parsed tool arguments, with values preserving their JSON types |
+
+Target-specific variables are isolated. For example, `model` is unavailable to MCP rules, and `mcp_tool` is unavailable to LLM rules.
 
 Rule fields:
 
@@ -506,11 +592,15 @@ Rule fields:
 | `name` | Yes | Human-readable name |
 | `description` | No | Optional description |
 | `enabled` | Yes | `true` to activate |
+| `target` | No | `"llm"` (default) or `"mcp"` |
 | `cel_expression` | Yes | CEL boolean expression; `"true"` matches all requests |
-| `apply_to` | Yes | `"input"`, `"output"`, or `"both"` |
+| `apply_to` | Yes | `"input"`, `"output"`, or `"both"`. For MCP rules, input is the tool arguments and output is the tool result |
 | `sampling_rate` | No | `0`–`100`; percentage of requests to check (default: 100) |
 | `timeout` | No | Rule timeout in seconds |
+| `stream_replay_event_interval_ms` | No | Delay between buffered events after block-capable output guardrails allow a streaming response. Defaults to `0` (immediate delivery); the dashboard uses `25` when pacing is enabled. |
 | `provider_config_ids` | No | Provider `id`s to invoke when this rule matches |
+
+`max_turns_to_send`, `evaluation_mode`, and `stream_replay_event_interval_ms` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
 
 ```yaml
 bifrost:
@@ -520,6 +610,7 @@ bifrost:
         name: "block-secrets-input"
         description: "Block prompts containing API keys"
         enabled: true
+        target: "llm"
         cel_expression: "true"
         apply_to: "input"
         sampling_rate: 100
@@ -530,15 +621,18 @@ bifrost:
         name: "azure-output-gpt4o"
         description: "Scan GPT-4o responses"
         enabled: true
+        target: "llm"
         cel_expression: "model == 'gpt-4o'"
         apply_to: "output"
         sampling_rate: 100
         timeout: 15
+        stream_replay_event_interval_ms: 25
         provider_config_ids: [3]
 
       - id: 103
         name: "grayswan-openai-input"
         enabled: true
+        target: "llm"
         cel_expression: "provider == 'openai'"
         apply_to: "input"
         sampling_rate: 50
@@ -548,11 +642,22 @@ bifrost:
       - id: 104
         name: "strict-team-check"
         enabled: true
+        target: "llm"
         cel_expression: "team == 'team-platform'"
         apply_to: "both"
         sampling_rate: 100
         timeout: 30
         provider_config_ids: [1, 3]   # multiple providers run in parallel
+
+      - id: 105
+        name: "protect-github-issue-creation"
+        enabled: true
+        target: "mcp"
+        cel_expression: "mcp_client == 'github' && mcp_tool == 'create_issue'"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 10
+        provider_config_ids: [1]
 ```
 
 ---

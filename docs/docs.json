@@ -60,7 +60,9 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": ["overview"]
+            "pages": [
+              "overview"
+            ]
           },
           {
             "group": "Quick Start",
@@ -100,17 +102,25 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": ["release-cadence"]
+            "pages": [
+              "release-cadence"
+            ]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": ["migration-guides/v1.5.0", "migration-guides/litellm"]
+            "pages": [
+              "migration-guides/v2.0.0",
+              "migration-guides/v1.5.0",
+              "migration-guides/litellm"
+            ]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": ["integrations/what-is-an-integration"]
+            "pages": [
+              "integrations/what-is-an-integration"
+            ]
           },
           {
             "group": "Providers & Guides",
@@ -123,6 +133,7 @@
                   "providers/supported-providers/overview",
                   "providers/supported-providers/anthropic",
                   "providers/supported-providers/azure",
+                  "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
@@ -150,6 +161,7 @@
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
+                  "providers/supported-providers/wafer",
                   "providers/supported-providers/xai"
                 ]
               },
@@ -219,6 +231,7 @@
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
+              "features/webhooks",
               {
                 "group": "Governance",
                 "icon": "user-lock",
@@ -263,7 +276,9 @@
           {
             "group": "Getting Started",
             "icon": "rocket",
-            "pages": ["enterprise/overview"]
+            "pages": [
+              "enterprise/overview"
+            ]
           },
           {
             "group": "Moving from OSS",
@@ -279,12 +294,17 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": ["enterprise/release-cadence"]
+            "pages": [
+              "enterprise/release-cadence"
+            ]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": ["enterprise/migration-guides/v1.4.0"]
+            "pages": [
+              "enterprise/migration-guides/v2.0.0",
+              "enterprise/migration-guides/v1.4.0"
+            ]
           },
           {
             "group": "Features",
@@ -314,15 +334,26 @@
                       "integrations/guardrails/google-model-armor",
                       "integrations/guardrails/crowdstrike-aidr",
                       "integrations/guardrails/grayswan",
-                      "integrations/guardrails/patronus-ai"
+                      "integrations/guardrails/patronus-ai",
+                      "integrations/guardrails/lakera",
+                      "integrations/guardrails/repello-argus"
                     ]
                   }
+                ]
+              },
+              {
+                "group": "Alerting",
+                "icon": "bell",
+                "pages": [
+                  "enterprise/alerting/overview",
+                  "enterprise/alerting/alert-rules",
+                  "enterprise/alerting/alert-channels",
+                  "enterprise/alerting/alert-history"
                 ]
               },
               "enterprise/audit-logs",
               "enterprise/secret-management",
               "enterprise/log-exports",
-              "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
               "enterprise/circuit-breaker",
@@ -332,7 +363,9 @@
           {
             "group": "Security",
             "icon": "shield",
-            "pages": ["security"]
+            "pages": [
+              "security"
+            ]
           }
         ]
       },
@@ -342,7 +375,10 @@
         "groups": [
           {
             "group": "Overview",
-            "pages": ["edge/overview", "edge/how-it-works"]
+            "pages": [
+              "edge/overview",
+              "edge/how-it-works"
+            ]
           },
           {
             "group": "Governance & Control",
@@ -365,12 +401,16 @@
           {
             "group": "Deployment",
             "icon": "cloud-arrow-up",
-            "pages": ["edge/deployment-mdm"]
+            "pages": [
+              "edge/deployment-mdm"
+            ]
           },
           {
             "group": "Reference",
             "icon": "list",
-            "pages": ["edge/supported-applications"]
+            "pages": [
+              "edge/supported-applications"
+            ]
           }
         ]
       },
@@ -428,7 +468,9 @@
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": ["integrations/genai-sdk/overview"]
+                "pages": [
+                  "integrations/genai-sdk/overview"
+                ]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -453,31 +495,41 @@
                 "group": "Microsoft Entra",
                 "icon": "microsoft",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-entra/oidc"]
+                "pages": [
+                  "enterprise/setting-up-entra/oidc"
+                ]
               },
               {
                 "group": "Zitadel",
                 "icon": "/media/zitadel-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-zitadel/oidc"]
+                "pages": [
+                  "enterprise/setting-up-zitadel/oidc"
+                ]
               },
               {
                 "group": "Keycloak",
                 "icon": "/media/keycloak-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-keycloak/oidc"]
+                "pages": [
+                  "enterprise/setting-up-keycloak/oidc"
+                ]
               },
               {
                 "group": "Google Workspace",
                 "icon": "google",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-google-workspace"]
+                "pages": [
+                  "enterprise/setting-up-google-workspace"
+                ]
               },
               {
                 "group": "Auth0",
                 "icon": "/media/auth0-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-auth0/oidc"]
+                "pages": [
+                  "enterprise/setting-up-auth0/oidc"
+                ]
               },
               {
                 "group": "Generic OIDC",
@@ -486,6 +538,15 @@
                 "pages": [
                   "enterprise/setting-up-generic-oidc/oidc",
                   "enterprise/setting-up-generic-oidc/scim"
+                ]
+              },
+              {
+                "group": "Auth Proxy",
+                "icon": "shield-halved",
+                "collapsed": true,
+                "pages": [
+                  "enterprise/auth-proxy/cloudflare-ztna",
+                  "enterprise/auth-proxy/generic-proxy"
                 ]
               }
             ]
@@ -503,7 +564,9 @@
               "integrations/guardrails/google-model-armor",
               "integrations/guardrails/crowdstrike-aidr",
               "integrations/guardrails/grayswan",
-              "integrations/guardrails/patronus-ai"
+              "integrations/guardrails/patronus-ai",
+              "integrations/guardrails/lakera",
+              "integrations/guardrails/repello-argus"
             ]
           },
           {
@@ -512,11 +575,13 @@
             "pages": [
               "features/observability/default",
               "features/observability/maxim",
+              "features/observability/datadog",
               "features/observability/otel",
               "features/observability/prometheus",
               "features/observability/kafka",
               "features/observability/bigquery",
-              "features/observability/pubsub"
+              "features/observability/pubsub",
+              "features/observability/content-logging"
             ]
           },
           {
@@ -559,6 +624,7 @@
                   "deployment-guides/helm/storage",
                   "deployment-guides/helm/plugins",
                   "deployment-guides/helm/governance",
+                  "deployment-guides/helm/alerting",
                   "deployment-guides/helm/guardrails",
                   "deployment-guides/helm/secret-management",
                   "deployment-guides/helm/cluster",
@@ -577,6 +643,7 @@
                   "deployment-guides/config-json/storage",
                   "deployment-guides/config-json/plugins",
                   "deployment-guides/config-json/governance",
+                  "deployment-guides/config-json/alerting",
                   "deployment-guides/config-json/cluster",
                   "deployment-guides/config-json/guardrails",
                   "deployment-guides/config-json/secret-management"
@@ -613,6 +680,13 @@
         "tab": "API",
         "icon": "code",
         "groups": [
+          {
+            "group": "Authentication",
+            "icon": "key",
+            "pages": [
+              "api/procuring-api-keys"
+            ]
+          },
           {
             "group": "API Reference",
             "openapi": "openapi/openapi.json"
@@ -678,6 +752,11 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.6.7",
+              "changelogs/v1.6.6",
+              "changelogs/v1.6.5",
+              "changelogs/v2.0.0-prerelease2",
+              "changelogs/v1.6.4",
               "changelogs/v2.0.0-prerelease1",
               "changelogs/v1.6.3",
               "changelogs/v1.6.2",
@@ -862,7 +941,10 @@
               },
               {
                 "group": "September 2025",
-                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
+                "pages": [
+                  "changelogs/v1.2.22",
+                  "changelogs/v1.2.21"
+                ]
               }
             ]
           },
@@ -870,19 +952,29 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.7",
+              "changelogs/ent-v1.5.6",
+              "changelogs/ent-v1.5.5",
+              "changelogs/ent-v2.0.0-prerelease2",
+              "changelogs/ent-v1.5.4",
               "changelogs/ent-v2.0.0-prerelease1",
               "changelogs/ent-v1.5.3",
               "changelogs/ent-v1.5.2",
-              "changelogs/ent-v1.5.1",
-              "changelogs/ent-v1.5.0",
-              "changelogs/ent-v1.4.13",
-              "changelogs/ent-v1.4.12",
-              "changelogs/ent-v1.4.11",
-              "changelogs/ent-v1.4.10",
-              "changelogs/ent-v1.4.9",
-              "changelogs/ent-v1.4.8",
-              "changelogs/ent-v1.4.7",
-              "changelogs/ent-v1.4.7-rc1",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/ent-v1.5.1",
+                  "changelogs/ent-v1.5.0",
+                  "changelogs/ent-v1.4.13",
+                  "changelogs/ent-v1.4.12",
+                  "changelogs/ent-v1.4.11",
+                  "changelogs/ent-v1.4.10",
+                  "changelogs/ent-v1.4.9",
+                  "changelogs/ent-v1.4.8",
+                  "changelogs/ent-v1.4.7",
+                  "changelogs/ent-v1.4.7-rc1"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
@@ -932,6 +1024,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.3.0",
               "changelogs/edge-v0.2.0",
               "changelogs/edge-v0.1.0"
             ]
@@ -943,7 +1036,10 @@
               "changelogs/cli-v0.10.6",
               {
                 "group": "May 2026",
-                "pages": ["changelogs/cli-v0.10.5", "changelogs/cli-v0.10.4"]
+                "pages": [
+                  "changelogs/cli-v0.10.5",
+                  "changelogs/cli-v0.10.4"
+                ]
               },
               {
                 "group": "March 2026",
@@ -960,13 +1056,23 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.32",
+              "changelogs/helm-v2.1.31",
+              "changelogs/helm-v2.1.30",
+              "changelogs/helm-v2.1.29",
+              "changelogs/helm-v2.1.28",
               "changelogs/helm-v2.1.27",
               "changelogs/helm-v2.1.26",
-              "changelogs/helm-v2.1.25",
-              "changelogs/helm-v2.1.24",
-              "changelogs/helm-v2.1.23",
-              "changelogs/helm-v2.1.22",
-              "changelogs/helm-v2.1.21",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.25",
+                  "changelogs/helm-v2.1.24",
+                  "changelogs/helm-v2.1.23",
+                  "changelogs/helm-v2.1.22",
+                  "changelogs/helm-v2.1.21"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
@@ -1182,7 +1288,11 @@
     },
     {
       "source": "/enterprise/data-connectors/datadog",
-      "destination": "/enterprise/datadog-connector"
+      "destination": "/features/observability/datadog"
+    },
+    {
+      "source": "/enterprise/datadog-connector",
+      "destination": "/features/observability/datadog"
     },
     {
       "source": "/enterprise/mcp-with-fa",
@@ -1191,6 +1301,10 @@
     {
       "source": "/enterprise/getting-started",
       "destination": "/enterprise/overview"
+    },
+    {
+      "source": "/alerting/:slug*",
+      "destination": "/enterprise/alerting/:slug*"
     }
   ],
   "footer": {

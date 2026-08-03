@@ -19,13 +19,15 @@ import (
 // overridden. Any other call panics, surfacing an unexpected dependency.
 type fakeRecalcStore struct {
 	logstore.LogStore
-	logs           []logstore.Log // pre-sorted by (timestamp, id)
-	cost           map[string]float64
-	hasCost        map[string]bool
-	updateCount    map[string]int // successful BulkUpdateCost touches per id
-	searchCalls    int
-	bulkCalls      int
-	failBulkOnCall int // 1-based bulk call number to fail; 0 = never
+	logs              []logstore.Log // pre-sorted by (timestamp, id)
+	cost              map[string]float64
+	hasCost           map[string]bool
+	updateCount       map[string]int // successful BulkUpdateCost touches per id
+	searchCalls       int
+	bulkCalls         int
+	failBulkOnCall    int   // 1-based bulk call number to fail; 0 = never
+	hydrateChunkSizes []int // sizes handed to HydrateBillingChunk, in order
+	backfilled        []int // sizes handed to BulkBackfillBillingPayloads, in order
 }
 
 func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
@@ -35,6 +37,28 @@ func newFakeRecalcStore(logs []logstore.Log) *fakeRecalcStore {
 		hasCost:     make(map[string]bool),
 		updateCount: make(map[string]int),
 	}
+}
+
+// SearchLogsForBilling is what the recalc job actually calls. The fake has nothing
+// offloaded to object storage, so it returns the same rows as SearchLogs — matching
+// RDBLogStore, where every pricing input is already present in the row.
+func (s *fakeRecalcStore) SearchLogsForBilling(ctx context.Context, f logstore.SearchFilters, p logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	return s.SearchLogs(ctx, f, p)
+}
+
+// HydrateBillingChunk records the chunk sizes it is handed so tests can assert the
+// caller never asks for more payloads at once than BillingHydrationChunkSize. Nothing
+// is offloaded here, so there is nothing to fetch.
+func (s *fakeRecalcStore) HydrateBillingChunk(_ context.Context, logs []*logstore.Log) (logstore.BillingHydrationResult, error) {
+	s.hydrateChunkSizes = append(s.hydrateChunkSizes, len(logs))
+	return logstore.BillingHydrationResult{}, nil
+}
+
+// BulkBackfillBillingPayloads should never be reached here: nothing is offloaded, so no
+// row is ever hydrated and there is nothing recovered to write back.
+func (s *fakeRecalcStore) BulkBackfillBillingPayloads(_ context.Context, updates map[string]logstore.BillingPayloadBackfill) error {
+	s.backfilled = append(s.backfilled, len(updates))
+	return nil
 }
 
 func (s *fakeRecalcStore) SearchLogs(_ context.Context, f logstore.SearchFilters, p logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -107,6 +131,25 @@ func skipLog(id string, ts time.Time) logstore.Log {
 	}
 }
 
+// bedrockMantleStreamLog mirrors a real bedrock_mantle streaming chat row. The
+// datasheet files openai.gpt-5.5 under responses mode only, so pricing it
+// requires both the bedrock_mantle→bedrock provider fold and the chat→responses
+// mode fallback; without them recalc skips the row as zero-cost.
+func bedrockMantleStreamLog(id string, ts time.Time) logstore.Log {
+	return logstore.Log{
+		ID:        id,
+		Timestamp: ts,
+		Provider:  "bedrock_mantle",
+		Model:     "openai.gpt-5.5",
+		Object:    "chat_completion_stream",
+		TokenUsageParsed: &schemas.BifrostLLMUsage{
+			PromptTokens:     955,
+			CompletionTokens: 3138,
+			TotalTokens:      4093,
+		},
+	}
+}
+
 func newRecalcPlugin(t *testing.T, store *fakeRecalcStore) *LoggerPlugin {
 	t.Helper()
 	return &LoggerPlugin{
@@ -141,6 +184,49 @@ func window(base time.Time) logstore.SearchFilters {
 	start := base.Add(-time.Hour)
 	end := base.Add(time.Hour)
 	return logstore.SearchFilters{StartTime: &start, EndTime: &end}
+}
+
+// TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing pins the
+// recalc entry point on a stored streaming chat row whose only datasheet entry is
+// filed under responses mode: the cost must come back from the responses rates
+// rather than zero.
+func TestCalculateCostForLog_BedrockMantleChatStreamUsesResponsesPricing(t *testing.T) {
+	p := newRecalcPlugin(t, newFakeRecalcStore(nil))
+	entry := bedrockMantleStreamLog("mantle-1", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	cost, err := p.calculateCostForLog(&entry)
+	if err != nil {
+		t.Fatalf("calculateCostForLog() error = %v", err)
+	}
+	// openai.gpt-5.5 testdata rates (responses mode): input 5.5e-6, output 3.3e-5.
+	want := 955*5.5e-6 + 3138*3.3e-5
+	if diff := cost - want; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("cost = %v, want %v (responses-mode rates via the chat→responses fallback)", cost, want)
+	}
+}
+
+// TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow drives the full
+// missing-cost recalc job over an uncosted bedrock_mantle streaming row and
+// proves it is now backfilled instead of counted as skipped.
+func TestRunCostRecalcJob_BackfillsBedrockMantleStreamRow(t *testing.T) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := newFakeRecalcStore([]logstore.Log{bedrockMantleStreamLog("mantle-1", base)})
+	p := newRecalcPlugin(t, store)
+
+	final, _, err := runJob(t, p, CostRecalcJobMeta{Filters: window(base), MissingCostOnly: true, Total: 1})
+	if err != nil {
+		t.Fatalf("RunCostRecalcJob() error = %v", err)
+	}
+	if final.Updated != 1 {
+		t.Errorf("Updated = %d, want 1", final.Updated)
+	}
+	if final.Skipped != 0 {
+		t.Errorf("Skipped = %d, want 0 (the row must no longer resolve to zero cost)", final.Skipped)
+	}
+	want := 955*5.5e-6 + 3138*3.3e-5
+	if diff := store.cost["mantle-1"] - want; diff < -1e-9 || diff > 1e-9 {
+		t.Errorf("persisted cost = %v, want %v", store.cost["mantle-1"], want)
+	}
 }
 
 // TestRunCostRecalcJob_FullRecalcTiePagination proves the offset cursor walks
@@ -311,5 +397,47 @@ func TestRunCostRecalcJob_EmptyWindow(t *testing.T) {
 	}
 	if len(checkpoints) != 0 {
 		t.Errorf("expected no checkpoints for an empty window, got %d", len(checkpoints))
+	}
+}
+
+// TestRunCostRecalcJob_HydratesInBoundedChunks pins the memory bound.
+//
+// A hydrated row holds its whole offloaded payload — potentially full message
+// histories and raw request/response bodies — so a recompute must never ask for a
+// whole batch of them at once. The job walks the batch in BillingHydrationChunkSize
+// slices and releases each before advancing, which keeps peak payload memory flat no
+// matter how large the batch or the recompute window is.
+func TestRunCostRecalcJob_HydratesInBoundedChunks(t *testing.T) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	const rows = 10
+	logs := make([]logstore.Log, 0, rows)
+	for i := range rows {
+		logs = append(logs, positiveLog(fmt.Sprintf("chunk-%02d", i), base.Add(time.Duration(i)*time.Second)))
+	}
+	store := newFakeRecalcStore(logs)
+	p := newRecalcPlugin(t, store)
+
+	final, _, err := runJob(t, p, CostRecalcJobMeta{Filters: window(base)})
+	if err != nil {
+		t.Fatalf("RunCostRecalcJob() error = %v", err)
+	}
+	if final.Updated != rows {
+		t.Fatalf("expected all %d rows priced, got Updated=%d", rows, final.Updated)
+	}
+
+	if len(store.hydrateChunkSizes) == 0 {
+		t.Fatal("expected the job to hydrate through HydrateBillingChunk, but it never called it")
+	}
+	total := 0
+	for _, size := range store.hydrateChunkSizes {
+		if size > logstore.BillingHydrationChunkSize {
+			t.Fatalf("hydration chunk of %d exceeds BillingHydrationChunkSize=%d; peak payload memory would scale with batch size, got chunks %v",
+				size, logstore.BillingHydrationChunkSize, store.hydrateChunkSizes)
+		}
+		total += size
+	}
+	if total != rows {
+		t.Fatalf("chunks covered %d rows, want every one of %d: %v", total, rows, store.hydrateChunkSizes)
 	}
 }

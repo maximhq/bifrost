@@ -19,6 +19,7 @@ const (
 	DefaultConcurrency                = 1000
 	DefaultStreamBufferSize           = 256
 	DefaultStreamIdleTimeoutInSeconds = 120 // Idle timeout per stream chunk — if no data for this many seconds, bifrost closes the connection
+	DefaultKeepAliveTimeoutInSeconds  = 30  // Idle keep-alive for pooled connections — how long an idle connection is kept for reuse before being closed
 	DefaultMaxConnsPerHost            = 5000
 	MaxConnsPerHostUpperBound         = 10000
 	DefaultMaxIdleConnsPerHost        = 40
@@ -40,6 +41,7 @@ const (
 	ErrProviderRawRequestUnmarshal  = "failed to unmarshal raw request from provider API"
 	ErrProviderRawResponseUnmarshal = "failed to unmarshal raw response from provider API"
 	ErrProviderResponseDecompress   = "failed to decompress provider's response"
+	ErrProviderStreamTruncated      = "provider closed the stream before sending a completion marker (upstream connection ended mid-stream)"
 )
 
 // NetworkConfig represents the network configuration for provider connections.
@@ -60,6 +62,7 @@ type NetworkConfig struct {
 	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`           // Disables TLS certificate verification for provider connections
 	CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`                    // PEM-encoded CA certificate to trust for provider endpoint connections (supports env.*)
 	StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"` // Idle timeout per stream chunk (0 = use default 60s)
+	KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`  // Idle keep-alive for pooled connections; set below the upstream server's keep-alive to avoid reusing connections it has already closed. Default: 30s
 	MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`             // Max TCP connections per provider host (default: 5000)
 	EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`                  // Force HTTP/2 on provider connections (relevant for net/http-based providers like Bedrock)
 	BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`          // Override default beta header support per provider (keys are prefixes like "redact-thinking-")
@@ -84,6 +87,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      *SecretVar        `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
+		KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
@@ -103,6 +107,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.InsecureSkipVerify = alias.InsecureSkipVerify
 	nc.CACertPEM = alias.CACertPEM
 	nc.StreamIdleTimeoutInSeconds = alias.StreamIdleTimeoutInSeconds
+	nc.KeepAliveTimeoutInSeconds = alias.KeepAliveTimeoutInSeconds
 	nc.MaxConnsPerHost = alias.MaxConnsPerHost
 	nc.EnforceHTTP2 = alias.EnforceHTTP2
 	nc.BetaHeaderOverrides = alias.BetaHeaderOverrides
@@ -175,6 +180,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
 		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 		StreamIdleTimeoutInSeconds     int               `json:"stream_idle_timeout_in_seconds,omitempty"`
+		KeepAliveTimeoutInSeconds      int               `json:"keep_alive_timeout_in_seconds,omitempty"`
 		MaxConnsPerHost                int               `json:"max_conns_per_host,omitempty"`
 		EnforceHTTP2                   bool              `json:"enforce_http2,omitempty"`
 		BetaHeaderOverrides            map[string]bool   `json:"beta_header_overrides,omitempty"`
@@ -191,6 +197,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		RetryBackoffMax:            int64(nc.RetryBackoffMax / time.Millisecond),
 		InsecureSkipVerify:         nc.InsecureSkipVerify,
 		StreamIdleTimeoutInSeconds: nc.StreamIdleTimeoutInSeconds,
+		KeepAliveTimeoutInSeconds:  nc.KeepAliveTimeoutInSeconds,
 		MaxConnsPerHost:            nc.MaxConnsPerHost,
 		EnforceHTTP2:               nc.EnforceHTTP2,
 		BetaHeaderOverrides:        nc.BetaHeaderOverrides,
@@ -222,6 +229,7 @@ var DefaultNetworkConfig = NetworkConfig{
 	RetryBackoffInitial:            DefaultRetryBackoffInitial,
 	RetryBackoffMax:                DefaultRetryBackoffMax,
 	StreamIdleTimeoutInSeconds:     DefaultStreamIdleTimeoutInSeconds,
+	KeepAliveTimeoutInSeconds:      DefaultKeepAliveTimeoutInSeconds,
 	MaxConnsPerHost:                DefaultMaxConnsPerHost,
 }
 
@@ -398,7 +406,7 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
-	case ResponsesRetrieveRequest:
+	case ResponsesRetrieveRequest, ResponsesRetrieveStreamRequest:
 		return ar.ResponsesRetrieve
 	case ResponsesDeleteRequest:
 		return ar.ResponsesDelete
@@ -575,6 +583,10 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.NetworkConfig.StreamIdleTimeoutInSeconds = DefaultStreamIdleTimeoutInSeconds
 	}
 
+	if config.NetworkConfig.KeepAliveTimeoutInSeconds <= 0 {
+		config.NetworkConfig.KeepAliveTimeoutInSeconds = DefaultKeepAliveTimeoutInSeconds
+	}
+
 	if config.NetworkConfig.MaxConnsPerHost <= 0 {
 		config.NetworkConfig.MaxConnsPerHost = DefaultMaxConnsPerHost
 	} else if config.NetworkConfig.MaxConnsPerHost > MaxConnsPerHostUpperBound {
@@ -723,6 +735,8 @@ type Provider interface {
 // in core dispatch; providers that do not implement it return unsupported_operation.
 type ResponsesLifecycleProvider interface {
 	ResponsesRetrieve(ctx *BifrostContext, key Key, req *BifrostResponsesRetrieveRequest) (*BifrostResponsesResponse, *BifrostError)
+	// ResponsesRetrieveStream replays a stored response as an SSE stream (OpenAI GET /v1/responses/{id}?stream=true).
+	ResponsesRetrieveStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostResponsesRetrieveRequest) (chan *BifrostStreamChunk, *BifrostError)
 	ResponsesDelete(ctx *BifrostContext, key Key, req *BifrostResponsesDeleteRequest) (*BifrostResponsesDeleteResponse, *BifrostError)
 	ResponsesCancel(ctx *BifrostContext, key Key, req *BifrostResponsesCancelRequest) (*BifrostResponsesResponse, *BifrostError)
 	ResponsesInputItems(ctx *BifrostContext, key Key, req *BifrostResponsesInputItemsRequest) (*BifrostResponsesInputItemsResponse, *BifrostError)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -26,6 +27,26 @@ type SSEDataReader interface {
 // Returns ("", nil, io.EOF) at end of stream.
 type SSEEventReader interface {
 	ReadEvent() (eventType string, data []byte, err error)
+}
+
+// SSEStreamTerminator is optionally implemented by SSE readers that can report
+// whether the stream ended on an explicit terminal marker ("data: [DONE]")
+// rather than a plain body EOF. ReadDataLine returns io.EOF for both, so
+// without this a provider loop cannot tell a provider that finished cleanly
+// from an upstream connection that died mid-stream.
+type SSEStreamTerminator interface {
+	SawDoneMarker() bool
+}
+
+// SSEStreamEndedOnMarker reports whether r ended on an explicit [DONE] marker.
+// Readers that do not implement SSEStreamTerminator (e.g. an enterprise-injected
+// SSEReaderFactory) return true: with no signal available we assume the stream
+// terminated normally rather than misreport a healthy stream as truncated.
+func SSEStreamEndedOnMarker(r SSEDataReader) bool {
+	if t, ok := r.(SSEStreamTerminator); ok {
+		return t.SawDoneMarker()
+	}
+	return true
 }
 
 // SSEReaderFactory creates SSE readers for streaming response processing.
@@ -73,7 +94,12 @@ var (
 // Handles Format A SSE streams (data-only: OpenAI, Gemini, Cohere, etc.).
 type defaultSSEDataReader struct {
 	scanner *bufio.Scanner
+	pending []byte // line carried over from an aborted multi-line JSON accumulation
+	sawDone bool   // stream ended on "data: [DONE]" rather than a bare body EOF
 }
+
+// SawDoneMarker implements SSEStreamTerminator.
+func (r *defaultSSEDataReader) SawDoneMarker() bool { return r.sawDone }
 
 func newDefaultSSEDataReader(reader io.Reader) *defaultSSEDataReader {
 	scanner := bufio.NewScanner(reader)
@@ -82,8 +108,11 @@ func newDefaultSSEDataReader(reader io.Reader) *defaultSSEDataReader {
 }
 
 func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
-	for r.scanner.Scan() {
-		line := r.scanner.Bytes()
+	for {
+		line, ok := r.nextLine()
+		if !ok {
+			break
+		}
 		// Skip empty lines and comments
 		if len(line) == 0 || line[0] == ':' {
 			continue
@@ -99,6 +128,7 @@ func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
 				continue
 			}
 			if bytes.Equal(data, sseDoneMarker) {
+				r.sawDone = true
 				return nil, io.EOF
 			}
 			// Copy to decouple from scanner's internal buffer
@@ -112,13 +142,62 @@ func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
 			continue
 		}
 
-		// Non-SSE line: return as-is (raw JSON error fallback, e.g. OpenAI)
+		// Non-SSE line: raw JSON error fallback (e.g. OpenAI). Google pretty-prints
+		// stream-abort error bodies (e.g. mid-stream 429s) across multiple lines;
+		// reassemble those so chunk parsers see one complete payload.
+		trimmed := bytes.TrimLeft(line, " \t\r")
+		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') && !sonic.Valid(trimmed) {
+			return r.readMultilineJSON(line), nil
+		}
 		return append([]byte(nil), line...), nil
 	}
 	if err := r.scanner.Err(); err != nil {
 		return nil, err
 	}
 	return nil, io.EOF
+}
+
+// nextLine returns the line carried over from an aborted multi-line JSON
+// accumulation, or advances the scanner. The returned slice is only valid
+// until the next call.
+func (r *defaultSSEDataReader) nextLine() ([]byte, bool) {
+	if r.pending != nil {
+		line := r.pending
+		r.pending = nil
+		return line, true
+	}
+	if r.scanner.Scan() {
+		return r.scanner.Bytes(), true
+	}
+	return nil, false
+}
+
+// readMultilineJSON accumulates raw lines starting at open until they form
+// complete JSON, the stream ends, or the buffer hits sseMaxBufSize. An SSE
+// "data:" line aborts accumulation (carried over to the next ReadDataLine)
+// so a live stream can never be swallowed. The validity check only runs once
+// the buffer can close a JSON value (last byte '}' or ']'); a partial buffer
+// at stream end is returned as-is for the caller to surface.
+func (r *defaultSSEDataReader) readMultilineJSON(open []byte) []byte {
+	buf := append([]byte(nil), open...)
+	for r.scanner.Scan() {
+		line := r.scanner.Bytes()
+		if bytes.HasPrefix(line, sseDataPrefix) {
+			r.pending = append([]byte(nil), line...)
+			return buf
+		}
+		buf = append(buf, '\n')
+		buf = append(buf, line...)
+		if trimmed := bytes.TrimRight(buf, " \t\r\n"); len(trimmed) > 0 &&
+			(trimmed[len(trimmed)-1] == '}' || trimmed[len(trimmed)-1] == ']') &&
+			sonic.Valid(buf) {
+			return buf
+		}
+		if len(buf) >= sseMaxBufSize {
+			return buf
+		}
+	}
+	return buf
 }
 
 // defaultSSEEventReader implements SSEEventReader using bufio.NewScanner.

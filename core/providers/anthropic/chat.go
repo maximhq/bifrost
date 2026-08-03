@@ -11,6 +11,41 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// documentPlaceholderText is prepended to a message whose content holds
+// document blocks but no text block. Anthropic requires a text block alongside
+// documents ("A text block must be included when using documents") and
+// separately rejects text blocks that are empty or whitespace-only ("text
+// content blocks must contain non-whitespace text"), so the placeholder has to
+// be non-whitespace. Being non-whitespace also makes it survive the
+// trailing-whitespace trim applied to a final assistant prefill below.
+const documentPlaceholderText = "."
+
+// hasAnthropicDocumentBlock reports whether any of the content blocks is a
+// document block, i.e. whether the message needs an accompanying text block.
+func hasAnthropicDocumentBlock(blocks []AnthropicContentBlock) bool {
+	for _, b := range blocks {
+		if b.Type == AnthropicContentBlockTypeDocument {
+			return true
+		}
+	}
+	return false
+}
+
+// leadingAnthropicReasoningBlockCount returns the number of thinking and
+// redacted_thinking blocks at the head of the content slice. Anthropic requires
+// a thinking-enabled assistant turn to begin with its thinking blocks, so any
+// block injected into the message has to start at this index instead of 0.
+func leadingAnthropicReasoningBlockCount(blocks []AnthropicContentBlock) int {
+	count := 0
+	for _, b := range blocks {
+		if b.Type != AnthropicContentBlockTypeThinking && b.Type != AnthropicContentBlockTypeRedactedThinking {
+			break
+		}
+		count++
+	}
+	return count
+}
+
 // convertFunctionToolToAnthropic turns an OpenAI-style function tool
 // (schemas.ChatTool with non-nil Function) into an AnthropicTool.
 // Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
@@ -381,6 +416,46 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 
+		// Fallbacks — Anthropic native server-side fallback objects arrive via
+		// ExtraParams["fallbacks"]. Promote them onto the typed Fallbacks field so
+		// they marshal natively and drive server-side-fallback beta-header injection
+		// (mirrors ToAnthropicResponsesRequest); Bifrost string fallbacks are not
+		// carried here (they travel on BifrostChatRequest.Fallbacks).
+		if fbVal, exists := bifrostReq.Params.ExtraParams["fallbacks"]; exists {
+			var natives []AnthropicNativeFallback
+			switch v := fbVal.(type) {
+			case string:
+				// fallbacks:"default" (Opus 5 default fallback routing) — promote onto the
+				// typed field so it marshals natively and drives the -07-01 header.
+				delete(anthropicReq.ExtraParams, "fallbacks")
+				anthropicReq.Fallbacks = &AnthropicFallbacks{Preset: v}
+			case []AnthropicNativeFallback:
+				natives = v
+			default:
+				if data, err := providerUtils.MarshalSorted(v); err == nil {
+					_ = sonic.Unmarshal(data, &natives)
+				}
+			}
+			if len(natives) > 0 {
+				delete(anthropicReq.ExtraParams, "fallbacks")
+				entries := make([]AnthropicFallbackEntry, len(natives))
+				for i := range natives {
+					n := natives[i]
+					entries[i] = AnthropicFallbackEntry{Native: &n}
+				}
+				anthropicReq.Fallbacks = &AnthropicFallbacks{Entries: entries}
+			}
+		}
+
+		// Fallback credit token — same promotion, so the retry marshals the token
+		// top-level and picks up the fallback-credit beta header.
+		if tokenVal, exists := bifrostReq.Params.ExtraParams["fallback_credit_token"]; exists {
+			if token, ok := tokenVal.(string); ok && token != "" {
+				delete(anthropicReq.ExtraParams, "fallback_credit_token")
+				anthropicReq.FallbackCreditToken = &token
+			}
+		}
+
 		// TaskBudget — maps onto output_config.task_budget. If an OutputConfig
 		// already exists (e.g. from structured outputs), attach the budget to
 		// it; otherwise create one.
@@ -410,9 +485,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MCPServers = servers
 		}
 		if bifrostReq.Params.ResponseFormat != nil {
-			// Vertex and Bedrock Mantle don't accept native structured outputs
+			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
-			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle {
+			if bifrostReq.Provider == schemas.Vertex || bifrostReq.Provider == schemas.BedrockMantle || bifrostReq.Provider == schemas.Azure {
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
@@ -580,6 +655,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
 			}
+		}
+
+		// DeepSeek rejects a forced tool_choice while thinking is enabled (which is
+		// the default). Force thinking off when tool_choice pins a specific tool.
+		if bifrostReq.Provider == schemas.DeepSeek && anthropicReq.ToolChoice != nil &&
+			anthropicReq.ToolChoice.Type == "tool" {
+			anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
 		}
 
 		// Convert service tier
@@ -804,6 +886,39 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			}
 
+			// Anthropic rejects a message whose content contains a document
+			// block with no accompanying text block ("A text block must be
+			// included when using documents"). Insert a placeholder so
+			// document-only messages still validate.
+			if hasAnthropicDocumentBlock(content) {
+				filtered := content[:0]
+				hasUsableText := false
+				for _, b := range content {
+					if b.Type == AnthropicContentBlockTypeText {
+						if b.Text == nil || strings.TrimSpace(*b.Text) == "" {
+							continue
+						}
+						hasUsableText = true
+					}
+					filtered = append(filtered, b)
+				}
+				content = filtered
+				if !hasUsableText {
+					// A thinking-enabled assistant turn must begin with its
+					// thinking/redacted_thinking blocks, so the placeholder goes
+					// after them rather than at index 0.
+					at := leadingAnthropicReasoningBlockCount(content)
+					withPlaceholder := make([]AnthropicContentBlock, 0, len(content)+1)
+					withPlaceholder = append(withPlaceholder, content[:at]...)
+					withPlaceholder = append(withPlaceholder, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: schemas.Ptr(documentPlaceholderText),
+					})
+					withPlaceholder = append(withPlaceholder, content[at:]...)
+					content = withPlaceholder
+				}
+			}
+
 			// Set content
 			if len(content) == 1 && content[0].Type == AnthropicContentBlockTypeText {
 				// Always use ContentBlocks for consistent array serialization
@@ -856,6 +971,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		Model:   response.Model,
 		Created: int(time.Now().Unix()),
 	}
+
+	// Record the server-side fallback serving model before usage is flattened —
+	// the neutral chat usage has no iterations to recover it from later.
+	bifrostResponse.ExtraFields.RoutingInfo.ServerSideFallbackModel = response.Usage.ServerSideFallbackModel()
 
 	// Check if we have a structured output tool
 	var structuredOutputToolName string
@@ -1040,6 +1159,15 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 				NumSearchQueries: &n,
 			}
+		}
+		// Extended-thinking token count. Already a subset of OutputTokens (see
+		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
+		// ReasoningTokens <= CompletionTokens — so no folding is required here.
+		if response.Usage.OutputTokensDetails != nil && response.Usage.OutputTokensDetails.ThinkingTokens > 0 {
+			if bifrostResponse.Usage.CompletionTokensDetails == nil {
+				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+			}
+			bifrostResponse.Usage.CompletionTokensDetails.ReasoningTokens = response.Usage.OutputTokensDetails.ThinkingTokens
 		}
 		bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		// Forward service tier from usage to response

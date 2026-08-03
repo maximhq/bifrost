@@ -131,9 +131,47 @@ func MarshalPluginConfig[T any](source any) (*T, error) {
 	return nil, fmt.Errorf("invalid config type")
 }
 
+// currentKeyStatus returns the status and description currently held in memory
+// for the target of a KeyStatus update, and whether that target was found.
+//
+// A keyless provider is addressed by ks.KeyID == "" and carries its status on
+// the provider config; a keyed provider carries it on the matching key. found
+// is false when the provider is absent, when the key is absent, or when a
+// provider-level update arrives for a keyed provider — in every one of those
+// cases the caller has nothing to compare against and must not skip the write.
+func (s *BifrostHTTPServer) currentKeyStatus(ks schemas.KeyStatus) (status string, description string, found bool) {
+	s.Config.Mu.RLock()
+	defer s.Config.Mu.RUnlock()
+
+	providerConfig, exists := s.Config.Providers[ks.Provider]
+	if !exists {
+		return "", "", false
+	}
+
+	if ks.KeyID == "" {
+		if providerConfig.CustomProviderConfig == nil || !providerConfig.CustomProviderConfig.IsKeyLess {
+			return "", "", false
+		}
+		return providerConfig.Status, providerConfig.Description, true
+	}
+
+	for i := range providerConfig.Keys {
+		if providerConfig.Keys[i].ID == ks.KeyID {
+			return string(providerConfig.Keys[i].Status), providerConfig.Keys[i].Description, true
+		}
+	}
+	return "", "", false
+}
+
 // updateKeyStatus updates the model discovery status for keys or providers based on key statuses.
 // For keyed providers: updates individual key status
 // For keyless providers: updates provider-level status
+//
+// Statuses that match what is already stored are dropped before the write.
+// ConfigStore.UpdateStatus is an unconditional SQL UPDATE, and list-models runs
+// on a background interval on every node, so writing unconditionally would put
+// a steady keys x nodes x interval stream of no-op UPDATEs on the keys table
+// for rows whose values almost never change.
 func (s *BifrostHTTPServer) updateKeyStatus(
 	ctx context.Context,
 	keyStatuses []schemas.KeyStatus,
@@ -147,6 +185,13 @@ func (s *BifrostHTTPServer) updateKeyStatus(
 		errorMsg := ""
 		if ks.Error != nil && ks.Error.Error != nil {
 			errorMsg = ks.Error.Error.Message
+		}
+
+		// Compared before the DB write, not after: a status that has not moved
+		// needs neither the UPDATE nor the in-memory rewrite below.
+		if currentStatus, currentDesc, found := s.currentKeyStatus(ks); found &&
+			currentStatus == string(ks.Status) && currentDesc == errorMsg {
+			continue
 		}
 
 		if err := s.Config.ConfigStore.UpdateStatus(ctx, ks.Provider, ks.KeyID, string(ks.Status), errorMsg); err != nil {

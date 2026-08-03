@@ -73,6 +73,7 @@ export interface AliasConfig {
 	inference_profile_arn?: SecretVar;
 	// Replicate overrides
 	use_deployments_endpoint?: boolean;
+	use_anthropic_endpoints?: boolean;
 }
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
@@ -217,6 +218,7 @@ export interface ModelProviderKey {
 	weight: number;
 	enabled?: boolean;
 	use_for_batch_api?: boolean;
+	use_anthropic_endpoints?: boolean;
 	aliases?: Record<string, AliasConfig>;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
@@ -257,6 +259,7 @@ export interface NetworkConfig {
 	insecure_skip_verify?: boolean;
 	ca_cert_pem?: SecretVar;
 	stream_idle_timeout_in_seconds?: number;
+	keep_alive_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
 	beta_header_overrides?: Record<string, boolean>;
@@ -475,13 +478,26 @@ export interface FrameworkConfig {
 	model_parameters_url: string;
 	mcp_library_url?: string;
 	mcp_library_sync_interval?: number;
+	/** Seconds between background re-fetches of each provider's model list. 0 disables it. */
+	live_models_sync_interval?: number;
 }
+
+/** Seconds between background model-list refreshes when the user has not set one. */
+export const DEFAULT_LIVE_MODELS_SYNC_INTERVAL = 3600;
+/** Sentinel for "never refresh the model list in the background". */
+export const LIVE_MODELS_SYNC_DISABLED = 0;
+/** Server-side floor for a non-zero live models sync interval, in seconds. */
+export const MIN_LIVE_MODELS_SYNC_INTERVAL = 60;
 
 // Auth config
 export interface AuthConfig {
 	admin_username: SecretVar;
 	admin_password: SecretVar;
 	is_enabled: boolean;
+	/** Write-only: required only when this PUT request creates the very first admin account
+	 *  (no admin account exists yet). Provided by the operator via setup_token in config.json
+	 *  or the BIFROST_SETUP_TOKEN env var. Never persisted or returned by GET /api/config. */
+	setup_token?: string;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)
@@ -554,6 +570,7 @@ export interface BifrostConfig {
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
+	is_object_storage_connected?: boolean;
 	is_git_available: boolean;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
@@ -574,6 +591,7 @@ export interface CoreConfig {
 	prometheus_labels: string[];
 	enable_logging: boolean;
 	disable_content_logging: boolean;
+	retain_content_in_object_storage: boolean;
 	allow_per_request_content_storage_override: boolean;
 	allow_per_request_raw_override: boolean;
 	allow_direct_keys: boolean;
@@ -581,6 +599,7 @@ export interface CoreConfig {
 	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
+	dual_credential_conflict_behavior?: "error" | "prefer_vk" | "prefer_idp";
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
@@ -614,6 +633,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	prometheus_labels: [],
 	enable_logging: true,
 	disable_content_logging: false,
+	retain_content_in_object_storage: false,
 	allow_per_request_content_storage_override: false,
 	allow_per_request_raw_override: false,
 	allow_direct_keys: false,
@@ -621,6 +641,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	dump_errors_in_console_logs: false,
 	log_retention_days: 365,
 	enforce_auth_on_inference: false,
+	dual_credential_conflict_behavior: "prefer_idp",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },

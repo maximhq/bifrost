@@ -333,6 +333,60 @@ export const providersApi = baseApi.injectEndpoints({
 			},
 		}),
 
+		// Re-run model discovery across every enabled key of a provider. The
+		// catalog otherwise refreshes on the configured interval, so this is how
+		// an operator picks up a newly served model straight away.
+		//
+		// The server answers 409 when a refresh for the same provider is already
+		// running, which the caller surfaces rather than retrying.
+		refreshProviderModels: builder.mutation<ModelProviderKey[], string>({
+			query: (provider) => ({
+				url: `/providers/${encodeURIComponent(provider)}/refresh-models`,
+				method: "POST",
+			}),
+			transformResponse: (response: ListProviderKeysResponse) => response.keys ?? [],
+			// The provider's own key rows come back in the response and are
+			// patched in below. "DBKeys" covers getAllKeys, whose DBKey.models is
+			// the same per-key model list a refresh rewrites; without it the
+			// routing-rule, pricing-override and virtual-key pickers keep showing
+			// the pre-refresh models, since a query only refetches on a tag it
+			// provides itself.
+			invalidatesTags: ["Models", "DBKeys"],
+			async onQueryStarted(provider, { dispatch, queryFulfilled }) {
+				try {
+					const { data: refreshedKeys } = await queryFulfilled;
+					dispatch(providersApi.util.updateQueryData("getProviderKeys", provider, () => refreshedKeys));
+				} catch {}
+			},
+		}),
+
+		// Re-run model discovery for a single key.
+		refreshProviderKeyModels: builder.mutation<ModelProviderKey, { provider: string; keyId: string }>({
+			query: ({ provider, keyId }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}/refresh-models`,
+				method: "POST",
+			}),
+			// See refreshProviderModels above for why "DBKeys" is invalidated
+			// alongside "Models".
+			invalidatesTags: ["Models", "DBKeys"],
+			async onQueryStarted({ provider, keyId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data: refreshedKey } = await queryFulfilled;
+					// Patch in place so the discovery status icon repaints without
+					// a refetch, matching how updateProviderKey behaves.
+					dispatch(
+						providersApi.util.updateQueryData("getProviderKeys", provider, (draft) => {
+							const index = draft.findIndex((key) => key.id === keyId);
+							if (index !== -1) {
+								draft[index] = refreshedKey;
+							}
+						}),
+					);
+					dispatch(providersApi.util.updateQueryData("getProviderKey", { provider, keyId }, () => refreshedKey));
+				} catch {}
+			},
+		}),
+
 		// Get all available keys from all providers for governance selection
 		getAllKeys: builder.query<DBKey[], void>({
 			query: () => "/keys",
@@ -428,6 +482,8 @@ export const {
 	useCreateProviderKeyMutation,
 	useUpdateProviderKeyMutation,
 	useDeleteProviderKeyMutation,
+	useRefreshProviderModelsMutation,
+	useRefreshProviderKeyModelsMutation,
 	useDeleteProviderMutation,
 	useGetAllKeysQuery,
 	useGetModelsQuery,

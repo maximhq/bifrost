@@ -19,7 +19,7 @@ Integrations are protocol adapters that make Bifrost **100% compatible** with ex
 import openai
 
 client = openai.OpenAI(
-    api_key="your-openai-key"
+    api_key="<YOUR-OPENAI-API-KEY>"
 )
 ```
 
@@ -29,7 +29,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8080/openai",  # Point to Bifrost
-    api_key="dummy-key"  # Keys handled by Bifrost
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>"  # Replace with your actual Bifrost virtual key.
 )
 ```
 

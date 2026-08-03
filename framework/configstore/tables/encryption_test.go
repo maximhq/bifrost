@@ -40,6 +40,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&TableOauthConfig{},
 		&TableOauthToken{},
 		&TableVectorStoreConfig{},
+		&TableWebhookEndpoint{},
 	)
 	require.NoError(t, err)
 	return db
@@ -1545,9 +1546,15 @@ func TestTableVectorStoreConfig_EncryptionDisabled_StoresPlaintext(t *testing.T)
 // Multi-backend helpers — run the same tests on SQLite and Postgres
 // ============================================================================
 
+// pgTestSchema is this package's dedicated Postgres schema. Test packages
+// (configstore, configstore/tables, logstore) run in parallel against the same
+// database, so each one works in its own schema to avoid clobbering the
+// others' tables and rows.
+const pgTestSchema = "configstore_tables_test"
+
 // postgresDSN matches the postgres service in tests/docker-compose.yml and
 // framework/docker-compose.yml.
-const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
 
 // namedDB pairs a backend name with its GORM connection for use in subtests.
 type namedDB struct {
@@ -1583,6 +1590,12 @@ func trySetupPostgresDB(t *testing.T) *gorm.DB {
 		return nil
 	}
 	if err := sqlDB.Ping(); err != nil {
+		return nil
+	}
+
+	// All objects live in this package's dedicated schema (via search_path in
+	// the DSN), isolated from other test packages sharing the same database.
+	if err := db.Exec("CREATE SCHEMA IF NOT EXISTS " + pgTestSchema).Error; err != nil {
 		return nil
 	}
 
@@ -1650,10 +1663,6 @@ func forEachDB(t *testing.T) []namedDB {
 // narrow to hold the base64-encoded ciphertext. All three columns are now
 // text type which has no length limit.
 // ============================================================================
-
-func TestEncryptedColumns_AzureAPIVersion_FitsAfterWidening(t *testing.T) {
-	t.Skip("azure_api_version column has been removed from AzureKeyConfig")
-}
 
 func TestEncryptedColumns_VertexRegion_FitsAfterWidening(t *testing.T) {
 	// "northamerica-northeast1" is 23 chars — encrypts to ~68 chars.

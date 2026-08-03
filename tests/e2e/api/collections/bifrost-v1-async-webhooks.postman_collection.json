@@ -1,0 +1,1708 @@
+{
+	"info": {
+		"_postman_id": "b1f0c7d2-9e4a-4f5b-8c3d-webhooks0001",
+		"name": "Bifrost v1 - Async Webhooks",
+		"description": "End-to-end coverage for async inference webhooks: endpoint CRUD and validation, per-field update integrity, submit-time reference validation, signed delivery (Standard Webhooks), payload shapes, retries and outcomes, history and redelivery, secret rotation, and test fires. Requires the webhook-receiver sidecar (see runners/individual/run-newman-webhooks-tests.sh).",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{ "key": "base_url", "value": "http://localhost:8080" },
+		{ "key": "receiver_url", "value": "http://localhost:3005" },
+		{ "key": "provider", "value": "openai" },
+		{ "key": "model", "value": "gpt-4o-mini" },
+		{ "key": "wh_id", "value": "" },
+		{ "key": "wh_secret", "value": "" },
+		{ "key": "wh_old_secret", "value": "" },
+		{ "key": "fail_wh_id", "value": "" },
+		{ "key": "retry_wh_id", "value": "" },
+		{ "key": "matrix_wh_id", "value": "" },
+		{ "key": "matrix_baseline", "value": "" },
+		{ "key": "matrix_index", "value": "0" },
+		{ "key": "job_id", "value": "" },
+		{ "key": "job_request_id", "value": "" },
+		{ "key": "delivery_webhook_id", "value": "" },
+		{ "key": "redeliver_delivery_id", "value": "" },
+		{ "key": "poll_retries", "value": "0" },
+		{ "key": "completed_only_setup_done", "value": "false" },
+		{ "key": "suffix", "value": "" }
+	],
+	"item": [
+		{
+			"name": "Setup",
+			"item": [
+				{
+					"name": "Reset receiver",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Unique run suffix so reruns against a dirty server never collide on names.",
+									"pm.collectionVariables.set('suffix', Date.now().toString(36));"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Receiver reset', function () { pm.expect(pm.response.code).to.eql(204); });"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"url": { "raw": "{{receiver_url}}/captures", "host": ["{{receiver_url}}"], "path": ["captures"] }
+					}
+				}
+			]
+		},
+		{
+			"name": "A - Endpoint CRUD",
+			"item": [
+				{
+					"name": "Create endpoint",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Create returns 201', function () { pm.expect(pm.response.code).to.eql(201); });",
+									"var body = pm.response.json();",
+									"pm.test('Secret returned once with whsec_ prefix', function () {",
+									"    pm.expect(body.secret).to.match(/^whsec_/);",
+									"});",
+									"pm.test('Endpoint carries no secret field', function () {",
+									"    pm.expect(JSON.stringify(body.endpoint)).to.not.include('whsec_');",
+									"});",
+									"pm.test('Custom header value is redacted in response', function () {",
+									"    pm.expect(body.endpoint.headers['X-Team'].value).to.eql('<REDACTED>');",
+									"});",
+									"pm.collectionVariables.set('wh_id', body.endpoint.id);",
+									"pm.collectionVariables.set('wh_secret', body.secret);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"name\":\"e2e-main-{{suffix}}\",\"url\":\"{{receiver_url}}/hook/main\",\"events\":[\"async_job.completed\",\"async_job.failed\"],\"headers\":{\"X-Team\":{\"value\":\"platform-secret\"}},\"allow_private_network\":true,\"retry_backoff_initial_seconds\":1,\"retry_backoff_max_seconds\":2}"
+						},
+						"url": { "raw": "{{base_url}}/api/webhooks", "host": ["{{base_url}}"], "path": ["api", "webhooks"] }
+					}
+				},
+				{
+					"name": "Duplicate name rejected",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Duplicate name returns 409', function () { pm.expect(pm.response.code).to.eql(409); });"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"name\":\"e2e-main-{{suffix}}\",\"url\":\"{{receiver_url}}/hook/other\",\"events\":[\"async_job.completed\"],\"allow_private_network\":true}"
+						},
+						"url": { "raw": "{{base_url}}/api/webhooks", "host": ["{{base_url}}"], "path": ["api", "webhooks"] }
+					}
+				},
+				{
+					"name": "Validation rejects bad payloads",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"var receiver = pm.collectionVariables.get('receiver_url');",
+									"var cases = [",
+									"    { name: 'missing name', body: { url: receiver + '/hook/x', events: ['async_job.completed'], allow_private_network: true } },",
+									"    { name: 'http without opt-in', body: { name: 'e2e-bad-http', url: receiver + '/hook/x', events: ['async_job.completed'] } },",
+									"    { name: 'empty events', body: { name: 'e2e-bad-events', url: receiver + '/hook/x', events: [], allow_private_network: true } },",
+									"    { name: 'unknown event', body: { name: 'e2e-bad-event', url: receiver + '/hook/x', events: ['bogus.event'], allow_private_network: true } },",
+									"    { name: 'reserved header', body: { name: 'e2e-bad-header', url: receiver + '/hook/x', events: ['async_job.completed'], allow_private_network: true, headers: { 'webhook-signature': { value: 'x' } } } },",
+									"    { name: 'negative knob', body: { name: 'e2e-bad-knob', url: receiver + '/hook/x', events: ['async_job.completed'], allow_private_network: true, max_retries: -1 } }",
+									"];",
+									"var results = [];",
+									"function run(i) {",
+									"    if (i >= cases.length) { pm.collectionVariables.set('validation_results', JSON.stringify(results)); return; }",
+									"    pm.sendRequest({",
+									"        url: pm.collectionVariables.get('base_url') + '/api/webhooks',",
+									"        method: 'POST',",
+									"        header: { 'Content-Type': 'application/json' },",
+									"        body: { mode: 'raw', raw: JSON.stringify(cases[i].body) }",
+									"    }, function (err, res) {",
+									"        results.push({ name: cases[i].name, code: err ? 0 : res.code });",
+									"        run(i + 1);",
+									"    });",
+									"}",
+									"run(0);"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var results = JSON.parse(pm.collectionVariables.get('validation_results') || '[]');",
+									"pm.test('All six invalid payloads rejected with 400', function () {",
+									"    pm.expect(results.length).to.eql(6);",
+									"    results.forEach(function (r) { pm.expect(r.code, r.name).to.eql(400); });",
+									"});",
+									"pm.test('Main endpoint still fetchable', function () { pm.expect(pm.response.code).to.eql(200); });"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{wh_id}}", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{wh_id}}"] }
+					}
+				},
+				{
+					"name": "List filters and pagination",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"var base = pm.collectionVariables.get('base_url') + '/api/webhooks';",
+									"var suffix = pm.collectionVariables.get('suffix');",
+									"var checks = [",
+									"    { name: 'search by name', q: '?search=e2e-main-' + suffix, expectTotal: 1 },",
+									"    { name: 'search misses', q: '?search=no-such-endpoint-zzz', expectTotal: 0 },",
+									"    { name: 'paging envelope', q: '?limit=1&offset=0', expectCount: 1 },",
+									"    { name: 'bad disabled', q: '?disabled=maybe', expectCode: 400 },",
+									"    { name: 'bad event', q: '?event=bogus.event', expectCode: 400 },",
+									"    { name: 'bad limit', q: '?limit=zzz', expectCode: 400 },",
+									"    { name: 'bad offset', q: '?offset=-1', expectCode: 400 }",
+									"];",
+									"var results = [];",
+									"function run(i) {",
+									"    if (i >= checks.length) { pm.collectionVariables.set('list_results', JSON.stringify(results)); return; }",
+									"    pm.sendRequest({ url: base + checks[i].q, method: 'GET' }, function (err, res) {",
+									"        var entry = { name: checks[i].name, code: err ? 0 : res.code };",
+									"        if (!err && res.code === 200) {",
+									"            var j = res.json();",
+									"            entry.total = j.total_count; entry.count = j.count; entry.limit = j.limit;",
+									"        }",
+									"        results.push(entry);",
+									"        run(i + 1);",
+									"    });",
+									"}",
+									"run(0);"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var results = JSON.parse(pm.collectionVariables.get('list_results') || '[]');",
+									"var byName = {};",
+									"results.forEach(function (r) { byName[r.name] = r; });",
+									"pm.test('Search filters by name', function () { pm.expect(byName['search by name'].total).to.eql(1); });",
+									"pm.test('Search can miss', function () { pm.expect(byName['search misses'].total).to.eql(0); });",
+									"pm.test('Paging returns one row with full total', function () {",
+									"    pm.expect(byName['paging envelope'].count).to.eql(1);",
+									"    pm.expect(byName['paging envelope'].total).to.be.at.least(1);",
+									"    pm.expect(byName['paging envelope'].limit).to.eql(1);",
+									"});",
+									"['bad disabled', 'bad event', 'bad limit', 'bad offset'].forEach(function (name) {",
+									"    pm.test('List rejects ' + name, function () { pm.expect(byName[name].code).to.eql(400); });",
+									"});",
+									"pm.test('Event filter matches subscriber', function () {",
+									"    var j = pm.response.json();",
+									"    var names = j.endpoints.map(function (e) { return e.name; });",
+									"    pm.expect(names).to.include('e2e-main-' + pm.collectionVariables.get('suffix'));",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/webhooks?event=async_job.failed&search=e2e-main-{{suffix}}",
+							"host": ["{{base_url}}"],
+							"path": ["api", "webhooks"],
+							"query": [
+								{ "key": "event", "value": "async_job.failed" },
+								{ "key": "search", "value": "e2e-main-{{suffix}}" }
+							]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "H - Update Field Matrix",
+			"item": [
+				{
+					"name": "Create matrix endpoint",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Matrix endpoint created', function () { pm.expect(pm.response.code).to.eql(201); });",
+									"var endpoint = pm.response.json().endpoint;",
+									"pm.collectionVariables.set('matrix_wh_id', endpoint.id);",
+									"pm.collectionVariables.set('matrix_index', '0');",
+									"// The caller-editable state, exactly as PUT expects it. Header values",
+									"// are the redacted placeholders GET returns; the server restores the",
+									"// stored values for untouched placeholders.",
+									"var suffix = pm.collectionVariables.get('suffix');",
+									"var baseline = {",
+									"    name: 'e2e-matrix-' + suffix,",
+									"    url: pm.collectionVariables.get('receiver_url') + '/hook/matrix',",
+									"    events: ['async_job.completed', 'async_job.failed'],",
+									"    headers: { 'X-A': { value: '<REDACTED>' }, 'X-B': { value: '<REDACTED>' } },",
+									"    include_response: true,",
+									"    allow_private_network: true,",
+									"    disabled: false,",
+									"    max_retries: 2,",
+									"    retry_backoff_initial_seconds: 3,",
+									"    retry_backoff_max_seconds: 60,",
+									"    attempt_timeout_seconds: 5,",
+									"    max_response_payload_kbs: 128,",
+									"    max_concurrent_deliveries: 4",
+									"};",
+									"pm.collectionVariables.set('matrix_baseline', JSON.stringify(baseline));"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"name\":\"e2e-matrix-{{suffix}}\",\"url\":\"{{receiver_url}}/hook/matrix\",\"events\":[\"async_job.completed\",\"async_job.failed\"],\"headers\":{\"X-A\":{\"value\":\"alpha\"},\"X-B\":{\"value\":\"beta\"}},\"include_response\":true,\"allow_private_network\":true,\"max_retries\":2,\"retry_backoff_initial_seconds\":3,\"retry_backoff_max_seconds\":60,\"attempt_timeout_seconds\":5,\"max_response_payload_kbs\":128,\"max_concurrent_deliveries\":4}"
+						},
+						"url": { "raw": "{{base_url}}/api/webhooks", "host": ["{{base_url}}"], "path": ["api", "webhooks"] }
+					}
+				},
+				{
+					"name": "Mutate one field",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// One PUT per caller-editable field: send the baseline with exactly",
+									"// that field changed. The follow-up GET asserts the change took and",
+									"// nothing else moved. setNextRequest loops back here per field.",
+									"var mutations = [",
+									"    { field: 'name', value: 'e2e-matrix-renamed-' + pm.collectionVariables.get('suffix') },",
+									"    { field: 'url', value: pm.collectionVariables.get('receiver_url') + '/hook/matrix-moved' },",
+									"    { field: 'events', value: ['async_job.completed'] },",
+									"    { field: 'headers', value: { 'X-A': { value: '<REDACTED>' }, 'X-C': { value: 'gamma' } } },",
+									"    { field: 'include_response', value: false },",
+									"    { field: 'allow_private_network', value: true },",
+									"    { field: 'disabled', value: true },",
+									"    { field: 'max_retries', value: 5 },",
+									"    { field: 'retry_backoff_initial_seconds', value: 7 },",
+									"    { field: 'retry_backoff_max_seconds', value: 90 },",
+									"    { field: 'attempt_timeout_seconds', value: 9 },",
+									"    { field: 'max_response_payload_kbs', value: 64 },",
+									"    { field: 'max_concurrent_deliveries', value: 2 }",
+									"];",
+									"var index = parseInt(pm.collectionVariables.get('matrix_index'), 10);",
+									"var baseline = JSON.parse(pm.collectionVariables.get('matrix_baseline'));",
+									"var body = JSON.parse(JSON.stringify(baseline));",
+									"var mutation = mutations[index];",
+									"body[mutation.field] = mutation.value;",
+									"pm.collectionVariables.set('matrix_body', JSON.stringify(body));",
+									"pm.collectionVariables.set('matrix_field', mutation.field);",
+									"pm.collectionVariables.set('matrix_total', String(mutations.length));"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var field = pm.collectionVariables.get('matrix_field');",
+									"pm.test('PUT ' + field + ' accepted', function () { pm.expect(pm.response.code).to.eql(200); });"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "PUT",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{{matrix_body}}" },
+						"url": { "raw": "{{base_url}}/api/webhooks/{{matrix_wh_id}}", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{matrix_wh_id}}"] }
+					}
+				},
+				{
+					"name": "Verify field took, others intact",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('GET after update returns 200', function () { pm.expect(pm.response.code).to.eql(200); });",
+									"var got = pm.response.json();",
+									"var expected = JSON.parse(pm.collectionVariables.get('matrix_body'));",
+									"var field = pm.collectionVariables.get('matrix_field');",
+									"function view(endpoint) {",
+									"    // Normalize to the caller-editable shape; header VALUES compare as",
+									"    // key sets (stored values are never returned).",
+									"    return {",
+									"        name: endpoint.name,",
+									"        url: endpoint.url,",
+									"        events: (endpoint.events || []).slice().sort(),",
+									"        header_keys: Object.keys(endpoint.headers || {}).sort(),",
+									"        include_response: !!endpoint.include_response,",
+									"        allow_private_network: !!endpoint.allow_private_network,",
+									"        disabled: !!endpoint.disabled,",
+									"        max_retries: endpoint.max_retries || 0,",
+									"        retry_backoff_initial_seconds: endpoint.retry_backoff_initial_seconds || 0,",
+									"        retry_backoff_max_seconds: endpoint.retry_backoff_max_seconds || 0,",
+									"        attempt_timeout_seconds: endpoint.attempt_timeout_seconds || 0,",
+									"        max_response_payload_kbs: endpoint.max_response_payload_kbs || 0,",
+									"        max_concurrent_deliveries: endpoint.max_concurrent_deliveries || 0",
+									"    };",
+									"}",
+									"var gotView = view(got);",
+									"var expectedView = view(Object.assign({}, expected, { header_keys: undefined }));",
+									"expectedView.header_keys = Object.keys(expected.headers || {}).sort();",
+									"pm.test('Field ' + field + ' updated and all other fields intact', function () {",
+									"    pm.expect(gotView).to.deep.eql(expectedView);",
+									"});",
+									"var index = parseInt(pm.collectionVariables.get('matrix_index'), 10) + 1;",
+									"var total = parseInt(pm.collectionVariables.get('matrix_total'), 10);",
+									"pm.collectionVariables.set('matrix_index', String(index));",
+									"if (index < total) { postman.setNextRequest('Mutate one field'); }"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{matrix_wh_id}}", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{matrix_wh_id}}"] }
+					}
+				},
+				{
+					"name": "Teardown - delete matrix endpoint",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Matrix endpoint deleted', function () { pm.expect(pm.response.code).to.eql(200); });"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{matrix_wh_id}}", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{matrix_wh_id}}"] }
+					}
+				}
+			]
+		},
+		{
+			"name": "B - Submit Validation",
+			"item": [
+				{
+					"name": "Unknown webhook reference rejected",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Unknown webhook name returns 400', function () { pm.expect(pm.response.code).to.eql(400); });",
+									"pm.test('Error names the reference', function () {",
+									"    pm.expect(pm.response.text()).to.include('no-such-endpoint');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "x-bf-async-webhook", "value": "no-such-endpoint" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"{{provider}}/{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16}"
+						},
+						"url": { "raw": "{{base_url}}/v1/async/chat/completions", "host": ["{{base_url}}"], "path": ["v1", "async", "chat", "completions"] }
+					}
+				},
+				{
+					"name": "Create disabled endpoint",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Disabled endpoint created', function () { pm.expect(pm.response.code).to.eql(201); });",
+									"pm.collectionVariables.set('disabled_wh_id', pm.response.json().endpoint.id);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"name\":\"e2e-disabled-{{suffix}}\",\"url\":\"{{receiver_url}}/hook/disabled\",\"events\":[\"async_job.completed\"],\"allow_private_network\":true,\"disabled\":true}"
+						},
+						"url": { "raw": "{{base_url}}/api/webhooks", "host": ["{{base_url}}"], "path": ["api", "webhooks"] }
+					}
+				},
+				{
+					"name": "Disabled webhook reference rejected",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Disabled endpoint reference returns 400', function () { pm.expect(pm.response.code).to.eql(400); });",
+									"pm.test('Error says disabled', function () { pm.expect(pm.response.text()).to.include('disabled'); });"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "x-bf-async-webhook", "value": "e2e-disabled-{{suffix}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"{{provider}}/{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16}"
+						},
+						"url": { "raw": "{{base_url}}/v1/async/chat/completions", "host": ["{{base_url}}"], "path": ["v1", "async", "chat", "completions"] }
+					}
+				}
+			]
+		},
+		{
+			"name": "C - Delivery Happy Path",
+			"item": [
+				{
+					"name": "Submit job with webhook",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Submit accepted', function () { pm.expect(pm.response.code).to.eql(202); });",
+									"var job = pm.response.json();",
+									"pm.test('Job id and request id returned', function () {",
+									"    pm.expect(job.id).to.be.a('string').and.not.empty;",
+									"    pm.expect(job.request_id).to.be.a('string').and.not.empty;",
+									"});",
+									"pm.collectionVariables.set('job_id', job.id);",
+									"pm.collectionVariables.set('job_request_id', job.request_id);",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "x-bf-async-webhook", "value": "e2e-main-{{suffix}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"{{provider}}/{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":16}"
+						},
+						"url": { "raw": "{{base_url}}/v1/async/chat/completions", "host": ["{{base_url}}"], "path": ["v1", "async", "chat", "completions"] }
+					}
+				},
+				{
+					"name": "Await signed delivery",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var body = pm.response.json();",
+									"if (body.count < 1) {",
+									"    var retries = parseInt(pm.collectionVariables.get('poll_retries'), 10);",
+									"    if (retries < 30) {",
+									"        pm.collectionVariables.set('poll_retries', String(retries + 1));",
+									"        var end = Date.now() + 2000; while (Date.now() < end) {}",
+									"        postman.setNextRequest('Await signed delivery');",
+									"        pm.test('Waiting for delivery (attempt ' + (retries + 1) + ')', function () { pm.expect(true).to.be.true; });",
+									"        return;",
+									"    }",
+									"    pm.test('Delivery arrived before timeout', function () { pm.expect.fail('no delivery after 60s'); });",
+									"    return;",
+									"}",
+									"var cap = body.captures[body.captures.length - 1];",
+									"var headers = {};",
+									"Object.keys(cap.headers).forEach(function (k) { headers[k.toLowerCase()] = cap.headers[k][0]; });",
+									"pm.test('Standard Webhooks headers present', function () {",
+									"    pm.expect(headers['webhook-id']).to.be.a('string').and.not.empty;",
+									"    pm.expect(headers['webhook-timestamp']).to.match(/^\\d+$/);",
+									"    pm.expect(headers['webhook-signature']).to.match(/^v1,/);",
+									"});",
+									"pm.test('Signature verifies against the create-time secret', function () {",
+									"    var secret = pm.collectionVariables.get('wh_secret');",
+									"    var key = CryptoJS.enc.Base64.parse(secret.replace(/^whsec_/, ''));",
+									"    var message = headers['webhook-id'] + '.' + headers['webhook-timestamp'] + '.' + cap.body;",
+									"    var expected = 'v1,' + CryptoJS.enc.Base64.stringify(CryptoJS.HmacSHA256(message, key));",
+									"    pm.expect(headers['webhook-signature']).to.eql(expected);",
+									"});",
+									"pm.test('Custom header delivered with stored value', function () {",
+									"    pm.expect(headers['x-team']).to.eql('platform-secret');",
+									"});",
+									"pm.test('Reserved headers not overridable', function () {",
+									"    pm.expect(headers['x-bifrost-event']).to.eql('async_job.completed');",
+									"});",
+									"var payload = JSON.parse(cap.body);",
+									"pm.test('Envelope is a completed event for the submitted job', function () {",
+									"    pm.expect(payload.event).to.eql('async_job.completed');",
+									"    pm.expect(payload.data.job_id).to.eql(pm.collectionVariables.get('job_id'));",
+									"});",
+									"pm.test('Thin payload: result_url present, no inline result', function () {",
+									"    pm.expect(payload.data.result_url).to.be.a('string').and.not.empty;",
+									"    pm.expect(payload.data).to.not.have.property('response');",
+									"});",
+									"pm.collectionVariables.set('delivery_webhook_id', headers['webhook-id']);",
+									"pm.collectionVariables.set('result_url', payload.data.result_url);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{receiver_url}}/captures?scenario=main",
+							"host": ["{{receiver_url}}"],
+							"path": ["captures"],
+							"query": [{ "key": "scenario", "value": "main" }]
+						}
+					}
+				},
+				{
+					"name": "Result fetch-back via result_url",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('result_url serves the job result', function () {",
+									"    pm.expect(pm.response.code).to.eql(200);",
+									"    var job = pm.response.json();",
+									"    pm.expect(job.status).to.eql('completed');",
+									"    pm.expect(job.result).to.exist;",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}{{result_url}}", "host": ["{{base_url}}{{result_url}}"] }
+					}
+				},
+				{
+					"name": "Delivery history records the attempt",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Deliveries listed', function () { pm.expect(pm.response.code).to.eql(200); });",
+									"var body = pm.response.json();",
+									"pm.test('Pagination envelope present', function () {",
+									"    pm.expect(body.pagination.total_count).to.be.at.least(1);",
+									"});",
+									"var mine = body.deliveries.filter(function (d) {",
+									"    return d.webhook_id === pm.collectionVariables.get('delivery_webhook_id');",
+									"});",
+									"pm.test('The delivery has one successful attempt with request id', function () {",
+									"    pm.expect(mine.length).to.eql(1);",
+									"    pm.expect(mine[0].outcome).to.eql('delivered');",
+									"    pm.expect(mine[0].attempt_no).to.eql(1);",
+									"    pm.expect(mine[0].status_code).to.eql(204);",
+									"    pm.expect(mine[0].async_job_id).to.eql(pm.collectionVariables.get('job_id'));",
+									"    pm.expect(mine[0].request_id).to.eql(pm.collectionVariables.get('job_request_id'));",
+									"});",
+									"pm.collectionVariables.set('redeliver_delivery_id', mine[0].id);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{wh_id}}/deliveries", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{wh_id}}", "deliveries"] }
+					}
+				},
+				{
+					"name": "Enable include_response",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Full-replace PUT: resend the endpoint's state with include_response",
+									"// on, keeping the header placeholder so the stored value survives.",
+									"var suffix = pm.collectionVariables.get('suffix');",
+									"var body = {",
+									"    name: 'e2e-main-' + suffix,",
+									"    url: pm.collectionVariables.get('receiver_url') + '/hook/main',",
+									"    events: ['async_job.completed', 'async_job.failed'],",
+									"    headers: { 'X-Team': { value: '<REDACTED>' } },",
+									"    include_response: true,",
+									"    allow_private_network: true,",
+									"    retry_backoff_initial_seconds: 1,",
+									"    retry_backoff_max_seconds: 2",
+									"};",
+									"pm.collectionVariables.set('main_put_body', JSON.stringify(body));"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('include_response enabled', function () {",
+									"    pm.expect(pm.response.code).to.eql(200);",
+									"    pm.expect(pm.response.json().include_response).to.be.true;",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "PUT",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{{main_put_body}}" },
+						"url": { "raw": "{{base_url}}/api/webhooks/{{wh_id}}", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{wh_id}}"] }
+					}
+				},
+				{
+					"name": "Submit job for inline result",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Second submit accepted', function () { pm.expect(pm.response.code).to.eql(202); });",
+									"pm.collectionVariables.set('job2_id', pm.response.json().id);",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "x-bf-async-webhook", "value": "e2e-main-{{suffix}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"{{provider}}/{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":16}"
+						},
+						"url": { "raw": "{{base_url}}/v1/async/chat/completions", "host": ["{{base_url}}"], "path": ["v1", "async", "chat", "completions"] }
+					}
+				},
+				{
+					"name": "Await inline-result delivery",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jobID = pm.collectionVariables.get('job2_id');",
+									"var body = pm.response.json();",
+									"var mine = (body.captures || []).filter(function (c) {",
+									"    try { return JSON.parse(c.body).data.job_id === jobID; } catch (e) { return false; }",
+									"});",
+									"if (mine.length < 1) {",
+									"    var retries = parseInt(pm.collectionVariables.get('poll_retries'), 10);",
+									"    if (retries < 30) {",
+									"        pm.collectionVariables.set('poll_retries', String(retries + 1));",
+									"        var end = Date.now() + 2000; while (Date.now() < end) {}",
+									"        postman.setNextRequest('Await inline-result delivery');",
+									"        pm.test('Waiting for inline delivery (attempt ' + (retries + 1) + ')', function () { pm.expect(true).to.be.true; });",
+									"        return;",
+									"    }",
+									"    pm.test('Inline delivery arrived before timeout', function () { pm.expect.fail('no delivery after 60s'); });",
+									"    return;",
+									"}",
+									"var payload = JSON.parse(mine[mine.length - 1].body);",
+									"pm.test('Result inlined when include_response is on', function () {",
+									"    pm.expect(payload.data.response).to.exist;",
+									"    pm.expect(payload.data).to.not.have.property('response_omitted');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{receiver_url}}/captures?scenario=main",
+							"host": ["{{receiver_url}}"],
+							"path": ["captures"],
+							"query": [{ "key": "scenario", "value": "main" }]
+						}
+					}
+				},
+				{
+					"name": "Submit failing job",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Failing submit accepted', function () { pm.expect(pm.response.code).to.eql(202); });",
+									"pm.collectionVariables.set('fail_job_id', pm.response.json().id);",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "x-bf-async-webhook", "value": "e2e-main-{{suffix}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"{{provider}}/e2e-no-such-model-xyz\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16}"
+						},
+						"url": { "raw": "{{base_url}}/v1/async/chat/completions", "host": ["{{base_url}}"], "path": ["v1", "async", "chat", "completions"] }
+					}
+				},
+				{
+					"name": "Await failed-event delivery",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jobID = pm.collectionVariables.get('fail_job_id');",
+									"var body = pm.response.json();",
+									"var mine = (body.captures || []).filter(function (c) {",
+									"    try { return JSON.parse(c.body).data.job_id === jobID; } catch (e) { return false; }",
+									"});",
+									"if (mine.length < 1) {",
+									"    var retries = parseInt(pm.collectionVariables.get('poll_retries'), 10);",
+									"    if (retries < 30) {",
+									"        pm.collectionVariables.set('poll_retries', String(retries + 1));",
+									"        var end = Date.now() + 2000; while (Date.now() < end) {}",
+									"        postman.setNextRequest('Await failed-event delivery');",
+									"        pm.test('Waiting for failed event (attempt ' + (retries + 1) + ')', function () { pm.expect(true).to.be.true; });",
+									"        return;",
+									"    }",
+									"    pm.test('Failed event arrived before timeout', function () { pm.expect.fail('no delivery after 60s'); });",
+									"    return;",
+									"}",
+									"var payload = JSON.parse(mine[mine.length - 1].body);",
+									"pm.test('Failed job fires async_job.failed', function () {",
+									"    pm.expect(payload.event).to.eql('async_job.failed');",
+									"    pm.expect(payload.data.status).to.eql('failed');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{receiver_url}}/captures?scenario=main",
+							"host": ["{{receiver_url}}"],
+							"path": ["captures"],
+							"query": [{ "key": "scenario", "value": "main" }]
+						}
+					}
+				},
+				{
+					"name": "Completed-only endpoint skips failed events",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Create a completed-only endpoint, run a failing job against it, and",
+									"// assert nothing is enqueued for it: filtering happens at enqueue.",
+									"// The test script below polls for a full window and re-enters this",
+									"// request on each retry, so setup must run exactly once — re-creating",
+									"// the endpoint, re-submitting the job, or resetting the poll counter on",
+									"// every retry would loop forever. A busy wait is likewise avoided; it",
+									"// would only block these callbacks from ever running.",
+									"if (pm.collectionVariables.get('completed_only_setup_done') === 'true') { return; }",
+									"pm.collectionVariables.set('completed_only_setup_done', 'true');",
+									"pm.collectionVariables.set('poll_retries', '0');",
+									"var base = pm.collectionVariables.get('base_url');",
+									"var receiver = pm.collectionVariables.get('receiver_url');",
+									"var suffix = pm.collectionVariables.get('suffix');",
+									"var provider = pm.collectionVariables.get('provider');",
+									"pm.sendRequest({",
+									"    url: base + '/api/webhooks', method: 'POST',",
+									"    header: { 'Content-Type': 'application/json' },",
+									"    body: { mode: 'raw', raw: JSON.stringify({ name: 'e2e-completed-only-' + suffix, url: receiver + '/hook/completed-only', events: ['async_job.completed'], allow_private_network: true }) }",
+									"}, function (err, res) {",
+									"    if (err || res.code !== 201) { return; }",
+									"    pm.collectionVariables.set('completed_only_wh_id', res.json().endpoint.id);",
+									"    pm.sendRequest({",
+									"        url: base + '/v1/async/chat/completions', method: 'POST',",
+									"        header: { 'Content-Type': 'application/json', 'x-bf-async-webhook': 'e2e-completed-only-' + suffix },",
+									"        body: { mode: 'raw', raw: JSON.stringify({ model: provider + '/e2e-no-such-model-xyz', messages: [{ role: 'user', content: 'hi' }], max_tokens: 16 }) }",
+									"    }, function (err2, res2) {",
+									"        if (!err2 && res2.code === 200) { pm.collectionVariables.set('completed_only_job_id', res2.json().id); }",
+									"    });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// A delivery here would be a filtering bug, so fail fast if any capture",
+									"// ever appears. Otherwise poll for a fixed window (~60s, matching the",
+									"// positive failed-delivery timing) so the failing job has at least as",
+									"// long to wrongly deliver as a real failed delivery takes before we",
+									"// conclude it did not.",
+									"var count = pm.response.json().count;",
+									"if (count > 0) {",
+									"    pm.test('No delivery reached the completed-only endpoint', function () {",
+									"        pm.expect.fail('completed-only endpoint received ' + count + ' delivery(ies)');",
+									"    });",
+									"    return;",
+									"}",
+									"var retries = parseInt(pm.collectionVariables.get('poll_retries'), 10);",
+									"if (retries < 30) {",
+									"    pm.collectionVariables.set('poll_retries', String(retries + 1));",
+									"    var end = Date.now() + 2000; while (Date.now() < end) {}",
+									"    postman.setNextRequest('Completed-only endpoint skips failed events');",
+									"    pm.test('Waiting out the delivery window (attempt ' + (retries + 1) + ')', function () { pm.expect(true).to.be.true; });",
+									"    return;",
+									"}",
+									"pm.test('Completed-only endpoint received no failed-event delivery', function () {",
+									"    pm.expect(count).to.eql(0);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{receiver_url}}/captures?scenario=completed-only",
+							"host": ["{{receiver_url}}"],
+							"path": ["captures"],
+							"query": [{ "key": "scenario", "value": "completed-only" }]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "D - Retries and Outcomes",
+			"item": [
+				{
+					"name": "Create fast-retry endpoint",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// The receiver answers /hook/retry with 500 until told otherwise.",
+									"pm.sendRequest({ url: pm.collectionVariables.get('receiver_url') + '/mode/retry?status=500', method: 'POST' }, function () {});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Retry endpoint created', function () { pm.expect(pm.response.code).to.eql(201); });",
+									"pm.collectionVariables.set('retry_wh_id', pm.response.json().endpoint.id);",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"name\":\"e2e-retry-{{suffix}}\",\"url\":\"{{receiver_url}}/hook/retry\",\"events\":[\"async_job.completed\",\"async_job.failed\"],\"allow_private_network\":true,\"max_retries\":1,\"retry_backoff_initial_seconds\":1,\"retry_backoff_max_seconds\":1}"
+						},
+						"url": { "raw": "{{base_url}}/api/webhooks", "host": ["{{base_url}}"], "path": ["api", "webhooks"] }
+					}
+				},
+				{
+					"name": "Submit job to failing receiver",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Submit accepted', function () { pm.expect(pm.response.code).to.eql(202); });",
+									"pm.collectionVariables.set('retry_job_id', pm.response.json().id);",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "x-bf-async-webhook", "value": "e2e-retry-{{suffix}}" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"{{provider}}/{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":16}"
+						},
+						"url": { "raw": "{{base_url}}/v1/async/chat/completions", "host": ["{{base_url}}"], "path": ["v1", "async", "chat", "completions"] }
+					}
+				},
+				{
+					"name": "Await exhausted run",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var body = pm.response.json();",
+									"var attempts = body.deliveries || [];",
+									"var exhausted = attempts.some(function (d) { return d.outcome === 'exhausted'; });",
+									"if (!exhausted) {",
+									"    var retries = parseInt(pm.collectionVariables.get('poll_retries'), 10);",
+									"    if (retries < 30) {",
+									"        pm.collectionVariables.set('poll_retries', String(retries + 1));",
+									"        var end = Date.now() + 2000; while (Date.now() < end) {}",
+									"        postman.setNextRequest('Await exhausted run');",
+									"        pm.test('Waiting for retries to exhaust (attempt ' + (retries + 1) + ')', function () { pm.expect(true).to.be.true; });",
+									"        return;",
+									"    }",
+									"    pm.test('Run exhausted before timeout', function () { pm.expect.fail('not exhausted after 60s'); });",
+									"    return;",
+									"}",
+									"pm.test('History shows retryable failure then exhausted, budget respected', function () {",
+									"    pm.expect(attempts.length).to.eql(2); // max_retries 1 = 2 attempts",
+									"    var byAttempt = {};",
+									"    attempts.forEach(function (d) { byAttempt[d.attempt_no] = d; });",
+									"    pm.expect(byAttempt[1].outcome).to.eql('retryable_failure');",
+									"    pm.expect(byAttempt[1].status_code).to.eql(500);",
+									"    pm.expect(byAttempt[2].outcome).to.eql('exhausted');",
+									"});",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{retry_wh_id}}/deliveries", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{retry_wh_id}}", "deliveries"] }
+					}
+				},
+				{
+					"name": "Failure counters recorded",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var endpoint = pm.response.json();",
+									"pm.test('Consecutive failures counted and last_failure_at set', function () {",
+									"    pm.expect(endpoint.consecutive_failures).to.be.at.least(2);",
+									"    pm.expect(endpoint.last_failure_at).to.be.a('string');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{retry_wh_id}}", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{retry_wh_id}}"] }
+					}
+				},
+				{
+					"name": "Permanent failure on 404",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Switch the receiver to 404 and redeliver the exhausted delivery:",
+									"// a non-retryable status must finish in ONE attempt.",
+									"var receiver = pm.collectionVariables.get('receiver_url');",
+									"var base = pm.collectionVariables.get('base_url');",
+									"pm.sendRequest({ url: receiver + '/mode/retry?status=404', method: 'POST' }, function () {",
+									"    pm.sendRequest({",
+									"        url: base + '/api/webhooks/' + pm.collectionVariables.get('retry_wh_id') + '/deliveries',",
+									"        method: 'GET'",
+									"    }, function (err, res) {",
+									"        if (err || res.code !== 200) { return; }",
+									"        var exhausted = res.json().deliveries.filter(function (d) { return d.outcome === 'exhausted'; })[0];",
+									"        if (!exhausted) { return; }",
+									"        pm.sendRequest({ url: base + '/api/webhooks/deliveries/' + exhausted.id + '/redeliver', method: 'POST' }, function () {});",
+									"    });",
+									"});",
+									"var end = Date.now() + 6000; while (Date.now() < end) {}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var attempts = pm.response.json().deliveries || [];",
+									"var permanent = attempts.filter(function (d) { return d.outcome === 'permanent_failure'; });",
+									"pm.test('404 retires the redelivered run in one attempt', function () {",
+									"    pm.expect(permanent.length).to.eql(1);",
+									"    pm.expect(permanent[0].attempt_no).to.eql(1);",
+									"    pm.expect(permanent[0].status_code).to.eql(404);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{retry_wh_id}}/deliveries", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{retry_wh_id}}", "deliveries"] }
+					}
+				},
+				{
+					"name": "Recovery resets the failure streak",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Receiver healthy again; redeliver once more so a success lands.",
+									"var receiver = pm.collectionVariables.get('receiver_url');",
+									"var base = pm.collectionVariables.get('base_url');",
+									"pm.sendRequest({ url: receiver + '/mode/retry?status=204', method: 'POST' }, function () {",
+									"    pm.sendRequest({",
+									"        url: base + '/api/webhooks/' + pm.collectionVariables.get('retry_wh_id') + '/deliveries',",
+									"        method: 'GET'",
+									"    }, function (err, res) {",
+									"        if (err || res.code !== 200) { return; }",
+									"        var any = res.json().deliveries[0];",
+									"        if (!any) { return; }",
+									"        pm.sendRequest({ url: base + '/api/webhooks/deliveries/' + any.id + '/redeliver', method: 'POST' }, function () {});",
+									"    });",
+									"});",
+									"var end = Date.now() + 6000; while (Date.now() < end) {}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var endpoint = pm.response.json();",
+									"pm.test('Success resets consecutive_failures and stamps last_success_at', function () {",
+									"    pm.expect(endpoint.consecutive_failures).to.eql(0);",
+									"    pm.expect(endpoint.last_success_at).to.be.a('string');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{retry_wh_id}}", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{retry_wh_id}}"] }
+					}
+				}
+			]
+		},
+		{
+			"name": "E - Redelivery",
+			"item": [
+				{
+					"name": "Redeliver keeps the webhook id",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Redeliver queued', function () { pm.expect(pm.response.code).to.eql(202); });",
+									"pm.test('Same webhook id reused for the replay', function () {",
+									"    pm.expect(pm.response.json().webhook_id).to.eql(pm.collectionVariables.get('delivery_webhook_id'));",
+									"});",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/webhooks/deliveries/{{redeliver_delivery_id}}/redeliver",
+							"host": ["{{base_url}}"],
+							"path": ["api", "webhooks", "deliveries", "{{redeliver_delivery_id}}", "redeliver"]
+						}
+					}
+				},
+				{
+					"name": "Replay arrives with the same webhook-id header",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var target = pm.collectionVariables.get('delivery_webhook_id');",
+									"var caps = (pm.response.json().captures || []).filter(function (c) {",
+									"    var headers = {};",
+									"    Object.keys(c.headers).forEach(function (k) { headers[k.toLowerCase()] = c.headers[k][0]; });",
+									"    return headers['webhook-id'] === target;",
+									"});",
+									"if (caps.length < 2) {",
+									"    var retries = parseInt(pm.collectionVariables.get('poll_retries'), 10);",
+									"    if (retries < 15) {",
+									"        pm.collectionVariables.set('poll_retries', String(retries + 1));",
+									"        var end = Date.now() + 2000; while (Date.now() < end) {}",
+									"        postman.setNextRequest('Replay arrives with the same webhook-id header');",
+									"        pm.test('Waiting for replay (attempt ' + (retries + 1) + ')', function () { pm.expect(true).to.be.true; });",
+									"        return;",
+									"    }",
+									"    pm.test('Replay arrived before timeout', function () { pm.expect.fail('no replay after 30s'); });",
+									"    return;",
+									"}",
+									"pm.test('Original and replay share the dedupe key', function () {",
+									"    pm.expect(caps.length).to.be.at.least(2);",
+									"});",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{receiver_url}}/captures?scenario=main",
+							"host": ["{{receiver_url}}"],
+							"path": ["captures"],
+							"query": [{ "key": "scenario", "value": "main" }]
+						}
+					}
+				},
+				{
+					"name": "History shows the redelivery run",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var target = pm.collectionVariables.get('delivery_webhook_id');",
+									"var runs = pm.response.json().deliveries.filter(function (d) { return d.webhook_id === target; });",
+									"pm.test('Attempt numbering restarted for the replay', function () {",
+									"    var firstAttempts = runs.filter(function (d) { return d.attempt_no === 1; });",
+									"    pm.expect(firstAttempts.length).to.be.at.least(2);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{wh_id}}/deliveries", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{wh_id}}", "deliveries"] }
+					}
+				},
+				{
+					"name": "Redeliver for disabled endpoint rejected",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Disable the main endpoint, try the redeliver, then re-enable.",
+									"var base = pm.collectionVariables.get('base_url');",
+									"var body = JSON.parse(pm.collectionVariables.get('main_put_body'));",
+									"body.disabled = true;",
+									"pm.sendRequest({",
+									"    url: base + '/api/webhooks/' + pm.collectionVariables.get('wh_id'),",
+									"    method: 'PUT', header: { 'Content-Type': 'application/json' },",
+									"    body: { mode: 'raw', raw: JSON.stringify(body) }",
+									"}, function (err, res) {",
+									"    pm.sendRequest({",
+									"        url: base + '/api/webhooks/deliveries/' + pm.collectionVariables.get('redeliver_delivery_id') + '/redeliver',",
+									"        method: 'POST'",
+									"    }, function (err2, res2) {",
+									"        pm.collectionVariables.set('disabled_redeliver_code', String(err2 ? 0 : res2.code));",
+									"        body.disabled = false;",
+									"        pm.sendRequest({",
+									"            url: base + '/api/webhooks/' + pm.collectionVariables.get('wh_id'),",
+									"            method: 'PUT', header: { 'Content-Type': 'application/json' },",
+									"            body: { mode: 'raw', raw: JSON.stringify(body) }",
+									"        }, function () {});",
+									"    });",
+									"});",
+									"var end = Date.now() + 3000; while (Date.now() < end) {}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Redeliver to a disabled endpoint returns 400', function () {",
+									"    pm.expect(pm.collectionVariables.get('disabled_redeliver_code')).to.eql('400');",
+									"});",
+									"pm.test('Endpoint re-enabled', function () {",
+									"    pm.expect(pm.response.json().disabled).to.be.false;",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": { "raw": "{{base_url}}/api/webhooks/{{wh_id}}", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{wh_id}}"] }
+					}
+				}
+			]
+		},
+		{
+			"name": "F - Rotation and Test Fire",
+			"item": [
+				{
+					"name": "Rotate signing secret",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Rotate returns the new secret once', function () {",
+									"    pm.expect(pm.response.code).to.eql(200);",
+									"    pm.expect(pm.response.json().secret).to.match(/^whsec_/);",
+									"});",
+									"pm.test('Secret actually changed', function () {",
+									"    pm.expect(pm.response.json().secret).to.not.eql(pm.collectionVariables.get('wh_secret'));",
+									"});",
+									"pm.collectionVariables.set('wh_old_secret', pm.collectionVariables.get('wh_secret'));",
+									"pm.collectionVariables.set('wh_secret', pm.response.json().secret);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/webhooks/{{wh_id}}/rotate-secret",
+							"host": ["{{base_url}}"],
+							"path": ["api", "webhooks", "{{wh_id}}", "rotate-secret"]
+						}
+					}
+				},
+				{
+					"name": "Test fire signs with the new secret",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Test fire delivered', function () {",
+									"    pm.expect(pm.response.code).to.eql(200);",
+									"    pm.expect(pm.response.json().delivered).to.be.true;",
+									"    pm.expect(pm.response.json().receiver_status_code).to.eql(204);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\"event\":\"async_job.failed\"}" },
+						"url": { "raw": "{{base_url}}/api/webhooks/{{wh_id}}/test", "host": ["{{base_url}}"], "path": ["api", "webhooks", "{{wh_id}}", "test"] }
+					}
+				},
+				{
+					"name": "Verify rotated signature and chosen event",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var caps = pm.response.json().captures || [];",
+									"var cap = caps[caps.length - 1];",
+									"pm.test('Test delivery captured', function () { pm.expect(caps.length).to.be.at.least(1); });",
+									"var headers = {};",
+									"Object.keys(cap.headers).forEach(function (k) { headers[k.toLowerCase()] = cap.headers[k][0]; });",
+									"var message = headers['webhook-id'] + '.' + headers['webhook-timestamp'] + '.' + cap.body;",
+									"function sign(secret) {",
+									"    var key = CryptoJS.enc.Base64.parse(secret.replace(/^whsec_/, ''));",
+									"    return 'v1,' + CryptoJS.enc.Base64.stringify(CryptoJS.HmacSHA256(message, key));",
+									"}",
+									"pm.test('Signature verifies with the NEW secret only', function () {",
+									"    pm.expect(headers['webhook-signature']).to.eql(sign(pm.collectionVariables.get('wh_secret')));",
+									"    pm.expect(headers['webhook-signature']).to.not.eql(sign(pm.collectionVariables.get('wh_old_secret')));",
+									"});",
+									"pm.test('Sample carries the requested event', function () {",
+									"    var payload = JSON.parse(cap.body);",
+									"    pm.expect(payload.event).to.eql('async_job.failed');",
+									"    pm.expect(payload.data.status).to.eql('failed');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{receiver_url}}/captures?scenario=main",
+							"host": ["{{receiver_url}}"],
+							"path": ["captures"],
+							"query": [{ "key": "scenario", "value": "main" }]
+						}
+					}
+				},
+				{
+					"name": "Test fire event validation",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// An event the endpoint is not subscribed to must be rejected",
+									"// (the completed-only endpoint is enabled but never gets failures).",
+									"var base = pm.collectionVariables.get('base_url');",
+									"pm.sendRequest({",
+									"    url: base + '/api/webhooks/' + pm.collectionVariables.get('completed_only_wh_id') + '/test',",
+									"    method: 'POST', header: { 'Content-Type': 'application/json' },",
+									"    body: { mode: 'raw', raw: JSON.stringify({ event: 'async_job.failed' }) }",
+									"}, function (err, res) {",
+									"    pm.collectionVariables.set('unsubscribed_code', String(err ? 0 : res.code));",
+									"});",
+									"var end = Date.now() + 2500; while (Date.now() < end) {}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Unsubscribed test event rejected', function () {",
+									"    pm.expect(pm.collectionVariables.get('unsubscribed_code')).to.eql('400');",
+									"});",
+									"pm.test('Disabled endpoint cannot be test-fired', function () {",
+									"    pm.expect(pm.response.code).to.eql(400);",
+									"    pm.expect(pm.response.text()).to.include('disabled');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": { "mode": "raw", "raw": "{\"event\":\"async_job.completed\"}" },
+						"url": {
+							"raw": "{{base_url}}/api/webhooks/{{disabled_wh_id}}/test",
+							"host": ["{{base_url}}"],
+							"path": ["api", "webhooks", "{{disabled_wh_id}}", "test"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "G - Result Expiry",
+			"item": [
+				{
+					"name": "Create expiry endpoint",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Attempt 1 must fail so the retry lands after the job's TTL: the",
+									"// receiver answers /hook/expiry with 500 until flipped to 204.",
+									"pm.sendRequest({ url: pm.collectionVariables.get('receiver_url') + '/mode/expiry?status=500', method: 'POST' }, function () {});"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Expiry endpoint created', function () { pm.expect(pm.response.code).to.eql(201); });",
+									"pm.collectionVariables.set('expiry_wh_id', pm.response.json().endpoint.id);",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"name\":\"e2e-expiry-{{suffix}}\",\"url\":\"{{receiver_url}}/hook/expiry\",\"events\":[\"async_job.completed\",\"async_job.failed\"],\"allow_private_network\":true,\"max_retries\":2,\"retry_backoff_initial_seconds\":4,\"retry_backoff_max_seconds\":4}"
+						},
+						"url": { "raw": "{{base_url}}/api/webhooks", "host": ["{{base_url}}"], "path": ["api", "webhooks"] }
+					}
+				},
+				{
+					"name": "Submit job with 2s result TTL",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Short-TTL submit accepted', function () { pm.expect(pm.response.code).to.eql(202); });",
+									"pm.collectionVariables.set('expiry_job_id', pm.response.json().id);",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" },
+							{ "key": "x-bf-async-webhook", "value": "e2e-expiry-{{suffix}}" },
+							{ "key": "x-bf-async-job-result-ttl", "value": "2" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\"model\":\"{{provider}}/{{model}}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: ok\"}],\"max_tokens\":16}"
+						},
+						"url": { "raw": "{{base_url}}/v1/async/chat/completions", "host": ["{{base_url}}"], "path": ["v1", "async", "chat", "completions"] }
+					}
+				},
+				{
+					"name": "Await first (failed) attempt",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Attempt 1 fires while the job row is alive; once it has failed,",
+									"// heal the receiver so the post-expiry retry can deliver.",
+									"var jobID = pm.collectionVariables.get('expiry_job_id');",
+									"var mine = (pm.response.json().captures || []).filter(function (c) {",
+									"    try { return JSON.parse(c.body).data.job_id === jobID; } catch (e) { return false; }",
+									"});",
+									"if (mine.length < 1) {",
+									"    var retries = parseInt(pm.collectionVariables.get('poll_retries'), 10);",
+									"    if (retries < 30) {",
+									"        pm.collectionVariables.set('poll_retries', String(retries + 1));",
+									"        var end = Date.now() + 2000; while (Date.now() < end) {}",
+									"        postman.setNextRequest('Await first (failed) attempt');",
+									"        pm.test('Waiting for first attempt (attempt ' + (retries + 1) + ')', function () { pm.expect(true).to.be.true; });",
+									"        return;",
+									"    }",
+									"    pm.test('First attempt arrived before timeout', function () { pm.expect.fail('no attempt after 60s'); });",
+									"    return;",
+									"}",
+									"var payload = JSON.parse(mine[0].body);",
+									"pm.test('First attempt rendered a live payload with result_url', function () {",
+									"    pm.expect(payload.data.result_url).to.be.a('string').and.not.empty;",
+									"    pm.expect(payload.data).to.not.have.property('result_expired');",
+									"});",
+									"pm.sendRequest({ url: pm.collectionVariables.get('receiver_url') + '/mode/expiry?status=204', method: 'POST' }, function () {});",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{receiver_url}}/captures?scenario=expiry",
+							"host": ["{{receiver_url}}"],
+							"path": ["captures"],
+							"query": [{ "key": "scenario", "value": "expiry" }]
+						}
+					}
+				},
+				{
+					"name": "Await degraded result_expired retry",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// The retry fires >=3.2s after attempt 1 - past the 2s TTL - so the",
+									"// job row is gone and the delivery degrades to the expired body.",
+									"var jobID = pm.collectionVariables.get('expiry_job_id');",
+									"var mine = (pm.response.json().captures || []).filter(function (c) {",
+									"    try { return JSON.parse(c.body).data.job_id === jobID; } catch (e) { return false; }",
+									"});",
+									"if (mine.length < 2) {",
+									"    var retries = parseInt(pm.collectionVariables.get('poll_retries'), 10);",
+									"    if (retries < 15) {",
+									"        pm.collectionVariables.set('poll_retries', String(retries + 1));",
+									"        var end = Date.now() + 2000; while (Date.now() < end) {}",
+									"        postman.setNextRequest('Await degraded result_expired retry');",
+									"        pm.test('Waiting for post-expiry retry (attempt ' + (retries + 1) + ')', function () { pm.expect(true).to.be.true; });",
+									"        return;",
+									"    }",
+									"    pm.test('Post-expiry retry arrived before timeout', function () { pm.expect.fail('no retry after 30s'); });",
+									"    return;",
+									"}",
+									"var payload = JSON.parse(mine[mine.length - 1].body);",
+									"pm.test('Retry delivered the degraded expired payload', function () {",
+									"    pm.expect(payload.data.result_expired).to.be.true;",
+									"    pm.expect(payload.data).to.not.have.property('result_url');",
+									"    pm.expect(payload.data).to.not.have.property('response');",
+									"    pm.expect(payload.data.job_id).to.eql(jobID);",
+									"});",
+									"pm.collectionVariables.set('poll_retries', '0');"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{receiver_url}}/captures?scenario=expiry",
+							"host": ["{{receiver_url}}"],
+							"path": ["captures"],
+							"query": [{ "key": "scenario", "value": "expiry" }]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Teardown",
+			"item": [
+				{
+					"name": "Delete created endpoints",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"var base = pm.collectionVariables.get('base_url');",
+									"var ids = ['wh_id', 'disabled_wh_id', 'retry_wh_id', 'completed_only_wh_id', 'expiry_wh_id']",
+									"    .map(function (k) { return pm.collectionVariables.get(k); })",
+									"    .filter(function (v) { return v; });",
+									"function drop(i) {",
+									"    if (i >= ids.length) { return; }",
+									"    pm.sendRequest({ url: base + '/api/webhooks/' + ids[i], method: 'DELETE' }, function () { drop(i + 1); });",
+									"}",
+									"drop(0);",
+									"var end = Date.now() + 2000; while (Date.now() < end) {}"
+								],
+								"type": "text/javascript"
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('All run endpoints removed', function () {",
+									"    var names = pm.response.json().endpoints.map(function (e) { return e.name; });",
+									"    var suffix = pm.collectionVariables.get('suffix');",
+									"    names.forEach(function (n) { pm.expect(n).to.not.include(suffix); });",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/webhooks?search=e2e-",
+							"host": ["{{base_url}}"],
+							"path": ["api", "webhooks"],
+							"query": [{ "key": "search", "value": "e2e-" }]
+						}
+					}
+				},
+				{
+					"name": "Reset receiver",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Receiver reset after run', function () { pm.expect(pm.response.code).to.eql(204); });"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"url": { "raw": "{{receiver_url}}/captures", "host": ["{{receiver_url}}"], "path": ["captures"] }
+					}
+				}
+			]
+		}
+	]
+}

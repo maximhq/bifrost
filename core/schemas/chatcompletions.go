@@ -235,6 +235,11 @@ type ChatParameters struct {
 	TaskBudget        *ChatTaskBudget `json:"task_budget,omitempty"`        // Anthropic output_config.task_budget (task-budgets-2026-03-13 beta)
 	ContextManagement json.RawMessage `json:"context_management,omitempty"` // Anthropic context_management — complex union, passed as raw JSON to the provider layer
 
+	// Opts into running built-in server-side tools (e.g. Google Search) in the same
+	// turn as function declarations. Required by Gemini 3+, which otherwise rejects
+	// the combination; providers without the concept ignore it.
+	IncludeServerSideToolInvocations *bool `json:"include_server_side_tool_invocations,omitempty"`
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -1360,7 +1365,8 @@ type ChatMCPServer struct {
 
 // ChatInputImage represents image data in a message.
 type ChatInputImage struct {
-	URL              string  `json:"url"`
+	URL              string  `json:"url,omitempty"`
+	FileID           *string `json:"file_id,omitempty"` // Reference to an uploaded file (in place of URL)
 	Detail           *string `json:"detail,omitempty"`
 	MaxLongSidePixel *int    `json:"max_long_side_pixel,omitempty"`
 }
@@ -1657,6 +1663,11 @@ type BifrostLLMUsage struct {
 	// the tier multiplier. json:"-" keeps them out of every serialized usage payload.
 	Speed        *string `json:"-"`
 	InferenceGeo *string `json:"-"`
+	// Model that actually served the turn after a server-side fallback handoff.
+	// Carried here for the same reason as the two above: the bare-usage billing path
+	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
+	// turn is priced at the requested model's rates.
+	ServerSideFallbackModel *string `json:"-"`
 }
 
 type ChatPromptTokensDetails struct {

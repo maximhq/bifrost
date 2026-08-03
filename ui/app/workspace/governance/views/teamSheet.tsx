@@ -1,3 +1,4 @@
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -8,18 +9,18 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
+import { CopyableId } from "@/components/copyableId";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
-import { CreateTeamRequest, Customer, Team, UpdateTeamRequest } from "@/lib/types/governance";
+import { CreateTeamRequest, Team, UpdateTeamRequest } from "@/lib/types/governance";
 import { formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -31,7 +32,6 @@ import { v4 as uuid } from "uuid";
 
 interface TeamSheetProps {
 	team?: Team | null;
-	customers: Customer[];
 	onSave: () => void;
 	onCancel: () => void;
 }
@@ -82,7 +82,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 	};
 };
 
-export default function TeamSheet({ team, customers, onSave, onCancel }: TeamSheetProps) {
+export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 	const isEditing = !!team;
 	const [initialState, setInitialState] = useState<Omit<TeamFormData, "isDirty">>(createInitialState(team));
 	const [formData, setFormData] = useState<TeamFormData>({
@@ -204,17 +204,17 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 			// Rate limit validation - token limits
 			...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
 				? [
-						Validator.minValue(tokenMaxLimitNum || 0, 1, "Token max limit must be at least 1"),
-						Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
-					]
+					Validator.minValue(tokenMaxLimitNum || 0, 1, "Token max limit must be at least 1"),
+					Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
+				]
 				: []),
 
 			// Rate limit validation - request limits
 			...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
 				? [
-						Validator.minValue(requestMaxLimitNum || 0, 1, "Request max limit must be at least 1"),
-						Validator.required(formData.requestResetDuration, "Request reset duration is required"),
-					]
+					Validator.minValue(requestMaxLimitNum || 0, 1, "Request max limit must be at least 1"),
+					Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+				]
 				: []),
 		]);
 	}, [formData, tokenMaxLimitNum, requestMaxLimitNum]);
@@ -321,7 +321,10 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 				onEscapeKeyDown={() => onCancel()}
 			>
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
-					<SheetTitle className="flex items-center gap-2">{isEditing ? "Edit Team" : "Create Team"}</SheetTitle>
+					<SheetTitle className="flex items-center gap-2">
+						{isEditing ? "Edit Team" : "Create Team"}
+						{team?.id && <CopyableId id={team.id} entityLabel="Team" />}
+					</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update the team information and settings." : "Create a new team to organize users and manage shared resources."}
 					</SheetDescription>
@@ -344,31 +347,40 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 								{nameError && <p className="text-destructive text-sm">{nameError}</p>}
 							</div>
 
-							{/* Customer Assignment */}
-							{customers?.length > 0 && (
-								<div className="space-y-2">
-									<Label htmlFor="customer">Customer (optional)</Label>
-									<Select
-										value={formData.customerId || "__none__"}
-										onValueChange={(value) => updateField("customerId", value === "__none__" ? "" : value)}
-									>
-										<SelectTrigger id="customer" className="w-full" data-testid="team-customer-select-trigger">
-											<SelectValue placeholder="Select a customer" />
-										</SelectTrigger>
-										<SelectContent>
-											<SelectItem value="__none__" data-testid="team-customer-option-none">
-												None
-											</SelectItem>
-											{customers.map((customer) => (
-												<SelectItem key={customer.id} value={customer.id} data-testid={`team-customer-option-${customer.id}`}>
-													{customer.name}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
-									<p className="text-muted-foreground text-sm">Assign to a customer or leave independent.</p>
+							{/* Customer Assignment — searchable/paginated, so the sheet never
+							    depends on the caller having fetched every customer up front. */}
+							<div className="space-y-2">
+								<Label htmlFor="customer">Customer (optional)</Label>
+								<div className="flex items-center gap-2" data-testid="team-customer-selector">
+									<CustomerSelector
+										value={formData.customerId}
+										onChange={(value) => updateField("customerId", value)}
+										// The team row embeds its customer, so an existing assignment
+										// renders a name instead of a raw UUID before any fetch.
+										fallbackOption={
+											team?.customer_id
+												? {
+													value: team.customer_id,
+													label: team.customer?.name ?? team.customer_id,
+												}
+												: null
+										}
+										className="min-w-0 flex-1"
+									/>
+									{formData.customerId && (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={() => updateField("customerId", "")}
+											data-testid="team-customer-clear-btn"
+										>
+											Clear
+										</Button>
+									)}
 								</div>
-							)}
+								<p className="text-muted-foreground text-sm">Assign to a customer or leave independent.</p>
+							</div>
 						</div>
 
 						{/* Multi-budget configuration: one row per budget, each keyed by reset_duration */}
@@ -393,7 +405,7 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 										<div className="flex-1">
 											<NumberAndSelect
 												id={`budgetMaxLimit-${idx}`}
-												label={`Budget #${idx + 1} — Maximum Spend (USD)`}
+												label={`Budget #${idx + 1}: Maximum Spend (USD)`}
 												value={row.maxLimit}
 												selectValue={row.resetDuration}
 												onChangeNumber={(value) => updateBudgetRow(idx, { maxLimit: value })}
@@ -558,7 +570,7 @@ export default function TeamSheet({ team, customers, onSave, onCancel }: TeamShe
 												<Badge
 													variant={
 														team.rate_limit.request_max_limit > 0 &&
-														team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit
+															team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit
 															? "destructive"
 															: "default"
 													}

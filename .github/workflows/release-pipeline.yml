@@ -119,7 +119,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Detect what needs release
         id: detect
@@ -164,7 +164,9 @@ jobs:
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
+            api.x.ai:443
             bifrost-gateway-resource.openai.azure.com:443
+            bedrock-mantle.us-east-1.api.aws:443
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
@@ -175,6 +177,7 @@ jobs:
             login.microsoftonline.com:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
+            oauth2.googleapis.com:443
             openrouter.ai:443
             proxy.golang.org:443
             registry.npmjs.org:443
@@ -192,7 +195,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -315,7 +318,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Docker Compose
         run: |
@@ -424,7 +427,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Docker Compose
         run: |
@@ -535,7 +538,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -614,7 +617,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -678,9 +681,13 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            api.perplexity.ai:443
             api.replicate.com:443
+            api.x.ai:443
             auth.docker.io:443
+            bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
+            bifrost-gateway-resource.openai.azure.com:443
             cr.weaviate.io:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
@@ -692,6 +699,7 @@ jobs:
             huggingface.co:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
+            oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
@@ -714,7 +722,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -839,7 +847,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Run cost accuracy test
         env:
@@ -883,9 +891,11 @@ jobs:
             127.0.0.1:8000
             127.0.0.1:8080
             api.github.com:443
+            bedrock.us-east-1.amazonaws.com:443
             codeload.github.com:443
             getbifrost.ai:443
             github.com:443
+            huggingface.co:443
             objects.githubusercontent.com:443
             proxy.golang.org:443
             release-assets.githubusercontent.com:443
@@ -910,7 +920,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Run load performance test
         env:
@@ -969,9 +979,13 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            api.perplexity.ai:443
             api.replicate.com:443
+            api.x.ai:443
             auth.docker.io:443
+            bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
+            bifrost-gateway-resource.openai.azure.com:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
@@ -982,6 +996,7 @@ jobs:
             huggingface.co:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
+            oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
@@ -1004,7 +1019,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1093,9 +1108,13 @@ jobs:
             api.mistral.ai:443
             api.openai.com:443
             api.parasail.io:443
+            api.perplexity.ai:443
             api.replicate.com:443
+            api.x.ai:443
             auth.docker.io:443
+            bedrock-mantle.us-east-1.api.aws:443
             bedrock.us-east-1.amazonaws.com:443
+            bifrost-gateway-resource.openai.azure.com:443
             dl-cdn.alpinelinux.org:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
@@ -1106,6 +1125,7 @@ jobs:
             huggingface.co:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
+            oauth2.googleapis.com:443
             openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
@@ -1128,7 +1148,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1229,7 +1249,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1334,7 +1354,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Configure Git
         run: |
@@ -1460,7 +1480,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1584,7 +1604,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1648,7 +1668,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -1717,7 +1737,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.4"
+          go-version: "1.26.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -2423,6 +2443,7 @@ jobs:
             _https._tcp.packages.microsoft.com:443
             azure.archive.ubuntu.com:80
             discord.com:443
+            discordapp.com:443
             dl.google.com:443
             esm.ubuntu.com:443
             packages.microsoft.com:443
