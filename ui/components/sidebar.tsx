@@ -22,6 +22,7 @@ import {
 	Hexagon,
 	BadgeCheck,
 	BadgeInfo,
+	Palette,
 	LaptopMinimalCheck,
 	LayoutGrid,
 	LogOut,
@@ -74,6 +75,7 @@ import {
 import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { useBranding } from "@/lib/hooks/useBranding";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
@@ -1088,6 +1090,13 @@ export default function AppSidebar() {
 					...(IS_ENTERPRISE
 						? [
 								{
+									title: "Branding",
+									url: "/workspace/config/branding",
+									icon: Palette,
+									description: "Custom logo and icon",
+									hasAccess: hasSettingsAccess,
+								},
+								{
 									title: "License Info",
 									url: "/workspace/config/license",
 									icon: BadgeInfo,
@@ -1356,9 +1365,10 @@ export default function AppSidebar() {
 		return false;
 	};
 
-	// Always render the light theme version for SSR to avoid hydration mismatch
-	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.webp" : "/bifrost-logo.webp";
-	const iconSrc = mounted && resolvedTheme === "dark" ? "/bifrost-icon-dark.webp" : "/bifrost-icon.webp";
+	// Always render the light theme version for SSR to avoid hydration mismatch.
+	// On a white-labelled deployment useBranding returns the customer's assets
+	// instead, which are theme-agnostic.
+	const { logoSrc, iconSrc, logoAlt } = useBranding(mounted && resolvedTheme === "dark");
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
@@ -1514,7 +1524,16 @@ export default function AppSidebar() {
 				{/* Expanded state: horizontal layout */}
 				<div className="flex h-10 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
 					<Link to="/workspace/logs" className="group flex items-center gap-2 pl-2">
-						<img className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
+						{/* max-w caps an unusually wide uploaded logo so it cannot push the
+						    collapse button out of the header; object-contain preserves its
+						    aspect ratio within that box. */}
+						<img
+							className="h-[22px] w-auto max-w-[150px] object-contain"
+							src={logoSrc}
+							alt={logoAlt}
+							width={70}
+							height={70}
+						/>
 					</Link>
 					<button
 						onClick={toggleSidebar}
@@ -1531,7 +1550,14 @@ export default function AppSidebar() {
 					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex"
 					onClick={toggleSidebar}
 				>
-					<img className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} style={{ width: 18 }} />
+					<img
+						className="h-[22px] w-auto object-contain"
+						src={iconSrc}
+						alt={logoAlt}
+						width={22}
+						height={22}
+						style={{ width: 18 }}
+					/>
 				</div>
 			</SidebarHeader>
 			{envLabel && (
