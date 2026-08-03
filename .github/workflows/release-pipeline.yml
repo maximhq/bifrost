@@ -181,6 +181,7 @@ jobs:
             openrouter.ai:443
             proxy.golang.org:443
             registry.npmjs.org:443
+            router.requesty.ai:443
             release-assets.githubusercontent.com:443
             router.huggingface.co:443
             storage.googleapis.com:443

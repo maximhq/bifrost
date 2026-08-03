@@ -25,11 +25,11 @@ func TestRequesty(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.Requesty,
-		ChatModel:      "google/gemma-4-31b-it", // Vision+Tools+Think, 262K context
+		ChatModel:      "google/gemma-4-31b-it", // Vision+Tools+Think
 		TextModel:      "",                      // Requesty doesn't support text completion
 		EmbeddingModel: "openai/text-embedding-3-small",
 		Fallbacks: []schemas.Fallback{
-			{Provider: schemas.Requesty, Model: "nvidia/nemotron-3-nano-30b-a3b"}, // Tools+Think, 262K context
+			{Provider: schemas.Requesty, Model: "nvidia/nemotron-3-nano-30b-a3b"}, // Tools+Think
 		},
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported

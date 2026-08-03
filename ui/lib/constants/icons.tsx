@@ -618,8 +618,6 @@ export const ProviderIcons = {
 	requesty: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 
-		// TODO: replace with Requesty's official brand SVG (see their brand/press kit)
-		// before merging. This is a placeholder monogram so the UI doesn't break.
 		return (
 			<svg
 				viewBox="0 0 24 24"
@@ -641,7 +639,7 @@ export const ProviderIcons = {
 				></path>
 				</g>
 			</svg>
-    );
+		);
 	},
 
 	huggingface: ({ size = "md", className = "" }: IconProps) => {
