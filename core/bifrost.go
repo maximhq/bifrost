@@ -42,6 +42,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
+	"github.com/maximhq/bifrost/core/providers/requesty"
 	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/sarvam"
@@ -4328,6 +4329,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return sgl.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:
 		return parasail.NewParasailProvider(config, bifrost.logger)
+	case schemas.Requesty:
+		return requesty.NewRequestyProvider(config, bifrost.logger)
 	case schemas.Perplexity:
 		return perplexity.NewPerplexityProvider(config, bifrost.logger)
 	case schemas.Cerebras:

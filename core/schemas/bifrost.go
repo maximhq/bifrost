@@ -56,6 +56,7 @@ const (
 	Groq          ModelProvider = "groq"
 	SGL           ModelProvider = "sgl"
 	Parasail      ModelProvider = "parasail"
+	Requesty      ModelProvider = "requesty"
 	Perplexity    ModelProvider = "perplexity"
 	Cerebras      ModelProvider = "cerebras"
 	DeepSeek      ModelProvider = "deepseek"
@@ -117,6 +118,7 @@ var StandardProviders = []ModelProvider{
 	Fireworks,
 	Sarvam,
 	Wafer,
+	Requesty,
 }
 
 // RequestType represents the type of request being made to a provider.
