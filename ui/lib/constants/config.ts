@@ -66,6 +66,7 @@ export const ModelPlaceholders = {
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
+	modelark: "e.g. seedance-1-0-pro-fast-251015, dreamina-seedance-2-0-260128",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -99,6 +100,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	fireworks: true,
 	sarvam: true,
 	wafer: true,
+	modelark: true,
 };
 
 export const DefaultNetworkConfig = {

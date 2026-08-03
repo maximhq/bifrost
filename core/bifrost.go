@@ -34,6 +34,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/huggingface"
 	"github.com/maximhq/bifrost/core/providers/mistral"
+	"github.com/maximhq/bifrost/core/providers/modelark"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -4391,6 +4392,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return fireworks.NewFireworksProvider(config, bifrost.logger)
 	case schemas.Sarvam:
 		return sarvam.NewSarvamProvider(config, bifrost.logger)
+	case schemas.ModelArk:
+		return modelark.NewModelArkProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
