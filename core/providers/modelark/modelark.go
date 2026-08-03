@@ -382,6 +382,11 @@ func (provider *ModelArkProvider) VideoDownload(ctx *schemas.BifrostContext, key
 			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 			nil), latency)
 	}
+	if contentLength := resp.Header.ContentLength(); videoDownloadExceedsLimit(contentLength) {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("video exceeds maximum download size: %d bytes", contentLength),
+			nil), latency)
+	}
 
 	// Get content and content type
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -404,6 +409,10 @@ func (provider *ModelArkProvider) VideoDownload(ctx *schemas.BifrostContext, key
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 
 	return bifrostResp, nil
+}
+
+func videoDownloadExceedsLimit(contentLength int) bool {
+	return contentLength > maxVideoDownloadBytes
 }
 
 // VideoDelete is not supported by the ModelArk provider.

@@ -101,3 +101,9 @@ func TestNewModelArkProviderBoundsVideoDownloadSize(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, maxVideoDownloadBytes, provider.client.MaxResponseBodySize)
 }
+
+func TestVideoDownloadRejectsAdvertisedOversizedBody(t *testing.T) {
+	assert.False(t, videoDownloadExceedsLimit(-1), "unknown Content-Length is allowed and bounded by fasthttp")
+	assert.False(t, videoDownloadExceedsLimit(maxVideoDownloadBytes))
+	assert.True(t, videoDownloadExceedsLimit(maxVideoDownloadBytes+1))
+}

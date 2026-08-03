@@ -40,6 +40,7 @@ const (
 	ModelArkTaskStatusSucceeded ModelArkTaskStatus = "succeeded"
 	ModelArkTaskStatusFailed    ModelArkTaskStatus = "failed"
 	ModelArkTaskStatusCancelled ModelArkTaskStatus = "cancelled"
+	ModelArkTaskStatusExpired   ModelArkTaskStatus = "expired"
 )
 
 type ModelArkTaskContent struct {

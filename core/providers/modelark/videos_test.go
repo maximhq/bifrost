@@ -98,13 +98,14 @@ func TestToModelArkVideoGenerationRequest(t *testing.T) {
 	})
 
 	t.Run("extra_params_lifted_into_typed_fields", func(t *testing.T) {
+		extraParams := map[string]interface{}{
+			"ratio":        "16:9",
+			"watermark":    true,
+			"callback_url": "https://example.com/hook",
+			"draft":        true,
+		}
 		result, err := ToModelArkVideoGenerationRequest(makeVideoReq("a cat", nil, &schemas.VideoGenerationParameters{
-			ExtraParams: map[string]interface{}{
-				"ratio":        "16:9",
-				"watermark":    true,
-				"callback_url": "https://example.com/hook",
-				"draft":        true,
-			},
+			ExtraParams: extraParams,
 		}))
 		require.NoError(t, err)
 		require.NotNil(t, result.Ratio)
@@ -117,6 +118,9 @@ func TestToModelArkVideoGenerationRequest(t *testing.T) {
 		assert.NotContains(t, result.ExtraParams, "watermark")
 		assert.NotContains(t, result.ExtraParams, "callback_url")
 		assert.Contains(t, result.ExtraParams, "draft", "unrecognised keys pass through to ModelArk")
+		assert.Contains(t, extraParams, "ratio", "request conversion must not mutate retryable caller parameters")
+		assert.Contains(t, extraParams, "watermark")
+		assert.Contains(t, extraParams, "callback_url")
 	})
 }
 
@@ -169,6 +173,7 @@ func TestToBifrostVideoGenerationResponse(t *testing.T) {
 			{"succeeded", ModelArkTaskStatusSucceeded, schemas.VideoStatusCompleted},
 			{"failed", ModelArkTaskStatusFailed, schemas.VideoStatusFailed},
 			{"cancelled", ModelArkTaskStatusCancelled, schemas.VideoStatusFailed},
+			{"expired", ModelArkTaskStatusExpired, schemas.VideoStatusFailed},
 			{"unknown", ModelArkTaskStatus("throttled"), schemas.VideoStatusQueued},
 		}
 

@@ -68,7 +68,12 @@ func ToModelArkVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneration
 	}
 
 	if params.ExtraParams != nil {
-		request.ExtraParams = params.ExtraParams
+		// Keep the caller's map intact: the same request can be retried or used by
+		// observability after conversion.
+		request.ExtraParams = make(map[string]interface{}, len(params.ExtraParams))
+		for key, value := range params.ExtraParams {
+			request.ExtraParams[key] = value
+		}
 
 		if ratio, ok := schemas.SafeExtractStringPointer(params.ExtraParams["ratio"]); ok {
 			delete(request.ExtraParams, "ratio")
@@ -109,7 +114,7 @@ func ToBifrostVideoGenerationResponse(taskDetails *ModelArkTaskDetailsResponse) 
 		response.Status = schemas.VideoStatusInProgress
 	case ModelArkTaskStatusSucceeded:
 		response.Status = schemas.VideoStatusCompleted
-	case ModelArkTaskStatusFailed, ModelArkTaskStatusCancelled:
+	case ModelArkTaskStatusFailed, ModelArkTaskStatusCancelled, ModelArkTaskStatusExpired:
 		response.Status = schemas.VideoStatusFailed
 	default:
 		response.Status = schemas.VideoStatusQueued
