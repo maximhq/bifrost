@@ -186,17 +186,6 @@ func TestToBifrostGigaChatBatchStatus(t *testing.T) {
 			}
 		})
 	}
-
-	extra := toBifrostGigaChatBatchProviderExtraFields(GigaChatBatch{
-		Method: GigaChatBatchMethodEmbedder,
-		Status: GigaChatBatchStatus("queued"),
-	})
-	if extra["gigachat_batch_status"] != "queued" {
-		t.Fatalf("raw unknown status was not preserved: %#v", extra)
-	}
-	if extra["gigachat_batch_method"] != string(GigaChatBatchMethodEmbedder) {
-		t.Fatalf("batch method was not preserved: %#v", extra)
-	}
 }
 
 func TestConvertGigaChatBatchInputJSONL(t *testing.T) {
@@ -215,6 +204,7 @@ func TestGigaChatBatchesHTTP(t *testing.T) {
 	t.Run("CreateTransformsFileRows", testGigaChatBatchCreateTransformsFileRows)
 	t.Run("CreateUsesKeyBaseURLAndRefreshesTokenAfterUnauthorized", testGigaChatBatchCreateUsesKeyBaseURLAndRefreshesTokenAfterUnauthorized)
 	t.Run("ListParsesWrapper", testGigaChatBatchListParsesWrapper)
+	t.Run("ListPaginatesLocally", testGigaChatBatchListPaginatesLocally)
 	t.Run("ListParsesEmptyRootArray", testGigaChatBatchListParsesEmptyRootArray)
 	t.Run("RetrieveParsesSingleObject", testGigaChatBatchRetrieveParsesSingleObject)
 	t.Run("RetrieveMapsResultFileID", testGigaChatBatchRetrieveMapsResultFileID)
@@ -610,6 +600,38 @@ func testGigaChatBatchListParsesEmptyRootArray(t *testing.T) {
 	}
 }
 
+func testGigaChatBatchListPaginatesLocally(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/batches" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"batch-1","object":"batch","status":"in_progress"},{"id":"batch-2","object":"batch","status":"completed"}]}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	request := &schemas.BifrostBatchListRequest{Provider: schemas.GigaChat, Limit: 1}
+	first, bifrostErr := provider.BatchList(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("batch-list-token")}, request)
+	if bifrostErr != nil {
+		t.Fatalf("first BatchList returned error: %v", bifrostErr)
+	}
+	if len(first.Data) != 1 || first.Data[0].ID != "batch-1" || !first.HasMore || first.NextCursor == nil {
+		t.Fatalf("unexpected first page: %#v", first)
+	}
+
+	request.After = first.NextCursor
+	second, bifrostErr := provider.BatchList(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("batch-list-token")}, request)
+	if bifrostErr != nil {
+		t.Fatalf("second BatchList returned error: %v", bifrostErr)
+	}
+	if len(second.Data) != 1 || second.Data[0].ID != "batch-2" || second.HasMore || second.NextCursor != nil {
+		t.Fatalf("unexpected second page: %#v", second)
+	}
+}
+
 func testGigaChatBatchRetrieveParsesSingleObject(t *testing.T) {
 	t.Parallel()
 
@@ -678,9 +700,6 @@ func testGigaChatBatchRetrieveMapsResultFileID(t *testing.T) {
 	}
 	if response.OutputFileID == nil || *response.OutputFileID != "result-file" {
 		t.Fatalf("result_file_id was not mapped to output_file_id: %#v", response.OutputFileID)
-	}
-	if response.ProviderExtraFields["gigachat_result_file_id"] != "result-file" {
-		t.Fatalf("result_file_id was not preserved in provider extra fields: %#v", response.ProviderExtraFields)
 	}
 }
 
@@ -808,9 +827,6 @@ func testGigaChatBatchResultsDownloadsOutputFile(t *testing.T) {
 	result := response.Results[0]
 	if result.CustomID != "row-1" || result.Response == nil || result.Response.StatusCode != 200 || result.Response.RequestID != "req-1" {
 		t.Fatalf("unexpected result item: %#v", result)
-	}
-	if response.ProviderExtraFields["gigachat_result_file_id"] != "result-file" || response.ProviderExtraFields["gigachat_batch_output_file_id"] != "result-file" {
-		t.Fatalf("provider extra fields mismatch: %#v", response.ProviderExtraFields)
 	}
 }
 

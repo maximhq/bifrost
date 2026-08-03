@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -212,9 +213,6 @@ func validateGigaChatBatchCreateRequest(request *schemas.BifrostBatchCreateReque
 }
 
 func validateGigaChatBatchListRequest(request *schemas.BifrostBatchListRequest) *schemas.BifrostError {
-	if request.Limit > 0 {
-		return providerUtils.NewBifrostOperationError("GigaChat batch list does not support limit pagination", nil)
-	}
 	if request.BeforeID != nil && strings.TrimSpace(*request.BeforeID) != "" {
 		return providerUtils.NewBifrostOperationError("GigaChat batch list does not support before_id pagination", nil)
 	}
@@ -273,34 +271,6 @@ func toBifrostGigaChatBatchStatus(status GigaChatBatchStatus) schemas.BatchStatu
 	}
 }
 
-func toBifrostGigaChatBatchProviderExtraFields(batch GigaChatBatch) map[string]interface{} {
-	fields := make(map[string]interface{})
-	if batch.Method != "" {
-		fields["gigachat_batch_method"] = string(batch.Method)
-	}
-	switch batch.Status {
-	case "", GigaChatBatchStatusCreated, GigaChatBatchStatusInProgress, GigaChatBatchStatusCompleted:
-	default:
-		fields["gigachat_batch_status"] = string(batch.Status)
-	}
-	if batch.ResultFileID != nil && strings.TrimSpace(*batch.ResultFileID) != "" {
-		fields["gigachat_result_file_id"] = strings.TrimSpace(*batch.ResultFileID)
-	}
-	if batch.OutputFileID != nil && strings.TrimSpace(*batch.OutputFileID) != "" {
-		fields["gigachat_output_file_id"] = strings.TrimSpace(*batch.OutputFileID)
-	}
-	if batch.InputFileID != nil && strings.TrimSpace(*batch.InputFileID) != "" {
-		fields["gigachat_input_file_id"] = strings.TrimSpace(*batch.InputFileID)
-	}
-	if batch.ErrorFileID != nil && strings.TrimSpace(*batch.ErrorFileID) != "" {
-		fields["gigachat_error_file_id"] = strings.TrimSpace(*batch.ErrorFileID)
-	}
-	if len(fields) == 0 {
-		return nil
-	}
-	return fields
-}
-
 func decodeGigaChatBatchResponse(responseBody []byte) (GigaChatBatch, error) {
 	var batch GigaChatBatch
 	if err := json.Unmarshal(responseBody, &batch); err == nil && strings.TrimSpace(batch.ID) != "" {
@@ -342,17 +312,16 @@ func toBifrostGigaChatBatchCreateResponse(providerName schemas.ModelProvider, ba
 	}
 
 	response := &schemas.BifrostBatchCreateResponse{
-		ID:                  batch.ID,
-		Object:              toBifrostGigaChatBatchObject(batch.Object),
-		Endpoint:            endpoint,
-		InputFileID:         inputFileID,
-		CompletionWindow:    completionWindow,
-		Status:              toBifrostGigaChatBatchStatus(batch.Status),
-		RequestCounts:       toBifrostGigaChatBatchRequestCounts(batch.RequestCounts),
-		CreatedAt:           batch.CreatedAt,
-		OutputFileID:        toBifrostGigaChatBatchOutputFileID(batch),
-		ErrorFileID:         cleanGigaChatBatchFileID(batch.ErrorFileID),
-		ProviderExtraFields: toBifrostGigaChatBatchProviderExtraFields(batch),
+		ID:               batch.ID,
+		Object:           toBifrostGigaChatBatchObject(batch.Object),
+		Endpoint:         endpoint,
+		InputFileID:      inputFileID,
+		CompletionWindow: completionWindow,
+		Status:           toBifrostGigaChatBatchStatus(batch.Status),
+		RequestCounts:    toBifrostGigaChatBatchRequestCounts(batch.RequestCounts),
+		CreatedAt:        batch.CreatedAt,
+		OutputFileID:     toBifrostGigaChatBatchOutputFileID(batch),
+		ErrorFileID:      cleanGigaChatBatchFileID(batch.ErrorFileID),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
 			Latency:  latency.Milliseconds(),
@@ -395,18 +364,17 @@ func toBifrostGigaChatBatchRetrieveResponse(providerName schemas.ModelProvider, 
 	}
 
 	return &schemas.BifrostBatchRetrieveResponse{
-		ID:                  batch.ID,
-		Object:              toBifrostGigaChatBatchObject(batch.Object),
-		Endpoint:            endpoint,
-		InputFileID:         inputFileID,
-		CompletionWindow:    batch.CompletionWindow,
-		Status:              toBifrostGigaChatBatchStatus(batch.Status),
-		RequestCounts:       toBifrostGigaChatBatchRequestCounts(batch.RequestCounts),
-		CreatedAt:           batch.CreatedAt,
-		CompletedAt:         batch.CompletedAt,
-		OutputFileID:        toBifrostGigaChatBatchOutputFileID(batch),
-		ErrorFileID:         cleanGigaChatBatchFileID(batch.ErrorFileID),
-		ProviderExtraFields: toBifrostGigaChatBatchProviderExtraFields(batch),
+		ID:               batch.ID,
+		Object:           toBifrostGigaChatBatchObject(batch.Object),
+		Endpoint:         endpoint,
+		InputFileID:      inputFileID,
+		CompletionWindow: batch.CompletionWindow,
+		Status:           toBifrostGigaChatBatchStatus(batch.Status),
+		RequestCounts:    toBifrostGigaChatBatchRequestCounts(batch.RequestCounts),
+		CreatedAt:        batch.CreatedAt,
+		CompletedAt:      batch.CompletedAt,
+		OutputFileID:     toBifrostGigaChatBatchOutputFileID(batch),
+		ErrorFileID:      cleanGigaChatBatchFileID(batch.ErrorFileID),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
 			Latency:  latency.Milliseconds(),
@@ -509,17 +477,6 @@ func parseGigaChatBatchResultsJSONL(content []byte, logger schemas.Logger) ([]sc
 	return results, parseResult.Errors
 }
 
-func cloneGigaChatBatchProviderExtraFields(fields map[string]interface{}) map[string]interface{} {
-	if len(fields) == 0 {
-		return nil
-	}
-	cloned := make(map[string]interface{}, len(fields))
-	for key, value := range fields {
-		cloned[key] = value
-	}
-	return cloned
-}
-
 func withGigaChatQuery(path string, values url.Values) string {
 	encoded := values.Encode()
 	if encoded == "" {
@@ -529,6 +486,40 @@ func withGigaChatQuery(path string, values url.Values) string {
 		return path + "&" + encoded
 	}
 	return path + "?" + encoded
+}
+
+func paginateGigaChatBatchList(response *schemas.BifrostBatchListResponse, nativeCursor string, limit int) (string, bool, error) {
+	offset := 0
+	if nativeCursor != "" {
+		parsed, err := strconv.Atoi(nativeCursor)
+		if err != nil || parsed < 0 {
+			return "", false, fmt.Errorf("invalid GigaChat batch cursor %q", nativeCursor)
+		}
+		offset = parsed
+	}
+	if offset > len(response.Data) {
+		return "", false, fmt.Errorf("GigaChat batch cursor offset %d exceeds result count %d", offset, len(response.Data))
+	}
+
+	end := len(response.Data)
+	hasMore := false
+	if limit > 0 && limit < len(response.Data)-offset {
+		end = offset + limit
+		hasMore = true
+	}
+	response.Data = response.Data[offset:end]
+	response.FirstID = nil
+	response.LastID = nil
+	if len(response.Data) > 0 {
+		firstID := response.Data[0].ID
+		lastID := response.Data[len(response.Data)-1].ID
+		response.FirstID = &firstID
+		response.LastID = &lastID
+	}
+	if !hasMore {
+		return "", false, nil
+	}
+	return strconv.Itoa(end), true, nil
 }
 
 func convertGigaChatBatchRequestItemsToJSONL(endpoint schemas.BatchEndpoint, requests []schemas.BatchRequestItem) ([]byte, error) {

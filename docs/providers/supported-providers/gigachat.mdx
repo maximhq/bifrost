@@ -142,7 +142,7 @@ case schemas.GigaChat:
         Models: []string{"GigaChat-2", "GigaChat-2-Pro", "GigaChat-2-Max"},
         Weight: 1.0,
         GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
-            Credentials:  schemas.NewEnvVar("env.GIGACHAT_CREDENTIALS"),
+            Credentials:  schemas.NewSecretVar("env.GIGACHAT_CREDENTIALS"),
             Scope:        schemas.DefaultGigaChatScope,
             AuthURL:      "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
             CABundleFile: "./certs/russian_trusted_root_ca_pem.crt",
@@ -470,7 +470,7 @@ Bifrost maps OpenAI-compatible batch requests to GigaChat `/batches`.
 Supported batch operations:
 
 - `BatchCreate` - `completion_window` defaults to `24h`; any other value is rejected.
-- `BatchList` - returns GigaChat batch jobs from `GET /batches`; Bifrost pagination controls are not supported by GigaChat.
+- `BatchList` - returns GigaChat batch jobs from `GET /batches`; Bifrost applies `limit` and its serial `after` cursor locally because GigaChat does not expose native batch pagination.
 - `BatchRetrieve` - calls `GET /batches?batch_id=<id>`.
 - `BatchResults` - when GigaChat returns `output_file_id` or `result_file_id`, Bifrost downloads that file through Files and parses JSONL result rows.
 - If GigaChat does not return an output/result file ID, `BatchResults` returns a clear operation error instead of fabricating a results endpoint.
@@ -487,7 +487,7 @@ Status mapping:
 | `created` | `validating` |
 | `in_progress` | `in_progress` |
 | `completed` | `completed` |
-| unknown status | Preserved in provider extra fields and returned as the raw status string when schema requires a status |
+| unknown status | Returned as the raw status string when the Bifrost schema requires a status |
 
 ## Models
 

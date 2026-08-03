@@ -134,8 +134,7 @@ type BifrostBatchCreateResponse struct {
 	OutputBlob *string `json:"output_blob,omitempty"`
 	ErrorBlob  *string `json:"error_blob,omitempty"`
 
-	ProviderExtraFields map[string]interface{}     `json:"provider_extra_fields,omitempty"`
-	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // BifrostBatchListRequest represents a request to list batch jobs.
@@ -228,8 +227,7 @@ type BifrostBatchRetrieveResponse struct {
 	OutputBlob *string `json:"output_blob,omitempty"`
 	ErrorBlob  *string `json:"error_blob,omitempty"`
 
-	ProviderExtraFields map[string]interface{}     `json:"provider_extra_fields,omitempty"`
-	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 // BifrostBatchCancelRequest represents a request to cancel a batch job.
@@ -348,6 +346,5 @@ type BifrostBatchResultsResponse struct {
 	HasMore    bool    `json:"has_more,omitempty"`
 	NextCursor *string `json:"next_cursor,omitempty"`
 
-	ProviderExtraFields map[string]interface{}     `json:"provider_extra_fields,omitempty"`
-	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

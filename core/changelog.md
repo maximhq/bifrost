@@ -1,3 +1,4 @@
+- fix: keep GigaChat batch pagination provider-local without widening shared batch response schemas [@krakenalt](https://github.com/krakenalt)
 - fix: finalize GigaChat Chat Completions and Responses streams across normal and large-response passthrough paths [@krakenalt](https://github.com/krakenalt)
 - fix: cache GigaChat TLS clients without hot-path certificate file reads [@krakenalt](https://github.com/krakenalt)
 - fix: tighten GigaChat attachment retries, auth cache cleanup, file-list validation, structured output handling, and batch key configuration [@krakenalt](https://github.com/krakenalt)

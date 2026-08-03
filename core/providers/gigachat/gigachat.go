@@ -1152,7 +1152,7 @@ func (provider *GigaChatProvider) BatchList(ctx *schemas.BifrostContext, keys []
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
-	key, _, ok := helper.GetCurrentKey()
+	key, nativeCursor, ok := helper.GetCurrentKey()
 	if !ok {
 		return &schemas.BifrostBatchListResponse{
 			Object: "list",
@@ -1168,7 +1168,11 @@ func (provider *GigaChatProvider) BatchList(ctx *schemas.BifrostContext, keys []
 		return nil, bifrostErr
 	}
 
-	nextCursor, hasMore := helper.BuildNextCursor(false, "")
+	nativeNextCursor, nativeHasMore, err := paginateGigaChatBatchList(response, nativeCursor, request.Limit)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+	}
+	nextCursor, hasMore := helper.BuildNextCursor(nativeHasMore, nativeNextCursor)
 	response.HasMore = hasMore
 	if nextCursor != "" {
 		response.NextCursor = &nextCursor
@@ -1249,16 +1253,10 @@ func (provider *GigaChatProvider) BatchResults(ctx *schemas.BifrostContext, keys
 	}
 
 	results, parseErrors := parseGigaChatBatchResultsJSONL(fileContentResponse.Content, provider.logger)
-	providerExtraFields := cloneGigaChatBatchProviderExtraFields(batchResponse.ProviderExtraFields)
-	if providerExtraFields == nil {
-		providerExtraFields = make(map[string]interface{})
-	}
-	providerExtraFields["gigachat_batch_output_file_id"] = outputFileID
 
 	response := &schemas.BifrostBatchResultsResponse{
-		BatchID:             strings.TrimSpace(request.BatchID),
-		Results:             results,
-		ProviderExtraFields: providerExtraFields,
+		BatchID: strings.TrimSpace(request.BatchID),
+		Results: results,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider:                provider.GetProviderKey(),
 			Latency:                 fileContentResponse.ExtraFields.Latency,
