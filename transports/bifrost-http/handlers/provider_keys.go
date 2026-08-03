@@ -98,6 +98,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
 	}
 
+	if requireGenuineAuthForEndpointChange(ctx, baseProvider) {
+		return
+	}
+
 	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
@@ -208,6 +212,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	baseProvider := provider
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
 		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
+	}
+
+	if requireGenuineAuthForEndpointChange(ctx, baseProvider) {
+		return
 	}
 
 	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" {
@@ -623,4 +631,47 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		}
 	}
 	return nil
+}
+
+// providerKeyCarriesEndpointURL reports whether provider is one whose key config always
+// carries a caller-chosen destination Bifrost will later dial directly (Ollama/SGL/VLLM
+// url, Azure endpoint) - as opposed to providers like Bedrock/Vertex where the config only
+// selects a region and Bifrost builds the actual request host itself. validateProviderKeyURL
+// makes this field mandatory for these four, so any create/update on them always sets one.
+func providerKeyCarriesEndpointURL(provider schemas.ModelProvider) bool {
+	switch provider {
+	case schemas.Ollama, schemas.SGL, schemas.VLLM, schemas.Azure:
+		return true
+	default:
+		return false
+	}
+}
+
+// isAuthBypassed reports whether ctx was let through the auth middleware's fail-open branch
+// (dashboard auth disabled/unconfigured) rather than a genuine credential check. Handlers
+// gating a capability that's fine for a real admin but dangerous for anyone on the network
+// (e.g. pointing a dial destination somewhere new) should check this, not
+// IsLocalAdminContextKey, which is also true for genuinely authenticated sessions.
+func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	return bypassed
+}
+
+// requireGenuineAuthForEndpointChange rejects a provider-key create/update that would set an
+// arbitrary dial destination (see providerKeyCarriesEndpointURL) when the caller was only let
+// through by the fail-open bypass (dashboard auth disabled/unconfigured), not by a real
+// credential. The destination itself isn't inherently unsafe - self-hosted Ollama/vLLM on a
+// loopback or private address is the normal, documented setup, and is already appropriately
+// dial-guarded (ConfigureDialer) - the vulnerability is that anyone unauthenticated can set it
+// at all. On rejection this sends the response and returns true; callers should return
+// immediately when it does.
+func requireGenuineAuthForEndpointChange(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider) bool {
+	if !providerKeyCarriesEndpointURL(provider) {
+		return false
+	}
+	if isAuthBypassed(ctx) {
+		SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Setting a %s key's endpoint URL requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", provider))
+		return true
+	}
+	return false
 }

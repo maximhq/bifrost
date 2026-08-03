@@ -20,7 +20,11 @@ providers:
   post:
     operationId: addProvider
     summary: Add a new provider
-    description: Adds a new provider with the specified configuration.
+    description: |
+      Adds a new provider with the specified configuration.
+      Setting network_config.base_url requires a genuinely authenticated admin session - it
+      is refused with 403 if dashboard authentication is disabled or unconfigured, even
+      though other management endpoints remain reachable in that state.
     tags:
       - Providers
     requestBody:
@@ -40,6 +44,10 @@ providers:
               $ref: '../../schemas/management/providers.yaml#/ProviderResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          network_config.base_url was supplied and dashboard authentication is disabled or
+          unconfigured (the request was not genuinely authenticated)
       '409':
         description: Provider already exists
         content:
@@ -89,6 +97,9 @@ providers-by-name:
     description: |
       Updates a provider's configuration. Expects ALL fields to be provided,
       including both edited and non-edited fields. Partial updates are not supported.
+      Setting network_config.base_url requires a genuinely authenticated admin session - it
+      is refused with 403 if dashboard authentication is disabled or unconfigured, even
+      though other management endpoints remain reachable in that state.
     tags:
       - Providers
     parameters:
@@ -115,6 +126,10 @@ providers-by-name:
               $ref: '../../schemas/management/providers.yaml#/ProviderResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          network_config.base_url was supplied and dashboard authentication is disabled or
+          unconfigured (the request was not genuinely authenticated)
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -192,6 +207,11 @@ provider-keys:
       Creates a new API key for the specified provider. The key `id` is auto-generated
       if omitted. `enabled` defaults to `true` if omitted. `value` is required and must
       not be empty. Keys cannot be created on keyless providers.
+      For Ollama, SGL, VLLM, and Azure keys, setting the endpoint URL
+      (ollama_key_config.url / sgl_key_config.url / vllm_key_config.url /
+      azure_key_config.endpoint) requires a genuinely authenticated admin session - it is
+      refused with 403 if dashboard authentication is disabled or unconfigured, even though
+      other management endpoints remain reachable in that state.
     tags:
       - Providers
     parameters:
@@ -218,6 +238,10 @@ provider-keys:
               $ref: '../../schemas/management/providers.yaml#/Key'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          An Ollama/SGL/VLLM/Azure endpoint URL was supplied and dashboard authentication is
+          disabled or unconfigured (the request was not genuinely authenticated)
       '404':
         description: Provider not found
         content:
@@ -280,6 +304,10 @@ provider-key-by-id:
       Updates an existing key. Send the full key object. Redacted values sent back
       unchanged are automatically preserved (the server merges them with the stored
       raw values).
+      For Ollama, SGL, VLLM, and Azure keys, changing the endpoint URL requires a genuinely
+      authenticated admin session - it is refused with 403 if dashboard authentication is
+      disabled or unconfigured, even though other management endpoints remain reachable in
+      that state.
     tags:
       - Providers
     parameters:
@@ -312,6 +340,10 @@ provider-key-by-id:
               $ref: '../../schemas/management/providers.yaml#/Key'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '403':
+        description: >-
+          An Ollama/SGL/VLLM/Azure endpoint URL was supplied and dashboard authentication is
+          disabled or unconfigured (the request was not genuinely authenticated)
       '404':
         description: Provider or key not found
         content:

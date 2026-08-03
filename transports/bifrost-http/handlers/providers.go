@@ -304,6 +304,16 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if payload.NetworkConfig.BaseURL != "" {
+			// Setting a provider's base URL - like a provider key's endpoint URL,
+			// see requireGenuineAuthForEndpointChange - requires genuine auth. The
+			// destination check below (ValidateExternalURL) only blocks private-network
+			// targets when allow_private_network is false; an unauthenticated caller under
+			// the fail-open bypass could otherwise just set both fields together in the
+			// same request and self-authorize its own SSRF target.
+			if isAuthBypassed(ctx) {
+				SendError(ctx, fasthttp.StatusForbidden, "Setting a provider's base URL requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.")
+				return
+			}
 			if err := bifrost.ValidateExternalURL(payload.NetworkConfig.BaseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
 				return
@@ -493,6 +503,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if nc.BaseURL != "" {
+		if isAuthBypassed(ctx) {
+			SendError(ctx, fasthttp.StatusForbidden, "Setting a provider's base URL requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.")
+			return
+		}
 		if err := bifrost.ValidateExternalURL(nc.BaseURL, nc.AllowPrivateNetwork); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
 			return
