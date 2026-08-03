@@ -177,7 +177,7 @@ func BenchmarkAnthropicMessageRequestRawFieldExtraction(b *testing.B) {
 	}
 
 	for _, tc := range cases {
-		b.Run(tc.name, func(b *testing.B) {
+		b.Run("current_map/"+tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(tc.body)))
 			for b.Loop() {
@@ -185,6 +185,14 @@ func BenchmarkAnthropicMessageRequestRawFieldExtraction(b *testing.B) {
 				if err := sonic.Unmarshal(tc.body, &fields); err != nil {
 					b.Fatal(err)
 				}
+			}
+		})
+		b.Run("proposed_scan/"+tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.body)))
+			for b.Loop() {
+				var req AnthropicMessageRequest
+				extractAnthropicMessageRequestUnknownFields(tc.body, &req)
 			}
 		})
 	}
