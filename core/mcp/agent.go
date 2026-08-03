@@ -264,7 +264,7 @@ func (a *AgentModeExecutor) executeAgent(
 			}
 
 			// Check if tool can be auto-executed
-			if canAutoExecuteTool(toolName, client.ExecutionConfig) {
+			if CanAutoExecuteTool(toolName, client.ExecutionConfig) {
 				autoExecutableTools = append(autoExecutableTools, toolCall)
 				a.logger.Debug("Tool %s can be auto-executed", toolName)
 			} else {

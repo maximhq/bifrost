@@ -448,9 +448,15 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 	return true // Tool is skipped (nil is treated as [] - no tools)
 }
 
-// canAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
+// CanAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
 // Returns true if the tool can be auto-executed, false otherwise.
-func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
+//
+// This is the authoritative allow-list check and must be called at the actual tool-invocation
+// chokepoint, not just as a pre-flight heuristic over generated code text - see its call site
+// in codemode/starlark/executecode.go's callMCPTool for why: a model can reference a bound
+// tool through any syntactic indirection (e.g. getattr(server, name)) that a source-text scan
+// won't recognize, so a scan-based check alone fails open on tool calls it doesn't see.
+func CanAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// First check if tool is in ToolsToExecute (must be executable first)
 	if shouldSkipToolForConfig(toolName, config) {
 		return false // Tool is not in ToolsToExecute, so it cannot be auto-executed

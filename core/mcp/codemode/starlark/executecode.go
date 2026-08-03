@@ -418,6 +418,17 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		return nil, fmt.Errorf("client not found for server name: %s", clientName)
 	}
 
+	// Enforce ToolsToAutoExecute at the actual invocation chokepoint, not just via the
+	// pre-flight source-text scan in agent.go: generated code can reach any bound tool
+	// through indirection (getattr, a dispatch table, etc.) that scan doesn't recognize,
+	// so this is the only point that sees the real tool being called regardless of how
+	// the Starlark code referenced it. Every Starlark tool invocation passes through this
+	// function (it's the sole callee of the builtin closures the sandbox is populated
+	// with), so this one check covers every syntax shape at once.
+	if !codemcp.CanAutoExecuteTool(toolName, client.ExecutionConfig) {
+		return nil, fmt.Errorf("tool %q requires approval and cannot be auto-executed via Code Mode", toolName)
+	}
+
 	// Strip the client name prefix from tool name before calling MCP server
 	originalToolName := stripClientPrefix(toolName, clientName)
 
