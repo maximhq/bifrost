@@ -12,7 +12,6 @@ import {
 	Construction,
 	DatabaseZap,
 	Flag,
-	ShieldHalf,
 	FlaskConical,
 	FolderGit,
 	Gavel,
@@ -72,6 +71,7 @@ import {
 	SidebarMenuSubItem,
 	useSidebar,
 } from "@/components/ui/sidebar";
+import { HIDDEN_UNTIL_NAV_COOKIE, REMIND_LATER_COOKIE, useOnboardingChecklist } from "@/hooks/useOnboardingChecklist";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
@@ -84,16 +84,16 @@ import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
-import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./themeToggle";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
 
 // Cookie name for dismissing production setup card
 const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
-
-const newBadgeClassName =
-	"relative overflow-hidden after:pointer-events-none after:absolute after:inset-y-0 after:-left-full after:w-full after:skew-x-[-18deg] after:bg-gradient-to-r after:from-transparent after:via-primary/25 after:to-transparent after:opacity-0 after:content-[''] after:animate-[sidebar-new-badge-shine_1200ms_cubic-bezier(0.22,1,0.36,1)_260ms_both]";
+// Closing the "setup checklist incomplete" promo card only snoozes that card
+// for a day — separate from the widget's own hidden/snoozed cookies, so it
+// doesn't affect whether the floating widget itself reappears on next nav.
+const ONBOARDING_CARD_DISMISSED_COOKIE = "bifrost_onboarding_card_dismissed";
 
 // Custom MCP Icon Component
 const MCPIcon = ({ className }: { className?: string }) => (
@@ -359,7 +359,7 @@ const SidebarItemView = ({
 		menuButton = (
 			<SidebarMenuButton asChild tooltip={item.title} className={buttonClassName}>
 				<Link
-					to={item.url as any}
+					to={item.url}
 					preload="intent"
 					data-nav-url={item.url}
 					onClick={isSidebarCollapsed ? (e: React.MouseEvent) => e.stopPropagation() : undefined}
@@ -417,7 +417,7 @@ const SidebarItemView = ({
 										</div>
 									) : (
 										<Link
-											to={href as any}
+											to={href}
 											preload="intent"
 											data-testid={`sidebar-subitem-link-${subSlug}`}
 											className={`flex h-7 items-center rounded-sm px-2 ${isSubItemActive ? "bg-sidebar-accent" : "hover:bg-sidebar-accent"}`}
@@ -475,7 +475,7 @@ const SidebarItemView = ({
 								) : (
 									<SidebarMenuSubButton asChild className={subItemClassName}>
 										<Link
-											to={subItemHref as any}
+											to={subItemHref}
 											preload="intent"
 											data-nav-url={subItemHref}
 											data-testid={`sidebar-subitem-link-${slug(subItem.title)}`}
@@ -539,6 +539,7 @@ export default function AppSidebar() {
 	// Wrapper that accepts arbitrary string URLs (TanStack Router's `to` is
 	// strictly typed, but our sidebar items come from a runtime config).
 	const navigate = useCallback((url: string) => tsNavigate({ to: url as string }), [tsNavigate]);
+	const { state: sidebarState, toggleSidebar } = useSidebar();
 	const [mounted, setMounted] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -546,8 +547,14 @@ export default function AppSidebar() {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [focusedIndex, setFocusedIndex] = useState(-1);
 	const searchInputRef = useRef<HTMLInputElement>(null);
-	const [cookies, setCookie] = useCookies([PRODUCTION_SETUP_DISMISSED_COOKIE]);
+	const [cookies, setCookie, removeCookie] = useCookies([
+		PRODUCTION_SETUP_DISMISSED_COOKIE,
+		HIDDEN_UNTIL_NAV_COOKIE,
+		REMIND_LATER_COOKIE,
+		ONBOARDING_CARD_DISMISSED_COOKIE,
+	]);
 	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
+	const isOnboardingCardDismissed = !!cookies[ONBOARDING_CARD_DISMISSED_COOKIE];
 	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
 		skip: !mounted, // Only fetch after component is mounted
 	});
@@ -599,6 +606,30 @@ export default function AppSidebar() {
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
 	const envLabel = coreConfig?.env_label ?? null;
+
+	// Same completion logic the floating OnboardingWidget uses — shared so the
+	// two surfaces can't disagree on what counts as "done".
+	const {
+		steps: onboardingSteps,
+		skippedIds: onboardingSkippedIds,
+		checklistReady: onboardingChecklistReady,
+		isDismissedForAll: isOnboardingDismissedForAll,
+	} = useOnboardingChecklist({ skip: !isDbConnected });
+	const onboardingDoneCount = onboardingSteps.filter((step) => step.complete || onboardingSkippedIds.includes(step.id)).length;
+	const isOnboardingIncomplete = onboardingChecklistReady && onboardingDoneCount < onboardingSteps.length;
+	// The widget itself hides via these two cookies (X close / "Remind me
+	// later"); "I accept the risk - hide for everyone" is a deliberate
+	// permanent opt-out and should not resurrect this card.
+	const showOnboardingResumeCard =
+		isDbConnected &&
+		isOnboardingIncomplete &&
+		!isOnboardingDismissedForAll &&
+		!isOnboardingCardDismissed &&
+		(!!cookies[HIDDEN_UNTIL_NAV_COOKIE] || !!cookies[REMIND_LATER_COOKIE]);
+	const handleResumeOnboarding = useCallback(() => {
+		removeCookie(HIDDEN_UNTIL_NAV_COOKIE, { path: "/" });
+		removeCookie(REMIND_LATER_COOKIE, { path: "/" });
+	}, [removeCookie]);
 
 	const items = useMemo(
 		() => [
@@ -1099,7 +1130,6 @@ export default function AppSidebar() {
 			hasPromptRepositoryAccess,
 			hasSkillsRepositoryAccess,
 			hasAccessProfilesAccess,
-			hasAccessProfilesAccess,
 			hasFeatureFlagsAccess,
 			hasDevicesAccess,
 			hasInventoryAccess,
@@ -1352,6 +1382,33 @@ export default function AppSidebar() {
 				variant: "warning" as const,
 			});
 		}
+		// Setup checklist dismissed (X / snoozed) while still incomplete —
+		// non-dismissible, same severity tier as restart-required.
+		if (showOnboardingResumeCard) {
+			const remainingSteps = onboardingSteps.length - onboardingDoneCount;
+			cards.push({
+				id: "onboarding-incomplete",
+				title: "Setup checklist incomplete",
+				description: (
+					<div className="flex h-full flex-col gap-2 text-xs text-amber-700 dark:text-amber-300/80">
+						<p>
+							{remainingSteps} setup step{remainingSteps === 1 ? "" : "s"} left. Not completing these steps keeps your Bifrost setup
+							vulnerable.
+						</p>
+						<button
+							type="button"
+							onClick={handleResumeOnboarding}
+							data-testid="onboarding-resume-btn"
+							className="text-primary mt-auto self-start pb-1 font-medium underline"
+						>
+							Resume setup
+						</button>
+					</div>
+				),
+				dismissible: true,
+				variant: "warning" as const,
+			});
+		}
 		if (showNewReleaseBanner && latestRelease) {
 			cards.push({
 				id: "new-release",
@@ -1377,7 +1434,18 @@ export default function AppSidebar() {
 			cards.push(productionSetupHelpCard);
 		}
 		return cards;
-	}, [coreConfig?.restart_required, showNewReleaseBanner, latestRelease, newReleaseImage, isProductionSetupDismissed, mounted]);
+	}, [
+		coreConfig?.restart_required,
+		showNewReleaseBanner,
+		latestRelease,
+		newReleaseImage,
+		isProductionSetupDismissed,
+		mounted,
+		showOnboardingResumeCard,
+		onboardingSteps.length,
+		onboardingDoneCount,
+		handleResumeOnboarding,
+	]);
 
 	// Reset areCardsEmpty when promoCards changes
 	useEffect(() => {
@@ -1386,7 +1454,10 @@ export default function AppSidebar() {
 		}
 	}, [promoCards]);
 
-	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty;
+	// The promo card stack is hidden via CSS when collapsed (icon rail), so it
+	// shouldn't reserve vertical space there — otherwise the nav icon list
+	// gets squeezed into a shorter scroll area for a card nobody can see.
+	const hasPromoCards = promoCards.length > 0 && !areCardsEmpty && sidebarState !== "collapsed";
 	// When cards are present: 13rem (header 3rem + bottom section ~10rem)
 	// When no cards: 8rem (header 3rem + bottom section without cards ~5rem)
 	const sidebarGroupHeight = hasPromoCards ? "h-[calc(100vh-13rem)]" : "h-[calc(100vh-8rem)]";
@@ -1405,8 +1476,25 @@ export default function AppSidebar() {
 					expires: expiryDate,
 				});
 			}
+			if (cardId === "onboarding-incomplete") {
+				// If the widget itself is snoozed via "Remind me later", align the
+				// card's dismissal to that same date — otherwise the card would
+				// keep nagging on its own 1-day clock while the widget stays quiet
+				// for the full snooze period. Falls back to 1 day when the card is
+				// only up because of the widget's X close (no snooze date to match).
+				const remindAt = cookies[REMIND_LATER_COOKIE];
+				const remindAtDate = remindAt ? new Date(remindAt) : null;
+				const expiryDate = remindAtDate && !Number.isNaN(remindAtDate.getTime()) ? remindAtDate : new Date();
+				if (!remindAtDate || Number.isNaN(remindAtDate.getTime())) {
+					expiryDate.setDate(expiryDate.getDate() + 1);
+				}
+				setCookie(ONBOARDING_CARD_DISMISSED_COOKIE, "true", {
+					path: "/",
+					expires: expiryDate,
+				});
+			}
 		},
-		[setCookie],
+		[setCookie, cookies],
 	);
 
 	const handleLogout = async () => {
@@ -1419,8 +1507,6 @@ export default function AppSidebar() {
 			navigate("/login");
 		}
 	};
-
-	const { state: sidebarState, toggleSidebar } = useSidebar();
 
 	return (
 		<Sidebar collapsible="icon" className="overflow-y-clip border-none bg-transparent">
