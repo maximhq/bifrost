@@ -424,6 +424,9 @@
         "parasail": {
           "$ref": "#/$defs/provider"
         },
+        "requesty": {
+          "$ref": "#/$defs/provider"
+        },
         "perplexity": {
           "$ref": "#/$defs/provider"
         },
@@ -2520,7 +2523,8 @@
                         "perplexity",
                         "replicate",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "requesty"
                       ]
                     },
                     "embedding_model": {
