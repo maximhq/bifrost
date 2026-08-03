@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -44,6 +45,29 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 			if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" || ctx.IsTLS() {
 				ctx.Response.Header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 			}
+			next(ctx)
+		}
+	}
+}
+
+// RecoveryMiddleware recovers from panics anywhere in the wrapped handler chain
+// so a single malformed request cannot crash the whole process. fasthttp.Server
+// has no built-in panic recovery (unlike net/http's Server, it never wraps the
+// handler in a recover()), so any panic reachable from request-derived input -
+// a malformed payload tripping an out-of-bounds slice access deep in a
+// dependency, for example - is otherwise fatal to every in-flight request.
+// This must be the outermost middleware so it also covers panics raised by
+// inner middlewares, not just route handlers.
+func RecoveryMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error(fmt.Sprintf("recovered from panic in request handler: %v\n%s", r, debug.Stack()))
+					ctx.Response.Reset()
+					SendError(ctx, fasthttp.StatusInternalServerError, "internal server error")
+				}
+			}()
 			next(ctx)
 		}
 	}
