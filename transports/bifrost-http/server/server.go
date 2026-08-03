@@ -19,6 +19,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -2102,8 +2103,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.
 	s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
 	s.Config.EventBroadcaster = s.WebSocketHandler.BroadcastEvent
-	// Initializing plugin loader
-	s.Config.PluginLoader = &dynamicPlugins.SharedObjectPluginLoader{}
+	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
+	// fails server startup rather than silently no-oping, since this is security-relaxing
+	// config for SSRF protection on custom plugin downloads.
+	var pluginDownloadAllowlist *network.Allowlist
+	if s.Config.ServerConfig != nil && len(s.Config.ServerConfig.PluginDownloadPrivateAllowlist) > 0 {
+		pluginDownloadAllowlist, err = network.NewAllowlist(s.Config.ServerConfig.PluginDownloadPrivateAllowlist)
+		if err != nil {
+			return fmt.Errorf("invalid server.plugin_download_private_allowlist: %w", err)
+		}
+	}
+	s.Config.PluginLoader = dynamicPlugins.NewSharedObjectPluginLoader(pluginDownloadAllowlist)
 	// Initialize log retention cleaner if log store is configured
 	if s.Config.LogsStore != nil {
 		// If log retention days remains 0, then we wont be initializing the log retention cleaner

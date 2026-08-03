@@ -149,6 +149,13 @@ type pluginOrderInfo struct {
 
 type ServerConfig struct {
 	ReadBufferSize int `json:"read_buffer_size,omitempty"`
+
+	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
+	// plugin (.so) downloads may reach even when they resolve to a private/loopback/
+	// link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted
+	// internal artifact hosts. Deploy-time only - read from config.json/environment at
+	// startup, never settable via the plugin admin API. Invalid entries fail server startup.
+	PluginDownloadPrivateAllowlist []string `json:"plugin_download_private_allowlist,omitempty"`
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.

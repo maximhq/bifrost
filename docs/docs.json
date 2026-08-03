@@ -110,6 +110,7 @@
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
+              "migration-guides/v2.0.0",
               "migration-guides/v1.5.0",
               "migration-guides/litellm"
             ]
@@ -300,6 +301,7 @@
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
+              "enterprise/migration-guides/v2.0.0",
               "enterprise/migration-guides/v1.4.0"
             ]
           },
