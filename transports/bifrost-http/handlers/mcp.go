@@ -81,6 +81,7 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.updateMCPClient, middlewares...))
 	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.deleteMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
+	r.POST("/api/mcp/client/{id}/reauth", lib.ChainMiddlewares(h.reauthMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
 }
 
@@ -540,6 +541,164 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client reconnected successfully",
+	})
+}
+
+// reauthMCPClient handles POST /api/mcp/client/{id}/reauth - Start a fresh OAuth
+// authorization for an existing server-level OAuth MCP client.
+//
+// This is the escape hatch for an expired or upstream-revoked token: reconnect
+// re-dials with the same dead credentials, so the admin has to sign in again.
+// The client's existing oauth_configs row supplies the client credentials,
+// endpoints, scopes and resource, so nothing has to be retyped — including a
+// client_id that originally came from dynamic registration (RFC 7591).
+//
+// The response is the same `pending_oauth` payload the create flow returns, and
+// the UI drives it through the identical popup → poll status → POST
+// /api/mcp/client/{oauth_config_id}/complete-oauth sequence. completeMCPClientOAuth
+// sees that the pending config points at an existing client and takes its update
+// path: repoint oauth_config_id at the freshly authorized config and reconnect.
+// The old oauth config/token rows are deliberately left in place until then, so a
+// re-auth that's abandoned halfway leaves the live connection untouched.
+//
+// Only auth_type == "oauth" is supported. per_user_oauth tokens belong to
+// individual end users and are re-authorized from the MCP Sessions page.
+func (h *MCPHandler) reauthMCPClient(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+	id, err := getIDFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
+		return
+	}
+
+	dbClient, err := h.store.ConfigStore.GetMCPClientByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("MCP client %s not found", id))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get MCP client: %v", err))
+		return
+	}
+	if dbClient == nil {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("MCP client %s not found", id))
+		return
+	}
+
+	if dbClient.AuthType != string(schemas.MCPAuthTypeOauth) {
+		SendError(ctx, fasthttp.StatusBadRequest, "re-authentication is only available for MCP clients using OAuth 2.0 authentication")
+		return
+	}
+	if dbClient.Disabled {
+		SendError(ctx, fasthttp.StatusBadRequest, "cannot re-authenticate a disabled MCP client: enable the client first")
+		return
+	}
+	if dbClient.OauthConfigID == nil || *dbClient.OauthConfigID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "MCP client has no OAuth configuration to re-authenticate with: edit the client to configure OAuth")
+		return
+	}
+
+	existingOauthConfig, err := h.store.ConfigStore.GetOauthConfigByID(ctx, *dbClient.OauthConfigID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get OAuth config: %v", err))
+		return
+	}
+	if existingOauthConfig == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "OAuth configuration for this MCP client no longer exists: edit the client to reconfigure OAuth")
+		return
+	}
+
+	// Scopes are persisted as a JSON array. An unreadable value shouldn't block
+	// re-auth — fall back to empty and let discovery repopulate them.
+	var scopes []string
+	if existingOauthConfig.Scopes != "" {
+		if err := json.Unmarshal([]byte(existingOauthConfig.Scopes), &scopes); err != nil {
+			logger.Warn(fmt.Sprintf("failed to parse stored OAuth scopes for MCP client %s: %v", id, err))
+			scopes = nil
+		}
+	}
+
+	serverURL := existingOauthConfig.ServerURL
+	if serverURL == "" && dbClient.ConnectionString != nil {
+		serverURL = dbClient.ConnectionString.GetValue()
+	}
+	registrationURL := ""
+	if existingOauthConfig.RegistrationURL != nil {
+		registrationURL = *existingOauthConfig.RegistrationURL
+	}
+
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
+		ClientID:        existingOauthConfig.ClientID,
+		ClientSecret:    existingOauthConfig.GetClientSecretAsSecretVar(),
+		AuthorizeURL:    existingOauthConfig.AuthorizeURL,
+		TokenURL:        existingOauthConfig.TokenURL,
+		RegistrationURL: registrationURL,
+		RedirectURI:     redirectURI,
+		Scopes:          scopes,
+		ServerURL:       serverURL,
+		Resource:        existingOauthConfig.Resource,
+	})
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+		return
+	}
+
+	// The pending config is the current client verbatim, with only the OAuth
+	// config pointer swapped. Everything the completion path writes back has to
+	// be carried here or it would be reset to its zero value on completion.
+	isPingAvailable := true
+	if dbClient.IsPingAvailable != nil {
+		isPingAvailable = *dbClient.IsPingAvailable
+	}
+	pendingConfig := schemas.MCPClientConfig{
+		ID:                        dbClient.ClientID,
+		Name:                      dbClient.Name,
+		IsCodeModeClient:          dbClient.IsCodeModeClient,
+		IsPingAvailable:           &isPingAvailable,
+		ConnectionType:            schemas.MCPConnectionType(dbClient.ConnectionType),
+		ConnectionString:          dbClient.ConnectionString,
+		StdioConfig:               dbClient.StdioConfig,
+		TLSConfig:                 dbClient.TLSConfig,
+		AuthType:                  schemas.MCPAuthType(dbClient.AuthType),
+		OauthConfigID:             &flowInitiation.OauthConfigID,
+		ToolsToExecute:            dbClient.ToolsToExecute,
+		ToolsToAutoExecute:        dbClient.ToolsToAutoExecute,
+		Headers:                   dbClient.Headers,
+		AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
+		ToolPricing:               dbClient.ToolPricing,
+		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
+		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
+		DiscoveredTools:           dbClient.DiscoveredTools,
+		DiscoveredToolNameMapping: dbClient.DiscoveredToolNameMapping,
+		Disabled:                  dbClient.Disabled,
+	}
+	if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
+		logger.Error(fmt.Sprintf("[MCP Reauth] Failed to store pending MCP client: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store pending MCP client: %v", err))
+		return
+	}
+
+	completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
+	statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
+	SendJSON(ctx, map[string]any{
+		"status":          "pending_oauth",
+		"message":         "OAuth re-authorization required",
+		"oauth_config_id": flowInitiation.OauthConfigID,
+		"authorize_url":   flowInitiation.AuthorizeURL,
+		"expires_at":      flowInitiation.ExpiresAt,
+		"mcp_client_id":   dbClient.ClientID,
+		"complete_url":    completeURL,
+		"status_url":      statusURL,
+		"next_steps": []string{
+			"1. Open authorize_url in a browser to approve access",
+			"2. Poll status_url to check when status becomes 'authorized'",
+			"3. POST complete_url to apply the new credentials to the MCP client",
+		},
 	})
 }
 
@@ -1889,6 +2048,9 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	// Standard server-level OAuth completion
 	if isUpdateFlow {
 		oldDBConfig := *existingDBConfig
+		// UpdateMCPClientConfig always writes tls_config_json and
+		// tool_execution_timeout, so both have to be carried through from the
+		// pending config or a re-auth would silently clear them.
 		updateReq := &configstoreTables.TableMCPClient{
 			ClientID:                  mcpClientConfig.ID,
 			Name:                      mcpClientConfig.Name,
@@ -1896,6 +2058,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			ConnectionType:            string(mcpClientConfig.ConnectionType),
 			ConnectionString:          mcpClientConfig.ConnectionString,
 			StdioConfig:               mcpClientConfig.StdioConfig,
+			TLSConfig:                 mcpClientConfig.TLSConfig,
 			AuthType:                  string(mcpClientConfig.AuthType),
 			OauthConfigID:             mcpClientConfig.OauthConfigID,
 			ToolsToExecute:            mcpClientConfig.ToolsToExecute,
@@ -1905,6 +2068,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			IsPingAvailable:           mcpClientConfig.IsPingAvailable,
 			ToolPricing:               mcpClientConfig.ToolPricing,
 			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
+			ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
 			AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
 			DiscoveredTools:           mcpClientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: mcpClientConfig.DiscoveredToolNameMapping,
@@ -1921,6 +2085,17 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			logger.Error(fmt.Sprintf("Failed to reconnect MCP client after OAuth DB update for client %s: %v", mcpClientConfig.ID, err))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client with updated OAuth credentials: %v", err))
 			return
+		}
+		// The client now runs on the new OAuth config, so the superseded one is
+		// dead weight — and TokenRefreshWorker walks every token row regardless
+		// of whether an MCP client still points at it, so leaving it behind means
+		// refreshing an unused token upstream forever. Revoke only after the
+		// reconnect succeeds; the rollback path above still needs the old token.
+		if oldDBConfig.OauthConfigID != nil && *oldDBConfig.OauthConfigID != "" && *oldDBConfig.OauthConfigID != oauthConfigID {
+			if err := h.oauthHandler.RevokeToken(ctx, *oldDBConfig.OauthConfigID); err != nil {
+				logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to revoke superseded OAuth config %s for client %s: %v",
+					*oldDBConfig.OauthConfigID, mcpClientConfig.ID, err))
+			}
 		}
 	} else {
 		if h.store.ConfigStore != nil {
