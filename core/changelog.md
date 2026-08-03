@@ -1,3 +1,4 @@
+- fix: apply GigaChat file-list limit and cursor pagination locally [@krakenalt](https://github.com/krakenalt)
 - fix: guard GigaChat batch output downloads against an empty key set [@krakenalt](https://github.com/krakenalt)
 - fix: keep GigaChat batch pagination provider-local without widening shared batch response schemas [@krakenalt](https://github.com/krakenalt)
 - fix: finalize GigaChat Chat Completions and Responses streams across normal and large-response passthrough paths [@krakenalt](https://github.com/krakenalt)

@@ -446,7 +446,7 @@ The GigaChat provider implements Bifrost's OpenAI-compatible Files surface on to
 | Bifrost operation | GigaChat behavior | Notes |
 | ----------------- | ----------------- | ----- |
 | `FileUpload` | `POST /files` multipart with `file` and `purpose` fields | Bifrost purpose `assistants` maps to GigaChat `assistant`; other purposes map to `general`. |
-| `FileList` | `GET /files` | GigaChat does not support Bifrost limit/order pagination controls. |
+| `FileList` | `GET /files` | Bifrost applies `limit` and its serial `after` cursor locally; `order` remains unsupported. |
 | `FileRetrieve` | `GET /files/{file}` | Returns normalized file metadata. |
 | `FileDelete` | `POST /files/{file}/delete` | Bifrost's `DELETE /v1/files/{file_id}` calls this upstream endpoint. |
 | `FileContent` | `GET /files/{file}/content` | Raw byte responses are returned as-is; JSON wrappers with base64 `content` are decoded. |

@@ -11,6 +11,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -49,6 +50,32 @@ func toBifrostFilePurpose(gigaChatPurpose string, requestedPurpose schemas.FileP
 	default:
 		return schemas.FilePurpose(gigaChatPurpose)
 	}
+}
+
+func paginateGigaChatFileList(response *schemas.BifrostFileListResponse, nativeCursor string, limit int) (string, bool, error) {
+	offset := 0
+	if nativeCursor != "" {
+		parsed, err := strconv.Atoi(nativeCursor)
+		if err != nil || parsed < 0 {
+			return "", false, fmt.Errorf("invalid GigaChat file cursor %q", nativeCursor)
+		}
+		offset = parsed
+	}
+	if offset > len(response.Data) {
+		return "", false, fmt.Errorf("GigaChat file cursor offset %d exceeds result count %d", offset, len(response.Data))
+	}
+
+	end := len(response.Data)
+	hasMore := false
+	if limit > 0 && limit < len(response.Data)-offset {
+		end = offset + limit
+		hasMore = true
+	}
+	response.Data = response.Data[offset:end]
+	if !hasMore {
+		return "", false, nil
+	}
+	return strconv.Itoa(end), true, nil
 }
 
 func (provider *GigaChatProvider) fileUploadWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest, forceRefresh bool) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {

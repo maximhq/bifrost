@@ -1293,9 +1293,6 @@ func (provider *GigaChatProvider) FileList(ctx *schemas.BifrostContext, keys []s
 	if request.Order != nil && strings.TrimSpace(*request.Order) != "" {
 		return nil, providerUtils.NewBifrostOperationError("GigaChat file list does not support order sorting", nil)
 	}
-	if request.Limit != 0 {
-		return nil, providerUtils.NewBifrostOperationError("GigaChat file list does not support limit pagination", nil)
-	}
 	if len(keys) == 0 {
 		keys = []schemas.Key{{}}
 	}
@@ -1304,7 +1301,7 @@ func (provider *GigaChatProvider) FileList(ctx *schemas.BifrostContext, keys []s
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
 	}
-	key, _, ok := helper.GetCurrentKey()
+	key, nativeCursor, ok := helper.GetCurrentKey()
 	if !ok {
 		return &schemas.BifrostFileListResponse{
 			Object: "list",
@@ -1320,7 +1317,11 @@ func (provider *GigaChatProvider) FileList(ctx *schemas.BifrostContext, keys []s
 		return nil, bifrostErr
 	}
 
-	nextCursor, hasMore := helper.BuildNextCursor(false, "")
+	nativeNextCursor, nativeHasMore, err := paginateGigaChatFileList(response, nativeCursor, request.Limit)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+	}
+	nextCursor, hasMore := helper.BuildNextCursor(nativeHasMore, nativeNextCursor)
 	response.HasMore = hasMore
 	if nextCursor != "" {
 		response.After = &nextCursor
