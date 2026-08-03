@@ -285,6 +285,55 @@ client-reconnect:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+client-reauth:
+  post:
+    operationId: reauthMCPClient
+    summary: Re-authenticate MCP client
+    description: |
+      Opens a fresh OAuth consent flow for an existing MCP client whose stored token
+      has expired or been revoked upstream. Reconnect re-dials with the same dead
+      credentials, so re-authentication is the only way to recover without editing
+      the client.
+
+      The client's existing OAuth configuration (client credentials, endpoints,
+      scopes, resource) is reused, so nothing has to be resupplied — including a
+      client_id that originally came from dynamic client registration (RFC 7591).
+
+      The client keeps running on its current credentials until the flow completes:
+      follow `authorize_url` to the provider, poll `/api/oauth/config/{oauth_config_id}/status`,
+      then POST `/api/mcp/client/{oauth_config_id}/complete-oauth` to swap in the new
+      token and reconnect. The superseded OAuth config and token are revoked at that
+      point.
+
+      Only clients with `auth_type: oauth` are supported. Per-user OAuth tokens belong
+      to individual users and are re-authorized via `/api/mcp/sessions/{id}/reauth`.
+    tags:
+      - MCP
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: OAuth re-authorization flow initiated
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/OAuthFlowInitiation'
+      '400':
+        description: |
+          Client is not OAuth-authenticated, is disabled, or has no OAuth configuration.
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 client-complete-oauth:
   post:
     operationId: completeMCPClientOAuth

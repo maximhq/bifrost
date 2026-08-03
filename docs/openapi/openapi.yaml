@@ -793,6 +793,8 @@ paths:
     $ref: './paths/management/mcp.yaml#/client-by-id'
   /api/mcp/client/{id}/reconnect:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
+  /api/mcp/client/{id}/reauth:
+    $ref: './paths/management/mcp.yaml#/client-reauth'
   /api/mcp/client/{id}/complete-oauth:
     $ref: './paths/management/mcp.yaml#/client-complete-oauth'
 
