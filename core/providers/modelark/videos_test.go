@@ -128,6 +128,10 @@ func TestResolutionFromSize(t *testing.T) {
 		wantOK bool
 	}{
 		{"width_by_height", "1280x720", "720p", true},
+		{"portrait_uses_the_short_edge", "720x1280", "720p", true},
+		{"square", "1024x1024", "1024p", true},
+		{"non_numeric_width", "widex720", "", false},
+		{"negative_width_via_x", "-1280x720", "", false},
 		{"uppercase_separator", "1920X1080", "1080p", true},
 		{"already_a_tier", "480p", "480p", true},
 		{"empty", "", "", false},

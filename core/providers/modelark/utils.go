@@ -18,26 +18,35 @@ const defaultVideoRatio = "adaptive"
 const maxVideoDownloadBytes = 512 * 1024 * 1024
 
 // resolutionFromSize maps a Bifrost "WIDTHxHEIGHT" size onto ModelArk's resolution
-// field, which is a frame-height tier ("720p") rather than exact dimensions. Sizes
-// already expressed as a tier pass through, and anything else is dropped so ModelArk
+// field, which is a tier ("720p") rather than exact dimensions. Sizes already
+// expressed as a tier pass through, and anything else is dropped so ModelArk
 // applies the model default instead of rejecting the task.
+//
+// The tier is the SHORT edge, not the height: a portrait 720x1280 request is 720p,
+// and sending "1280p" is refused with "the parameter resolution specified in the
+// request is not valid for model ... in i2v".
 func resolutionFromSize(size string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(size))
 	if normalized == "" {
 		return "", false
 	}
 	if tier, ok := strings.CutSuffix(normalized, "p"); ok {
-		if height, err := strconv.Atoi(tier); err == nil && height > 0 {
+		if edge, err := strconv.Atoi(tier); err == nil && edge > 0 {
 			return normalized, true
 		}
 		return "", false
 	}
-	_, height, found := strings.Cut(normalized, "x")
+	rawWidth, rawHeight, found := strings.Cut(normalized, "x")
 	if !found {
 		return "", false
 	}
-	if parsed, err := strconv.Atoi(height); err != nil || parsed <= 0 {
+	width, err := strconv.Atoi(rawWidth)
+	if err != nil || width <= 0 {
 		return "", false
 	}
-	return height + "p", true
+	height, err := strconv.Atoi(rawHeight)
+	if err != nil || height <= 0 {
+		return "", false
+	}
+	return strconv.Itoa(min(width, height)) + "p", true
 }
