@@ -123,10 +123,10 @@ func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
 }
 
 // CanProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
-// Some providers like Vertex and Bedrock have their credentials in additional key configs.
+// Some providers like Vertex, Bedrock, Bedrock Mantle, and GigaChat have their credentials in additional key configs.
 // Ollama and SGL are keyless (API Key is optional) but use per-key server URLs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.GigaChat
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
@@ -204,6 +204,15 @@ func validateKey(providerKey schemas.ModelProvider, key *schemas.Key) error {
 		}
 		if key.SGLKeyConfig.URL.GetValue() == "" {
 			return fmt.Errorf("sgl_key_config.url is required")
+		}
+	case schemas.GigaChat:
+		if key.GigaChatKeyConfig != nil {
+			if err := key.GigaChatKeyConfig.Validate(); err != nil {
+				return err
+			}
+		}
+		if !key.Value.IsSet() && (key.GigaChatKeyConfig == nil || (!key.GigaChatKeyConfig.HasAuthMaterial() && !key.GigaChatKeyConfig.HasClientCertificateMaterial())) {
+			return fmt.Errorf("gigachat key requires value access token, gigachat_key_config bearer auth material, or gigachat_key_config mTLS client certificate material")
 		}
 	}
 	return nil

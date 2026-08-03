@@ -139,6 +139,7 @@ type Key struct {
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
+	GigaChatKeyConfig      *GigaChatKeyConfig      `json:"gigachat_key_config,omitempty"`       // GigaChat-specific key configuration
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
@@ -764,6 +765,112 @@ type OllamaKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple SGLang instances.
 type SGLKeyConfig struct {
 	URL SecretVar `json:"url"` // SGLang server base URL (required, supports env. prefix)
+}
+
+const (
+	// DefaultGigaChatScope is the personal API scope used by GigaChat SDKs and REST examples.
+	DefaultGigaChatScope = "GIGACHAT_API_PERS"
+)
+
+// GigaChatKeyConfig represents GigaChat-specific authentication and endpoint settings.
+type GigaChatKeyConfig struct {
+	Credentials  *SecretVar `json:"credentials,omitempty"`    // Authorization key for OAuth token exchange (supports env.* and vault.*)
+	Scope        string     `json:"scope,omitempty"`          // OAuth scope. Defaults to GIGACHAT_API_PERS.
+	User         *SecretVar `json:"user,omitempty"`           // Username for password auth mode (supports env.* and vault.*)
+	Password     *SecretVar `json:"password,omitempty"`       // Password for password auth mode (supports env.* and vault.*)
+	AccessToken  *SecretVar `json:"access_token,omitempty"`   // Pre-obtained access token (supports env.* and vault.*)
+	AuthURL      string     `json:"auth_url,omitempty"`       // OAuth token endpoint override
+	BaseURL      string     `json:"base_url,omitempty"`       // API base URL override for this key
+	CertFile     string     `json:"cert_file,omitempty"`      // Client certificate file for mTLS
+	KeyFile      string     `json:"key_file,omitempty"`       // Client private key file for mTLS
+	CABundleFile string     `json:"ca_bundle_file,omitempty"` // CA bundle file for GigaChat TLS roots
+}
+
+// CheckAndSetDefaults applies GigaChat defaults that are safe at config-parse time.
+func (config *GigaChatKeyConfig) CheckAndSetDefaults() {
+	if config == nil {
+		return
+	}
+	if strings.TrimSpace(config.Scope) == "" {
+		config.Scope = DefaultGigaChatScope
+	}
+}
+
+// Validate checks static GigaChat auth configuration constraints.
+func (config *GigaChatKeyConfig) Validate() error {
+	if config == nil {
+		return nil
+	}
+	config.CheckAndSetDefaults()
+
+	hasUser := config.User.IsSet()
+	hasPassword := config.Password.IsSet()
+	if hasUser != hasPassword {
+		return fmt.Errorf("gigachat_key_config.user and gigachat_key_config.password must be set together")
+	}
+
+	hasCertFile := strings.TrimSpace(config.CertFile) != ""
+	hasKeyFile := strings.TrimSpace(config.KeyFile) != ""
+	if hasCertFile != hasKeyFile {
+		return fmt.Errorf("gigachat_key_config.cert_file and gigachat_key_config.key_file must be set together")
+	}
+	return nil
+}
+
+// HasAuthMaterial reports whether the config contains a usable bearer auth mode.
+func (config *GigaChatKeyConfig) HasAuthMaterial() bool {
+	if config == nil {
+		return false
+	}
+	if config.AccessToken.IsSet() || config.Credentials.IsSet() {
+		return true
+	}
+	if config.User.IsSet() && config.Password.IsSet() {
+		return true
+	}
+	return false
+}
+
+// HasTLSMaterial reports whether the config contains TLS or mTLS material.
+func (config *GigaChatKeyConfig) HasTLSMaterial() bool {
+	if config == nil {
+		return false
+	}
+	return strings.TrimSpace(config.CertFile) != "" ||
+		strings.TrimSpace(config.KeyFile) != "" ||
+		strings.TrimSpace(config.CABundleFile) != ""
+}
+
+// HasClientCertificateMaterial reports whether the config contains a complete
+// client certificate pair for mTLS authentication.
+func (config *GigaChatKeyConfig) HasClientCertificateMaterial() bool {
+	if config == nil {
+		return false
+	}
+	return strings.TrimSpace(config.CertFile) != "" && strings.TrimSpace(config.KeyFile) != ""
+}
+
+// Redacted returns a copy of the GigaChat key config with sensitive fields masked.
+func (config *GigaChatKeyConfig) Redacted() *GigaChatKeyConfig {
+	if config == nil {
+		return nil
+	}
+	redacted := *config
+	redacted.Credentials = config.Credentials.FullyRedacted()
+	redacted.User = config.User.FullyRedacted()
+	redacted.Password = config.Password.FullyRedacted()
+	redacted.AccessToken = config.AccessToken.FullyRedacted()
+	redacted.CertFile = redactNonEmptyString(config.CertFile)
+	redacted.KeyFile = redactNonEmptyString(config.KeyFile)
+	redacted.CABundleFile = redactNonEmptyString(config.CABundleFile)
+	return &redacted
+}
+
+func redactNonEmptyString(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return value
+	}
+	return "<REDACTED>"
 }
 
 // Account defines the interface for managing provider accounts and their configurations.
