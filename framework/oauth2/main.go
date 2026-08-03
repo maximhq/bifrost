@@ -839,7 +839,7 @@ func sleepIfNotLastAttempt(ctx context.Context, attempt int, baseDelay time.Dura
 // Transport errors and 5xx responses are retried up to maxTokenRetries times with
 // exponential backoff. HTTP 4xx responses are returned immediately as PermanentOAuthError.
 func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
-	client := &http.Client{Timeout: networkTimeout}
+	client := newOAuthDiscoveryHTTPClient(networkTimeout)
 	var lastErr error
 
 	for attempt := range maxTokenRetries {
