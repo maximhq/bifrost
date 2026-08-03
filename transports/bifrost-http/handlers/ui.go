@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"embed"
 	"mime"
 	"path"
@@ -16,18 +17,39 @@ import (
 
 const uiDevServerAddr = "localhost:3000"
 
+// shellLogoPaths are the bundled logo paths referenced by the static
+// pre-hydration shell in index.html. The shell embeds both the light and dark
+// asset and hides one with CSS; a single uploaded logo serves both, so every
+// occurrence is rewritten to the same URL.
+//
+// Neither path is a substring of the other, so the replacement order does not
+// matter.
+var shellLogoPaths = []string{
+	"/bifrost-logo.webp",
+	"/bifrost-logo-dark.webp",
+}
+
+// shellBrandedLogoPath is the endpoint the shell's logo is repointed at when a
+// deployment has uploaded a custom one.
+const shellBrandedLogoPath = "/api/branding/asset/logo"
+
 // UIHandler handles UI routes.
 type UIHandler struct {
 	uiContent embed.FS
 	// uiDevClient proxies dashboard requests to the local Vite dev server.
 	// It is only set when dev mode is enabled (see NewUIHandler); nil otherwise.
 	uiDevClient *fasthttp.HostClient
+	// branding rewrites the logo in the pre-hydration shell. nil disables the
+	// rewrite entirely, which is the OSS path.
+	branding *lib.BrandingService
 }
 
-// NewUIHandler creates a new UIHandler instance.
-func NewUIHandler(uiContent embed.FS) *UIHandler {
+// NewUIHandler creates a new UIHandler instance. branding may be nil, in which
+// case index.html is always served exactly as embedded.
+func NewUIHandler(uiContent embed.FS, branding *lib.BrandingService) *UIHandler {
 	h := &UIHandler{
 		uiContent: uiContent,
+		branding:  branding,
 	}
 	// Only wire the dev-server proxy client when running in dev mode. Timeouts
 	// guard against the local Vite server hanging dashboard requests if it is
@@ -135,6 +157,17 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Point the static skeleton at the custom logo. Without this the shell
+	// renders the bundled Bifrost logo for the moment before the bundle boots
+	// and React swaps in the real branding, which reads as a flash of the wrong
+	// company's mark on every page load.
+	//
+	// The rewrite is skipped entirely when no branding is configured, so the
+	// OSS path serves the embedded bytes untouched.
+	if ext := filepath.Ext(cleanPath); ext == ".html" {
+		data = h.applyShellBranding(ctx, data)
+	}
+
 	// Set content type based on file extension
 	ext := filepath.Ext(cleanPath)
 	contentType := mime.TypeByExtension(ext)
@@ -154,6 +187,34 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 
 	// Send the file content
 	ctx.SetBody(data)
+}
+
+// applyShellBranding rewrites the bundled logo paths in the pre-hydration shell
+// to the branding asset endpoint. It returns data unchanged when no custom logo
+// is configured. On OSS that is the only outcome: the branding service is
+// constructed there with no store and inert besides, so Asset short-circuits
+// without any database work and the shell is always served exactly as embedded.
+//
+// Only the logo is rewritten: the shell's skeleton does not render the square
+// icon, so there is nothing to swap for that slot.
+func (h *UIHandler) applyShellBranding(ctx *fasthttp.RequestCtx, data []byte) []byte {
+	if h.branding == nil {
+		return data
+	}
+	asset := h.branding.Asset(ctx, lib.BrandingAssetLogo)
+	if asset == nil {
+		return data
+	}
+
+	// Version the URL by content hash so the shell picks up a re-upload
+	// immediately despite the asset's long cache lifetime.
+	target := []byte(shellBrandedLogoPath + "?v=" + strings.Trim(asset.ETag, `"`))
+
+	out := data
+	for _, original := range shellLogoPaths {
+		out = bytes.ReplaceAll(out, []byte(original), target)
+	}
+	return out
 }
 
 // serveDevDashboard proxies dashboard requests to the local Vite dev server.
