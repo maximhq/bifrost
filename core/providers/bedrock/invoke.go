@@ -801,6 +801,13 @@ func (r *BedrockInvokeRequest) parseSystemMessages() []BedrockSystemMessage {
 					continue
 				}
 				result = append(result, msg)
+
+				// Anthropic-dialect blocks mark a breakpoint with a per-block "cache_control"
+				// instead of Converse's positional cachePoint entry; translate it the same
+				// way convertSystemMessages does for the Bifrost->Bedrock egress direction.
+				if cacheControl, ok := m["cache_control"].(map[string]interface{}); ok {
+					result = append(result, BedrockSystemMessage{CachePoint: newBedrockCachePoint(cacheControlTTL(cacheControl))})
+				}
 			}
 		}
 		return result
@@ -811,6 +818,15 @@ func (r *BedrockInvokeRequest) parseSystemMessages() []BedrockSystemMessage {
 		return msgs
 	}
 
+	return nil
+}
+
+// cacheControlTTL extracts the optional "ttl" string from an Anthropic-dialect
+// cache_control map, e.g. {"type": "ephemeral", "ttl": "1h"}.
+func cacheControlTTL(cacheControl map[string]interface{}) *string {
+	if ttl, ok := cacheControl["ttl"].(string); ok {
+		return &ttl
+	}
 	return nil
 }
 
@@ -842,6 +858,15 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
+
+		// Anthropic attaches cache_control to the tool itself; Converse instead expects a
+		// positional cachePoint element in toolConfig.tools. The downstream shared builder
+		// (BedrockConverseRequest.ToBifrostResponsesRequest) already knows how to read this —
+		// see responses.go's tool.CachePoint handling — including the Nova-family exclusion,
+		// so no extra gating is needed here.
+		if cacheControl, ok := toolMap["cache_control"].(map[string]interface{}); ok {
+			bedrockTools = append(bedrockTools, BedrockTool{CachePoint: newBedrockCachePoint(cacheControlTTL(cacheControl))})
+		}
 	}
 
 	if len(bedrockTools) == 0 {
@@ -1101,9 +1126,12 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 
 	// Usage
 	if resp.Usage != nil {
+		usage := buildBedrockTokenUsage(resp.Usage)
 		result.Usage = &BedrockInvokeMessagesUsage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
+			InputTokens:              usage.InputTokens,
+			OutputTokens:             usage.OutputTokens,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
+			CacheCreationInputTokens: usage.CacheWriteInputTokens,
 		}
 	}
 
@@ -1405,9 +1433,23 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			},
 		}
 		if resp.Response != nil && resp.Response.Usage != nil {
-			messageDelta["usage"] = map[string]interface{}{
-				"output_tokens": resp.Response.Usage.OutputTokens,
+			// Bedrock Converse only reports usage on the terminal event (unlike native
+			// Anthropic, which also puts input_tokens on message_start) — see
+			// buildBedrockTokenUsage's doc comment. This is the only stream event where
+			// Bifrost has input/cache token counts for a Bedrock-backed call, so all of
+			// them are reported here rather than split across message_start/message_delta.
+			usage := buildBedrockTokenUsage(resp.Response.Usage)
+			usageMap := map[string]interface{}{
+				"input_tokens":  usage.InputTokens,
+				"output_tokens": usage.OutputTokens,
 			}
+			if usage.CacheReadInputTokens > 0 {
+				usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+			}
+			if usage.CacheWriteInputTokens > 0 {
+				usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+			}
+			messageDelta["usage"] = usageMap
 		}
 
 		// Build message_stop event
