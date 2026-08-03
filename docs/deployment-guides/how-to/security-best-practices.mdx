@@ -16,6 +16,10 @@ Most of these controls live on the **Security Settings** page in the dashboard a
 
 The dashboard can be protected with **Password protect the dashboard** on the Security Settings page (an admin username + password). Anyone who reaches the dashboard URL without credentials can read configuration, virtual keys, and logs, so this is the first thing to turn on for a public host.
 
+<Warning>
+**Set the admin password before exposing the port, not after.** Until an admin account exists, `PUT /api/config` is itself reachable without credentials - this is intentional, zero-config UX for a fresh local instance, but it means anyone who reaches an exposed, not-yet-configured instance first can create the admin account before you do. Starting in **Bifrost 2.0.0-prerelease3**, creating the *first* admin account additionally requires a **setup token** that you configure ahead of time via `setup_token` in `config.json` (or the `BIFROST_SETUP_TOKEN` environment variable) - paste that same value into the **Setup token** field shown alongside the username/password fields the first time you enable auth. If you haven't configured one, first-admin creation is rejected until you do. See [Setting up auth](/quickstart/gateway/setting-up-auth) for the full flow. This token requirement only applies once, when no admin account exists yet.
+</Warning>
+
 <Note>
 **Password policy is enforced starting OSS v1.6.0 and Enterprise v1.5.0.** On these versions Bifrost validates the password both in the UI and on the server before saving, and rejects weak values with HTTP 400. On **earlier versions there was no strength check at all**. If you are running an older build, choose a strong password manually (and upgrade as soon as you can).
 </Note>

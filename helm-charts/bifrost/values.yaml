@@ -1109,7 +1109,8 @@ bifrost:
       #   name: "Block PII"
       #   description: "Block requests containing PII"
       #   enabled: true
-      #   cel_expression: "!contains(request.body, 'SSN')"
+      #   target: "llm"     # "llm" (default) | "mcp"
+      #   cel_expression: "true"
       #   apply_to: "input"
       #   sampling_rate: 100
       #   timeout: 60        # Timeout in seconds for rule execution (default: 60)

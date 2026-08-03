@@ -19,6 +19,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -76,6 +77,7 @@ type ServerCallbacks interface {
 	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
+	ValidateSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	// Pricing related callbacks
 	UpdateSyncConfig(ctx context.Context) error
@@ -1017,8 +1019,21 @@ func (s *BifrostHTTPServer) UpdateAuthConfig(ctx context.Context, authConfig *co
 		} else {
 			s.AuthMiddleware.UpdateAuthConfig(updatedAuthConfig)
 		}
+		// The first admin account now exists (or already did) — permanently
+		// invalidate the bootstrap setup token. No-op if already cleared.
+		s.AuthMiddleware.ClearBootstrapToken()
 	}
 	return nil
+}
+
+// ValidateSetupToken reports whether token is a valid one-time bootstrap setup token,
+// as required to create the very first admin account (see AuthMiddleware.bootstrapToken).
+// Once an admin account exists, this always returns true — the gate closes permanently.
+func (s *BifrostHTTPServer) ValidateSetupToken(token string) bool {
+	if s.AuthMiddleware == nil {
+		return true
+	}
+	return s.AuthMiddleware.CheckBootstrapToken(token)
 }
 
 // UpdateDropExcessRequests updates excess requests config
@@ -2093,8 +2108,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.
 	s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
 	s.Config.EventBroadcaster = s.WebSocketHandler.BroadcastEvent
-	// Initializing plugin loader
-	s.Config.PluginLoader = &dynamicPlugins.SharedObjectPluginLoader{}
+	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
+	// fails server startup rather than silently no-oping, since this is security-relaxing
+	// config for SSRF protection on custom plugin downloads.
+	var pluginDownloadAllowlist *network.Allowlist
+	if s.Config.ServerConfig != nil && len(s.Config.ServerConfig.PluginDownloadPrivateAllowlist) > 0 {
+		pluginDownloadAllowlist, err = network.NewAllowlist(s.Config.ServerConfig.PluginDownloadPrivateAllowlist)
+		if err != nil {
+			return fmt.Errorf("invalid server.plugin_download_private_allowlist: %w", err)
+		}
+	}
+	s.Config.PluginLoader = dynamicPlugins.NewSharedObjectPluginLoader(pluginDownloadAllowlist)
 	// Initialize log retention cleaner if log store is configured
 	if s.Config.LogsStore != nil {
 		// If log retention days remains 0, then we wont be initializing the log retention cleaner
@@ -2253,7 +2277,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.Config.MCPHeadersProvider != nil {
 			s.Config.MCPHeadersProvider.SetTempTokenService(s.TempTokens)
 		}
-		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens)
+		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens, s.Config.SetupToken)
 		if err != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
