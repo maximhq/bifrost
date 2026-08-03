@@ -929,7 +929,7 @@ export default function MCPClientsTable({
 													// surface just the badge, not the sessions link, since there's
 													// nothing to view yet (unverified) or the link isn't the fix
 													// (repair via the actions menu is).
-													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
+													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state.replace(/_/g, " ")}</Badge>
 												) : isPerUserAuth && hasPerUserSessions ? (
 													// Per-user clients never hold a shared upstream connection, so a
 													// connection-state badge here would be misleading: point to the
@@ -947,7 +947,7 @@ export default function MCPClientsTable({
 													// actionable state — nothing to surface here.
 													null
 												) : (
-													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
+													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state.replace(/_/g, " ")}</Badge>
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
