@@ -979,6 +979,70 @@ func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	}
 }
 
+// TestAuthMiddleware_BootstrapToken_NoAdminNoToken tests that CheckBootstrapToken fails
+// closed when no admin account exists yet and no setup token was configured at boot (e.g.
+// the operator hasn't set setup_token / BIFROST_SETUP_TOKEN) — the very first admin account
+// cannot be created until the operator configures one.
+func TestAuthMiddleware_BootstrapToken_NoAdminNoToken(t *testing.T) {
+	am := &AuthMiddleware{}
+
+	if am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should reject when no admin exists and no setup token is configured")
+	}
+	if am.CheckBootstrapToken("anything") {
+		t.Error("CheckBootstrapToken should reject when no admin exists and no setup token is configured")
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_AdminExists tests that CheckBootstrapToken allows any
+// value through once an admin account already exists, regardless of bootstrapToken state.
+func TestAuthMiddleware_BootstrapToken_AdminExists(t *testing.T) {
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+
+	if !am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should allow through once an admin account exists")
+	}
+	if !am.CheckBootstrapToken("anything") {
+		t.Error("CheckBootstrapToken should allow through once an admin account exists")
+	}
+}
+
+// TestAuthMiddleware_BootstrapToken_ValidatesAndClears tests that once a bootstrap token is
+// set (simulating InitAuthMiddleware booting with a configured setup token and no admin
+// account yet), only the exact token validates, and creating the admin account — which sets
+// authConfig, mirroring BifrostHTTPServer.UpdateAuthConfig — permanently reopens the gate.
+func TestAuthMiddleware_BootstrapToken_ValidatesAndClears(t *testing.T) {
+	am := &AuthMiddleware{}
+	token := "test-bootstrap-token"
+	am.bootstrapToken.Store(&token)
+
+	if am.CheckBootstrapToken("") {
+		t.Error("CheckBootstrapToken should reject an empty token once a bootstrap token is set")
+	}
+	if am.CheckBootstrapToken("wrong-token") {
+		t.Error("CheckBootstrapToken should reject a mismatched token")
+	}
+	if !am.CheckBootstrapToken(token) {
+		t.Error("CheckBootstrapToken should accept the exact bootstrap token")
+	}
+
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     true,
+	})
+	am.ClearBootstrapToken()
+
+	if !am.CheckBootstrapToken("wrong-token") {
+		t.Error("CheckBootstrapToken should allow anything through once an admin account exists")
+	}
+}
+
 // TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled tests disabling auth after it was enabled
 func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 	SetLogger(&mockLogger{})
