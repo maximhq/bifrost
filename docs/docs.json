@@ -614,13 +614,27 @@
         "tab": "Deployment Guides",
         "icon": "server",
         "pages": [
+          "deployment-guides/overview",
+          "deployment-guides/runtime-contract",
           {
-            "group": "Platform specific guides",
+            "group": "Managed Kubernetes",
+            "icon": "cloud",
+            "pages": [
+              "deployment-guides/platforms/eks",
+              "deployment-guides/platforms/gke",
+              "deployment-guides/platforms/aks",
+              "deployment-guides/k8s"
+            ]
+          },
+          {
+            "group": "Hosted Containers",
             "icon": "swatchbook",
             "pages": [
-              "deployment-guides/k8s",
               "deployment-guides/ecs",
-              "deployment-guides/fly"
+              "deployment-guides/fly",
+              "deployment-guides/platforms/cloud-run",
+              "deployment-guides/platforms/render",
+              "deployment-guides/platforms/railway"
             ]
           },
           {
