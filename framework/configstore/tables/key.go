@@ -82,6 +82,9 @@ type TableKey struct {
 	// SGL config fields (embedded)
 	SGLUrl *schemas.SecretVar `gorm:"type:text" json:"sgl_url,omitempty"`
 
+	// GigaChat config fields (serialized because the auth surface spans multiple optional modes)
+	GigaChatKeyConfigJSON *string `gorm:"column:gigachat_key_config_json;type:text" json:"-"`
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
@@ -106,6 +109,7 @@ type TableKey struct {
 	ReplicateKeyConfig     *schemas.ReplicateKeyConfig     `gorm:"-" json:"replicate_key_config,omitempty"`
 	OllamaKeyConfig        *schemas.OllamaKeyConfig        `gorm:"-" json:"ollama_key_config,omitempty"`
 	SGLKeyConfig           *schemas.SGLKeyConfig           `gorm:"-" json:"sgl_key_config,omitempty"`
+	GigaChatKeyConfig      *schemas.GigaChatKeyConfig      `gorm:"-" json:"gigachat_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -425,6 +429,41 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.SGLUrl = nil
 	}
 
+	if k.GigaChatKeyConfig != nil {
+		cfg := *k.GigaChatKeyConfig
+		if cfg.Credentials != nil {
+			v := *cfg.Credentials
+			cfg.Credentials = &v
+		}
+		if cfg.User != nil {
+			v := *cfg.User
+			cfg.User = &v
+		}
+		if cfg.Password != nil {
+			v := *cfg.Password
+			cfg.Password = &v
+		}
+		if cfg.AccessToken != nil {
+			v := *cfg.AccessToken
+			cfg.AccessToken = &v
+		}
+		cfg.CheckAndSetDefaults()
+		if schemas.VaultStoreWriteEnabled() {
+			base := schemas.VaultBasePath(tx.Statement.Table, k.VaultPathKey()) + "/gigachat_key_config"
+			if err := schemas.StoreOwnedVaultSecretVars(tx.Statement.Context, base, &cfg); err != nil {
+				return fmt.Errorf("failed to store gigachat key secrets to vault: %w", err)
+			}
+		}
+		data, err := sonic.Marshal(&cfg)
+		if err != nil {
+			return err
+		}
+		s := string(data)
+		k.GigaChatKeyConfigJSON = &s
+	} else {
+		k.GigaChatKeyConfigJSON = nil
+	}
+
 	// Store plaintext SecretVar columns into the vault and rewrite them to vault refs.
 	// This must run after the columns are populated (above) and before encryption (below):
 	// encryptSecretVar skips fields that are already vault refs, so vault-owned secrets are
@@ -543,6 +582,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to encrypt sgl url: %w", err)
 		}
+		// GigaChat
+		if err := encryptString(k.GigaChatKeyConfigJSON); err != nil {
+			return fmt.Errorf("failed to encrypt gigachat key config: %w", err)
+		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
 	return nil
@@ -657,6 +700,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		// SGL
 		if err := decryptSecretVarPtr(&k.SGLUrl); err != nil {
 			return fmt.Errorf("failed to decrypt sgl url: %w", err)
+		}
+		// GigaChat
+		if err := decryptString(k.GigaChatKeyConfigJSON); err != nil {
+			return fmt.Errorf("failed to decrypt gigachat key config: %w", err)
 		}
 	}
 
@@ -821,6 +868,16 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		k.SGLKeyConfig = nil
+	}
+	if k.GigaChatKeyConfigJSON != nil && *k.GigaChatKeyConfigJSON != "" {
+		var config schemas.GigaChatKeyConfig
+		if err := sonic.Unmarshal([]byte(*k.GigaChatKeyConfigJSON), &config); err != nil {
+			return err
+		}
+		config.CheckAndSetDefaults()
+		k.GigaChatKeyConfig = &config
+	} else {
+		k.GigaChatKeyConfig = nil
 	}
 	return nil
 }
