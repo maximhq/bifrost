@@ -53,7 +53,7 @@ resource "google_cloud_run_v2_service" "bifrost" {
       command = ["/bin/sh"]
       args = [
         "-c",
-        "cp /var/run/bifrost-config/config.json /app/data/config.json && exec /app/docker-entrypoint.sh",
+        "cp /var/run/bifrost-config/config.json /app/data/config.json && exec /app/docker-entrypoint.sh /app/main",
       ]
 
       ports {
