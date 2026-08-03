@@ -79,37 +79,29 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Normalize messages: handle AI21 Jamba where content can be a plain string
+	// Normalize messages: Bedrock Converse and Anthropic use content block arrays,
+	// while AI21 Jamba permits a plain string.
 	if len(aux.Messages) > 0 {
-		r.Messages = nil // Clear before re-parsing
+		var rawMsgs []struct {
+			Role    BedrockMessageRole `json:"role"`
+			Content json.RawMessage    `json:"content"`
+		}
+		if err := sonic.Unmarshal(aux.Messages, &rawMsgs); err != nil {
+			return fmt.Errorf("invalid bedrock invoke messages: %w", err)
+		}
 
-		// Try standard []BedrockMessage first
-		var standardMsgs []BedrockMessage
-		if err := sonic.Unmarshal(aux.Messages, &standardMsgs); err == nil {
-			r.Messages = standardMsgs
-		} else {
-			// Try AI21 format where content is a string
-			var rawMsgs []struct {
-				Role    BedrockMessageRole `json:"role"`
-				Content json.RawMessage    `json:"content"`
-			}
-			if err := sonic.Unmarshal(aux.Messages, &rawMsgs); err == nil {
-				for _, rm := range rawMsgs {
-					msg := BedrockMessage{Role: rm.Role}
-					// Try as string first (AI21 format)
-					var contentStr string
-					if err := sonic.Unmarshal(rm.Content, &contentStr); err == nil {
-						msg.Content = []BedrockContentBlock{{Text: &contentStr}}
-					} else {
-						// Fall back to standard content blocks
-						var blocks []BedrockContentBlock
-						if err := sonic.Unmarshal(rm.Content, &blocks); err == nil {
-							msg.Content = blocks
-						}
-					}
-					r.Messages = append(r.Messages, msg)
+		r.Messages = make([]BedrockMessage, 0, len(rawMsgs))
+		for i, rm := range rawMsgs {
+			msg := BedrockMessage{Role: rm.Role}
+			var contentStr string
+			if err := sonic.Unmarshal(rm.Content, &contentStr); err == nil {
+				msg.Content = []BedrockContentBlock{{Text: &contentStr}}
+			} else {
+				if err := sonic.Unmarshal(rm.Content, &msg.Content); err != nil {
+					return fmt.Errorf("invalid bedrock invoke message %d content: %w", i, err)
 				}
 			}
+			r.Messages = append(r.Messages, msg)
 		}
 	}
 
