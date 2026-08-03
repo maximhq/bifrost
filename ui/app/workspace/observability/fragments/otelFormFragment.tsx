@@ -34,6 +34,7 @@ interface StoredOtelProfile {
 	metrics_enabled?: boolean;
 	metrics_endpoint?: string | SecretVar;
 	metrics_push_interval?: number;
+	export_timeout?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
 	group_traces_by_session?: boolean;
@@ -98,6 +99,7 @@ const emptyProfile = (): ProfileForm => ({
 	metrics_enabled: false,
 	metrics_endpoint: emptySecretVar(),
 	metrics_push_interval: 15,
+	export_timeout: 5,
 	request_headers: [],
 	disable_content_logging: false,
 	group_traces_by_session: false,
@@ -117,6 +119,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	metrics_enabled: p?.metrics_enabled ?? false,
 	metrics_endpoint: toSecretVarFormValue(p?.metrics_endpoint),
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
+	export_timeout: p?.export_timeout ?? 5,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
 	group_traces_by_session: p?.group_traces_by_session ?? false,
@@ -438,7 +441,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 								<FormDescription>
 									Comma-separated list of request headers to capture and emit as span attributes. Supports exact names and wildcard patterns
 									(e.g. <code className="text-xs">x-custom-*</code> captures all headers with that prefix,{" "}
-									<code className="text-xs">*</code> captures all headers — note that <code className="text-xs">*</code> will capture
+									<code className="text-xs">*</code> captures all headers; note that <code className="text-xs">*</code> will capture
 									sensitive headers like Authorization).
 								</FormDescription>
 								<FormControl>
@@ -586,6 +589,32 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 							)}
 						/>
 					</div>
+
+					<FormField
+						control={control}
+						name={`${base}.export_timeout`}
+						render={({ field }) => (
+							<FormItem className="w-full max-w-xs">
+								<FormLabel>Export Timeout (seconds)</FormLabel>
+								<FormControl>
+									<Input
+										type="number"
+										min={1}
+										max={60}
+										disabled={!hasOtelAccess}
+										{...field}
+										value={field.value ?? ""}
+										onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
+									/>
+								</FormControl>
+								<FormDescription>
+									Maximum time for a single trace export (1-60 seconds). Traces are dropped rather than retried past this
+									limit, so an unreachable collector cannot slow down request handling.
+								</FormDescription>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
 
 					{/* TLS Configuration */}
 					<div className="flex flex-col gap-4">

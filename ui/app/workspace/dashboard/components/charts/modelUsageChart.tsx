@@ -4,13 +4,13 @@ import { memo, useMemo } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
 	CHART_COLORS,
+	computeDisplaySeries,
 	formatFullTimestamp,
 	formatTimestamp,
 	getModelColor,
 	OTHER_SERIES_COLOR,
 	OTHER_SERIES_KEY,
 	OTHER_SERIES_LABEL,
-	pickTopSeries,
 } from "../../utils/chartUtils";
 import { ChartErrorBoundary } from "./chartErrorBoundary";
 import type { ChartType } from "./chartTypeToggle";
@@ -102,10 +102,9 @@ function ModelUsageChartImpl({ data, chartType, startTime, endTime, selectedMode
 		let displayList: string[];
 		let topSet: Set<string> | null = null;
 		if (selectedModel === "all") {
-			const top = pickTopSeries(data.buckets, data.models, (b, m) => b.by_model?.[m]?.total ?? 0);
-			const hasOther = top.length < data.models.length;
-			displayList = hasOther ? [...top, OTHER_SERIES_KEY] : top;
-			topSet = hasOther ? new Set(top) : null;
+			displayList = computeDisplaySeries(data.buckets, data.models, (b, m) => b.by_model?.[m]?.total ?? 0);
+			const hasOther = displayList[displayList.length - 1] === OTHER_SERIES_KEY;
+			topSet = hasOther ? new Set(displayList.slice(0, -1)) : null;
 		} else {
 			displayList = data.models;
 		}

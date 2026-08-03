@@ -27,16 +27,27 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
-import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingEngineUsedLabels, Status } from "@/lib/constants/logs";
+import {
+	logAppDisplayName,
+	mapAppToClientApp,
+	mapUserAgentToApp,
+	RequestTypeColors,
+	RequestTypeLabels,
+	RoutingEngineUsedColors,
+	RoutingEngineUsedLabels,
+	Status,
+} from "@/lib/constants/logs";
 import { ContentBlock, LogEntry, ResponsesMessage } from "@/lib/types/logs";
+import { useGetUserAgentMappingsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { downloadAsJson } from "@/lib/utils/browser-download";
 import { formatCompactNumber } from "@/lib/utils/numbers";
+import { applyRedactionMapping, hasRedactionMappingEntries } from "@/lib/utils/redaction";
 import { isJson } from "@/lib/utils/validation";
 import { Link } from "@tanstack/react-router";
 import { addMilliseconds, format } from "date-fns";
 import { AlertCircle, ChevronDown, Clipboard, Copy, Download, Loader2, MoreVertical, Trash2, Wrench } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useMemo, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -70,18 +81,6 @@ const getRealtimeTransportBadgeClass = (value: unknown): string => {
 		default:
 			return "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-300";
 	}
-};
-
-const hasRedactionMappingEntries = (mapping?: LogEntry["redaction_mapping"]): boolean =>
-	Boolean(mapping && (Object.keys(mapping.input ?? {}).length > 0 || Object.keys(mapping.output ?? {}).length > 0));
-
-const applyRedactionMapping = (text: string | undefined, mapping?: Record<string, string>): string => {
-	if (!text || !mapping) return text || "";
-	let result = text;
-	for (const [key, value] of Object.entries(mapping)) {
-		result = result.replaceAll(`[${key}]`, value);
-	}
-	return result;
 };
 
 const formatRealtimeSource = (value: unknown): string => {
@@ -641,7 +640,21 @@ export function LogDetailView({
 
 	const selectedPromptDisplayName = resolvedSelectedPromptName ?? log.selected_prompt_name ?? "";
 
+	const { data: userAgentMappingsData } = useGetUserAgentMappingsQuery();
+	const customAppIcons = useMemo(() => {
+		const icons: Record<string, string> = {};
+		for (const mapping of userAgentMappingsData?.mappings ?? []) {
+			if (mapping.app && mapping.logo && mapping.logo_mime) {
+				icons[mapping.app] = `data:${mapping.logo_mime};base64,${mapping.logo}`;
+			}
+		}
+		return icons;
+	}, [userAgentMappingsData?.mappings]);
+
 	const isContainer = isContainerOperation(log.object);
+	const detectedApp = log.app ? mapAppToClientApp(log.app) : log.user_agent ? mapUserAgentToApp(log.user_agent) : null;
+	const detectedAppIcon = log.app && detectedApp ? customAppIcons[log.app] || detectedApp.icon : detectedApp?.icon;
+	const detectedAppLabel = detectedApp ? logAppDisplayName(detectedApp, log.user_agent) : "";
 	const showTabs = !isContainer;
 	const isPassthrough = isPassthroughOperation(log.object);
 	const isRealtimeTurn = log.object === "realtime.turn";
@@ -702,8 +715,11 @@ export function LogDetailView({
 				<div className="flex items-center gap-3">
 					{revealAvailable && (
 						<div className="flex items-center gap-2">
-							<span className="text-muted-foreground text-[11px] font-medium">Show original values</span>
+							<label htmlFor="logdetails-reveal-toggle" className="text-muted-foreground text-[11px] font-medium">
+								Show original values
+							</label>
 							<Switch
+								id="logdetails-reveal-toggle"
 								checked={revealEnabled}
 								onCheckedChange={handleToggleReveal}
 								data-testid="logdetails-reveal-toggle"
@@ -1007,6 +1023,28 @@ export function LogDetailView({
 							)}
 							{!isContainer && log.server_side_fallback_model && (
 								<LogEntryDetailsView className="w-full" label="Served By (fallback)" value={log.server_side_fallback_model} />
+							)}
+							{detectedApp && (
+								<LogEntryDetailsView
+									className="w-full"
+									label="App"
+									value={
+										<div className="flex min-w-0 items-center gap-2" title={log.user_agent || undefined}>
+											{detectedAppIcon ? (
+												<img
+													className="rounded-sm"
+													src={detectedAppIcon}
+													alt={detectedAppLabel}
+													width={20}
+													height={20}
+													loading="lazy"
+													decoding="async"
+												/>
+											) : null}
+											<span className="truncate">{detectedAppLabel}</span>
+										</div>
+									}
+								/>
 							)}
 							<LogEntryDetailsView
 								className="w-full"
@@ -2196,13 +2234,13 @@ export function LogDetailView({
 
 					{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-							Large payload request — input content was streamed directly to the provider and is not available for display.
+							Large payload request: input content was streamed directly to the provider and is not available for display.
 							{log.raw_request && " A truncated preview is available in the Raw JSON tab."}
 						</div>
 					)}
 					{log.is_large_payload_response && !log.output_message && !log.responses_output?.length && log.status !== "processing" && (
 						<div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-							Large payload response — response content was streamed directly to the client and is not available for display.
+							Large payload response: response content was streamed directly to the client and is not available for display.
 							{log.raw_response && " A truncated preview is available in the Raw JSON tab."}
 						</div>
 					)}

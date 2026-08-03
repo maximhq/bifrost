@@ -287,6 +287,103 @@ func TestValidateProviderKeyRequiredNestedFields(t *testing.T) {
 	}
 }
 
+// refreshHandlerForTest builds a ProviderHandler with one keyed provider and a
+// recording models manager.
+func refreshHandlerForTest(mgr *mockModelsManager) *ProviderHandler {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	return &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"openai": {Keys: []schemas.Key{{ID: "key-1"}}},
+			},
+		},
+		modelsManager: mgr,
+	}
+}
+
+func TestRefreshProviderModels_DelegatesToModelsManager(t *testing.T) {
+	mgr := &mockModelsManager{}
+	h := refreshHandlerForTest(mgr)
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("provider", "openai")
+	h.refreshProviderModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(mgr.refreshProviderCalls) != 1 || mgr.refreshProviderCalls[0] != "openai" {
+		t.Fatalf("expected one provider-level refresh for openai, got %v", mgr.refreshProviderCalls)
+	}
+}
+
+func TestRefreshProviderKeyModels_DelegatesToModelsManager(t *testing.T) {
+	mgr := &mockModelsManager{}
+	h := refreshHandlerForTest(mgr)
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("provider", "openai")
+	ctx.SetUserValue("key_id", "key-1")
+	h.refreshProviderKeyModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(mgr.refreshKeyCalls) != 1 || mgr.refreshKeyCalls[0].keyID != "key-1" {
+		t.Fatalf("expected one refresh for key-1, got %v", mgr.refreshKeyCalls)
+	}
+}
+
+// A refresh already running for the provider must surface as 409 rather than
+// stacking another (enabled keys x 2) burst of upstream calls, so the UI can
+// tell the user to wait instead of silently doubling the load.
+func TestRefreshProviderModels_InFlightReturns409(t *testing.T) {
+	mgr := &mockModelsManager{refreshErr: ErrRefreshInProgress}
+	h := refreshHandlerForTest(mgr)
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("provider", "openai")
+	h.refreshProviderModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusConflict {
+		t.Fatalf("status got %d, want 409; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+func TestRefreshProviderKeyModels_UnknownKeyReturns404(t *testing.T) {
+	mgr := &mockModelsManager{}
+	h := refreshHandlerForTest(mgr)
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("provider", "openai")
+	ctx.SetUserValue("key_id", "does-not-exist")
+	h.refreshProviderKeyModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("status got %d, want 404; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(mgr.refreshKeyCalls) != 0 {
+		t.Fatalf("expected no upstream refresh for an unknown key, got %v", mgr.refreshKeyCalls)
+	}
+}
+
+func TestRefreshProviderModels_UnknownProviderReturns404(t *testing.T) {
+	mgr := &mockModelsManager{}
+	h := refreshHandlerForTest(mgr)
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("provider", "does-not-exist")
+	h.refreshProviderModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusNotFound {
+		t.Fatalf("status got %d, want 404; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if len(mgr.refreshProviderCalls) != 0 {
+		t.Fatalf("expected no upstream refresh for an unknown provider, got %v", mgr.refreshProviderCalls)
+	}
+}
+
 // Regression for the custom-provider path: required-field validation must run
 // against the resolved BASE provider, not the custom route name, or a custom
 // provider based on Bedrock would skip the region requirement entirely.

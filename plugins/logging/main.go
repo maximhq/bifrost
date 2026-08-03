@@ -6,7 +6,7 @@ package logging
 import (
 	"context"
 	"fmt"
-	"math"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -108,14 +108,35 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
-// attachLogRedactionData copies guardrail redaction data into the log entry for async writers.
-func attachLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
-	if ctx == nil || entry == nil || !contentLoggingEnabled {
-		return
+// redactionDataForLogging returns an owned request snapshot for asynchronous log writers.
+func redactionDataForLogging(ctx *schemas.BifrostContext, contentLoggingEnabled bool) *schemas.RedactionData {
+	if ctx == nil || !contentLoggingEnabled {
+		return nil
 	}
 	if data, ok := schemas.RedactionDataFromContext(ctx); ok {
 		snapshot := data.Clone()
-		entry.RedactionData = &snapshot
+		return &snapshot
+	}
+	return nil
+}
+
+// attachLogRedactionData copies guardrail redaction data into an LLM log entry.
+func attachLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
+	if entry == nil {
+		return
+	}
+	if snapshot := redactionDataForLogging(ctx, contentLoggingEnabled); snapshot != nil {
+		entry.RedactionData = snapshot
+	}
+}
+
+// attachMCPLogRedactionData copies guardrail redaction data into an MCP tool log entry.
+func attachMCPLogRedactionData(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog, contentLoggingEnabled bool) {
+	if entry == nil {
+		return
+	}
+	if snapshot := redactionDataForLogging(ctx, contentLoggingEnabled); snapshot != nil {
+		entry.RedactionData = snapshot
 	}
 }
 
@@ -243,6 +264,32 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 }
 
+const (
+	// maxDeferredUsageWatchers caps goroutines parked waiting for trailing usage on
+	// large-payload requests. Generous, because each one is idle on a channel receive;
+	// it exists so a pathological burst cannot grow the goroutine set without limit.
+	maxDeferredUsageWatchers = 2048
+	// deferredUsageRetries / deferredUsageBackoff control how long we wait for the
+	// batch writer to land the row before giving up. Backoff doubles per attempt:
+	// 250ms, 500ms, 1s.
+	deferredUsageRetries   = 3
+	deferredUsageBackoff   = 250 * time.Millisecond
+	deferredUsageDBTimeout = 10 * time.Second
+)
+
+// sleepCtx sleeps for d, returning false if the plugin context is cancelled first.
+// Cleanup waits on p.wg, so an uncancellable sleep here delays shutdown.
+func (p *LoggerPlugin) sleepCtx(d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-p.ctx.Done():
+		return false
+	}
+}
+
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -252,11 +299,32 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 	if !ok || deferredChan == nil {
 		return
 	}
+	// Cap the watcher goroutines themselves. deferredUsageSem below only limits how
+	// many updates touch the DB concurrently; the goroutine is created before it is
+	// acquired and then parks on the channel receive, so without this the live
+	// goroutine count tracks in-flight large-payload requests rather than the limit.
+	select {
+	case p.deferredUsageWatchSem <- struct{}{}:
+	default:
+		if n := p.droppedDeferredUsage.Add(1); n == 1 || n%1000 == 0 {
+			p.logger.Warn("deferred usage update dropped for request %s: %d watchers already parked (%d dropped so far)", requestID, maxDeferredUsageWatchers, n)
+		}
+		return
+	}
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		defer func() { <-p.deferredUsageWatchSem }()
 		// Large-response phase B closes this channel after trailing usage extraction completes.
-		deferredUsage, chanOpen := <-deferredChan
+		var deferredUsage *schemas.BifrostLLMUsage
+		var chanOpen bool
+		select {
+		case deferredUsage, chanOpen = <-deferredChan:
+		case <-p.ctx.Done():
+			// Plugin is shutting down; stop waiting for trailing usage.
+			return
+		}
 		if !chanOpen || deferredUsage == nil {
 			return
 		}
@@ -267,6 +335,7 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		case p.deferredUsageSem <- struct{}{}:
 			defer func() { <-p.deferredUsageSem }()
 		default:
+			p.droppedDeferredUsage.Add(1)
 			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", requestID)
 			return
 		}
@@ -281,27 +350,44 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			usageUpdates["cached_read_tokens"] = tempEntry.CachedReadTokens
 		}
 
-		// Check if log entry present in the store
-		// exponential backoff with jitter and 3 retries
-		// then fail
+		// Wait for the batch writer to land the row, then patch usage onto it.
+		// This whole loop holds a deferredUsageSem slot, and dropping is immediate
+		// once the slots are full, so the phase is bounded twice over. The backoff is
+		// short: the previous 2s/4s/8s schedule meant a handful of slow lookups
+		// stalled every deferred update for 14s and dropped the rest. And a single
+		// deadline covers all attempts rather than one per attempt, because the ctx
+		// also covers waiting for a pool connection: a per-attempt budget let a slow
+		// store hold a slot for ~30s and drop everything arriving in that window.
+		retryCtx, cancelRetry := context.WithTimeout(p.ctx, deferredUsageDBTimeout)
+		defer cancelRetry()
 		var found bool
-		var findErr error
-		for i := 0; i < 3; i++ {
-			found, findErr = p.store.IsLogEntryPresent(p.ctx, requestID)
+		for attempt := range deferredUsageRetries {
+			presentResult, findErr := p.store.IsLogEntryPresent(retryCtx, requestID)
 			if findErr != nil {
 				p.logger.Warn("failed to check if log entry is present for request %s: %v", requestID, findErr)
-				continue
-			}
-			if found {
+			} else if presentResult {
+				found = true
 				break
 			}
-			time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second * 2)
+			// Budget spent: the remaining attempts would fail instantly, so don't
+			// sleep through backoffs that cannot help.
+			if retryCtx.Err() != nil {
+				break
+			}
+			// Sleep on the error path too, otherwise a DB error burns every retry
+			// in microseconds, exactly when the store needs time to recover.
+			if attempt < deferredUsageRetries-1 && !p.sleepCtx(deferredUsageBackoff<<attempt) {
+				return
+			}
 		}
 		if !found {
-			p.logger.Warn("log entry not found for request %s after 3 retries. failed to update deferred usage for large payload request", requestID)
+			p.logger.Warn("log entry not found for request %s after %d retries. failed to update deferred usage for large payload request", requestID, deferredUsageRetries)
 			return
 		}
-		if updErr := p.store.Update(p.ctx, requestID, usageUpdates); updErr != nil {
+
+		updCtx, cancel := context.WithTimeout(p.ctx, deferredUsageDBTimeout)
+		defer cancel()
+		if updErr := p.store.Update(updCtx, requestID, usageUpdates); updErr != nil {
 			p.logger.Warn("failed to update deferred usage for request %s: %v", requestID, updErr)
 		}
 	}()
@@ -312,7 +398,13 @@ type RecalculateCostResult struct {
 	TotalMatched int64 `json:"total_matched"`
 	Updated      int   `json:"updated"`
 	Skipped      int   `json:"skipped"`
-	Remaining    int64 `json:"remaining"`
+	// Unpriceable is the subset of Skipped left alone because their pricing inputs
+	// could not be recovered (for example, a failed object-storage fetch) rather than
+	// because there was nothing to charge. Surfaced separately so
+	// a caller can distinguish "no cost applies" from "we refused to write a number
+	// we knew would be wrong".
+	Unpriceable int   `json:"unpriceable,omitempty"`
+	Remaining   int64 `json:"remaining"`
 }
 
 // RecalculateCostProgress represents a progress event from a cost backfill operation.
@@ -369,6 +461,8 @@ type InitialLogData struct {
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
 	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
+	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
+	App                    string // Backend-detected client app derived from UserAgent
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -377,6 +471,7 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 // MCPToolLogCallback is a function that gets called when a new MCP tool log entry is created or updated
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
+// Config controls logging plugin behavior.
 type Config struct {
 	DisableContentLogging        *bool                  `json:"disable_content_logging"`
 	RetainContentInObjectStorage *bool                  `json:"retain_content_in_object_storage"` // Pointer to live config value; when true, content-disabled requests are offloaded to object storage as hidden instead of dropped
@@ -411,6 +506,13 @@ func validateWriterConfig(config logstore.WriterConfig) error {
 	return nil
 }
 
+type compiledUserAgentMapping struct {
+	Pattern   string
+	MatchType schemas.UserAgentMappingMatchType
+	App       string
+	Regex     *regexp.Regexp
+}
+
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
 type LoggerPlugin struct {
 	ctx                          context.Context
@@ -440,11 +542,15 @@ type LoggerPlugin struct {
 	writeQueue                   chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                       atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 	deferredUsageSem             chan struct{}         // Limits concurrent deferred usage DB updates
+	deferredUsageWatchSem        chan struct{}         // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
+	droppedDeferredUsage         atomic.Int64          // Deferred usage updates dropped because a semaphore was full
 	clusterNodeID                atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
 	batchCtx                     context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
 	batchCancel                  context.CancelFunc    // Cancels batchCtx
 	batchWriterDone              chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch               []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
+	userAgentMappings            atomic.Value          // []compiledUserAgentMapping, read from request hot paths
+	userAgentMappingMu           sync.Mutex            // serializes user-agent mapping write+reload sequences to keep the cache consistent
 }
 
 // Init creates new logger plugin with given log store
@@ -489,6 +595,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		writerConfig:                 writerConfig,
 		writeQueue:                   make(chan *writeQueueEntry, writerConfig.WriteQueueCapacity),
 		deferredUsageSem:             make(chan struct{}, writerConfig.DeferredUsageConcurrency),
+		deferredUsageWatchSem:        make(chan struct{}, maxDeferredUsageWatchers),
 		batchCtx:                     batchCtx,
 		batchCancel:                  batchCancel,
 		batchWriterDone:              make(chan struct{}),
@@ -510,6 +617,11 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		plugin.updateDataPool.Put(&UpdateLogData{})
 	}
 
+	if err := plugin.ReloadUserAgentMappings(ctx); err != nil {
+		logger.Warn("failed to load user agent mappings: %v", err)
+		plugin.userAgentMappings.Store([]compiledUserAgentMapping{})
+	}
+
 	// Start cleanup ticker (runs every 1 minute)
 	plugin.cleanupTicker = time.NewTicker(1 * time.Minute)
 	plugin.wg.Add(1)
@@ -520,6 +632,57 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	go plugin.batchWriter()
 
 	return plugin, nil
+}
+
+// ReloadUserAgentMappings refreshes the in-memory custom User-Agent mapping cache.
+func (p *LoggerPlugin) ReloadUserAgentMappings(ctx context.Context) error {
+	mappings, err := p.store.ListUserAgentMappings(ctx, true)
+	if err != nil {
+		return err
+	}
+	compiled := make([]compiledUserAgentMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		matchType := schemas.UserAgentMappingMatchType(mapping.MatchType)
+		entry := compiledUserAgentMapping{
+			Pattern:   mapping.Pattern,
+			MatchType: matchType,
+			App:       mapping.App,
+		}
+		if matchType == schemas.UserAgentMappingMatchTypeRegex {
+			re, err := regexp.Compile(mapping.Pattern)
+			if err != nil {
+				p.logger.Warn("skipping invalid user agent mapping regex %q: %v", mapping.Pattern, err)
+				continue
+			}
+			entry.Regex = re
+		}
+		compiled = append(compiled, entry)
+	}
+	p.userAgentMappings.Store(compiled)
+	return nil
+}
+
+func (p *LoggerPlugin) detectAppFromUserAgent(userAgent string) string {
+	if strings.TrimSpace(userAgent) == "" {
+		return ""
+	}
+	if mappings, ok := p.userAgentMappings.Load().([]compiledUserAgentMapping); ok {
+		for _, mapping := range mappings {
+			if mapping.App == "" || mapping.Pattern == "" {
+				continue
+			}
+			if mapping.Regex != nil {
+				if mapping.Regex.MatchString(userAgent) {
+					return mapping.App
+				}
+				continue
+			}
+			if schemas.MatchUserAgent(userAgent, mapping.Pattern, mapping.MatchType) {
+				return mapping.App
+			}
+		}
+	}
+	return schemas.DetectAppFromUserAgent(userAgent)
 }
 
 // SetClusterNodeID sets the cluster node ID that will be attached to all log entries.
@@ -588,6 +751,26 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
+}
+
+// userAgentFromContext returns the raw HTTP User-Agent of the calling client from
+// the request header map, or "" when absent. Keys in the map are lowercased, so
+// the lookup is case-insensitive. The value is stored verbatim on the log entry;
+// mapping it to a client app happens in the UI.
+func userAgentFromContext(ctx *schemas.BifrostContext) string {
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if allHeaders != nil {
+		if ua := allHeaders["user-agent"]; ua != "" {
+			return ua
+		}
+		for key, value := range allHeaders {
+			if strings.EqualFold(key, "user-agent") && value != "" {
+				return value
+			}
+		}
+	}
+	ua, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
+	return ua
 }
 
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
@@ -691,6 +874,14 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	if req.RequestType == schemas.RealtimeRequest {
 		initialData.Object = "realtime.turn"
+	}
+
+	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
+	// maps it to a client app such as Claude Code, Codex, or Cursor).
+	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
+	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
+		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
 	if p.contentLoggingEnabled(ctx) {
@@ -974,6 +1165,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Stream:    bifrost.IsStreamRequestType(requestType),
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
+			}
+			if ua := userAgentFromContext(ctx); ua != "" {
+				entry.UserAgent = &ua
+				if app := p.detectAppFromUserAgent(ua); app != "" {
+					entry.App = &app
+				}
 			}
 			entry.MetadataParsed = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
@@ -1432,13 +1629,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		return nil
 	}
 	// Serialize plugin logs once for all entries
-	var pluginLogsJSON string
-	if len(trace.PluginLogs) > 0 {
-		grouped := schemas.GroupPluginLogsByName(trace.PluginLogs)
-		if data, err := sonic.Marshal(grouped); err == nil {
-			pluginLogsJSON = string(data)
-		}
-	}
+	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
 	p.logger.Debug("Inject: enqueuing %d log entries", len(pending.entries))
 	// Enqueue each log entry (supports multiple attempts per trace)
 	for _, entry := range pending.entries {
@@ -1447,6 +1638,18 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
 	}
 	return nil
+}
+
+// serializePluginLogs groups plugin logs by plugin name for persistence and UI rendering.
+func serializePluginLogs(logs []schemas.PluginLogEntry) string {
+	if len(logs) == 0 {
+		return ""
+	}
+	data, err := sonic.Marshal(schemas.GroupPluginLogsByName(logs))
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // MCP Plugin Interface Implementation
@@ -1553,9 +1756,17 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
 
-	// Set arguments if content logging is enabled. MCP tool logs have no
-	// hidden-content mode, so content is only stored when it is also visible.
-	if p.resolveContentPolicy(ctx).visible() {
+	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
+	// maps it to a client app such as Claude Code, Codex, or Cursor).
+	if ua := userAgentFromContext(ctx); ua != "" {
+		entry.UserAgent = &ua
+		if app := p.detectAppFromUserAgent(ua); app != "" {
+			entry.App = &app
+		}
+	}
+
+	// Set arguments if content logging is enabled
+	if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
 	}
 
@@ -1704,6 +1915,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback
 	p.mu.Unlock()
+	attachMCPLogRedactionData(ctx, entry, p.contentLoggingEnabled(ctx))
+	entry.PluginLogs = serializePluginLogs(ctx.GetPluginLogs())
 	p.enqueueMCPToolLogEntry(entry, callback)
 
 	return resp, bifrostErr, nil

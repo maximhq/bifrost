@@ -88,6 +88,7 @@ type Bifrost struct {
 	bifrostRequestPool  sync.Pool                           // Pool for BifrostRequest objects
 	logger              schemas.Logger                      // logger instance, default logger is used if not provided
 	tracer              atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
+	modelCatalog        schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
 	MCPManager          mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
 	mcpCredStore        schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
 	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
@@ -245,6 +246,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
 		logger:        config.Logger,
 		kvStore:       config.KVStore,
+		modelCatalog:  config.ModelCatalog,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
@@ -388,6 +390,33 @@ func (bifrost *Bifrost) SetTracer(tracer schemas.Tracer) {
 // getTracer returns the tracer from atomic storage with type assertion.
 func (bifrost *Bifrost) getTracer() schemas.Tracer {
 	return bifrost.tracer.Load().(*tracerWrapper).tracer
+}
+
+// getModelCatalog returns the catalog supplied at Init, or nil if none was.
+func (bifrost *Bifrost) getModelCatalog() schemas.ModelInfoProvider {
+	return bifrost.modelCatalog
+}
+
+// setModelCatalogOnContext stamps the catalog handle onto a request context so
+// plugin hooks can reach it. Scoped plugin contexts delegate Value lookups to
+// the root (see BifrostContext.WithPluginScope), so stamping the root once is
+// enough for every plugin in the pipeline.
+//
+// The no-catalog case clears rather than skips: reused long-lived contexts
+// (realtime WS connections re-enter this per message) would otherwise keep
+// serving a catalog that a later SetModelCatalog(nil) already retired.
+// ClearValue is itself a no-op on a context with no values map, so SDK users
+// who never wire a catalog still pay nothing.
+func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	catalog := bifrost.getModelCatalog()
+	if catalog == nil {
+		ctx.ClearValue(schemas.BifrostContextKeyModelCatalog)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
 }
 
 // ReloadConfig reloads the config from DB
@@ -1061,6 +1090,53 @@ func (bifrost *Bifrost) ResponsesRetrieveRequest(ctx *schemas.BifrostContext, re
 		return nil, err
 	}
 	return response.ResponsesResponse, nil
+}
+
+// ResponsesRetrieveStreamRequest replays a stored response as an SSE stream
+// (OpenAI GET /v1/responses/{id}?stream=true).
+func (bifrost *Bifrost) ResponsesRetrieveStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRetrieveRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "responses retrieve stream request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveStreamRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for responses retrieve stream request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveStreamRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if req.ResponseID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "response_id is required for responses retrieve stream request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRetrieveStreamRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ResponsesRetrieveStreamRequest
+	bifrostReq.ResponsesRetrieveRequest = req
+	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
 // ResponsesDeleteRequest deletes a stored response (OpenAI DELETE /v1/responses/{id}).
@@ -2830,6 +2906,7 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 	} else {
 		ensureMCPRawStorageContext(ctx)
 		ensureMCPTracerContext(ctx, bifrost.getTracer())
+		bifrost.setModelCatalogOnContext(ctx)
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -2849,6 +2926,7 @@ func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, too
 	} else {
 		ensureMCPRawStorageContext(ctx)
 		ensureMCPTracerContext(ctx, bifrost.getTracer())
+		bifrost.setModelCatalogOnContext(ctx)
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -4504,6 +4582,7 @@ func (bifrost *Bifrost) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sch
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
 	}
+	bifrost.setModelCatalogOnContext(ctx)
 
 	pipeline := bifrost.getPluginPipeline()
 	defer bifrost.releasePluginPipeline(pipeline)
@@ -4528,6 +4607,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 
 	tracer := bifrost.getTracer()
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	bifrost.setModelCatalogOnContext(ctx)
 
 	// Create a trace so the logging plugin can accumulate streaming chunks.
 	// The traceID is used as the accumulator key in ProcessStreamingChunk.
@@ -4663,6 +4743,7 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 
 	tracer := bifrost.getTracer()
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	bifrost.setModelCatalogOnContext(ctx)
 
 	if _, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); !ok {
 		traceID := tracer.CreateTrace("")
@@ -4974,6 +5055,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
+	// before any hook runs.
+	bifrost.setModelCatalogOnContext(ctx)
 
 	// PreRequestHook: once-per-request phase where plugins decide provider/model/fallbacks
 	// (and may mutate other request fields). Mutations commit to req and are observed by
@@ -5106,6 +5190,9 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
+	// before any hook runs.
+	bifrost.setModelCatalogOnContext(ctx)
 
 	// PreRequestHook: once-per-request phase. See handleRequest for semantics.
 	preReqPipeline := bifrost.getPluginPipeline()
@@ -5184,6 +5271,21 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		// the channel. See SetFallbackRoutingInfo doc.
 		fallbackErr.SetFallbackRoutingInfo(provider, model)
 		if fallbackErr == nil {
+			// Layer Primary/IsFallback onto the ctx-stashed RoutingInfo (mirrors
+			// SetFallbackRoutingInfo) — chunks can't carry it (see above), but the
+			// transport's pre-stream response headers can. Use SetRoutingInfoSnapshot
+			// (bypasses the restricted-writes guard) so this write isn't dropped when it
+			// races the streaming response's async per-chunk post-hooks.
+			if ri, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
+				ri.IsFallback = true
+				if provider != "" {
+					ri.PrimaryProvider = Ptr(provider)
+				}
+				if model != "" {
+					ri.PrimaryModel = Ptr(model)
+				}
+				ctx.SetRoutingInfoSnapshot(ri)
+			}
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Request served by fallback %s/%s (attempt %d/%d)", fallback.Provider, fallback.Model, i+1, len(fallbacks)))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -6127,6 +6229,7 @@ func executeRequestWithRetries[T any](
 		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
 		// This enables retries and fallbacks for providers that embed errors in
 		// the SSE stream instead of returning proper HTTP error status codes.
+		emptyStream := false
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
 				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(ctx, streamChan)
@@ -6139,6 +6242,21 @@ func executeRequestWithRetries[T any](
 					// closed and fail every read with ErrStreamClosed.
 					ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
 					bifrostError = firstChunkErr
+				} else if checkedStream == nil {
+					// Empty stream (zero chunks before close — includes the large-payload
+					// passthrough placeholder). Substitute a closed, non-nil channel:
+					// this result becomes the public *StreamRequest return value, and a
+					// nil channel with a nil error makes callers that range/receive on
+					// it block forever (a nil-channel receive never returns). A closed
+					// channel preserves zero-chunk semantics (range exits immediately,
+					// receive yields (nil, false)). The span is still completed
+					// synchronously below (emptyStream keeps isStreamChan false): the
+					// provider goroutine has already exited, so nothing is left to
+					// complete a deferred span.
+					emptyStream = true
+					closedCh := make(chan *schemas.BifrostStreamChunk)
+					close(closedCh)
+					result = any(closedCh).(T)
 				} else {
 					result = any(checkedStream).(T)
 				}
@@ -6146,9 +6264,11 @@ func executeRequestWithRetries[T any](
 		}
 
 		// Check if result is a streaming channel - if so, defer span completion
-		// Only defer for successful stream setup; error paths must end the span synchronously
+		// Only defer for successful stream setup; error paths must end the span
+		// synchronously. An empty stream is also ended synchronously: its
+		// provider goroutine is gone, so a deferred span would never complete.
 		isStreamChan := false
-		if bifrostError == nil {
+		if bifrostError == nil && !emptyStream {
 			if ch, ok := any(result).(chan *schemas.BifrostStreamChunk); ok && ch != nil {
 				isStreamChan = true
 			}
@@ -6176,6 +6296,10 @@ func executeRequestWithRetries[T any](
 				}
 				resp.PopulateExtraFields(requestType, providerKey, model, resolvedModelUsed)
 				tracer.PopulateLLMResponseAttributes(ctx, handle, resp, bifrostError)
+			} else if bifrostError != nil {
+				// Failed stream requests carry a chan result and miss the cast above;
+				// stamp error attributes explicitly so spans don't report unknown.
+				tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostError)
 			}
 
 			// End span with appropriate status
@@ -6674,6 +6798,32 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				// Layer fallback identity here — the reliable write point. The orchestrator's
+				// post-hand-off ctx write (handleStreamRequest) races the streaming response's
+				// async per-chunk post-hooks, so set IsFallback/Primary on the per-attempt
+				// RoutingInfo instead. This flows into BOTH the header snapshot below and the
+				// per-chunk RoutingInfo (perAttemptRoutingInfo), so headers and SSE body agree.
+				// fallback index > 0 ⟺ this attempt is a fallback; Primary comes from the
+				// previous attempt's snapshot (the primary, or the carried-through primary on a
+				// later fallback — clearCtxForFallback keeps BifrostContextKeyRoutingInfo).
+				if fi, _ := req.Context.Value(schemas.BifrostContextKeyFallbackIndex).(int); fi > 0 {
+					attemptRoutingInfo.IsFallback = true
+					if prev, ok := req.Context.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo); ok {
+						if prev.IsFallback && prev.PrimaryProvider != nil {
+							attemptRoutingInfo.PrimaryProvider = prev.PrimaryProvider
+							attemptRoutingInfo.PrimaryModel = prev.PrimaryModel
+						} else if prev.Provider != "" {
+							pp := prev.Provider
+							pm := prev.Model
+							attemptRoutingInfo.PrimaryProvider = &pp
+							attemptRoutingInfo.PrimaryModel = &pm
+						}
+					}
+				}
+				// Stash for the transport: streams carry RoutingInfo only on chunks, but
+				// response headers must be written before the first chunk arrives. Each
+				// retry overwrites, so the winning attempt's snapshot survives.
+				req.Context.SetValue(schemas.BifrostContextKeyRoutingInfo, attemptRoutingInfo)
 				// Per-attempt snapshot for the async postHookRunner closure (it must
 				// not capture the outer var by reference — a later retry would race).
 				perAttemptRoutingInfo := attemptRoutingInfo
@@ -7253,6 +7403,12 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		return provider.ChatCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ChatRequest)
 	case schemas.ResponsesStreamRequest:
 		return provider.ResponsesStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRequest)
+	case schemas.ResponsesRetrieveStreamRequest:
+		lifecycle, ok := provider.(schemas.ResponsesLifecycleProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.ResponsesRetrieveStreamRequest, provider.GetProviderKey())
+		}
+		return lifecycle.ResponsesRetrieveStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.ResponsesRetrieveRequest)
 	case schemas.SpeechStreamRequest:
 		return provider.SpeechStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:

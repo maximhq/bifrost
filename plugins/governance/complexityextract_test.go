@@ -185,6 +185,37 @@ func TestBuildComplexityInput_SupportsStreamingRequestTypes(t *testing.T) {
 	}
 }
 
+// The Anthropic→Responses conversion tags user text blocks as output_text for
+// bedrock/-prefixed models (keepToolsGrouped path), emitting one message per
+// text block. Complexity extraction must still treat these as text, otherwise
+// Claude Code traffic using a bedrock/ alias never classifies and always falls
+// through to the default routing rule.
+func TestBuildComplexityInput_ResponsesOutputTextTypedUserBlocks(t *testing.T) {
+	systemRole := schemas.ResponsesInputMessageRoleSystem
+	userRole := schemas.ResponsesInputMessageRoleUser
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Input: []schemas.ResponsesMessage{
+				{
+					Role:    &systemRole,
+					Content: complexityResponsesBlocks(complexityResponsesTextBlock("You are a coding agent")),
+				},
+				{
+					Role:    &userRole,
+					Content: complexityResponsesBlocks(complexityResponsesOutputTextBlock("Explain encryption")),
+				},
+			},
+		},
+	}
+
+	input, ok := buildComplexityInput(req)
+	require.True(t, ok)
+	assert.Equal(t, "Explain encryption", input.LastUserText)
+	assert.Equal(t, "You are a coding agent", input.SystemText)
+}
+
 func TestBuildComplexityInput_SkipsUnsupportedRequestTypesEvenWhenTextIsPresent(t *testing.T) {
 	userRole := schemas.ResponsesInputMessageRoleUser
 	req := &schemas.BifrostRequest{

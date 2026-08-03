@@ -29,6 +29,22 @@ Bifrost provides built-in authentication to protect your dashboard and admin API
   strong password for security.
 </Note>
 
+<Note>
+  **Creating the first admin account:** until an admin account exists, Bifrost's dashboard/admin API is reachable
+  without a password from anyone who can route to it. To close that window, the first time you enable authentication
+  on an instance you must also supply a **Setup token**. Your operator configures this value ahead of time via
+  `setup_token` in `config.json` (accepts a literal value or an `env.VAR_NAME` / `vault.path` reference, same as
+  `admin_username`/`admin_password`) or the `BIFROST_SETUP_TOKEN` environment variable. Paste that same value into
+  the **Setup token** field that appears below the password field. The setup token is never persisted and is never
+  printed to logs. If no setup token is configured, creating the first admin account is rejected until you set one
+  - and because every node in a multi-node deployment reads the same configured value, there's no need to target a
+  specific node.
+</Note>
+
+<Note>
+  Setup token is required for version 2.0.0-prerelease3 and above.
+</Note>
+
 ### Step 3: Configure Inference Call Authentication (Optional)
 
 By default, when authentication is enabled, all API calls (including inference calls) require authentication. You can optionally disable authentication for inference calls while keeping it enabled for the dashboard and admin API:
