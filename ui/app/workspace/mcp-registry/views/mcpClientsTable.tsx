@@ -18,33 +18,59 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { getErrorMessage, useDeleteMCPClientMutation, useReconnectMCPClientMutation, useUpdateMCPClientMutation } from "@/lib/store";
+import {
+	getErrorMessage,
+	useDeleteMCPClientMutation,
+	useReauthMCPClientMutation,
+	useReconnectMCPClientMutation,
+	useUpdateMCPClientMutation,
+} from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { Box, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, PencilIcon, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
+import {
+	Box,
+	ChevronLeft,
+	ChevronRight,
+	KeyRound,
+	Loader2,
+	MoreHorizontal,
+	PencilIcon,
+	Plus,
+	RefreshCcw,
+	Search,
+	Trash2,
+	X,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import { MCPUsageGuideSheet } from "./mcpUsageGuide";
+import { OAuth2Authorizer } from "./oauth2Authorizer";
 
 function MCPClientActionsMenu({
 	client,
 	hasUpdateAccess,
 	hasDeleteAccess,
 	isReconnecting,
+	isReauthenticating,
 	isPerUserAuth,
+	isServerOAuth,
 	onEdit,
 	onReconnect,
+	onReauthenticate,
 	onDelete,
 }: {
 	client: MCPClient;
 	hasUpdateAccess: boolean;
 	hasDeleteAccess: boolean;
 	isReconnecting: boolean;
+	isReauthenticating: boolean;
 	isPerUserAuth: boolean;
+	isServerOAuth: boolean;
 	onEdit: (client: MCPClient) => void;
 	onReconnect: (client: MCPClient) => void;
+	onReauthenticate: (client: MCPClient) => void;
 	onDelete: (client: MCPClient) => void;
 }) {
 	const [isOpen, setIsOpen] = useState(false);
@@ -59,7 +85,7 @@ function MCPClientActionsMenu({
 					aria-label="MCP server actions"
 					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
 				>
-					{isReconnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+					{isReconnecting || isReauthenticating ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent
@@ -98,6 +124,24 @@ function MCPClientActionsMenu({
 					>
 						<RefreshCcw className="h-4 w-4" />
 						Reconnect
+					</DropdownMenuItem>
+				)}
+				{/* Re-authenticate only makes sense for the shared server-level OAuth
+				    connection. Per-user OAuth tokens belong to individual users and are
+				    re-authorized from the MCP Sessions page instead. */}
+				{hasUpdateAccess && isServerOAuth && (
+					<DropdownMenuItem
+						className="cursor-pointer"
+						data-testid={`mcp-client-reauth-${client.config.client_id}-menu-item`}
+						disabled={client.config.disabled || isReauthenticating}
+						onSelect={(e) => {
+							e.preventDefault();
+							onReauthenticate(client);
+							setIsOpen(false);
+						}}
+					>
+						<KeyRound className="h-4 w-4" />
+						Re-authenticate
 					</DropdownMenuItem>
 				)}
 				{hasDeleteAccess && (
@@ -159,10 +203,16 @@ export default function MCPClientsTable({
 	const { toast } = useToast();
 
 	const [reconnectingClients, setReconnectingClients] = useState<string[]>([]);
+	const [reauthenticatingClients, setReauthenticatingClients] = useState<string[]>([]);
 	const [togglingClientIds, setTogglingClientIds] = useState<Set<string>>(new Set());
+	// Set once /reauth hands back an authorize URL; drives the OAuth popup dialog.
+	const [reauthFlow, setReauthFlow] = useState<{ authorizeUrl: string; oauthConfigId: string; mcpClientId: string; name: string } | null>(
+		null,
+	);
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
+	const [reauthMCPClient] = useReauthMCPClientMutation();
 	const [deleteMCPClient] = useDeleteMCPClientMutation();
 	const [updateMCPClient] = useUpdateMCPClientMutation();
 
@@ -182,6 +232,43 @@ export default function MCPClientsTable({
 		} catch (error) {
 			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+		}
+	};
+
+	// Re-run the OAuth consent flow for a server whose token expired or was
+	// revoked upstream. The request only mints a new pending OAuth config; the
+	// client keeps its current credentials until the popup flow completes.
+	const handleReauthenticate = async (client: MCPClient) => {
+		try {
+			setReauthenticatingClients((prev) => [...prev, client.config.client_id]);
+			const response = await reauthMCPClient(client.config.client_id).unwrap();
+			if (response.status === "pending_oauth" && response.authorize_url) {
+				setReauthFlow({
+					authorizeUrl: response.authorize_url,
+					oauthConfigId: response.oauth_config_id,
+					mcpClientId: response.mcp_client_id,
+					name: client.config.name,
+				});
+			} else {
+				toast({ title: "Error", description: "Server did not return an authorization URL.", variant: "destructive" });
+			}
+		} catch (error) {
+			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+		} finally {
+			setReauthenticatingClients((prev) => prev.filter((id) => id !== client.config.client_id));
+		}
+	};
+
+	const handleReauthClose = () => {
+		setReauthFlow(null);
+	};
+
+	const handleReauthSuccess = async () => {
+		const name = reauthFlow?.name;
+		setReauthFlow(null);
+		toast({ title: "Re-authenticated", description: `Client ${name} re-authenticated successfully.` });
+		if (refetch) {
+			await refetch();
 		}
 	};
 
@@ -315,6 +402,17 @@ export default function MCPClientsTable({
 					onNavigate={handleDetailNavigate}
 					hasPrev={selectedMCPClientIndex > 0 || offset > 0}
 					hasNext={(selectedMCPClientIndex >= 0 && selectedMCPClientIndex < mcpClients.length - 1) || offset + limit < totalCount}
+				/>
+			)}
+			{reauthFlow && (
+				<OAuth2Authorizer
+					open={true}
+					onClose={handleReauthClose}
+					onSuccess={() => void handleReauthSuccess()}
+					onError={(error) => toast({ title: "Error", description: error, variant: "destructive" })}
+					authorizeUrl={reauthFlow.authorizeUrl}
+					oauthConfigId={reauthFlow.oauthConfigId}
+					mcpClientId={reauthFlow.mcpClientId}
 				/>
 			)}
 			<AlertDialog open={!!clientToDelete} onOpenChange={(open) => !open && setClientToDelete(null)}>
@@ -532,9 +630,12 @@ export default function MCPClientsTable({
 													hasUpdateAccess={hasUpdateMCPClientAccess}
 													hasDeleteAccess={hasDeleteMCPClientAccess}
 													isReconnecting={reconnectingClients.includes(c.config.client_id)}
+													isReauthenticating={reauthenticatingClients.includes(c.config.client_id)}
 													isPerUserAuth={isPerUserAuth}
+													isServerOAuth={c.config.auth_type === "oauth"}
 													onEdit={handleRowClick}
 													onReconnect={(client) => void handleReconnect(client)}
+													onReauthenticate={(client) => void handleReauthenticate(client)}
 													onDelete={setClientToDelete}
 												/>
 											</TableCell>

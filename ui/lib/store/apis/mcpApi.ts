@@ -229,6 +229,18 @@ export const mcpApi = baseApi.injectEndpoints({
 			invalidatesTags: ["MCPClients"],
 		}),
 
+		// Start a fresh OAuth authorization for an existing OAuth MCP client.
+		// Used when the stored token has expired or was revoked upstream — reconnect
+		// re-dials with the same dead credentials, this re-runs the consent flow.
+		// Reuses the client's stored OAuth config, so no cache update happens here:
+		// the client only changes once completeOAuthFlow lands.
+		reauthMCPClient: builder.mutation<OAuthFlowResponse, string>({
+			query: (id) => ({
+				url: `/mcp/client/${id}/reauth`,
+				method: "POST",
+			}),
+		}),
+
 		// Get OAuth config status (for polling)
 		getOAuthConfigStatus: builder.query<OAuthStatusResponse, string>({
 			query: (oauthConfigId) => `/oauth/config/${oauthConfigId}/status`,
@@ -257,6 +269,7 @@ export const {
 	useUpdateMCPClientMutation,
 	useDeleteMCPClientMutation,
 	useReconnectMCPClientMutation,
+	useReauthMCPClientMutation,
 	useLazyGetMCPClientsQuery,
 	useLazyGetOAuthConfigStatusQuery,
 	useCompleteOAuthFlowMutation,
