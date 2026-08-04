@@ -682,6 +682,42 @@ func TestSSEStreamReaderConcurrentSendEvent(t *testing.T) {
 	}
 }
 
+// TestSSEStreamReaderSendHeartbeat verifies the heartbeat frame is a valid SSE
+// comment line (starts with ':', per the WHATWG SSE spec every compliant client
+// ignores a comment line) so it can be sent as a disconnect-detection probe
+// without ever surfacing to application code as a real event.
+func TestSSEStreamReaderSendHeartbeat(t *testing.T) {
+	r := NewSSEStreamReader()
+	go func() {
+		r.SendHeartbeat()
+		r.Done()
+	}()
+
+	buf := make([]byte, 4096)
+	n, err := r.Read(buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := string(buf[:n])
+	if len(got) == 0 || got[0] != ':' {
+		t.Errorf("heartbeat frame = %q, want a line starting with ':' (SSE comment)", got)
+	}
+	if got[len(got)-2:] != "\n\n" {
+		t.Errorf("heartbeat frame = %q, want it terminated by a blank line", got)
+	}
+}
+
+// TestSSEStreamReaderSendHeartbeatAfterClose verifies the same disconnect
+// contract as the other Send* wrappers: false once the reader is closed.
+func TestSSEStreamReaderSendHeartbeatAfterClose(t *testing.T) {
+	r := NewSSEStreamReader()
+	r.Close()
+
+	if r.SendHeartbeat() {
+		t.Error("SendHeartbeat should return false after Close")
+	}
+}
+
 func TestSSEStreamReaderCloseUnblocksProducer(t *testing.T) {
 	r := NewSSEStreamReader()
 
