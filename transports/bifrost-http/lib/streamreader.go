@@ -107,6 +107,24 @@ func (r *SSEStreamReader) SendDone() bool {
 	return r.Send([]byte("data: [DONE]\n\n"))
 }
 
+// sseHeartbeatFrame is an SSE comment line -- per the WHATWG SSE spec, a line
+// beginning with ':' is a comment that every compliant client ignores. It never
+// surfaces to application code as a real event.
+var sseHeartbeatFrame = []byte(": heartbeat\n\n")
+
+// SendHeartbeat sends a no-op SSE comment line purely to force an additional
+// downstream write attempt. Client-disconnect detection in this reader is
+// reactive: fasthttp only calls Close() when a write actually fails, and a
+// write only happens when the producer calls Send/SendEvent/SendError/SendDone.
+// If the upstream provider finishes fast enough (few large chunks) that the
+// producer never attempts another write during a disconnect window, the
+// disconnect goes undetected and the stream completes as if nothing happened.
+// A caller sending this periodically (independent of real data) closes that
+// window. Returns false if the reader has been closed (client disconnected).
+func (r *SSEStreamReader) SendHeartbeat() bool {
+	return r.Send(sseHeartbeatFrame)
+}
+
 // Done closes the event channel, signaling to Read that the stream is finished.
 // Must be called exactly once by the producer goroutine when streaming is complete.
 func (r *SSEStreamReader) Done() {

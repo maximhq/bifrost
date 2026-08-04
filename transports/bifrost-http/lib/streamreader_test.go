@@ -5,6 +5,8 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 )
 
 func TestSSEStreamReaderSingleEventPerRead(t *testing.T) {
@@ -680,6 +682,101 @@ func TestSSEStreamReaderConcurrentSendEvent(t *testing.T) {
 	if count != numProducers*eventsPerProducer {
 		t.Errorf("got %d events, want %d", count, numProducers*eventsPerProducer)
 	}
+}
+
+// TestSSEStreamReaderSendHeartbeat verifies the heartbeat frame is a valid SSE
+// comment line (starts with ':', per the WHATWG SSE spec every compliant client
+// ignores a comment line) so it can be sent as a disconnect-detection probe
+// without ever surfacing to application code as a real event.
+func TestSSEStreamReaderSendHeartbeat(t *testing.T) {
+	r := NewSSEStreamReader()
+	go func() {
+		r.SendHeartbeat()
+		r.Done()
+	}()
+
+	buf := make([]byte, 4096)
+	n, err := r.Read(buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := string(buf[:n])
+	if len(got) == 0 || got[0] != ':' {
+		t.Errorf("heartbeat frame = %q, want a line starting with ':' (SSE comment)", got)
+	}
+	if got[len(got)-2:] != "\n\n" {
+		t.Errorf("heartbeat frame = %q, want it terminated by a blank line", got)
+	}
+}
+
+// TestSSEStreamReaderSendHeartbeatAfterClose verifies the same disconnect
+// contract as the other Send* wrappers: false once the reader is closed.
+func TestSSEStreamReaderSendHeartbeatAfterClose(t *testing.T) {
+	r := NewSSEStreamReader()
+	r.Close()
+
+	if r.SendHeartbeat() {
+		t.Error("SendHeartbeat should return false after Close")
+	}
+}
+
+// TestSSEStreamReaderDoneWhileSendBlockedDoesNotPanic is the regression test for a
+// shutdown-ordering bug in handleStreamingResponse's heartbeat goroutine: the buffered
+// eventCh has capacity 1, so a second concurrent Send (e.g. a heartbeat firing while a
+// real event is already queued and nothing is reading) blocks on `eventCh <- event`.
+// Calling Done() (which closes eventCh) while that send is still blocked races the close
+// against the pending send -- Go panics on "send on closed channel" if the send resumes
+// after the close. The safe sequence is: Close() first (the blocked Send's inner select
+// already watches closeCh, so it unblocks there instead, safely), wait for that goroutine
+// to actually exit, and only then call Done(). This proves the safe sequence never panics
+// even with a send still in flight when shutdown begins.
+//
+// Runs inside a synctest bubble so synctest.Wait() can deterministically confirm the
+// background goroutine has genuinely entered the blocking send (durably blocked on
+// eventCh, a channel created inside the bubble) before shutdown starts -- a plain
+// "goroutine has started" signal plus a timing guess could let Close() run first and
+// silently exercise the already-covered after-close path instead of this one.
+func TestSSEStreamReaderDoneWhileSendBlockedDoesNotPanic(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := NewSSEStreamReader()
+
+		// Fill the single buffer slot so a second Send has nowhere to go and blocks.
+		if !r.Send([]byte("data: first\n\n")) {
+			t.Fatal("first Send should succeed (buffer has room)")
+		}
+
+		blockedSendResult := make(chan bool, 1)
+		go func() {
+			// This blocks: the buffer is full and nothing is reading it.
+			blockedSendResult <- r.SendHeartbeat()
+		}()
+
+		// Deterministically wait until the goroutine above is durably blocked on the
+		// send, not just scheduled to run -- see the doc comment above.
+		synctest.Wait()
+
+		// Safe shutdown sequence, mirroring handleStreamingResponse's cleanup: Close() first...
+		r.Close()
+
+		// ...wait for the blocked send to actually unblock and return...
+		select {
+		case ok := <-blockedSendResult:
+			if ok {
+				t.Error("blocked SendHeartbeat should return false once Close() unblocks it")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("blocked Send never unblocked after Close() -- would deadlock handleStreamingResponse's cleanup")
+		}
+
+		// ...and only now is Done() (which closes eventCh) safe to call: no other goroutine
+		// can still be mid-send on it.
+		defer func() {
+			if rec := recover(); rec != nil {
+				t.Fatalf("Done() panicked after the safe Close-then-wait sequence: %v", rec)
+			}
+		}()
+		r.Done()
+	})
 }
 
 func TestSSEStreamReaderCloseUnblocksProducer(t *testing.T) {

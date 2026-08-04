@@ -14,21 +14,21 @@ import (
 
 // CohereResponsesStreamState tracks state during streaming conversion for responses API
 type CohereResponsesStreamState struct {
-	ContentIndexToOutputIndex     map[int]int    // Maps Cohere content_index to OpenAI output_index
-	ToolArgumentBuffers           map[int]string // Maps output_index to accumulated tool argument JSON
-	ToolCallNames                 map[int]string // Maps output_index to tool name
-	ItemIDs                       map[int]string // Maps output_index to item ID for stable IDs
-	ReasoningContentIndices       map[int]bool   // Tracks which content indices are reasoning blocks
-	AnnotationIndexToContentIndex map[int]int    // Maps annotation index to content index for citation pairing
-	TextBuffers                   map[int]*strings.Builder // Maps output_index to accumulated text content for done events
-	CurrentOutputIndex            int            // Current output index counter
-	MessageID                     *string        // Message ID from message_start
-	Model                         *string        // Model name from message_start
-	CreatedAt                     int            // Timestamp for created_at consistency
-	HasEmittedCreated             bool           // Whether we've emitted response.created
-	HasEmittedInProgress          bool           // Whether we've emitted response.in_progress
-	ToolPlanOutputIndex           *int           // Output index for tool plan text item (if created)
-	OutputItems                   map[int]*schemas.ResponsesMessage // Maps output_index to accumulated output item for response.completed
+	ContentIndexToOutputIndex     map[int]int                                                   // Maps Cohere content_index to OpenAI output_index
+	ToolArgumentBuffers           map[int]string                                                // Maps output_index to accumulated tool argument JSON
+	ToolCallNames                 map[int]string                                                // Maps output_index to tool name
+	ItemIDs                       map[int]string                                                // Maps output_index to item ID for stable IDs
+	ReasoningContentIndices       map[int]bool                                                  // Tracks which content indices are reasoning blocks
+	AnnotationIndexToContentIndex map[int]int                                                   // Maps annotation index to content index for citation pairing
+	TextBuffers                   map[int]*strings.Builder                                      // Maps output_index to accumulated text content for done events
+	CurrentOutputIndex            int                                                           // Current output index counter
+	MessageID                     *string                                                       // Message ID from message_start
+	Model                         *string                                                       // Model name from message_start
+	CreatedAt                     int                                                           // Timestamp for created_at consistency
+	HasEmittedCreated             bool                                                          // Whether we've emitted response.created
+	HasEmittedInProgress          bool                                                          // Whether we've emitted response.in_progress
+	ToolPlanOutputIndex           *int                                                          // Output index for tool plan text item (if created)
+	OutputItems                   map[int]*schemas.ResponsesMessage                             // Maps output_index to accumulated output item for response.completed
 	AnnotationsByOutputIndex      map[int][]schemas.ResponsesOutputMessageContentTextAnnotation // Maps output_index to citation annotations for done events and response.completed
 }
 
@@ -1839,8 +1839,8 @@ func convertSingleCohereMessageToBifrostMessages(cohereMsg *CohereMessage, isOut
 	// Handle reasoning blocks - prepend reasoning message if we collected any
 	if len(reasoningContentBlocks) > 0 {
 		reasoningMessage := schemas.ResponsesMessage{
-			ID:   schemas.Ptr("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
-			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ID:   new("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
+			Type: new(schemas.ResponsesMessageTypeReasoning),
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{},
 			},
