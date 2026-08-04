@@ -2045,21 +2045,22 @@ func convertToolChoice(toolChoice schemas.ChatToolChoice) *BedrockToolChoice {
 func extractToolsFromConversationHistory(ctx context.Context, messages []schemas.ChatMessage) (bool, []BedrockTool) {
 	hasToolContent := false
 	toolsMap := make(map[string]BedrockTool)
+	var toolNames []string // Insertion-order tracking for toolsMap
 
 	for _, msg := range messages {
-		hasToolContent = checkMessageForToolContent(ctx, msg, toolsMap) || hasToolContent
+		hasToolContent = checkMessageForToolContent(ctx, msg, toolsMap, &toolNames) || hasToolContent
 	}
 
 	tools := make([]BedrockTool, 0, len(toolsMap))
-	for _, tool := range toolsMap {
-		tools = append(tools, tool)
+	for _, toolName := range toolNames {
+		tools = append(tools, toolsMap[toolName])
 	}
 
 	return hasToolContent, tools
 }
 
 // checkMessageForToolContent checks a single message for tool content and updates the tools map
-func checkMessageForToolContent(ctx context.Context, msg schemas.ChatMessage, toolsMap map[string]BedrockTool) bool {
+func checkMessageForToolContent(ctx context.Context, msg schemas.ChatMessage, toolsMap map[string]BedrockTool, toolNames *[]string) bool {
 	hasContent := false
 
 	// Check assistant tool calls
@@ -2069,6 +2070,7 @@ func checkMessageForToolContent(ctx context.Context, msg schemas.ChatMessage, to
 			if toolCall.Function.Name != nil {
 				toolName := bedrockAliasToolName(ctx, *toolCall.Function.Name)
 				if _, exists := toolsMap[toolName]; !exists {
+					*toolNames = append(*toolNames, toolName)
 					// Create a complete schema object for extracted tools
 					schemaObject := map[string]interface{}{
 						"type":       "object",
