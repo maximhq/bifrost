@@ -486,6 +486,10 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 
+	case schemas.Minimax:
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.Wafer:
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true

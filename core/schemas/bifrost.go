@@ -72,6 +72,7 @@ const (
 	Runware       ModelProvider = "runware"
 	Fireworks     ModelProvider = "fireworks"
 	Sarvam        ModelProvider = "sarvam"
+	Minimax       ModelProvider = "minimax"
 	Wafer         ModelProvider = "wafer"
 )
 
@@ -117,6 +118,7 @@ var StandardProviders = []ModelProvider{
 	Runware,
 	Fireworks,
 	Sarvam,
+	Minimax,
 	Wafer,
 }
 

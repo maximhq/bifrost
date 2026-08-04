@@ -207,6 +207,11 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 						Detail:   block.ImageURLStruct.Detail,
 					}
 				}
+				if block.VideoURLStruct != nil {
+					respBlocks[i].ResponsesInputMessageContentBlockVideo = &ResponsesInputMessageContentBlockVideo{
+						VideoURL: block.VideoURLStruct,
+					}
+				}
 
 				// Map file
 				if block.File != nil {
@@ -595,6 +600,8 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					}
 				case ChatContentBlockTypeImage:
 					blockType = ResponsesInputMessageContentBlockTypeImage
+				case ChatContentBlockTypeVideo:
+					blockType = ResponsesInputMessageContentBlockTypeVideo
 				case ChatContentBlockTypeFile:
 					blockType = ResponsesInputMessageContentBlockTypeFile
 				case ChatContentBlockTypeInputAudio:
@@ -611,6 +618,11 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					responseBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
 						ImageURL: &block.ImageURLStruct.URL,
 						Detail:   block.ImageURLStruct.Detail,
+					}
+				}
+				if block.VideoURLStruct != nil {
+					responseBlocks[i].ResponsesInputMessageContentBlockVideo = &ResponsesInputMessageContentBlockVideo{
+						VideoURL: block.VideoURLStruct,
 					}
 				}
 				if block.File != nil {
@@ -667,6 +679,11 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						respBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
 							ImageURL: &block.ImageURLStruct.URL,
 							Detail:   block.ImageURLStruct.Detail,
+						}
+					}
+					if block.VideoURLStruct != nil {
+						respBlocks[i].ResponsesInputMessageContentBlockVideo = &ResponsesInputMessageContentBlockVideo{
+							VideoURL: block.VideoURLStruct,
 						}
 					}
 
@@ -898,6 +915,8 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						chatBlockType = ChatContentBlockTypeText // "input_text" -> "text"
 					case ResponsesInputMessageContentBlockTypeImage:
 						chatBlockType = ChatContentBlockTypeImage // "input_image" -> "image_url"
+					case ResponsesInputMessageContentBlockTypeVideo:
+						chatBlockType = ChatContentBlockTypeVideo // "input_video" -> "video_url"
 					case ResponsesInputMessageContentBlockTypeFile:
 						chatBlockType = ChatContentBlockTypeFile // "input_file" -> "file"
 					case ResponsesInputMessageContentBlockTypeAudio:
@@ -920,6 +939,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						if block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
 							chatBlocks[i].ImageURLStruct.URL = *block.ResponsesInputMessageContentBlockImage.ImageURL
 						}
+					}
+					if block.ResponsesInputMessageContentBlockVideo != nil {
+						chatBlocks[i].VideoURLStruct = block.ResponsesInputMessageContentBlockVideo.VideoURL
 					}
 					if block.ResponsesInputMessageContentBlockFile != nil {
 						chatBlocks[i].File = &ChatInputFile{

@@ -1494,6 +1494,7 @@ type ResponsesMessageContentBlockType string
 const (
 	ResponsesInputMessageContentBlockTypeText      ResponsesMessageContentBlockType = "input_text"
 	ResponsesInputMessageContentBlockTypeImage     ResponsesMessageContentBlockType = "input_image"
+	ResponsesInputMessageContentBlockTypeVideo     ResponsesMessageContentBlockType = "input_video"
 	ResponsesInputMessageContentBlockTypeFile      ResponsesMessageContentBlockType = "input_file"
 	ResponsesInputMessageContentBlockTypeAudio     ResponsesMessageContentBlockType = "input_audio"
 	ResponsesInputMessageContentBlockTypeContainer ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
@@ -1512,7 +1513,7 @@ const (
 	ResponsesOutputMessageContentTypeFallback ResponsesMessageContentBlockType = "fallback"
 )
 
-// ResponsesMessageContentBlock represents different types of content (text, image, file, audio)
+// ResponsesMessageContentBlock represents different types of content (text, image, video, file, audio)
 // Only one of the content type fields should be set
 type ResponsesMessageContentBlock struct {
 	Type      ResponsesMessageContentBlockType `json:"type"`
@@ -1524,6 +1525,7 @@ type ResponsesMessageContentBlock struct {
 	EncryptedContent *string `json:"encrypted_content,omitempty"`
 
 	*ResponsesInputMessageContentBlockImage
+	*ResponsesInputMessageContentBlockVideo
 	*ResponsesInputMessageContentBlockFile
 	Audio *ResponsesInputMessageContentBlockAudio `json:"input_audio,omitempty"`
 
@@ -1565,6 +1567,10 @@ type Citations struct {
 type ResponsesInputMessageContentBlockImage struct {
 	ImageURL *string `json:"image_url,omitempty"`
 	Detail   *string `json:"detail,omitempty"` // "low" | "high" | "auto"
+}
+
+type ResponsesInputMessageContentBlockVideo struct {
+	VideoURL *ChatInputVideo `json:"video_url,omitempty"`
 }
 
 type ResponsesInputMessageContentBlockFile struct {

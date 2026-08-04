@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **MiniMax Provider** - Registered MiniMax provider configuration and UI metadata (thanks [@octo-patch](https://github.com/octo-patch)!)
 - **Plugin Download Private Allowlist**: Added `server.plugin_download_private_allowlist` (deploy-time only, not settable via the plugin admin API) accepting hostnames, IPs, or CIDR ranges that custom plugin (`.so`) downloads are permitted to reach even when they resolve to a private/loopback/link-local/CGNAT address, for operators hosting plugins on a trusted internal artifact server.
 
 ## 🐞 Fixed

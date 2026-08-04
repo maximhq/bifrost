@@ -166,13 +166,15 @@ ChatContentBlock:
   properties:
     type:
       type: string
-      enum: [text, image_url, input_audio, file, refusal]
+      enum: [text, image_url, video_url, input_audio, file, refusal]
     text:
       type: string
     refusal:
       type: string
     image_url:
       $ref: '#/ChatInputImage'
+    video_url:
+      $ref: '#/ChatInputVideo'
     input_audio:
       $ref: '#/ChatInputAudio'
     file:
@@ -189,7 +191,26 @@ ChatInputImage:
       type: string
     detail:
       type: string
-      enum: [low, high, auto]
+      enum: [low, default, high, auto]
+    max_long_side_pixel:
+      type: integer
+
+ChatInputVideo:
+  type: object
+  required:
+    - url
+  properties:
+    url:
+      type: string
+    detail:
+      type: string
+      enum: [low, default, high]
+    fps:
+      type: number
+      minimum: 0.2
+      maximum: 5
+    max_long_side_pixel:
+      type: integer
 
 ChatInputAudio:
   type: object

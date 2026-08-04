@@ -1,0 +1,2 @@
+- fix: translate MiniMax Responses requests through Chat Completions (thanks [@octo-patch](https://github.com/octo-patch)!)
+- feat: add MiniMax provider support (thanks [@octo-patch](https://github.com/octo-patch)!)
