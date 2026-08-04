@@ -3718,6 +3718,12 @@
           "maximum": 3600,
           "description": "Idle keep-alive for pooled connections, in seconds. Set below the upstream server's keep-alive so Bifrost drops idle connections before the server closes them. Default: 30."
         },
+        "stream_read_buffer_size_kb": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384,
+          "description": "Read buffer size for streaming responses, in KB. Applies to Azure speech streaming and the Gemini/Vertex streaming readers. The buffer is allocated per stream, so large values cost memory per concurrent stream. Default: 64."
+        },
         "max_conns_per_host": {
           "type": "integer",
           "minimum": 1,
@@ -3792,6 +3798,12 @@
           "minimum": 1,
           "maximum": 3600,
           "description": "Idle keep-alive for pooled connections, in seconds. Set below the upstream server's keep-alive so Bifrost drops idle connections before the server closes them. Default: 30."
+        },
+        "stream_read_buffer_size_kb": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384,
+          "description": "Read buffer size for streaming responses, in KB. Applies to Azure speech streaming and the Gemini/Vertex streaming readers. The buffer is allocated per stream, so large values cost memory per concurrent stream. Default: 64."
         },
         "max_conns_per_host": {
           "type": "integer",
