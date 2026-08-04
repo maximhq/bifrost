@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1855,38 +1856,60 @@ func BaseModelName(id string) string {
 	return base
 }
 
-// modelVendorPrefixRe matches one leading "<token>." segment whose token is
-// lowercase letters/hyphens only (e.g. "us.", "anthropic.", "eu."). It never
-// matches a token containing a digit, so digit-dotted names such as
-// "gpt-3.5-turbo" or "gemini-1.5-pro" are left untouched.
+// CanonicalEntitySet returns id/name arrays as deduped, id-sorted, comma-joined
+// strings so the same set always yields the same pair. Empty set → "","". For
+// low-count dimensions (a user's teams), not unbounded sets.
+func CanonicalEntitySet(ids, names []string) (idsCSV, namesCSV string) {
+	if len(ids) == 0 {
+		return "", ""
+	}
+	type pair struct{ id, name string }
+	seen := make(map[string]struct{}, len(ids))
+	pairs := make([]pair, 0, len(ids))
+	for i, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		name := ""
+		if i < len(names) {
+			name = names[i]
+		}
+		pairs = append(pairs, pair{id, name})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].id < pairs[j].id })
+	idList := make([]string, len(pairs))
+	nameList := make([]string, len(pairs))
+	for i, p := range pairs {
+		idList[i] = p.id
+		nameList[i] = p.name
+	}
+	return strings.Join(idList, ","), strings.Join(nameList, ",")
+}
+
+// modelVendorPrefixRe matches a leading "<letters>." segment (us., anthropic.),
+// never a digit-dotted one, so "gpt-3.5-turbo" is left intact.
 var modelVendorPrefixRe = regexp.MustCompile(`^[a-z][a-z-]*\.`)
 
-// bedrockVersionSuffixRe matches a trailing Bedrock version suffix like ":0" or
-// "-v1:0" so it can be stripped from an inference-profile id.
+// bedrockVersionSuffixRe matches a trailing Bedrock version suffix (":0", "-v1:0").
 var bedrockVersionSuffixRe = regexp.MustCompile(`(-v\d+)?:\d+$`)
 
-// NormalizeModelName reduces a provider-specific model id to a stable base name
-// for metric aggregation, so the same logical model does not split across series.
-// It strips Bedrock cross-region / vendor inference-profile prefixes, Bedrock
-// version suffixes, and any trailing date/version suffix. Digit-dotted names
-// without a vendor prefix (e.g. "gpt-3.5-turbo", "gemini-1.5-pro") and OpenAI
-// fine-tune ids ("ft:...") are preserved.
-//
-// Examples:
+// NormalizeModelName strips Bedrock vendor/region prefixes, version suffixes, and
+// trailing date suffixes so the same model doesn't split across series. Preserves
+// digit-dotted names ("gpt-3.5-turbo") and fine-tune ids ("ft:...").
 //
 //	"us.anthropic.claude-opus-4-20250101-v1:0" → "claude-opus-4"
-//	"anthropic.claude-3-5-sonnet-20241022"     → "claude-3-5-sonnet"
 //	"gpt-4o-mini-2024-07-18"                    → "gpt-4o-mini"
-//	"gpt-3.5-turbo"                             → "gpt-3.5-turbo"
 func NormalizeModelName(model string) string {
-	// Trim surrounding whitespace so a blank/whitespace-only model collapses to ""
-	// (rather than a garbage label) and stray spaces around a real name are dropped.
+	// Trim so blank/whitespace-only collapses to "" and stray spaces are dropped.
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return model
 	}
-	// Strip vendor/region prefixes (Bedrock inference profiles). Loop so both the
-	// region and vendor segments come off (e.g. "us.anthropic.").
+	// Strip vendor/region prefixes; loop to remove both (e.g. "us.anthropic.").
 	for {
 		stripped := modelVendorPrefixRe.ReplaceAllString(model, "")
 		if stripped == model || stripped == "" {
@@ -1894,12 +1917,10 @@ func NormalizeModelName(model string) string {
 		}
 		model = stripped
 	}
-	// Strip the Bedrock version suffix. Skip OpenAI fine-tune ids, whose trailing
-	// segment is an id, not a version.
+	// Strip Bedrock version suffix; skip fine-tune ids (trailing segment is an id).
 	if !strings.HasPrefix(model, "ft:") {
 		model = bedrockVersionSuffixRe.ReplaceAllString(model, "")
 	}
-	// Strip any trailing date/version suffix.
 	return BaseModelName(model)
 }
 
