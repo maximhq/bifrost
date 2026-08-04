@@ -839,6 +839,53 @@ func getStringAttr(attrs map[string]any, key string) string {
 	return ""
 }
 
+// getStringSliceAttr reads an array-valued span attribute ([]string or []any).
+func getStringSliceAttr(attrs map[string]any, key string) []string {
+	if attrs == nil {
+		return nil
+	}
+	switch v := attrs[key].(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// entitySetFromAttrs resolves one entity dimension from span attrs: plural arrays,
+// else scalar as a set of one, canonicalized.
+func entitySetFromAttrs(attrs map[string]any, idsKey, namesKey, scalarIDKey, scalarNameKey string) (idsCSV, namesCSV string) {
+	ids := getStringSliceAttr(attrs, idsKey)
+	names := getStringSliceAttr(attrs, namesKey)
+	if len(ids) == 0 {
+		if id := getStringAttr(attrs, scalarIDKey); id != "" {
+			ids = []string{id}
+			names = []string{getStringAttr(attrs, scalarNameKey)}
+		}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
+}
+
+// entitySetFromContext is entitySetFromAttrs for the request context path.
+func entitySetFromContext(ctx context.Context, idsKey, namesKey, scalarIDKey, scalarNameKey schemas.BifrostContextKey) (idsCSV, namesCSV string) {
+	ids, _ := ctx.Value(idsKey).([]string)
+	names, _ := ctx.Value(namesKey).([]string)
+	if len(ids) == 0 {
+		if id := bifrost.GetStringFromContext(ctx, scalarIDKey); id != "" {
+			ids = []string{id}
+			names = []string{bifrost.GetStringFromContext(ctx, scalarNameKey)}
+		}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
+}
+
 func getIntAttr(attrs map[string]any, key string) int {
 	if attrs == nil {
 		return 0
@@ -880,6 +927,9 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	if method == "" {
 		method = span.Name
 	}
+	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrTeamID, schemas.AttrTeamName)
+	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrCustomerID, schemas.AttrCustomerName)
+	buIDs, buNames := entitySetFromAttrs(attrs, schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames, schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
 	return BuildBifrostAttributes(
 		getStringAttr(attrs, schemas.AttrProviderName),
 		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
@@ -889,10 +939,12 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 		getStringAttr(attrs, schemas.AttrSelectedKeyID),
 		getStringAttr(attrs, schemas.AttrSelectedKeyName),
 		getIntAttr(attrs, schemas.AttrFallbackIndex),
-		getStringAttr(attrs, schemas.AttrTeamID),
-		getStringAttr(attrs, schemas.AttrTeamName),
-		getStringAttr(attrs, schemas.AttrCustomerID),
-		getStringAttr(attrs, schemas.AttrCustomerName),
+		teamIDs,
+		teamNames,
+		customerIDs,
+		customerNames,
+		buIDs,
+		buNames,
 	)
 }
 
@@ -905,6 +957,9 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 	if resolvedModel != "" {
 		model = resolvedModel
 	}
+	teamIDs, teamNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName)
+	customerIDs, customerNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName)
+	buIDs, buNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 	return BuildBifrostAttributes(
 		string(provider),
 		schemas.NormalizeModelName(model),
@@ -914,10 +969,12 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName),
 		bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
+		teamIDs,
+		teamNames,
+		customerIDs,
+		customerNames,
+		buIDs,
+		buNames,
 	)
 }
 
