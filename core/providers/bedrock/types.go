@@ -868,6 +868,7 @@ type BedrockInvokeMessagesContentBlock struct {
 	Input     interface{} `json:"input,omitempty"`
 	Thinking  string      `json:"thinking,omitempty"`
 	Signature string      `json:"signature,omitempty"`
+<<<<<<< HEAD
 }
 
 // MarshalJSON forces the thinking key to be present on thinking blocks.
@@ -890,6 +891,8 @@ func (b BedrockInvokeMessagesContentBlock) MarshalJSON() ([]byte, error) {
 		alias
 		Thinking string `json:"thinking"`
 	}{alias: alias(b), Thinking: b.Thinking})
+=======
+>>>>>>> cbd58eb1e (bedrock + anthropic patches for adaptive thinking (#5821))
 }
 
 // BedrockInvokeMessagesUsage represents token usage in an Anthropic Messages response.
