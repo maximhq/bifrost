@@ -23,8 +23,10 @@ func TestNormalizeModelName(t *testing.T) {
 		// Digit-dotted names without a vendor prefix must be preserved.
 		{"gpt-3.5-turbo", "gpt-3.5-turbo"},
 		{"gemini-1.5-pro", "gemini-1.5-pro"},
-		// OpenAI fine-tune ids must be preserved (trailing segment is an id, not a version).
+		// OpenAI fine-tune ids must be preserved (trailing segment is an id, not a version),
+		// including a date-like custom suffix BaseModelName would otherwise strip.
 		{"ft:gpt-4o-mini:acme:custom:AbCd1234", "ft:gpt-4o-mini:acme:custom:AbCd1234"},
+		{"ft:gpt-4o-mini:acme:custom-20250514", "ft:gpt-4o-mini:acme:custom-20250514"},
 		// Already-base names are unchanged.
 		{"gpt-4o-mini", "gpt-4o-mini"},
 		{"claude-opus-4", "claude-opus-4"},

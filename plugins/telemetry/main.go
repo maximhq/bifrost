@@ -861,8 +861,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 	model = schemas.NormalizeModelName(model)
 
-	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label series.
+	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label
+	// series. Decrement ActiveRequests first, since PreLLMHook incremented it.
 	if provider == "" && model == "" {
+		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
+			p.ActiveRequests.WithLabelValues(string(method)).Dec()
+		}
 		return result, bifrostErr, nil
 	}
 
@@ -969,7 +973,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		for _, record := range attemptTrail {
 			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
-					string(provider), originalModel, record.KeyID, record.KeyName, *record.FailReason,
+					string(provider), model, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
 			}
 			if record.FailReason != nil {
