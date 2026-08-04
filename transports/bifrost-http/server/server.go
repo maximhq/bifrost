@@ -175,6 +175,11 @@ type ServerCallbacks interface {
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
 }
 
+// GovernanceRouteOverridesProvider lets downstream editions replace selected OSS governance route families.
+type GovernanceRouteOverridesProvider interface {
+	GetGovernanceRouteOverrides(ctx context.Context) handlers.GovernanceRouteOverrides
+}
+
 // LogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to log-detail responses.
 type LogRedactionMappingResolverProvider interface {
 	// GetLogRedactionMappingResolver returns the resolver used by the logging handler.
@@ -2151,7 +2156,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		featureFlagsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if governanceHandler != nil {
-		governanceHandler.RegisterRoutes(s.Router, middlewares...)
+		var overrides handlers.GovernanceRouteOverrides
+		if provider, ok := callbacks.(GovernanceRouteOverridesProvider); ok {
+			overrides = provider.GetGovernanceRouteOverrides(ctx)
+		}
+		governanceHandler.RegisterRoutesWithOverrides(s.Router, overrides, middlewares...)
 	}
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)
