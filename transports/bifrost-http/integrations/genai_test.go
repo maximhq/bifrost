@@ -3,6 +3,7 @@ package integrations
 import (
 	"context"
 	"testing"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -335,4 +336,56 @@ func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.
 	model, ok := converted.(gemini.GeminiModel)
 	require.True(t, ok, "expected gemini.GeminiModel")
 	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
+}
+
+// TestExtractAndSetModelAndRequestTypeClonesPathParam guards against the parsed model
+// aliasing fasthttp's pooled request URI buffer.
+//
+// fasthttp/router materialises route parameters as unsafe, zero-copy views over that
+// buffer (router.go builds the match path with strconv.B2S(ctx.Request.URI().PathOriginal())
+// and stores substrings of it via ctx.SetUserValue). A value retained past the immediate
+// read therefore observes whatever fasthttp writes there next, silently corrupting the
+// model name. See https://github.com/maximhq/bifrost/issues/5753.
+func TestExtractAndSetModelAndRequestTypeClonesPathParam(t *testing.T) {
+	backing := []byte("vertex/gemini-2.5-pro:generateContent")
+	// Same shape as the router's value: a string header over bytes it does not own.
+	aliased := unsafe.String(&backing[0], len(backing))
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", aliased)
+	ctx.Request.Header.SetMethod("POST")
+
+	req := &gemini.GeminiGenerationRequest{}
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+	require.Equal(t, "vertex/gemini-2.5-pro", req.Model)
+
+	// fasthttp recycles the buffer and the next request scribbles over it.
+	for i := range backing {
+		backing[i] = 'X'
+	}
+
+	assert.Equal(t, "vertex/gemini-2.5-pro", req.Model,
+		"model must own its bytes, not alias the pooled fasthttp URI buffer")
+}
+
+// TestExtractModelAndRequestTypeClonesPathParam is the same guard for the streaming
+// pre-parse path, which feeds routing before the handler runs.
+func TestExtractModelAndRequestTypeClonesPathParam(t *testing.T) {
+	backing := []byte("vertex/gemini-2.5-pro:streamGenerateContent")
+	aliased := unsafe.String(&backing[0], len(backing))
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", aliased)
+
+	model, _ := extractModelAndRequestType(ctx)
+	require.Equal(t, "vertex/gemini-2.5-pro", model)
+
+	for i := range backing {
+		backing[i] = 'X'
+	}
+
+	assert.Equal(t, "vertex/gemini-2.5-pro", model,
+		"model must own its bytes, not alias the pooled fasthttp URI buffer")
 }

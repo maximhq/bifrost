@@ -17,6 +17,25 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// clonePathParam converts a fasthttp route parameter into a string that owns its bytes.
+//
+// fasthttp/router materialises route parameters as unsafe, zero-copy views over the
+// pooled request URI buffer: it builds the match path with
+// strconv.B2S(ctx.Request.URI().PathOriginal()) and stores substrings of it through
+// ctx.SetUserValue. Any such value retained beyond the immediate read — request
+// structs, contexts, plugin payloads, upstream calls — can therefore observe that
+// buffer after fasthttp has recycled it, yielding a silently corrupted value.
+//
+// Cloning severs the alias. See https://github.com/maximhq/bifrost/issues/5753
+func clonePathParam(v interface{}) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+
+	return strings.Clone(s), true
+}
+
 var bifrostContextKeyProvider = schemas.BifrostContextKey("provider")
 
 var availableIntegrations = []string{
