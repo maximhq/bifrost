@@ -523,6 +523,78 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 	}
 }
 
+// TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock is the regression test for a
+// live harness failure: Anthropic's real API rejects cache_control nested inside
+// tool_result.content ("cache_control may not be specified within `tool_result.content`.
+// Instead, place it directly on `tool_result`"), but the ChatMessageRoleTool conversion branch
+// (chat.go:759-808) only ever copied a content block's CacheControl onto the nested block itself
+// (line 784), never onto the outer tool_result block, so every cached tool result built via the
+// unified chat-completions dialect was wire-invalid for Anthropic-family providers. The fix
+// hoists the first CacheControl found among a tool message's content blocks onto the tool_result
+// block itself and strips it from the nested block, mirroring the same hoist-to-outer-level
+// pattern already used for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
+func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.T) {
+	toolCallID := "toolu_1"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("what is the weather in nyc")},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(toolCallID)},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{
+						Type:         schemas.ChatContentBlockTypeText,
+						Text:         schemas.Ptr("68F, partly cloudy."),
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					},
+				}},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var toolResultBlock *AnthropicContentBlock
+	for i := range result.Messages {
+		msg := result.Messages[i]
+		if msg.Role != "user" || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for j := range msg.Content.ContentBlocks {
+			if msg.Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolResult {
+				toolResultBlock = &msg.Content.ContentBlocks[j]
+			}
+		}
+	}
+	if toolResultBlock == nil {
+		t.Fatal("expected a tool_result content block in the converted request")
+	}
+
+	if toolResultBlock.CacheControl == nil {
+		t.Fatal("expected cache_control to be hoisted onto the tool_result block itself")
+	}
+	if toolResultBlock.CacheControl.Type != schemas.CacheControlTypeEphemeral {
+		t.Errorf("tool_result cache_control type = %q, want %q", toolResultBlock.CacheControl.Type, schemas.CacheControlTypeEphemeral)
+	}
+
+	if toolResultBlock.Content == nil || toolResultBlock.Content.ContentBlocks == nil || len(toolResultBlock.Content.ContentBlocks) != 1 {
+		t.Fatalf("expected exactly 1 nested content block, got %+v", toolResultBlock.Content)
+	}
+	if toolResultBlock.Content.ContentBlocks[0].CacheControl != nil {
+		t.Error("nested content block must not carry cache_control -- Anthropic's real API rejects it there")
+	}
+}
+
 func TestToAnthropicChatRequest_NestedProperties_Preserved(t *testing.T) {
 	params := &schemas.ToolFunctionParameters{
 		Type: "object",

@@ -683,3 +683,259 @@ func TestConvertSingleBedrockMessageToBifrostMessages_ImageBlock(t *testing.T) {
 	require.NotNil(t, cb.ResponsesInputMessageContentBlockImage.ImageURL)
 	assert.Equal(t, "data:image/png;base64,"+imgBytes, *cb.ResponsesInputMessageContentBlockImage.ImageURL)
 }
+
+// TestBedrockInvokeRequest_UnmarshalJSON_TextContentBlockCacheControlSurvives is the regression
+// test for the reviewer comment on this file's system-message cache_control fix: cache_control
+// is handled for system messages (parseSystemMessages) and tools (convertAnthropicTools), but not
+// for ordinary message content blocks. A plain text content block's cache_control has no
+// BedrockContentBlock field to land on (only "cachePoint" is a recognized JSON key), so it must be
+// unmarshalled from real JSON — a struct literal can't reproduce the bug since there's no field to
+// set. Bedrock Converse expects a standalone trailing cachePoint entry instead.
+func TestBedrockInvokeRequest_UnmarshalJSON_TextContentBlockCacheControlSurvives(t *testing.T) {
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 16,
+		"messages": [{"role":"user","content":[
+			{"type":"text","text":"Long context to cache.","cache_control":{"type":"ephemeral"}}
+		]}]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	require.Len(t, req.Messages, 1)
+	require.Len(t, req.Messages[0].Content, 2, "expected the text block plus a trailing standalone cachePoint entry")
+
+	require.NotNil(t, req.Messages[0].Content[0].Text)
+	assert.Equal(t, "Long context to cache.", *req.Messages[0].Content[0].Text)
+	assert.Nil(t, req.Messages[0].Content[0].CachePoint)
+
+	assert.Nil(t, req.Messages[0].Content[1].Text)
+	require.NotNil(t, req.Messages[0].Content[1].CachePoint)
+	assert.Equal(t, BedrockCachePointTypeDefault, req.Messages[0].Content[1].CachePoint.Type)
+}
+
+// TestBedrockInvokeRequest_UnmarshalJSON_ImageContentBlockCacheControlSurvives extends the
+// text-block case to an image block, confirming applyMessageContentCacheControl's cache_control
+// detection is block-type-agnostic (it queries the raw "cache_control" path directly, independent
+// of which BedrockContentBlock.UnmarshalJSON normalization branch produced the block).
+func TestBedrockInvokeRequest_UnmarshalJSON_ImageContentBlockCacheControlSurvives(t *testing.T) {
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 16,
+		"messages": [{"role":"user","content":[
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + pngBase64Fixture + `"},"cache_control":{"type":"ephemeral"}}
+		]}]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	require.Len(t, req.Messages, 1)
+	require.Len(t, req.Messages[0].Content, 2)
+
+	require.NotNil(t, req.Messages[0].Content[0].Image)
+	assert.Equal(t, "png", req.Messages[0].Content[0].Image.Format)
+
+	require.NotNil(t, req.Messages[0].Content[1].CachePoint)
+	assert.Equal(t, BedrockCachePointTypeDefault, req.Messages[0].Content[1].CachePoint.Type)
+}
+
+// TestBedrockInvokeRequest_UnmarshalJSON_ToolUseContentBlockCacheControlSurvives extends the
+// same case to a tool_use block.
+func TestBedrockInvokeRequest_UnmarshalJSON_ToolUseContentBlockCacheControlSurvives(t *testing.T) {
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 16,
+		"messages": [{"role":"assistant","content":[
+			{"type":"tool_use","id":"toolu_xyz789","name":"get_time","input":{},"cache_control":{"type":"ephemeral"}}
+		]}]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	require.Len(t, req.Messages, 1)
+	require.Len(t, req.Messages[0].Content, 2)
+
+	require.NotNil(t, req.Messages[0].Content[0].ToolUse)
+	assert.Equal(t, "toolu_xyz789", req.Messages[0].Content[0].ToolUse.ToolUseID)
+
+	require.NotNil(t, req.Messages[0].Content[1].CachePoint)
+	assert.Equal(t, BedrockCachePointTypeDefault, req.Messages[0].Content[1].CachePoint.Type)
+}
+
+// TestBedrockInvokeRequest_UnmarshalJSON_ToolResultContentBlockCacheControlSurvives covers
+// cache_control on the tool_result block itself (not nested inside its content) — string content.
+func TestBedrockInvokeRequest_UnmarshalJSON_ToolResultContentBlockCacheControlSurvives(t *testing.T) {
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 16,
+		"messages": [{"role":"user","content":[
+			{"type":"tool_result","tool_use_id":"toolu_xyz789","content":"3:45 PM","cache_control":{"type":"ephemeral"}}
+		]}]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	require.Len(t, req.Messages, 1)
+	require.Len(t, req.Messages[0].Content, 2)
+
+	require.NotNil(t, req.Messages[0].Content[0].ToolResult)
+	assert.Equal(t, "toolu_xyz789", req.Messages[0].Content[0].ToolResult.ToolUseID)
+
+	require.NotNil(t, req.Messages[0].Content[1].CachePoint)
+	assert.Equal(t, BedrockCachePointTypeDefault, req.Messages[0].Content[1].CachePoint.Type)
+}
+
+// TestBedrockInvokeRequest_UnmarshalJSON_ToolResultNestedContentCacheControlSurvives is the
+// recursion case: cache_control nested inside a tool_result block's own array-form content
+// (Anthropic allows an independent cache breakpoint there, separate from one on the tool_result
+// block itself). applyMessageContentCacheControl must recurse into ToolResult.Content.
+func TestBedrockInvokeRequest_UnmarshalJSON_ToolResultNestedContentCacheControlSurvives(t *testing.T) {
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 16,
+		"messages": [{"role":"user","content":[
+			{"type":"tool_result","tool_use_id":"toolu_xyz789","content":[
+				{"type":"text","text":"Screenshot captured","cache_control":{"type":"ephemeral"}}
+			]}
+		]}]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	require.Len(t, req.Messages, 1)
+	require.Len(t, req.Messages[0].Content, 1, "no cache_control on the tool_result block itself, so no top-level sibling")
+
+	toolResult := req.Messages[0].Content[0].ToolResult
+	require.NotNil(t, toolResult)
+	require.Len(t, toolResult.Content, 2, "expected the nested text block plus a trailing standalone cachePoint entry")
+
+	require.NotNil(t, toolResult.Content[0].Text)
+	assert.Equal(t, "Screenshot captured", *toolResult.Content[0].Text)
+	assert.Nil(t, toolResult.Content[0].CachePoint)
+
+	assert.Nil(t, toolResult.Content[1].Text)
+	require.NotNil(t, toolResult.Content[1].CachePoint)
+	assert.Equal(t, BedrockCachePointTypeDefault, toolResult.Content[1].CachePoint.Type)
+}
+
+// TestBedrockInvokeRequest_UnmarshalJSON_ContentBlockNoCacheControlUnaffected is the regression
+// guard: with no cache_control anywhere in the message content, applyMessageContentCacheControl
+// must be a no-op — no injected CachePoint siblings, content byte-identical to pre-fix behavior.
+func TestBedrockInvokeRequest_UnmarshalJSON_ContentBlockNoCacheControlUnaffected(t *testing.T) {
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 16,
+		"messages": [
+			{"role":"user","content":[{"type":"text","text":"what time is it"}]},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_xyz789","name":"get_time","input":{}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_xyz789","content":"3:45 PM"}]}
+		]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	require.Len(t, req.Messages, 3)
+	for _, msg := range req.Messages {
+		require.Len(t, msg.Content, 1, "no cache_control anywhere, so no CachePoint siblings should be injected")
+		assert.Nil(t, msg.Content[0].CachePoint)
+	}
+}
+
+// TestBedrockInvokeRequest_UnmarshalJSON_ConverseShapeContentUnaffected confirms genuine
+// Converse-shaped messages (no Anthropic "type" discriminator, no cache_control keys at all —
+// used by Nova and the native /bedrock/converse route sharing this same untyped-JSON path) are
+// left untouched: applyMessageContentCacheControl's gjson lookups simply never match, since
+// Converse-shaped input never carries a raw "cache_control" key.
+func TestBedrockInvokeRequest_UnmarshalJSON_ConverseShapeContentUnaffected(t *testing.T) {
+	raw := `{
+		"messages": [{"role":"user","content":[
+			{"text":"Say OK."},
+			{"toolUse":{"toolUseId":"tooluse_1","name":"get_time","input":{}}},
+			{"cachePoint":{"type":"default"}}
+		]}]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	require.Len(t, req.Messages, 1)
+	require.Len(t, req.Messages[0].Content, 3, "no extra CachePoint siblings injected beyond the genuine one already present")
+
+	require.NotNil(t, req.Messages[0].Content[0].Text)
+	assert.Equal(t, "Say OK.", *req.Messages[0].Content[0].Text)
+
+	require.NotNil(t, req.Messages[0].Content[1].ToolUse)
+	assert.Equal(t, "tooluse_1", req.Messages[0].Content[1].ToolUse.ToolUseID)
+
+	require.NotNil(t, req.Messages[0].Content[2].CachePoint)
+	assert.Equal(t, BedrockCachePointTypeDefault, req.Messages[0].Content[2].CachePoint.Type)
+}
+
+// TestToBedrockConverseRequest_InvokeContentBlockCacheControlEndToEnd is the full-pipeline
+// regression test for the reviewer comment: cache_control on an ordinary message content block,
+// and cache_control nested inside a tool_result's own content, must both survive
+// invoke -> Converse -> Bifrost conversion, the same way system/tool cache_control already does
+// (TestToBedrockConverseRequest_InvokeCacheControlEndToEnd).
+func TestToBedrockConverseRequest_InvokeContentBlockCacheControlEndToEnd(t *testing.T) {
+	raw := `{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens": 16,
+		"tools": [{"name":"get_time","description":"get current time","input_schema":{"type":"object","properties":{}}}],
+		"messages": [
+			{"role":"user","content":[{"type":"text","text":"what time is it","cache_control":{"type":"ephemeral"}}]},
+			{"role":"assistant","content":[{"type":"tool_use","id":"toolu_xyz789","name":"get_time","input":{}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_xyz789","content":[
+				{"type":"text","text":"3:45 PM","cache_control":{"type":"ephemeral"}}
+			]}]}
+		]
+	}`
+
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+	converseReq := req.ToBedrockConverseRequest()
+	require.NotNil(t, converseReq)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq)
+
+	// Plain content-block cache breakpoint survived, landing on the text content block itself.
+	var userTextMsg *schemas.ResponsesMessage
+	for i := range bifrostReq.Input {
+		if bifrostReq.Input[i].Content != nil {
+			for _, cb := range bifrostReq.Input[i].Content.ContentBlocks {
+				if cb.Text != nil && *cb.Text == "what time is it" {
+					userTextMsg = &bifrostReq.Input[i]
+				}
+			}
+		}
+	}
+	require.NotNil(t, userTextMsg, "expected the plain user text message in the converted input")
+	lastBlock := userTextMsg.Content.ContentBlocks[len(userTextMsg.Content.ContentBlocks)-1]
+	require.NotNil(t, lastBlock.CacheControl, "cache_control on an ordinary content block must survive")
+	assert.Equal(t, schemas.CacheControlTypeEphemeral, lastBlock.CacheControl.Type)
+
+	// Nested tool_result cache breakpoint survived too.
+	var foundToolResult bool
+	for i := range bifrostReq.Input {
+		msg := bifrostReq.Input[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeFunctionCallOutput || msg.ResponsesToolMessage == nil {
+			continue
+		}
+		if msg.ResponsesToolMessage.CallID == nil || *msg.ResponsesToolMessage.CallID != "toolu_xyz789" {
+			continue
+		}
+		require.NotNil(t, msg.CacheControl, "cache_control nested inside tool_result.content must survive")
+		assert.Equal(t, schemas.CacheControlTypeEphemeral, msg.CacheControl.Type)
+		foundToolResult = true
+	}
+	assert.True(t, foundToolResult, "expected the tool_result message to survive as a function_call_output message")
+}

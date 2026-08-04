@@ -777,14 +777,28 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						} else if toolMsg.Content.ContentBlocks != nil {
 							blocks := make([]AnthropicContentBlock, 0, len(toolMsg.Content.ContentBlocks))
 							for _, block := range toolMsg.Content.ContentBlocks {
+								// Anthropic rejects cache_control nested inside tool_result.content
+								// ("cache_control may not be specified within `tool_result.content`.
+								// Instead, place it directly on `tool_result`"), so hoist the first
+								// one found onto the tool_result block itself rather than copying it
+								// onto the nested block -- mirrors the same hoist-to-outer-level
+								// pattern already used for Bedrock's nested cachePoint
+								// (core/providers/bedrock/responses.go).
+								if block.CacheControl != nil && toolResult.CacheControl == nil {
+									toolResult.CacheControl = block.CacheControl
+								}
 								if block.Text != nil && *block.Text != "" {
 									blocks = append(blocks, AnthropicContentBlock{
-										Type:         AnthropicContentBlockTypeText,
-										Text:         block.Text,
-										CacheControl: block.CacheControl,
+										Type: AnthropicContentBlockTypeText,
+										Text: block.Text,
 									})
 								} else if block.ImageURLStruct != nil {
-									blocks = append(blocks, ConvertToAnthropicImageBlock(block))
+									imageBlock := ConvertToAnthropicImageBlock(block)
+									// ConvertToAnthropicImageBlock copies CacheControl onto the
+									// returned block unconditionally (correct for a top-level image
+									// block, but not here -- it's already hoisted above).
+									imageBlock.CacheControl = nil
+									blocks = append(blocks, imageBlock)
 								}
 							}
 							if len(blocks) > 0 {
