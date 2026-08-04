@@ -2892,6 +2892,7 @@ func ensureResponsesToolConfigForConversation(ctx context.Context, bifrostReq *s
 func extractToolsFromResponsesConversationHistory(ctx context.Context, messages []schemas.ResponsesMessage, model string) (bool, []BedrockTool) {
 	var hasToolContent bool
 	toolMap := make(map[string]*schemas.ResponsesTool) // Use map to deduplicate by name
+	var toolNames []string                             // Insertion-order tracking for toolMap
 	var hasNovaGrounding, hasNovaCodeInterpreter bool
 
 	for _, msg := range messages {
@@ -2904,6 +2905,7 @@ func extractToolsFromResponsesConversationHistory(ctx context.Context, messages 
 				if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
 					toolName := *msg.ResponsesToolMessage.Name
 					if _, exists := toolMap[toolName]; !exists {
+						toolNames = append(toolNames, toolName)
 						// Create a minimal tool definition
 						toolMap[toolName] = &schemas.ResponsesTool{
 							Type: "function",
@@ -2929,7 +2931,8 @@ func extractToolsFromResponsesConversationHistory(ctx context.Context, messages 
 
 	// Convert function tool map to BedrockTool slice
 	var tools []BedrockTool
-	for _, tool := range toolMap {
+	for _, toolName := range toolNames {
+		tool := toolMap[toolName]
 		if tool.Name != nil && tool.ResponsesToolFunction != nil {
 			schemaObject := tool.ResponsesToolFunction.Parameters
 			if schemaObject == nil {

@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -797,5 +798,65 @@ func glmUserMessage(text string) schemas.ResponsesMessage {
 		Content: &schemas.ResponsesMessageContent{
 			ContentStr: schemas.Ptr(text),
 		},
+	}
+}
+
+// TestExtractToolsFromConversationHistory_StableOrder locks in the fix for the
+// non-deterministic tool ordering that both reconstruction paths had: toolConfig
+// was built by ranging a Go map, so identical requests produced different tool
+// orders. Tools are the first thing in Bedrock's prompt-cache prefix, so every
+// reshuffle was a guaranteed cache miss.
+func TestExtractToolsFromConversationHistory_StableOrder(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	names := []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"}
+
+	t.Run("responses", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{}
+		for i, name := range names {
+			input = append(input, schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(fmt.Sprintf("call_%d", i)),
+					Name:   schemas.Ptr(name),
+				},
+			})
+		}
+		for i := 0; i < 50; i++ {
+			_, tools := extractToolsFromResponsesConversationHistory(ctx, input, "us.anthropic.claude-opus-5")
+			assertToolOrder(t, tools, names)
+		}
+	})
+
+	t.Run("chat", func(t *testing.T) {
+		toolCalls := []schemas.ChatAssistantMessageToolCall{}
+		for i, name := range names {
+			toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr(fmt.Sprintf("call_%d", i)),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(name)},
+			})
+		}
+		input := []schemas.ChatMessage{{
+			Role:                 schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: toolCalls},
+		}}
+		for i := 0; i < 50; i++ {
+			_, tools := extractToolsFromConversationHistory(ctx, input)
+			assertToolOrder(t, tools, names)
+		}
+	})
+}
+
+func assertToolOrder(t *testing.T, tools []BedrockTool, want []string) {
+	t.Helper()
+	if len(tools) != len(want) {
+		t.Fatalf("got %d tools, want %d", len(tools), len(want))
+	}
+	for i, tool := range tools {
+		if tool.ToolSpec == nil {
+			t.Fatalf("tools[%d] has no ToolSpec", i)
+		}
+		if tool.ToolSpec.Name != want[i] {
+			t.Fatalf("tool order drifted: got %s at index %d, want %s", tool.ToolSpec.Name, i, want[i])
+		}
 	}
 }
