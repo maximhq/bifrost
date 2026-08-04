@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // Token exchange URL
@@ -35,6 +37,96 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// Per-request Copilot headers. Unlike copilotRequiredHeaders these are derived
+// from the request payload and are only sent on inference calls, never on the
+// OAuth token exchange.
+const (
+	// copilotInitiatorHeader tells Copilot whether a turn was initiated by the
+	// human ("user") or by an autonomous agent continuation ("agent"). Copilot
+	// meters and rate-limits the two differently, so sending it makes Bifrost's
+	// traffic accounted for the same way a first-party editor's traffic is.
+	copilotInitiatorHeader = "x-initiator"
+	copilotInitiatorUser   = "user"
+	copilotInitiatorAgent  = "agent"
+
+	// copilotVisionHeader must be set when the payload carries image content,
+	// otherwise Copilot rejects or silently drops the images for some models.
+	copilotVisionHeader = "Copilot-Vision-Request"
+
+	// copilotIntentHeader declares what the request is for. Editors send this on
+	// every chat/responses call.
+	copilotIntentHeader = "Openai-Intent"
+)
+
+// copilotIntent is the value sent in the Openai-Intent header, overridable via
+// BIFROST_COPILOT_OPENAI_INTENT for operators tracking upstream changes.
+var copilotIntent = envOrDefault("BIFROST_COPILOT_OPENAI_INTENT", "conversation-edits")
+
+// chatRequestHeaders derives the per-request Copilot headers for a chat
+// completion request.
+func chatRequestHeaders(request *schemas.BifrostChatRequest) map[string]string {
+	headers := map[string]string{
+		copilotIntentHeader:    copilotIntent,
+		copilotInitiatorHeader: copilotInitiatorUser,
+	}
+	if request == nil || len(request.Input) == 0 {
+		return headers
+	}
+
+	// A turn whose final message is not from the user is an agent continuation
+	// (tool result being fed back, or assistant prefill).
+	if request.Input[len(request.Input)-1].Role != schemas.ChatMessageRoleUser {
+		headers[copilotInitiatorHeader] = copilotInitiatorAgent
+	}
+
+	for i := range request.Input {
+		content := request.Input[i].Content
+		if content == nil {
+			continue
+		}
+		for j := range content.ContentBlocks {
+			if content.ContentBlocks[j].Type == schemas.ChatContentBlockTypeImage {
+				headers[copilotVisionHeader] = "true"
+				return headers
+			}
+		}
+	}
+	return headers
+}
+
+// responsesRequestHeaders derives the per-request Copilot headers for a
+// Responses API request.
+func responsesRequestHeaders(request *schemas.BifrostResponsesRequest) map[string]string {
+	headers := map[string]string{
+		copilotIntentHeader:    copilotIntent,
+		copilotInitiatorHeader: copilotInitiatorUser,
+	}
+	if request == nil || len(request.Input) == 0 {
+		return headers
+	}
+
+	// Responses items that are not messages (e.g. function_call_output) carry no
+	// role at all, which is itself the agent-continuation signal.
+	last := request.Input[len(request.Input)-1]
+	if last.Role == nil || *last.Role != schemas.ResponsesInputMessageRoleUser {
+		headers[copilotInitiatorHeader] = copilotInitiatorAgent
+	}
+
+	for i := range request.Input {
+		content := request.Input[i].Content
+		if content == nil {
+			continue
+		}
+		for j := range content.ContentBlocks {
+			if content.ContentBlocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeImage {
+				headers[copilotVisionHeader] = "true"
+				return headers
+			}
+		}
+	}
+	return headers
 }
 
 // tokenExpiryMargin is the number of seconds before expiry to trigger a refresh.

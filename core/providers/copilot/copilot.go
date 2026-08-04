@@ -142,9 +142,18 @@ func (provider *CopilotProvider) getCopilotAuth(key schemas.Key) (authHeader map
 	return headers, base, nil
 }
 
-// mergedExtraHeaders returns the provider's networkConfig.ExtraHeaders combined with copilotRequiredHeaders.
-func (provider *CopilotProvider) mergedExtraHeaders() map[string]string {
-	merged := make(map[string]string, len(provider.networkConfig.ExtraHeaders)+len(copilotRequiredHeaders))
+// mergedExtraHeaders returns the per-request Copilot headers combined with the
+// provider's networkConfig.ExtraHeaders and copilotRequiredHeaders.
+//
+// Precedence, lowest to highest: perRequest -> configured ExtraHeaders ->
+// copilotRequiredHeaders. Putting perRequest lowest gives operators an escape
+// hatch: any of the derived headers can be pinned or neutralised through
+// ExtraHeaders without a rebuild.
+func (provider *CopilotProvider) mergedExtraHeaders(perRequest map[string]string) map[string]string {
+	merged := make(map[string]string, len(perRequest)+len(provider.networkConfig.ExtraHeaders)+len(copilotRequiredHeaders))
+	for k, v := range perRequest {
+		merged[k] = v
+	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
 		merged[k] = v
 	}
@@ -209,7 +218,7 @@ func (provider *CopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []
 		request,
 		apiBase+providerUtils.GetPathFromContext(ctx, "/models"),
 		copilotKeys,
-		provider.mergedExtraHeaders(),
+		provider.mergedExtraHeaders(nil),
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -253,7 +262,7 @@ func (provider *CopilotProvider) chatNative(ctx *schemas.BifrostContext, key sch
 		apiBase+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		authHeader,
-		provider.mergedExtraHeaders(),
+		provider.mergedExtraHeaders(chatRequestHeaders(request)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -320,7 +329,7 @@ func (provider *CopilotProvider) chatStreamNative(ctx *schemas.BifrostContext, p
 		apiBase+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		authHeader,
-		provider.mergedExtraHeaders(),
+		provider.mergedExtraHeaders(chatRequestHeaders(request)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -407,7 +416,7 @@ func (provider *CopilotProvider) responsesNative(ctx *schemas.BifrostContext, ke
 		apiBase+providerUtils.GetPathFromContext(ctx, "/responses"),
 		request,
 		authHeader,
-		provider.mergedExtraHeaders(),
+		provider.mergedExtraHeaders(responsesRequestHeaders(request)),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -468,7 +477,7 @@ func (provider *CopilotProvider) responsesStreamNative(ctx *schemas.BifrostConte
 		apiBase+providerUtils.GetPathFromContext(ctx, "/responses"),
 		request,
 		authHeader,
-		provider.mergedExtraHeaders(),
+		provider.mergedExtraHeaders(responsesRequestHeaders(request)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
