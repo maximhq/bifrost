@@ -1,6 +1,13 @@
 flush-cache:
   post:
     operationId: flushVaultCache
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Flush vault secret cache
     description: |
       Clears the in-memory vault secret cache so the next resolution of every
