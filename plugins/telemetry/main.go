@@ -835,7 +835,9 @@ func extractProviderCacheTokens(result *schemas.BifrostResponse) (read, write, w
 func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
-	// Determine effective model label and alias label (mirrors applyModelAlias logic in logging)
+	// Determine effective model label and alias label (mirrors applyModelAlias logic in logging).
+	// The model label is normalized (prefix/version/date stripped) so the same logical model
+	// does not split across series; alias keeps the raw requested name.
 	model := originalModel
 	alias := ""
 	if resolvedModel != "" {
@@ -843,6 +845,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		if resolvedModel != originalModel {
 			alias = originalModel
 		}
+	}
+	model = schemas.NormalizeModelName(model)
+
+	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label series.
+	if provider == "" && model == "" {
+		return result, bifrostErr, nil
 	}
 
 	startTime, ok := ctx.Value(startTimeKey).(time.Time)
