@@ -987,6 +987,50 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 	}
 }
 
+// internalHeaderPrefix marks Bifrost's own request headers (x-bf-vk and friends). They carry
+// gateway credentials and must never be forwarded to a provider.
+const internalHeaderPrefix = "x-bf-"
+
+// SetPassthroughHeaders applies the caller's raw request headers captured for Anthropic OAuth
+// passthrough, where the caller's token is the upstream credential. ONLY the Anthropic provider
+// may call this: every other provider authenticates with its own configured credentials, so
+// forwarding these would leak x-bf-* upstream and, on Bedrock, break SigV4 when a hop rewrites
+// x-forwarded-for. Hop-by-hop headers are dropped by filterHeaders, x-bf-* never leaves the gateway.
+func SetPassthroughHeaders(ctx context.Context, req *fasthttp.Request, provider schemas.ModelProvider, skipHeaders []string) {
+	// Gate on the provider here rather than at the call sites: the Anthropic request handlers
+	// are shared with azure, vertex, bedrockmantle, vllm, sgl, deepseek and fireworks, so a
+	// call-site check would silently forward the caller's credential to all of them.
+	if provider != schemas.Anthropic {
+		return
+	}
+	headers, ok := (ctx).Value(schemas.BifrostContextKeyPassthroughHeaders).(map[string][]string)
+	if !ok {
+		return
+	}
+	for k, values := range filterHeaders(headers) {
+		lower := strings.ToLower(k)
+		if strings.HasPrefix(lower, internalHeaderPrefix) {
+			continue
+		}
+		// Bifrost owns the body it sends, so it owns Content-Type. Dropping it here keeps a
+		// caller value from overriding the JSON content type no matter where callers invoke
+		// this relative to their own SetContentType.
+		if lower == "content-type" {
+			continue
+		}
+		if skipHeaders != nil && slices.Contains(skipHeaders, lower) {
+			continue
+		}
+		for i, v := range values {
+			if i == 0 {
+				req.Header.Set(k, v)
+			} else {
+				req.Header.Add(k, v)
+			}
+		}
+	}
+}
+
 // GetPathFromContext gets the path from the context, if it exists, otherwise returns the default path.
 func GetPathFromContext(ctx context.Context, defaultPath string) string {
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {

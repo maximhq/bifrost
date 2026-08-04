@@ -269,6 +269,7 @@ const (
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"            // time.Duration (per-chunk idle timeout for streaming)
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"             // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                  // map[string][]string
+	BifrostContextKeyPassthroughHeaders                  BifrostContextKey = "bifrost-anthropic-passthrough-headers"  // map[string][]string (the caller's raw request headers, captured for Anthropic OAuth passthrough where their token is the upstream credential; ONLY the Anthropic provider may forward these — every other provider authenticates with its own configured credentials. Reserved: set by the transport, never by a plugin)
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                 // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
