@@ -3,7 +3,7 @@ module github.com/maximhq/bifrost/plugins/logging
 go 1.26.5
 
 require (
-	github.com/bytedance/sonic v1.15.2
+	github.com/bytedance/sonic v1.15.1
 	github.com/google/uuid v1.6.0
 	github.com/maximhq/bifrost/core v1.7.4
 	github.com/maximhq/bifrost/framework v1.5.4
