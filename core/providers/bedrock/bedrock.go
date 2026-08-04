@@ -1195,6 +1195,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	applyDroppedUnsupportedTools(ctx, &bifrostResponse.ExtraFields, provider.logger)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
@@ -1207,6 +1208,20 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	}
 
 	return bifrostResponse, nil
+}
+
+// applyDroppedUnsupportedTools reads tool-drop info stashed in context during
+// request building (ValidateChatToolsForProvider / ValidateResponsesToolsForProvider,
+// plus the Nova-model gate in convertToolConfigFromFiltered/ToBedrockResponsesRequest)
+// and surfaces it on the response so callers aren't left guessing why a requested
+// tool never showed up — mirrors how ProviderResponseHeaders is threaded via context.
+func applyDroppedUnsupportedTools(ctx *schemas.BifrostContext, extraFields *schemas.BifrostResponseExtraFields, logger schemas.Logger) {
+	dropped, ok := ctx.Value(schemas.BifrostContextKeyDroppedUnsupportedTools).([]string)
+	if !ok || len(dropped) == 0 {
+		return
+	}
+	extraFields.DroppedUnsupportedTools = dropped
+	logger.Warn(fmt.Sprintf("bedrock: dropped unsupported tools from request: %v", dropped))
 }
 
 // normalizeCachedUsage folds the accumulated cached read/write token counts into
@@ -1664,6 +1679,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	applyDroppedUnsupportedTools(ctx, &bifrostResponse.ExtraFields, provider.logger)
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {

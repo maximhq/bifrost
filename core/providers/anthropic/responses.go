@@ -2443,22 +2443,15 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		// Only convert response.created back to message_start (not response.in_progress to avoid duplicates)
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
 		if bifrostResp.Response != nil {
-			// Use actual usage if available (forwarded from upstream message_start),
-			// otherwise fall back to zeros for non-Anthropic providers
+			// Use actual usage if available (forwarded from upstream message_start).
+			// When unknown (e.g. Bedrock Converse, which only reports usage on its
+			// terminal event), omit the field entirely rather than fabricating
+			// zeros — Anthropic's own documented streaming contract tolerates usage
+			// being absent from message_start, and reporting zeros would misrepresent
+			// cost/usage telemetry to clients that read input_tokens from here.
 			var messageUsage *AnthropicUsage
 			if bifrostResp.Response.Usage != nil {
 				messageUsage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
-			} else {
-				messageUsage = &AnthropicUsage{
-					InputTokens:              0,
-					OutputTokens:             0,
-					CacheReadInputTokens:     0,
-					CacheCreationInputTokens: 0,
-					CacheCreation: AnthropicUsageCacheCreation{
-						Ephemeral5mInputTokens: 0,
-						Ephemeral1hInputTokens: 0,
-					},
-				}
 			}
 			streamMessage := &AnthropicMessageResponse{
 				Type:    "message",
@@ -3672,7 +3665,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						budgetTokens = MinimumReasoningMaxTokens
 					}
 					if budgetTokens < MinimumReasoningMaxTokens {
-						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
+						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic: %w", MinimumReasoningMaxTokens, ErrReasoningMaxTokensTooLow)
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -3693,7 +3686,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							setEffortOnOutputConfig(anthropicReq, effort)
 							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 							if err != nil {
-								return nil, err
+								return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
 							}
 							anthropicReq.Thinking = &AnthropicThinking{
 								Type:         "enabled",
@@ -3703,7 +3696,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							// Older models: budget_tokens only
 							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 							if err != nil {
-								return nil, err
+								return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
 							}
 							anthropicReq.Thinking = &AnthropicThinking{
 								Type:         "enabled",

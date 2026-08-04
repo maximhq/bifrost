@@ -2234,8 +2234,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Converse API genuinely can't consume are dropped. The kept slice is used
 	// locally below — bifrostReq.Params.Tools is never mutated.
 	var keepTools []schemas.ResponsesTool
+	var providerDroppedTools []string
 	if bifrostReq.Params != nil && bifrostReq.Params.Tools != nil {
-		keepTools, _ = anthropic.ValidateResponsesToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock)
+		keepTools, providerDroppedTools = anthropic.ValidateResponsesToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock)
 	}
 
 	bedrockReq := &BedrockConverseRequest{
@@ -2508,25 +2509,24 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	}
 
 	// Convert tools (using the provider-filtered keepTools set computed above).
+	var modelDroppedTools []string
 	if len(keepTools) > 0 {
 		var bedrockTools []BedrockTool
 		isNova2 := schemas.IsNova2Model(capModel)
 		for _, tool := range keepTools {
-			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
-				if !isNova2 {
-					// skip adding this tool
-					continue
-				}
-				var systemToolName BedrockSystemToolType
-				switch tool.Type {
-				case schemas.ResponsesToolTypeWebSearch:
-					systemToolName = BedrockSystemToolNovaGrounding
-				case schemas.ResponsesToolTypeCodeInterpreter:
+			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebSearchPreview || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
+				// web_search and web_search_preview are both kept for Bedrock by
+				// ValidateResponsesToolsForProvider (same case, same WebSearchNova
+				// carve-out) — both must map to nova_grounding here too.
+				systemToolName := BedrockSystemToolNovaGrounding
+				if tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
 					systemToolName = BedrockSystemToolNovaCodeInterpreter
 				}
-				bedrockTools = append(bedrockTools, BedrockTool{
-					SystemTool: &BedrockSystemTool{Name: systemToolName},
-				})
+				if bt := convertToNovaSystemTool(systemToolName, isNova2); bt != nil {
+					bedrockTools = append(bedrockTools, *bt)
+				} else {
+					modelDroppedTools = append(modelDroppedTools, string(tool.Type))
+				}
 				continue
 			}
 			if tool.ResponsesToolFunction != nil {
@@ -2582,6 +2582,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				Tools: bedrockTools,
 			}
 		}
+	}
+	if dropped := append(append([]string{}, providerDroppedTools...), modelDroppedTools...); len(dropped) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyDroppedUnsupportedTools, dropped)
 	}
 
 	// Convert tool choice

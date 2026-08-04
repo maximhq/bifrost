@@ -2155,6 +2155,24 @@ func NewBifrostTimeoutError(message string, err error) *schemas.BifrostError {
 	}
 }
 
+// NewBifrostBadRequestError creates a standardized error for client-input validation
+// failures surfaced during request conversion (e.g. an unsatisfiable reasoning/thinking
+// + max_tokens combination). Sets StatusCode to 400, distinguishing these from
+// NewBifrostOperationError's genuinely-internal conversion failures, which the HTTP
+// layer defaults to 500 when StatusCode is unset.
+func NewBifrostBadRequestError(message string) *schemas.BifrostError {
+	statusCode := 400
+	errorType := "invalid_request_error"
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error: &schemas.ErrorField{
+			Message: message,
+			Type:    &errorType,
+		},
+	}
+}
+
 // NewBifrostUpstreamConnectionError creates a standardized error for upstream
 // connectivity failures where Bifrost successfully dispatched to the provider
 // but the provider failed to return a response body (DNS lookup failure,

@@ -964,6 +964,16 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			continue
 		}
 
+		// tool_search_tool_* is a server tool for Anthropic's tool-search-tool beta,
+		// not an invocable function — and classic Bedrock can't support tool search
+		// at all (AWS restricts it to InvokeModel/InvokeModelWithResponseStream,
+		// never Converse; see ProviderFeatures[schemas.Bedrock].ToolSearch in the
+		// anthropic package). Skip it here rather than building a broken,
+		// schema-less "function" tool out of it.
+		if typeStr, ok := toolMap["type"].(string); ok && strings.HasPrefix(typeStr, "tool_search_tool_") {
+			continue
+		}
+
 		spec := &BedrockToolSpec{}
 		if name, ok := toolMap["name"].(string); ok {
 			spec.Name = name
@@ -1217,12 +1227,41 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		}
 		// Reasoning content
 		if item.ResponsesReasoning != nil {
-			for _, summary := range item.ResponsesReasoning.Summary {
-				if summary.Text != "" {
-					result.Content = append(result.Content, BedrockInvokeMessagesContentBlock{
-						Type:     "thinking",
-						Thinking: summary.Text,
-					})
+			// Bedrock-origin reasoning lives in Content.ContentBlocks (see
+			// convertSingleBedrockMessageToBifrostMessages) — ResponsesReasoning.Summary
+			// is OpenAI Responses-API shape and is always empty for Bedrock. Fall back
+			// to Summary whenever ContentBlocks yields no usable reasoning block, not
+			// merely when ContentBlocks is empty — a non-empty ContentBlocks containing
+			// no reasoning-type block would otherwise silently lose the Summary data.
+			emittedFromContentBlocks := false
+			if item.Content != nil {
+				for _, block := range item.Content.ContentBlocks {
+					// Only require Text != nil (matching convertBifrostReasoningToBedrockReasoning,
+					// the sibling egress function) — not non-empty. Bedrock can return a
+					// reasoning block with empty text but a real signature; requiring
+					// non-empty text here would drop the whole block, losing the
+					// signature a client needs to replay history on the next turn.
+					if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+						blk := BedrockInvokeMessagesContentBlock{
+							Type:     "thinking",
+							Thinking: *block.Text,
+						}
+						if sig := reasoningSignatureForBedrock(block.Signature); sig != nil {
+							blk.Signature = *sig
+						}
+						result.Content = append(result.Content, blk)
+						emittedFromContentBlocks = true
+					}
+				}
+			}
+			if !emittedFromContentBlocks {
+				for _, summary := range item.ResponsesReasoning.Summary {
+					if summary.Text != "" {
+						result.Content = append(result.Content, BedrockInvokeMessagesContentBlock{
+							Type:     "thinking",
+							Thinking: summary.Text,
+						})
+					}
 				}
 			}
 		}
@@ -1498,12 +1537,13 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			idx = *resp.ContentIndex
 		}
 		if resp.Signature != nil {
+			// Anthropic emits the signature as its own event type, not nested inside
+			// thinking_delta — https://platform.claude.com/docs/en/build-with-claude/thinking#streaming-thinking
 			event = map[string]interface{}{
 				"type":  "content_block_delta",
 				"index": idx,
 				"delta": map[string]interface{}{
-					"type":      "thinking_delta",
-					"thinking":  "",
+					"type":      "signature_delta",
 					"signature": *resp.Signature,
 				},
 			}
