@@ -869,6 +869,38 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 	return systemMsgs, nil
 }
 
+// bedrockDocumentPlaceholderText is inserted into a message whose content holds
+// document blocks but no text block. Bedrock's Converse API requires a text block
+// alongside documents ("A text block must be included when using documents"), and
+// convertContentBlock separately strips empty/whitespace-only text blocks, so the
+// placeholder has to be non-whitespace to survive both.
+const bedrockDocumentPlaceholderText = "."
+
+// hasBedrockDocumentBlock reports whether any of the content blocks is a document
+// block, i.e. whether the message needs an accompanying text block.
+func hasBedrockDocumentBlock(blocks []BedrockContentBlock) bool {
+	for _, b := range blocks {
+		if b.Document != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// leadingBedrockReasoningBlockCount returns the number of reasoning content blocks
+// at the head of the content slice, so an injected placeholder can be placed after
+// them rather than before.
+func leadingBedrockReasoningBlockCount(blocks []BedrockContentBlock) int {
+	count := 0
+	for _, b := range blocks {
+		if b.ReasoningContent == nil {
+			break
+		}
+		count++
+	}
+	return count
+}
+
 // convertMessage converts a Bifrost message to Bedrock format.
 // The ctx is propagated to URL fetches inside content blocks.
 func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessage, error) {
@@ -907,6 +939,34 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 			contentBlocks = append(contentBlocks, convertToolCallToContentBlock(ctx, toolCall))
+		}
+	}
+
+	// Bedrock rejects a message whose content contains a document block with no
+	// accompanying text block ("A text block must be included when using
+	// documents"). Insert a placeholder so document-only messages still validate.
+	if hasBedrockDocumentBlock(contentBlocks) {
+		filtered := contentBlocks[:0]
+		hasUsableText := false
+		for _, b := range contentBlocks {
+			if b.Text != nil {
+				if strings.TrimSpace(*b.Text) == "" {
+					continue
+				}
+				hasUsableText = true
+			}
+			filtered = append(filtered, b)
+		}
+		contentBlocks = filtered
+		if !hasUsableText {
+			at := leadingBedrockReasoningBlockCount(contentBlocks)
+			withPlaceholder := make([]BedrockContentBlock, 0, len(contentBlocks)+1)
+			withPlaceholder = append(withPlaceholder, contentBlocks[:at]...)
+			withPlaceholder = append(withPlaceholder, BedrockContentBlock{
+				Text: schemas.Ptr(bedrockDocumentPlaceholderText),
+			})
+			withPlaceholder = append(withPlaceholder, contentBlocks[at:]...)
+			contentBlocks = withPlaceholder
 		}
 	}
 
