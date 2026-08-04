@@ -1,18 +1,25 @@
 users:
   get:
     operationId: listUsers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List users
     description: Returns a paginated list of users with optional search.
     tags:
       - Users
     parameters:
-      - name: page
+      - name: offset
         in: query
-        description: Page number (1-based)
+        description: Zero-based result offset
         schema:
           type: integer
-          minimum: 1
-          default: 1
+          minimum: 0
+          default: 0
       - name: limit
         in: query
         description: Number of users per page (max 100)
@@ -40,6 +47,13 @@ users:
 
   post:
     operationId: createUser
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create user
     description: Manually creates a new user in the organization.
     tags:
@@ -73,6 +87,13 @@ users:
 users-email-virtual-keys:
   get:
     operationId: getUserVirtualKeysByEmail
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get user's virtual keys by email
     description: >
       **Enterprise only.**
@@ -112,9 +133,85 @@ users-email-virtual-keys:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+users-by-email:
+  get:
+    operationId: getUserByEmail
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Get user by email
+    description: Returns a single Enterprise user resolved by URL-encoded email address.
+    tags:
+      - Users
+    parameters:
+      - name: email
+        in: path
+        required: true
+        schema:
+          type: string
+          format: email
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/users.yaml#/UserObject'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 users-by-id:
+  get:
+    operationId: getUser
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Get user
+    description: Returns a single Enterprise user.
+    tags:
+      - Users
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        description: User ID
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/users.yaml#/UserObject'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
   delete:
     operationId: deleteUser
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete user
     description: >
       Permanently removes a user from the organization. This cascades to delete
@@ -123,7 +220,7 @@ users-by-id:
     tags:
       - Users
     parameters:
-      - name: id
+      - name: user_id
         in: path
         required: true
         description: User ID
@@ -156,6 +253,13 @@ users-by-id:
 users-me-permissions:
   get:
     operationId: getCurrentUserPermissions
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get current user permissions
     description: >
       Returns the RBAC permissions for the authenticated user. When SCIM is not
@@ -190,6 +294,13 @@ users-me-permissions:
 users-role:
   put:
     operationId: assignUserRole
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Assign role to user
     description: >
       Assigns an RBAC role to a user. This also auto-assigns the default
@@ -197,7 +308,7 @@ users-role:
     tags:
       - Users
     parameters:
-      - name: id
+      - name: user_id
         in: path
         required: true
         description: User ID
@@ -232,12 +343,19 @@ users-role:
 users-teams:
   get:
     operationId: getUserTeams
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get user's teams
     description: Returns the list of teams a user belongs to, including the membership source.
     tags:
       - Users
     parameters:
-      - name: id
+      - name: user_id
         in: path
         required: true
         description: User ID
@@ -265,6 +383,13 @@ users-teams:
 
   put:
     operationId: updateUserTeams
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Update user's team assignments
     description: >
       Replaces the user's manual team assignments. Synced team memberships
@@ -272,7 +397,7 @@ users-teams:
     tags:
       - Users
     parameters:
-      - name: id
+      - name: user_id
         in: path
         required: true
         description: User ID
@@ -308,129 +433,66 @@ users-teams:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-# ---- Teams ----
-
-teams:
-  get:
-    operationId: listTeams
-    summary: List teams
-    description: Returns a paginated list of teams with optional search.
-    tags:
-      - Teams
+users-governance:
+  post:
+    operationId: createUserGovernance
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Create user governance
+    tags: [Users]
     parameters:
-      - name: page
-        in: query
-        description: Page number (1-based)
-        schema:
-          type: integer
-          minimum: 1
-          default: 1
-      - name: limit
-        in: query
-        description: Number of teams per page (max 100)
-        schema:
-          type: integer
-          minimum: 1
-          maximum: 100
-          default: 20
-      - name: search
-        in: query
-        description: Search by team name
+      - name: user_id
+        in: path
+        required: true
         schema:
           type: string
-    security:
-      - ManagementBearerAuth: []
-    responses:
-      '200':
-        description: Successful response
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/users.yaml#/ListTeamsResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-
-  post:
-    operationId: createTeam
-    summary: Create team
-    description: Creates a new team. The team ID is derived from the name.
-    tags:
-      - Teams
     requestBody:
       required: true
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/users.yaml#/CreateTeamRequest'
+            $ref: '../../schemas/management/users.yaml#/UserGovernanceRequest'
     security:
       - ManagementBearerAuth: []
     responses:
       '200':
-        description: Team created successfully
+        description: Governance created
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/users.yaml#/CreateTeamResponse'
+              $ref: '../../schemas/management/users.yaml#/UserResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '409':
-        description: Team with this name already exists
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-
-teams-by-id:
-  get:
-    operationId: getTeam
-    summary: Get team
-    description: Returns details of a specific team including member count.
-    tags:
-      - Teams
-    parameters:
-      - name: id
-        in: path
-        required: true
-        description: Team ID
-        schema:
-          type: string
-    security:
-      - ManagementBearerAuth: []
-    responses:
-      '200':
-        description: Successful response
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/users.yaml#/TeamObject'
       '404':
-        description: Team not found
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: User governance already exists
         content:
           application/json:
             schema:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
-
   put:
-    operationId: updateTeam
-    summary: Update team
-    description: >-
-      Updates a team. Note that renaming teams is not allowed.
-
-      Accepts customer_id / customer_ids to attach customers to the team via the
-      team <-> customer many-to-many association, the same association exposed by
-      POST /api/teams/{id}/customers. Attachment is additive and does not detach
-      existing customers.
-    tags:
-      - Teams
+    operationId: updateUserGovernance
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Update user governance
+    tags: [Users]
     parameters:
-      - name: id
+      - name: user_id
         in: path
         required: true
-        description: Team ID
         schema:
           type: string
     requestBody:
@@ -438,73 +500,71 @@ teams-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/users.yaml#/UpdateTeamRequest'
+            $ref: '../../schemas/management/users.yaml#/UserGovernanceRequest'
     security:
       - ManagementBearerAuth: []
     responses:
       '200':
-        description: Team updated successfully
+        description: Governance updated
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/users.yaml#/UpdateTeamResponse'
+              $ref: '../../schemas/management/users.yaml#/UserResponse'
       '400':
-        description: Bad request (e.g. renaming not allowed)
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '404':
-        description: Team or customer not found
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
-
   delete:
-    operationId: deleteTeam
-    summary: Delete team
-    description: Permanently removes a team.
-    tags:
-      - Teams
+    operationId: deleteUserGovernance
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Delete user governance
+    tags: [Users]
     parameters:
-      - name: id
+      - name: user_id
         in: path
         required: true
-        description: Team ID
         schema:
           type: string
     security:
       - ManagementBearerAuth: []
     responses:
       '200':
-        description: Team deleted successfully
+        description: Governance deleted
         content:
           application/json:
             schema:
               $ref: '../../schemas/management/common.yaml#/MessageResponse'
       '404':
-        description: Team not found
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-# ---- Team Members ----
+# ---- Teams ----
 
 team-members:
   get:
     operationId: getTeamMembers
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List team members
     description: Returns all members of a team with their user details and membership source.
     tags:
       - Teams
     parameters:
-      - name: id
+      - name: team_id
         in: path
         required: true
         description: Team ID
@@ -532,12 +592,19 @@ team-members:
 
   post:
     operationId: addTeamMember
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Add team member
     description: Adds a user to a team. Both the team and user must exist.
     tags:
       - Teams
     parameters:
-      - name: id
+      - name: team_id
         in: path
         required: true
         description: Team ID
@@ -576,18 +643,25 @@ team-members:
 team-member-by-id:
   delete:
     operationId: removeTeamMember
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Remove team member
     description: Removes a user from a team.
     tags:
       - Teams
     parameters:
-      - name: id
+      - name: team_id
         in: path
         required: true
         description: Team ID
         schema:
           type: string
-      - name: userId
+      - name: user_id
         in: path
         required: true
         description: User ID to remove

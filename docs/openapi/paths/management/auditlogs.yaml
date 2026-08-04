@@ -1,6 +1,13 @@
 audit-logs:
   get:
     operationId: getAuditLogs
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List audit logs
     description: |
       Retrieves CADF-compliant audit log events with filtering, search, and
@@ -189,6 +196,13 @@ audit-logs:
 audit-logs-filterdata:
   get:
     operationId: getAuditLogsFilterData
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get audit log filter data
     description: |
       Returns the distinct values available for each audit log filter dimension,
@@ -227,6 +241,13 @@ audit-logs-filterdata:
 audit-logs-export:
   get:
     operationId: exportAuditLogs
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Export audit logs
     description: |
       Streams audit log events matching the supplied filters as a downloadable
@@ -304,6 +325,13 @@ audit-logs-export:
 audit-logs-by-id:
   get:
     operationId: getAuditLogById
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get audit log by ID
     description: Retrieves a single audit log event by its unique ID.
     tags:
@@ -334,6 +362,13 @@ audit-logs-by-id:
 audit-logs-verify:
   get:
     operationId: verifyAuditLogSignature
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Verify audit log signature
     description: |
       Recomputes the HMAC-SHA256 signature for a single audit log event and
