@@ -2636,6 +2636,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 	case schemas.ResponsesStreamResponseTypeCreated:
 		// Only convert response.created back to message_start (not response.in_progress to avoid duplicates)
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
+<<<<<<< HEAD
 		{
 			// The message object is built unconditionally, even when the created event
 			// carries no BifrostResponsesResponse at all: a bare {"type":"message_start"}
@@ -2656,9 +2657,19 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// totals rather than Anthropic's cumulative deltas, so a client that sums the
 			// two would over-count. Zero is neutral under both readings, and the terminal
 			// message_delta remains the authoritative source of the real figures.
+=======
+		if bifrostResp.Response != nil {
+			// Use actual usage if available (forwarded from upstream message_start).
+			// When unknown (e.g. Bedrock Converse, which only reports usage on its
+			// terminal event), omit the field entirely rather than fabricating
+			// zeros — Anthropic's own documented streaming contract tolerates usage
+			// being absent from message_start, and reporting zeros would misrepresent
+			// cost/usage telemetry to clients that read input_tokens from here.
+>>>>>>> cbd58eb1e (bedrock + anthropic patches for adaptive thinking (#5821))
 			var messageUsage *AnthropicUsage
 			if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
 				messageUsage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+<<<<<<< HEAD
 			}
 			if messageUsage == nil {
 				messageUsage = &AnthropicUsage{
@@ -2671,6 +2682,8 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 						Ephemeral1hInputTokens: 0,
 					},
 				}
+=======
+>>>>>>> cbd58eb1e (bedrock + anthropic patches for adaptive thinking (#5821))
 			}
 			streamMessage := &AnthropicMessageResponse{
 				Type:    "message",
