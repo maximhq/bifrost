@@ -104,6 +104,84 @@ func StripThoughtSignature(callID string) string {
 	return callID
 }
 
+// ReasoningItemIDMarker prefixes an OpenAI-issued reasoning item id onto the
+// payload it's smuggled inside -- an Anthropic thinking block's signature, or a
+// redacted_thinking block's data -- so the id survives a round trip through
+// Anthropic's wire format. Anthropic's thinking/redacted_thinking content blocks
+// have no id field (id is valid only on tool_use/server_tool_use/mcp_tool_use),
+// but OpenAI cryptographically binds encrypted_content to the id it was issued
+// with and rejects a replay whose id doesn't match. Without this, the id is
+// dropped on the way to the client and a fresh random one is minted when the
+// client echoes the block back, producing a fake-id/real-ciphertext pair that
+// OpenAI rejects with "Encrypted content item_id did not match the target item id."
+//
+// A fixed prefix marker (checked at byte offset 0), not an infix separator like
+// ThoughtSignatureSeparator, is deliberate: encrypted_content/signature payloads
+// are long opaque blobs, so an infix search has a small but nonzero chance of
+// matching inside genuine Anthropic-issued data. A false positive there would
+// corrupt a real signature/data value forwarded to Anthropic's own API
+// (Anthropic-to-Anthropic or Anthropic-to-Bedrock-Anthropic replay), not just a
+// benign same-provider replay, so the extra collision-safety matters more here.
+const ReasoningItemIDMarker = "brid_"
+
+// ReasoningItemIDSeparator delimits the embedded id from the real payload that
+// follows it: "<ReasoningItemIDMarker><id><ReasoningItemIDSeparator><payload>".
+const ReasoningItemIDSeparator = ":"
+
+// ShouldEmbedReasoningItemID reports whether provider/model represents a genuine
+// OpenAI-issued reasoning response that needs EmbedReasoningItemID's id-smuggling
+// treatment. True unconditionally only for the literal OpenAI provider, which by
+// definition only ever serves OpenAI models. Azure, Bedrock Mantle, and Vertex
+// each also route real OpenAI models (Azure AI Foundry, Bedrock Mantle, and
+// Vertex Model Garden all host OpenAI's gpt-oss alongside third-party model
+// families -- Llama/Mistral/DeepSeek on Azure, Claude on Bedrock Mantle,
+// Gemini/Claude on Vertex), so for all three the check additionally requires the
+// resolved model itself to be OpenAI-family -- stamping a Bifrost-synthetic id
+// onto a non-OpenAI reasoning item's signature/data would mark data that never
+// needed it and was never bound to any id in the first place.
+func ShouldEmbedReasoningItemID(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI:
+		return true
+	case schemas.Azure, schemas.BedrockMantle, schemas.Vertex:
+		return schemas.IsOpenAIModel(model)
+	default:
+		return false
+	}
+}
+
+// EmbedReasoningItemID prepends id onto payload so it survives a round trip
+// through a wire format with no field to carry it. Returns payload unchanged if
+// id is nil or empty: there is nothing worth preserving, and this keeps the
+// function a no-op for reasoning content that never had a real upstream id
+// (e.g. content converted from a Chat Completions reasoning bridge).
+func EmbedReasoningItemID(id *string, payload string) string {
+	if id == nil || *id == "" {
+		return payload
+	}
+	return ReasoningItemIDMarker + *id + ReasoningItemIDSeparator + payload
+}
+
+// ExtractReasoningItemID reverses EmbedReasoningItemID. Returns the embedded id
+// and the original payload with ok=true if payload carries the marker; otherwise
+// returns (nil, payload, false) unchanged -- notably including the case where
+// payload is a genuine Anthropic-issued signature/data value, which is never
+// marked this way, so real signatures/data pass through byte-for-byte untouched.
+func ExtractReasoningItemID(payload string) (id *string, rest string, ok bool) {
+	if !strings.HasPrefix(payload, ReasoningItemIDMarker) {
+		return nil, payload, false
+	}
+	body := strings.TrimPrefix(payload, ReasoningItemIDMarker)
+	extracted, remaining, found := strings.Cut(body, ReasoningItemIDSeparator)
+	if !found || extracted == "" {
+		// Malformed marker (shouldn't happen -- we always write the separator,
+		// and EmbedReasoningItemID never embeds an empty id).
+		// Treat conservatively as unmarked rather than guessing.
+		return nil, payload, false
+	}
+	return &extracted, remaining, true
+}
+
 // sortedAPI is a sonic encoder/decoder that sorts map keys during marshaling.
 // This ensures deterministic JSON output for map[string]interface{} values,
 // which is critical for LLM prompt caching (e.g., Anthropic cache keying).
