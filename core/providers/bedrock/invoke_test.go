@@ -47,6 +47,30 @@ func TestConvertAnthropicTools_NoCacheControl_Unaffected(t *testing.T) {
 	}
 }
 
+// TestConvertAnthropicTools_ToolSearchTypeNeverBecomesInvocable is a regression test:
+// classic Bedrock's Converse API has no concept of Anthropic's tool_search_tool_*
+// entries (tool search is InvokeModel/InvokeModelWithResponseStream only per AWS's
+// docs), so an inbound tool_search_tool_regex entry must never be built into an
+// ordinary invocable BedrockToolSpec — that would present a broken, schema-less
+// "function" tool to the model instead of being dropped.
+func TestConvertAnthropicTools_ToolSearchTypeNeverBecomesInvocable(t *testing.T) {
+	req := &BedrockInvokeRequest{
+		Tools: []interface{}{
+			map[string]interface{}{
+				"type": "tool_search_tool_regex_20251119",
+				"name": "tool_search_tool_regex",
+			},
+			anthropicToolMap("keep_me", nil),
+		},
+	}
+
+	toolConfig := req.convertAnthropicTools()
+	require.NotNil(t, toolConfig)
+	require.Len(t, toolConfig.Tools, 1, "the tool_search_tool_* entry must be skipped, only the real tool kept")
+	require.NotNil(t, toolConfig.Tools[0].ToolSpec)
+	assert.Equal(t, "keep_me", toolConfig.Tools[0].ToolSpec.Name)
+}
+
 // TestConvertAnthropicTools_CarriesCacheControl is the regression test for #5629: a
 // cache_control marker on an Anthropic-native tool must survive the invoke->Converse
 // conversion as a positional cachePoint entry appended after the marked tool, the same
@@ -293,6 +317,149 @@ func TestToBedrockInvokeAnthropicResponse_IncludesCacheFields(t *testing.T) {
 	assert.Equal(t, 5, result.Usage.OutputTokens)
 	assert.Equal(t, 8336, result.Usage.CacheCreationInputTokens)
 	assert.Equal(t, 0, result.Usage.CacheReadInputTokens)
+}
+
+// --- Regression tests for #5638: /invoke egress dropped the reasoning signature (and,
+// for Bedrock-originated reasoning, the thinking text itself) because neither the
+// non-streaming response builder nor the streaming signature event carried it. ---
+
+// TestToBedrockInvokeAnthropicResponse_ThinkingSignature covers the non-streaming path:
+// Bedrock-originated reasoning lives in item.Content.ContentBlocks (not
+// item.ResponsesReasoning.Summary, which is always empty for Bedrock — see
+// convertSingleBedrockMessageToBifrostMessages), so the response builder must read
+// ContentBlocks first and carry the signature through to the Anthropic-shaped thinking
+// block, or a client replaying it back to Bedrock will 400 on a missing signature.
+func TestToBedrockInvokeAnthropicResponse_ThinkingSignature(t *testing.T) {
+	model := "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	thinkingText := "Let me work through this."
+	signature := "EqQBCgIYAhIM...fixture"
+	resp := &schemas.BifrostResponsesResponse{
+		Model: model,
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{},
+				},
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+							Text:      &thinkingText,
+							Signature: &signature,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := toBedrockInvokeAnthropicResponse(resp, model)
+	require.Len(t, result.Content, 1)
+	assert.Equal(t, "thinking", result.Content[0].Type)
+	assert.Equal(t, thinkingText, result.Content[0].Thinking)
+	assert.Equal(t, signature, result.Content[0].Signature)
+}
+
+// TestToBedrockInvokeAnthropicResponse_SummaryFallbackWhenContentBlocksUnusable covers
+// a CodeRabbit finding on PR #5821: the branch decision was "does Content.ContentBlocks
+// have any entries" rather than "did we actually emit a thinking block from it." If
+// ContentBlocks is non-empty but contains no usable reasoning block (e.g. a
+// non-reasoning content type), the ResponsesReasoning.Summary fallback — which may hold
+// real data — was never consulted, silently losing thinking content on /invoke egress.
+func TestToBedrockInvokeAnthropicResponse_SummaryFallbackWhenContentBlocksUnusable(t *testing.T) {
+	model := "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	resp := &schemas.BifrostResponsesResponse{
+		Model: model,
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{
+						{Text: "fallback summary text"},
+					},
+				},
+				Content: &schemas.ResponsesMessageContent{
+					// Non-empty, but no reasoning-type block within it.
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText},
+					},
+				},
+			},
+		},
+	}
+
+	result := toBedrockInvokeAnthropicResponse(resp, model)
+	require.Len(t, result.Content, 1, "expected the Summary fallback to be used when ContentBlocks yields no reasoning block")
+	assert.Equal(t, "thinking", result.Content[0].Type)
+	assert.Equal(t, "fallback summary text", result.Content[0].Thinking)
+}
+
+// TestToBedrockInvokeAnthropicResponse_EmptyTextSignaturePreserved guards against a
+// stricter-than-necessary empty-text filter dropping the signature along with it.
+// The sibling egress function (convertBifrostReasoningToBedrockReasoning, responses.go)
+// only requires block.Text != nil — not non-empty — before carrying a reasoning block
+// through; this response builder must match that, or a Bedrock-returned reasoning block
+// with empty text but a real signature gets silently discarded here, losing the
+// signature a client needs to replay history on the next turn.
+func TestToBedrockInvokeAnthropicResponse_EmptyTextSignaturePreserved(t *testing.T) {
+	model := "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	emptyText := ""
+	signature := "EqQBCgIYAhIM...fixture"
+	resp := &schemas.BifrostResponsesResponse{
+		Model: model,
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary: []schemas.ResponsesReasoningSummary{},
+				},
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+							Text:      &emptyText,
+							Signature: &signature,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := toBedrockInvokeAnthropicResponse(resp, model)
+	require.Len(t, result.Content, 1, "the block must survive even with empty text, so its signature isn't lost")
+	assert.Equal(t, "thinking", result.Content[0].Type)
+	assert.Equal(t, "", result.Content[0].Thinking)
+	assert.Equal(t, signature, result.Content[0].Signature)
+}
+
+// TestToAnthropicInvokeStreamBytes_ReasoningSignatureDelta covers the streaming path:
+// Anthropic-compatible SDKs (including Claude Code) parse a thinking signature only off
+// a dedicated signature_delta event, never nested inside thinking_delta — see
+// https://platform.claude.com/docs/en/build-with-claude/thinking#streaming-thinking.
+func TestToAnthropicInvokeStreamBytes_ReasoningSignatureDelta(t *testing.T) {
+	signature := "EqQBCgIYAhIM...fixture"
+	idx := 0
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type:         schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+		ContentIndex: &idx,
+		Signature:    &signature,
+	}
+
+	frames, err := toAnthropicInvokeStreamBytes(resp)
+	require.NoError(t, err)
+	require.Len(t, frames, 1)
+
+	var event map[string]interface{}
+	require.NoError(t, json.Unmarshal(frames[0], &event))
+
+	delta, ok := event["delta"].(map[string]interface{})
+	require.True(t, ok, "expected a delta object")
+	assert.Equal(t, "signature_delta", delta["type"], "signature must arrive as its own event type, not nested in thinking_delta")
+	assert.Equal(t, signature, delta["signature"])
+	_, hasThinking := delta["thinking"]
+	assert.False(t, hasThinking, "signature_delta must not carry a thinking field")
 }
 
 // --- Regression tests for #5560: InvokeModel silently dropped image / tool_use /

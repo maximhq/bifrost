@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -27,9 +28,12 @@ import (
 // through without a code change. Exact-match types (currently just
 // "mcp_toolset") are handled separately.
 var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
-	"web_search_":       func(f ProviderFeatureSupport) bool { return f.WebSearch },
+	// OR in the Nova carve-outs to match ValidateResponsesToolsForProvider —
+	// WebSearch/CodeExecution are false for Bedrock, but WebSearchNova/CodeExecNova
+	// are true (nova_grounding / nova_code_interpreter system tools).
+	"web_search_":       func(f ProviderFeatureSupport) bool { return f.WebSearch || f.WebSearchNova },
 	"web_fetch_":        func(f ProviderFeatureSupport) bool { return f.WebFetch },
-	"code_execution_":   func(f ProviderFeatureSupport) bool { return f.CodeExecution },
+	"code_execution_":   func(f ProviderFeatureSupport) bool { return f.CodeExecution || f.CodeExecNova },
 	"computer_":         func(f ProviderFeatureSupport) bool { return f.ComputerUse },
 	"bash_":             func(f ProviderFeatureSupport) bool { return f.Bash },
 	"memory_":           func(f ProviderFeatureSupport) bool { return f.Memory },
@@ -37,6 +41,13 @@ var anthropicToolTypePrefixToFeature = map[string]func(ProviderFeatureSupport) b
 	"tool_search_tool_": func(f ProviderFeatureSupport) bool { return f.ToolSearch },
 	"advisor_":          func(f ProviderFeatureSupport) bool { return f.AdvisorTool },
 }
+
+// ErrReasoningMaxTokensTooLow marks a reasoning/thinking configuration error caused by
+// a client-supplied max_tokens too low for the resolved reasoning budget — a bad
+// request, not an internal conversion failure. Wrapped (%w) at every reasoning-budget
+// validation site in chat.go/responses.go so requestbuilder.go's newErr closures can
+// distinguish it from genuine internal errors and return 400 instead of a bare 500.
+var ErrReasoningMaxTokensTooLow = errors.New("max_tokens too low for reasoning/thinking configuration")
 
 // isAnthropicServerToolSupported returns whether the given Anthropic server-tool
 // type string is supported by the provider's ProviderFeatureSupport. Unknown
@@ -407,7 +418,10 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// Tool-level flags — strip per-tool without dropping the tool itself.
 	for i := range req.Tools {
 		tool := &req.Tools[i]
-		if tool.DeferLoading != nil && !features.AdvancedToolUse {
+		// defer_loading has its own beta (tool-search-tool-2025-10-19) as of
+		// current docs — it's no longer part of the AdvancedToolUse bundle. Gate
+		// on ToolSearch, not AdvancedToolUse (see AnthropicToolSearchBetaHeader).
+		if tool.DeferLoading != nil && !features.ToolSearch {
 			tool.DeferLoading = nil
 		}
 		if len(tool.AllowedCallers) > 0 && !features.AdvancedToolUse {
@@ -698,13 +712,17 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 					}
 				}
 			}
-			if !features.AdvancedToolUse {
+			// defer_loading has its own beta (tool-search-tool-2025-10-19) as of
+			// current docs — gate on ToolSearch, not AdvancedToolUse.
+			if !features.ToolSearch {
 				if providerUtils.JSONFieldExists(jsonBody, base+".defer_loading") {
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".defer_loading")
 					if err != nil {
 						return nil, fmt.Errorf("strip raw %s.defer_loading: %w", base, err)
 					}
 				}
+			}
+			if !features.AdvancedToolUse {
 				if providerUtils.JSONFieldExists(jsonBody, base+".allowed_callers") {
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".allowed_callers")
 					if err != nil {
@@ -1143,14 +1161,12 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 					headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
 				}
 			}
-			// Check for advanced-tool-use features. defer_loading and
-			// allowed_callers are only available as part of the bundle
-			// header; input_examples additionally has a standalone header
-			// (tool-examples-2025-10-29) used on Bedrock where the bundle is
-			// not accepted.
+			// defer_loading has its own beta (tool-search-tool-2025-10-19) as of
+			// current docs — it's no longer part of the AdvancedToolUse bundle.
+			// allowed_callers is still bundle-only.
 			if tool.DeferLoading != nil && *tool.DeferLoading {
-				if !hasProvider || features.AdvancedToolUse {
-					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+				if !hasProvider || features.ToolSearch {
+					headers = appendUniqueHeader(headers, AnthropicToolSearchBetaHeader)
 				}
 			}
 			if len(tool.InputExamples) > 0 {
@@ -1378,6 +1394,7 @@ var betaHeaderPrefixKnown = []string{
 	"context-management-",
 	"files-api-",
 	AnthropicAdvancedToolUseBetaHeaderPrefix,
+	AnthropicToolSearchBetaHeaderPrefix,
 	AnthropicToolExamplesBetaHeaderPrefix,
 	AnthropicInterleavedThinkingBetaHeaderPrefix,
 	AnthropicSkillsBetaHeaderPrefix,
@@ -1770,6 +1787,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	"context-management-":                        func(f ProviderFeatureSupport) bool { return f.ContextEditing },
 	"files-api-":                                 func(f ProviderFeatureSupport) bool { return f.FilesAPI },
 	AnthropicAdvancedToolUseBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.AdvancedToolUse },
+	AnthropicToolSearchBetaHeaderPrefix:          func(f ProviderFeatureSupport) bool { return f.ToolSearch },
 	AnthropicToolExamplesBetaHeaderPrefix:        func(f ProviderFeatureSupport) bool { return f.InputExamples },
 	AnthropicInterleavedThinkingBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.InterleavedThinking },
 	AnthropicSkillsBetaHeaderPrefix:              func(f ProviderFeatureSupport) bool { return f.Skills },

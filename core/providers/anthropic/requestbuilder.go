@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"errors"
 	"fmt"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -290,6 +291,16 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 		reqBody, convErr := ToAnthropicResponsesRequest(ctx, request)
 		if convErr != nil {
+			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
+				return nil, providerUtils.EnrichError(
+					ctx,
+					providerUtils.NewBifrostBadRequestError(convErr.Error()),
+					jsonBody,
+					nil,
+					cfg.ShouldSendBackRawRequest,
+					cfg.ShouldSendBackRawResponse,
+				)
+			}
 			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
 		}
 		if reqBody == nil {
@@ -531,6 +542,16 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 	} else {
 		reqBody, convErr := ToAnthropicChatRequest(ctx, request)
 		if convErr != nil {
+			if errors.Is(convErr, ErrReasoningMaxTokensTooLow) {
+				return nil, providerUtils.EnrichError(
+					ctx,
+					providerUtils.NewBifrostBadRequestError(convErr.Error()),
+					jsonBody,
+					nil,
+					cfg.ShouldSendBackRawRequest,
+					cfg.ShouldSendBackRawResponse,
+				)
+			}
 			return nil, newErr(schemas.ErrRequestBodyConversion, convErr, jsonBody)
 		}
 		if reqBody == nil {
