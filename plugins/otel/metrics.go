@@ -571,7 +571,11 @@ func (m *MetricsExporter) RecordHTTPResponseSize(ctx context.Context, sizeBytes 
 // Retry depth is intentionally NOT included here; it is reported via the dedicated
 // bifrost_request_retries histogram (recorded once per request) rather than as a label
 // on every per-attempt counter.
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamID, teamName, customerID, customerName string) []attribute.KeyValue {
+// team/customer/businessUnit id+name args are canonical comma-joined sets (see
+// schemas.CanonicalEntitySet) so a multi-team/customer/BU request carries every
+// value; single-valued traffic is a set of one. The label names stay singular
+// (team_id, customer_id, ...) for dashboard backward-compatibility.
+func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("provider", provider),
 		attribute.String("model", model),
@@ -581,10 +585,12 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("selected_key_id", selectedKeyID),
 		attribute.String("selected_key_name", selectedKeyName),
 		attribute.Int("fallback_index", fallbackIndex),
-		attribute.String("team_id", teamID),
-		attribute.String("team_name", teamName),
-		attribute.String("customer_id", customerID),
-		attribute.String("customer_name", customerName),
+		attribute.String("team_id", teamIDs),
+		attribute.String("team_name", teamNames),
+		attribute.String("customer_id", customerIDs),
+		attribute.String("customer_name", customerNames),
+		attribute.String("business_unit_id", businessUnitIDs),
+		attribute.String("business_unit_name", businessUnitNames),
 	}
 }
 
