@@ -4,19 +4,22 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/maximhq/bifrost/framework/configstore"
 )
 
 func TestDefaultEditableKeywordConfigIncludesSemanticExemplars(t *testing.T) {
 	cfg := DefaultEditableKeywordConfig()
+	exemplars := configstore.DefaultComplexityExemplars()
 	tiers := []struct {
 		name      string
 		values    []string
 		keywords  []string
 		exemplars []string
 	}{
-		{name: TierSimple, values: cfg.SimpleKeywords, keywords: simpleKeywords, exemplars: defaultSimpleExemplars},
-		{name: TierMedium, values: cfg.MediumKeywords, keywords: mediumKeywords, exemplars: defaultMediumExemplars},
-		{name: TierComplex, values: cfg.ComplexKeywords, keywords: complexKeywords, exemplars: defaultComplexExemplars},
+		{name: TierSimple, values: cfg.SimpleKeywords, keywords: simpleKeywords, exemplars: exemplars.SimpleKeywords},
+		{name: TierMedium, values: cfg.MediumKeywords, keywords: mediumKeywords, exemplars: exemplars.MediumKeywords},
+		{name: TierComplex, values: cfg.ComplexKeywords, keywords: complexKeywords, exemplars: exemplars.ComplexKeywords},
 	}
 
 	for _, tier := range tiers {

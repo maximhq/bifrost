@@ -1,4 +1,4 @@
-package complexity
+package configstore
 
 // Default semantic-routing exemplars are balanced along two axes at once.
 //
@@ -241,8 +241,17 @@ var defaultComplexExemplars = []string{
 	"Unfamiliar repo, flaky tests: decide what to run, when to stop, and what to hand back.",
 }
 
-func sharedTierDefaults(keywords, exemplars []string) []string {
-	combined := make([]string, 0, len(keywords)+len(exemplars))
-	combined = append(combined, keywords...)
-	return append(combined, exemplars...)
+// DefaultComplexityExemplars returns independent copies of the curated
+// semantic-routing exemplars. The configstore migration and governance runtime
+// share this source so existing and new installations receive the same phrases.
+func DefaultComplexityExemplars() ComplexityEditableKeywordConfig {
+	return ComplexityEditableKeywordConfig{
+		SimpleKeywords:  cloneComplexityExemplars(defaultSimpleExemplars),
+		MediumKeywords:  cloneComplexityExemplars(defaultMediumExemplars),
+		ComplexKeywords: cloneComplexityExemplars(defaultComplexExemplars),
+	}
+}
+
+func cloneComplexityExemplars(values []string) []string {
+	return append([]string(nil), values...)
 }

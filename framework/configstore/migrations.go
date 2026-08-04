@@ -457,6 +457,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
+	{IDs: []string{"backfill_default_complexity_exemplars"}, run: migrationBackfillDefaultComplexityExemplars},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11106,4 +11107,114 @@ func migrationAddPricingOverrideUserIDColumn(ctx context.Context, db *gorm.DB, l
 		return fmt.Errorf("error while running pricing override user_id column migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationBackfillDefaultComplexityExemplars appends the curated semantic
+// exemplars to persisted complexity configurations created before those
+// defaults existed. Existing phrases and tier assignments always win.
+func migrationBackfillDefaultComplexityExemplars(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "backfill_default_complexity_exemplars"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			var entry tables.TableGovernanceConfig
+			err := tx.First(&entry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error
+			if err == gorm.ErrRecordNotFound {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("query persisted complexity analyzer config: %w", err)
+			}
+			if strings.TrimSpace(entry.Value) == "" {
+				return nil
+			}
+
+			config, err := DecodeComplexityAnalyzerConfig([]byte(entry.Value))
+			if err != nil {
+				return fmt.Errorf("decode persisted complexity analyzer config: %w", err)
+			}
+			if config == nil {
+				return nil
+			}
+
+			added := appendMissingDefaultComplexityExemplars(config, DefaultComplexityExemplars())
+			if added == 0 {
+				return nil
+			}
+
+			config.EmbeddingFingerprint = ""
+			normalized := config.Normalized()
+			if err := normalized.Validate(); err != nil {
+				return fmt.Errorf("validate complexity analyzer config after exemplar backfill: %w", err)
+			}
+			raw, err := encodeComplexityAnalyzerConfig(normalized)
+			if err != nil {
+				return fmt.Errorf("encode complexity analyzer config after exemplar backfill: %w", err)
+			}
+
+			result := tx.Model(&tables.TableGovernanceConfig{}).
+				Where("key = ?", tables.ConfigComplexityAnalyzerConfigKey).
+				Update("value", string(raw))
+			if result.Error != nil {
+				return fmt.Errorf("persist complexity analyzer exemplar backfill: %w", result.Error)
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("persist complexity analyzer exemplar backfill: updated %d rows, want 1", result.RowsAffected)
+			}
+
+			logger.Info("[configstore] %s: added %d default complexity exemplars", migrationName, added)
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			// Removing phrases later would also remove administrator-owned data
+			// that happens to match a default exemplar.
+			return fmt.Errorf("%s is non-rollbackable: appended default phrases cannot be distinguished safely from administrator-owned phrases", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+func appendMissingDefaultComplexityExemplars(config *ComplexityAnalyzerConfig, defaults ComplexityEditableKeywordConfig) int {
+	type tierPhrases struct {
+		values   *[]string
+		defaults []string
+	}
+	tiers := []tierPhrases{
+		{values: &config.Keywords.SimpleKeywords, defaults: defaults.SimpleKeywords},
+		{values: &config.Keywords.MediumKeywords, defaults: defaults.MediumKeywords},
+		{values: &config.Keywords.ComplexKeywords, defaults: defaults.ComplexKeywords},
+	}
+
+	seen := make(map[string]struct{})
+	for _, tier := range tiers {
+		for _, phrase := range *tier.values {
+			seen[normalizeComplexityExemplarKey(phrase)] = struct{}{}
+		}
+	}
+
+	added := 0
+	for _, tier := range tiers {
+		for _, phrase := range tier.defaults {
+			key := normalizeComplexityExemplarKey(phrase)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			*tier.values = append(*tier.values, phrase)
+			seen[key] = struct{}{}
+			added++
+		}
+	}
+	return added
+}
+
+func normalizeComplexityExemplarKey(phrase string) string {
+	return strings.ToLower(strings.Join(strings.Fields(phrase), " "))
 }
