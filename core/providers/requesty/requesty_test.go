@@ -10,12 +10,16 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// TestRequesty runs a comprehensive set of tests against the Requesty provider.
+// It checks various scenarios including chat, streaming, tool calls, image handling, and embeddings.
+// It skips tests if REQUESTY_API_KEY is not set.
 func TestRequesty(t *testing.T) {
 	t.Parallel()
 	if strings.TrimSpace(os.Getenv("REQUESTY_API_KEY")) == "" {
 		t.Skip("Skipping Requesty tests because REQUESTY_API_KEY is not set")
 	}
 
+	// Setup the test environment and client
 	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
@@ -23,6 +27,8 @@ func TestRequesty(t *testing.T) {
 	defer cancel()
 	defer client.Shutdown()
 
+	// Define the comprehensive test configuration for Requesty
+	// Note: Requesty does not support text completion, so that scenario is set to false.
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.Requesty,
 		ChatModel:      "google/gemma-4-31b-it", // Vision+Tools+Think
