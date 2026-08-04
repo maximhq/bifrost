@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
@@ -86,7 +87,7 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 		// Try standard []BedrockMessage first
 		var standardMsgs []BedrockMessage
 		if err := sonic.Unmarshal(aux.Messages, &standardMsgs); err == nil {
-			r.Messages = standardMsgs
+			r.Messages = applyMessageContentCacheControl(standardMsgs, aux.Messages)
 		} else {
 			// Try AI21 format where content is a string
 			var rawMsgs []struct {
@@ -947,6 +948,51 @@ func cacheControlTTL(cacheControl map[string]interface{}) *string {
 		return &ttl
 	}
 	return nil
+}
+
+// applyMessageContentCacheControl catches per-block "cache_control" markers that
+// BedrockContentBlock's UnmarshalJSON normalizes structurally but doesn't translate, since
+// Converse instead expects a positional cachePoint sibling entry — mirroring the same
+// translation parseSystemMessages and convertAnthropicTools already apply for system
+// messages and tools. Queries only the "cache_control" path per already-parsed block
+// directly via gjson — no intermediate parse of the raw messages JSON into a map or tree.
+func applyMessageContentCacheControl(msgs []BedrockMessage, raw json.RawMessage) []BedrockMessage {
+	for i := range msgs {
+		msgs[i].Content = injectContentBlockCachePoints(msgs[i].Content, raw, fmt.Sprintf("%d.content", i))
+	}
+	return msgs
+}
+
+// injectContentBlockCachePoints walks the already-parsed blocks by index and, for each one,
+// queries "<basePath>.<index>.cache_control" directly against the raw JSON via gjson. A block
+// carrying cache_control gets a trailing standalone CachePoint sibling appended after it.
+// Recurses into tool_result blocks first, whose own nested content array can carry an
+// independent cache_control breakpoint of its own.
+func injectContentBlockCachePoints(blocks []BedrockContentBlock, raw json.RawMessage, basePath string) []BedrockContentBlock {
+	result := make([]BedrockContentBlock, 0, len(blocks))
+	for j, block := range blocks {
+		blockPath := fmt.Sprintf("%s.%d", basePath, j)
+		if block.ToolResult != nil {
+			block.ToolResult.Content = injectContentBlockCachePoints(block.ToolResult.Content, raw, blockPath+".content")
+		}
+		result = append(result, block)
+		if cc := gjson.GetBytes(raw, blockPath+".cache_control"); cc.Exists() {
+			result = append(result, BedrockContentBlock{CachePoint: newBedrockCachePoint(cacheControlTTLFromJSON(cc))})
+		}
+	}
+	return result
+}
+
+// cacheControlTTLFromJSON extracts the optional "ttl" string from a gjson-parsed cache_control
+// object — the gjson equivalent of cacheControlTTL, which operates on the map[string]interface{}
+// shape parseSystemMessages/convertAnthropicTools already have on hand.
+func cacheControlTTLFromJSON(cacheControl gjson.Result) *string {
+	ttl := cacheControl.Get("ttl")
+	if !ttl.Exists() {
+		return nil
+	}
+	s := ttl.String()
+	return &s
 }
 
 // convertAnthropicTools converts Anthropic-format tools to Bedrock ToolConfig.

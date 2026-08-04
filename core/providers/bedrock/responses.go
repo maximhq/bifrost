@@ -4441,8 +4441,26 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			// Create a copy of the value to avoid range loop variable capture
 			toolResultID := block.ToolResult.ToolUseID
 
+			// A cache_control nested inside the tool_result's own content (independent of one on
+			// the tool_result block itself, which the block.CachePoint sibling handler below
+			// already covers) surfaces here as a standalone CachePoint block within Content.
+			// Bifrost's canonical form has no per-nested-block cache granularity for tool results
+			// (mirrors the single ToolResult.CacheControl field on the egress side), so fold it
+			// into the message-level CacheControl, same as the sibling-CachePoint fallback below.
+			var nestedCacheControl *schemas.CacheControl
+			for _, c := range block.ToolResult.Content {
+				if c.CachePoint != nil {
+					nestedCacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  c.CachePoint.TTL,
+					}
+					break
+				}
+			}
+
 			resultMsg := schemas.ResponsesMessage{
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				CacheControl: nestedCacheControl,
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
 					CallID: &toolResultID,
 					Output: &schemas.ResponsesToolMessageOutputStruct{
