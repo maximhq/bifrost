@@ -848,11 +848,10 @@ func getStringSliceAttr(attrs map[string]any, key string) []string {
 	case []string:
 		return v
 	case []any:
-		out := make([]string, 0, len(v))
-		for _, e := range v {
-			if s, ok := e.(string); ok {
-				out = append(out, s)
-			}
+		// Preserve index so id/name arrays stay aligned; non-strings become "".
+		out := make([]string, len(v))
+		for i, e := range v {
+			out[i], _ = e.(string)
 		}
 		return out
 	}
@@ -1063,6 +1062,12 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	var finalSpan *schemas.Span
 	for _, span := range trace.Spans {
 		if span.Kind != schemas.SpanKindLLMCall && span.Kind != schemas.SpanKindRetry {
+			continue
+		}
+		// Skip spans with no provider and no model (avoid empty-label series); also
+		// excludes them from final-span selection below.
+		if getStringAttr(span.Attributes, schemas.AttrProviderName) == "" &&
+			strings.TrimSpace(getStringAttr(span.Attributes, schemas.AttrRequestModel)) == "" {
 			continue
 		}
 
