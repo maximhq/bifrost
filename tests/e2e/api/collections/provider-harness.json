@@ -4356,6 +4356,348 @@
                   }
                 }
               ]
+            },
+            {
+              "name": "8.1.G Bedrock drop-in /bedrock/model/{modelId}/converse × non-Bedrock providers",
+              "description": "AWS Bedrock Converse API shape (`messages[].content[].text` body, model ID in the URL path) routed to non-Bedrock backends. The Converse route captures `{modelId}` as a single path segment, so a `provider/model` prefix must be URL-encoded (`%2F`) in the path — see `bedrockPreCallback` in `transports/bifrost-http/integrations/bedrock.go`.",
+              "item": [
+                {
+                  "name": "openai/gpt-5",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-5/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "openai%2Fgpt-5",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "openai/gpt-4o-mini",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-4o-mini/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "openai%2Fgpt-4o-mini",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "anthropic/claude-opus-4-7",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/anthropic%2Fclaude-opus-4-7/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "anthropic%2Fclaude-opus-4-7",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "anthropic/claude-haiku-4-5",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/anthropic%2Fclaude-haiku-4-5/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "anthropic%2Fclaude-haiku-4-5",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "gemini/gemini-2.5-pro",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/gemini%2Fgemini-2.5-pro/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "gemini%2Fgemini-2.5-pro",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "gemini/gemini-2.5-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/gemini%2Fgemini-2.5-flash/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "gemini%2Fgemini-2.5-flash",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "vertex/gemini-2.5-pro",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/vertex%2Fgemini-2.5-pro/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "vertex%2Fgemini-2.5-pro",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "vertex/claude-opus-4-7",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/vertex%2Fclaude-opus-4-7/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "vertex%2Fclaude-opus-4-7",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "bedrock_mantle/anthropic.claude-opus-4-8",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/bedrock_mantle%2Fanthropic.claude-opus-4-8/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "bedrock_mantle%2Fanthropic.claude-opus-4-8",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "azure/gpt-4o-mini",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-4o-mini/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "azure%2Fgpt-4o-mini",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "azure/gpt-4o",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-4o/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "azure%2Fgpt-4o",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "deepseek/deepseek-v4-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/deepseek%2Fdeepseek-v4-flash/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "deepseek%2Fdeepseek-v4-flash",
+                        "converse"
+                      ]
+                    }
+                  }
+                }
+              ]
             }
           ]
         },
@@ -5533,6 +5875,180 @@
                           "key": "alt",
                           "value": "sse"
                         }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "8.2.G Bedrock drop-in /bedrock/model/{modelId}/converse-stream streaming × non-Bedrock providers",
+              "description": "Streaming variant of 8.1.G. Same Converse-shaped body; URL suffix changes to `/converse-stream`. The folder-level test script asserts a streaming Content-Type and a recognized terminator.",
+              "item": [
+                {
+                  "name": "openai/gpt-4o-mini",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-4o-mini/converse-stream",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "openai%2Fgpt-4o-mini",
+                        "converse-stream"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "anthropic/claude-haiku-4-5",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/anthropic%2Fclaude-haiku-4-5/converse-stream",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "anthropic%2Fclaude-haiku-4-5",
+                        "converse-stream"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "gemini/gemini-2.5-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/gemini%2Fgemini-2.5-flash/converse-stream",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "gemini%2Fgemini-2.5-flash",
+                        "converse-stream"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "vertex/gemini-2.5-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/vertex%2Fgemini-2.5-flash/converse-stream",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "vertex%2Fgemini-2.5-flash",
+                        "converse-stream"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "azure/gpt-4o-mini",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-4o-mini/converse-stream",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "azure%2Fgpt-4o-mini",
+                        "converse-stream"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "bedrock_mantle/anthropic.claude-opus-4-8",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"Hello from Bedrock Converse.\" }] }],\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/bedrock_mantle%2Fanthropic.claude-opus-4-8/converse-stream",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "bedrock_mantle%2Fanthropic.claude-opus-4-8",
+                        "converse-stream"
                       ]
                     }
                   }
@@ -7374,6 +7890,118 @@
                       ]
                     }
                   }
+                },
+                {
+                  "name": "8.6.1.G /bedrock/model/{modelId}/converse → openai/gpt-4o-mini",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"What's the weather in Tokyo?\" }] }],\n  \"toolConfig\": {\n    \"tools\": [{ \"toolSpec\": {\n      \"name\": \"get_weather\",\n      \"description\": \"Get current weather\",\n      \"inputSchema\": { \"json\": {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]} }\n    }}]\n  },\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-4o-mini/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "openai%2Fgpt-4o-mini",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "8.6.1.G /bedrock/model/{modelId}/converse → anthropic/claude-haiku-4-5",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"What's the weather in Tokyo?\" }] }],\n  \"toolConfig\": {\n    \"tools\": [{ \"toolSpec\": {\n      \"name\": \"get_weather\",\n      \"description\": \"Get current weather\",\n      \"inputSchema\": { \"json\": {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]} }\n    }}]\n  },\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/anthropic%2Fclaude-haiku-4-5/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "anthropic%2Fclaude-haiku-4-5",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "8.6.1.G /bedrock/model/{modelId}/converse → gemini/gemini-2.5-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"What's the weather in Tokyo?\" }] }],\n  \"toolConfig\": {\n    \"tools\": [{ \"toolSpec\": {\n      \"name\": \"get_weather\",\n      \"description\": \"Get current weather\",\n      \"inputSchema\": { \"json\": {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]} }\n    }}]\n  },\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/gemini%2Fgemini-2.5-flash/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "gemini%2Fgemini-2.5-flash",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "8.6.1.G /bedrock/model/{modelId}/converse → azure/gpt-4o-mini",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [{ \"text\": \"What's the weather in Tokyo?\" }] }],\n  \"toolConfig\": {\n    \"tools\": [{ \"toolSpec\": {\n      \"name\": \"get_weather\",\n      \"description\": \"Get current weather\",\n      \"inputSchema\": { \"json\": {\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]} }\n    }}]\n  },\n  \"inferenceConfig\": { \"maxTokens\": 1024 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-4o-mini/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "azure%2Fgpt-4o-mini",
+                        "converse"
+                      ]
+                    }
+                  }
                 }
               ]
             },
@@ -7597,6 +8225,90 @@
                         "models",
                         "anthropic",
                         "claude-haiku-4-5:generateContent"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "8.6.2.G /bedrock/model/{modelId}/converse → openai/gpt-4o-mini",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [\n    { \"text\": \"Describe this image in one word.\" },\n    { \"image\": { \"format\": \"png\", \"source\": { \"bytes\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" } } }\n  ] }],\n  \"inferenceConfig\": { \"maxTokens\": 512 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-4o-mini/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "openai%2Fgpt-4o-mini",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "8.6.2.G /bedrock/model/{modelId}/converse → anthropic/claude-haiku-4-5",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [\n    { \"text\": \"Describe this image in one word.\" },\n    { \"image\": { \"format\": \"png\", \"source\": { \"bytes\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" } } }\n  ] }],\n  \"inferenceConfig\": { \"maxTokens\": 512 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/anthropic%2Fclaude-haiku-4-5/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "anthropic%2Fclaude-haiku-4-5",
+                        "converse"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "name": "8.6.2.G /bedrock/model/{modelId}/converse → gemini/gemini-2.5-flash",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                      }
+                    ],
+                    "body": {
+                      "mode": "raw",
+                      "raw": "{\n  \"messages\": [{ \"role\": \"user\", \"content\": [\n    { \"text\": \"Describe this image in one word.\" },\n    { \"image\": { \"format\": \"png\", \"source\": { \"bytes\": \"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\" } } }\n  ] }],\n  \"inferenceConfig\": { \"maxTokens\": 512 }\n}"
+                    },
+                    "url": {
+                      "raw": "{{baseUrl}}/bedrock/model/gemini%2Fgemini-2.5-flash/converse",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "bedrock",
+                        "model",
+                        "gemini%2Fgemini-2.5-flash",
+                        "converse"
                       ]
                     }
                   }
@@ -18414,7 +19126,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"messages\": [{\"role\":\"user\",\"content\":[{\"text\":\"Describe\"},{\"image\":{\"format\":\"jpeg\",\"source\":{\"bytes\":\"REPLACE_WITH_BASE64\"}}}]}],\n  \"inferenceConfig\": {\"maxTokens\":512}\n}"
+                  "raw": "{\n  \"messages\": [{\"role\":\"user\",\"content\":[{\"text\":\"Describe\"},{\"image\":{\"format\":\"png\",\"source\":{\"bytes\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==\"}}}]}],\n  \"inferenceConfig\": {\"maxTokens\":512}\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
@@ -43476,7 +44188,7 @@
       "description": "Google Search grounding fields on the /genai route that had zero harness coverage: googleSearch.excludeDomains, googleSearch.timeRangeFilter (both camelCase and snake_case), and toolConfig.retrievalConfig.latLng on the request side, plus groundingMetadata fidelity on the response side for both non-streaming and streaming.\n\nThe /genai route is NOT passthrough: the request crosses Gemini JSON -> BifrostResponsesRequest -> Gemini JSON, and the response crosses back the same way. Every one of these fields therefore has two chances to be silently dropped, and a dropped field still returns 200 - the model just quietly runs an unfiltered search. So the assertions are on response content, not status:\n\n- excludeDomains / timeRangeFilter / retrievalConfig.latLng have no distinctive response signature, so they are pinned by the fact that the provider accepts them AND still grounds. A mangled or misnamed field is a 400 INVALID_ARGUMENT from Google; a dropped tool means no groundingMetadata at all.\n- excludeDomains is Vertex-only - the Gemini Developer API does not accept it - so every case carrying it runs on Vertex alone. timeRangeFilter and retrievalConfig.latLng run on both.\n- The latLng cases additionally assert no functionCallingConfig was synthesized: Gemini rejects functionCallingConfig without function declarations, so rebuilding toolConfig for latLng must not pull one in.\n- The snake_case cases pin GoogleSearch.UnmarshalJSON's alias handling: time_range_filter on Gemini, exclude_domains + time_range_filter together on Vertex.\n- The fidelity cases pin what must survive the four conversions: webSearchQueries, a citable uri on every grounding chunk, searchEntryPoint.renderedContent (Google requires rendering Search Suggestions), and groundingSupports[].groundingChunkIndices that stay in-bounds and de-duplicated.\n\nEach case runs on both providers via the provider-prefixed model form (/genai/v1beta/models/gemini/... and /genai/v1beta/models/vertex/...), so PROVIDER=gemini and PROVIDER=vertex both exercise the full set against their own backend.\n\nNot covered here: googleSearch.searchTypes (Grounding with Google Image Search) and the imageSearchQueries / groundingChunks[].image response half. Those need an image model and are deferred - Bifrost currently also drops the generated inlineData part in streaming, because processGeminiPart matches part.ThoughtSignature before part.InlineData and consumes an image part carrying a thought signature as a signature-only reasoning item.\n\nThe chunk-index test checks in-bounds and de-duplicated indices; it cannot by itself catch a regression that keeps only the first index of a multi-source support, since one index is still valid. Folder 32 pins that fan-out on /v1/responses.",
       "item": [
         {
-          "name": "vertex/gemini-3.6-flash googleSearch excludeDomains forwarded intact (/genai generateContent)",
+          "name": "vertex/gemini-2.5-flash googleSearch excludeDomains forwarded intact (/genai generateContent)",
           "request": {
             "method": "POST",
             "header": [
@@ -43490,7 +44202,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"excludeDomains\": [\n          \"wikipedia.org\"\n        ]\n      }\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -43499,7 +44211,7 @@
                 "v1beta",
                 "models",
                 "vertex",
-                "gemini-3.6-flash:generateContent"
+                "gemini-2.5-flash:generateContent"
               ]
             }
           },
@@ -43588,7 +44300,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-3.6-flash googleSearch timeRangeFilter forwarded intact (/genai generateContent)",
+          "name": "vertex/gemini-2.5-flash googleSearch timeRangeFilter forwarded intact (/genai generateContent)",
           "request": {
             "method": "POST",
             "header": [
@@ -43602,7 +44314,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"timeRangeFilter\": {\n          \"startTime\": \"2024-06-01T00:00:00Z\",\n          \"endTime\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -43611,7 +44323,7 @@
                 "v1beta",
                 "models",
                 "vertex",
-                "gemini-3.6-flash:generateContent"
+                "gemini-2.5-flash:generateContent"
               ]
             }
           },
@@ -43641,7 +44353,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-3.6-flash googleSearch excludeDomains + timeRangeFilter combined (/genai generateContent)",
+          "name": "vertex/gemini-2.5-flash googleSearch excludeDomains + timeRangeFilter combined (/genai generateContent)",
           "request": {
             "method": "POST",
             "header": [
@@ -43655,7 +44367,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"excludeDomains\": [\n          \"wikipedia.org\"\n        ],\n        \"timeRangeFilter\": {\n          \"startTime\": \"2024-06-01T00:00:00Z\",\n          \"endTime\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -43664,7 +44376,7 @@
                 "v1beta",
                 "models",
                 "vertex",
-                "gemini-3.6-flash:generateContent"
+                "gemini-2.5-flash:generateContent"
               ]
             }
           },
@@ -43757,7 +44469,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-3.6-flash googleSearch + toolConfig.retrievalConfig.latLng localization (/genai generateContent)",
+          "name": "vertex/gemini-2.5-flash googleSearch + toolConfig.retrievalConfig.latLng localization (/genai generateContent)",
           "request": {
             "method": "POST",
             "header": [
@@ -43771,7 +44483,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What are the best-known coffee shops in this area? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ],\n  \"toolConfig\": {\n    \"retrievalConfig\": {\n      \"latLng\": {\n        \"latitude\": 37.7749,\n        \"longitude\": -122.4194\n      }\n    }\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -43780,7 +44492,7 @@
                 "v1beta",
                 "models",
                 "vertex",
-                "gemini-3.6-flash:generateContent"
+                "gemini-2.5-flash:generateContent"
               ]
             }
           },
@@ -43867,7 +44579,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-3.6-flash googleSearch exclude_domains + time_range_filter snake_case aliases (/genai generateContent)",
+          "name": "vertex/gemini-2.5-flash googleSearch exclude_domains + time_range_filter snake_case aliases (/genai generateContent)",
           "request": {
             "method": "POST",
             "header": [
@@ -43881,7 +44593,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024? Answer in one short sentence using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {\n        \"exclude_domains\": [\n          \"wikipedia.org\"\n        ],\n        \"time_range_filter\": {\n          \"start_time\": \"2024-06-01T00:00:00Z\",\n          \"end_time\": \"2024-07-31T23:59:59Z\"\n        }\n      }\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -43890,7 +44602,7 @@
                 "v1beta",
                 "models",
                 "vertex",
-                "gemini-3.6-flash:generateContent"
+                "gemini-2.5-flash:generateContent"
               ]
             }
           },
@@ -44008,7 +44720,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-3.6-flash googleSearch grounding fidelity: chunk indices + searchEntryPoint (/genai generateContent)",
+          "name": "vertex/gemini-2.5-flash googleSearch grounding fidelity: chunk indices + searchEntryPoint (/genai generateContent)",
           "request": {
             "method": "POST",
             "header": [
@@ -44022,7 +44734,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:generateContent",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -44031,7 +44743,7 @@
                 "v1beta",
                 "models",
                 "vertex",
-                "gemini-3.6-flash:generateContent"
+                "gemini-2.5-flash:generateContent"
               ]
             }
           },
@@ -44184,7 +44896,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-3.6-flash googleSearch grounding survives streaming: chunk indices + searchEntryPoint (/genai SSE)",
+          "name": "vertex/gemini-2.5-flash googleSearch grounding survives streaming: chunk indices + searchEntryPoint (/genai SSE)",
           "request": {
             "method": "POST",
             "header": [
@@ -44198,7 +44910,7 @@
               "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Who won UEFA Euro 2024 and who was the top scorer? Answer in two short sentences using Google Search.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"googleSearch\": {}\n    }\n  ]\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.6-flash:streamGenerateContent?alt=sse",
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:streamGenerateContent?alt=sse",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -44207,7 +44919,7 @@
                 "v1beta",
                 "models",
                 "vertex",
-                "gemini-3.6-flash:streamGenerateContent"
+                "gemini-2.5-flash:streamGenerateContent"
               ],
               "query": [
                 {
