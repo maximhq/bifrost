@@ -2009,17 +2009,33 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			transportLogs = logs
 		}
 
-		// heartbeatDone stops the keep-alive goroutine below once this producer
+		// heartbeatDone asks the keep-alive goroutine below to stop once this producer
 		// goroutine exits, via any path (normal completion, disconnect, interceptor error).
+		// heartbeatExited is closed BY that goroutine right before it returns -- the deferred
+		// cleanup below waits on it before calling reader.Done(), so eventCh is never closed
+		// while the heartbeat goroutine could still be mid-send on it (see reader.Close() call
+		// below for why closing heartbeatDone alone isn't enough).
 		heartbeatDone := make(chan struct{})
+		heartbeatExited := make(chan struct{})
 
 		defer func() {
 			close(heartbeatDone)
+			// heartbeatDone only unblocks the heartbeat goroutine if it's waiting at its
+			// outer select; if it's currently blocked inside SendHeartbeat -> Send's
+			// `eventCh <- event` case (channel full, nothing reading), closing heartbeatDone
+			// does nothing -- that goroutine isn't looking at it. reader.Close() closes
+			// closeCh instead, which Send's inner select already watches, so it safely
+			// unblocks a pending send without racing eventCh's close below.
+			reader.Close()
+			<-heartbeatExited
 			schemas.ReleaseHTTPRequest(httpReq)
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
 			runCompleter(false)
+			// Safe now: the heartbeat goroutine has fully exited (waited on above), so no
+			// other goroutine can be mid-send on eventCh when this closes it. Closing it
+			// while a send was still in flight would panic ("send on closed channel").
 			reader.Done()
 			// Complete the trace after streaming finishes, passing transport plugin logs.
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
@@ -2039,6 +2055,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		// A periodic no-op heartbeat forces an extra write attempt during otherwise-idle
 		// gaps, closing that window without touching fasthttp's connection internals.
 		go func() {
+			defer close(heartbeatExited)
 			ticker := time.NewTicker(streamHeartbeatInterval)
 			defer ticker.Stop()
 			for {
