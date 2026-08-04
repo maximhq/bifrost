@@ -1917,10 +1917,12 @@ func NormalizeModelName(model string) string {
 		}
 		model = stripped
 	}
-	// Strip Bedrock version suffix; skip fine-tune ids (trailing segment is an id).
-	if !strings.HasPrefix(model, "ft:") {
-		model = bedrockVersionSuffixRe.ReplaceAllString(model, "")
+	// Fine-tune ids: trailing segment is an id, not a version. Return as-is so
+	// BaseModelName doesn't strip a date-like custom suffix.
+	if strings.HasPrefix(model, "ft:") {
+		return model
 	}
+	model = bedrockVersionSuffixRe.ReplaceAllString(model, "")
 	return BaseModelName(model)
 }
 
