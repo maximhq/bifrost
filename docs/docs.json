@@ -543,6 +543,7 @@
                 "collapsed": true,
                 "pages": [
                   "enterprise/auth-proxy/cloudflare-ztna",
+                  "enterprise/auth-proxy/aws-alb",
                   "enterprise/auth-proxy/generic-proxy"
                 ]
               }
