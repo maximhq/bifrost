@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -292,4 +293,226 @@ func TestToBedrockInvokeAnthropicResponse_IncludesCacheFields(t *testing.T) {
 	assert.Equal(t, 5, result.Usage.OutputTokens)
 	assert.Equal(t, 8336, result.Usage.CacheCreationInputTokens)
 	assert.Equal(t, 0, result.Usage.CacheReadInputTokens)
+}
+
+// --- Regression tests for #5560: InvokeModel silently dropped image / tool_use /
+// tool_result blocks because BedrockContentBlock only recognized Converse's
+// field-name-discriminated shape, not Anthropic's type-discriminated one. ---
+
+// pngBase64Fixture is a minimal 1x1 red PNG, reused across the tests below.
+const pngBase64Fixture = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+
+func TestBedrockContentBlock_AnthropicImageNormalized(t *testing.T) {
+	raw := `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + pngBase64Fixture + `"}}`
+
+	var block BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+	require.NotNil(t, block.Image, "Anthropic-native image block must normalize into Converse-shaped Image")
+	assert.Equal(t, "png", block.Image.Format)
+	require.NotNil(t, block.Image.Source.Bytes)
+	assert.Equal(t, pngBase64Fixture, *block.Image.Source.Bytes)
+}
+
+func TestBedrockContentBlock_AnthropicToolUseNormalized(t *testing.T) {
+	raw := `{"type":"tool_use","id":"toolu_xyz789","name":"get_time","input":{}}`
+
+	var block BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+	require.NotNil(t, block.ToolUse, "Anthropic-native tool_use block must normalize into Converse-shaped ToolUse")
+	assert.Equal(t, "toolu_xyz789", block.ToolUse.ToolUseID)
+	assert.Equal(t, "get_time", block.ToolUse.Name)
+	assert.JSONEq(t, "{}", string(block.ToolUse.Input))
+}
+
+func TestBedrockContentBlock_AnthropicToolResultNormalized(t *testing.T) {
+	t.Run("string content", func(t *testing.T) {
+		raw := `{"type":"tool_result","tool_use_id":"toolu_xyz789","content":"3:45 PM"}`
+
+		var block BedrockContentBlock
+		require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+		require.NotNil(t, block.ToolResult, "Anthropic-native tool_result block must normalize into Converse-shaped ToolResult")
+		assert.Equal(t, "toolu_xyz789", block.ToolResult.ToolUseID)
+		require.Len(t, block.ToolResult.Content, 1)
+		require.NotNil(t, block.ToolResult.Content[0].Text)
+		assert.Equal(t, "3:45 PM", *block.ToolResult.Content[0].Text)
+	})
+
+	t.Run("array content with nested image", func(t *testing.T) {
+		// Anthropic's tool_result.content can be an array of blocks, per platform.claude.com/docs/en/api/messages.
+		// A nested image must be recursively normalized via BedrockContentBlock.UnmarshalJSON too.
+		raw := `{"type":"tool_result","tool_use_id":"tooluse_screenshot_001","content":[
+			{"type":"text","text":"Screenshot captured"},
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + pngBase64Fixture + `"}}
+		]}`
+
+		var block BedrockContentBlock
+		require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+		require.NotNil(t, block.ToolResult)
+		require.Len(t, block.ToolResult.Content, 2)
+
+		require.NotNil(t, block.ToolResult.Content[0].Text)
+		assert.Equal(t, "Screenshot captured", *block.ToolResult.Content[0].Text)
+
+		require.NotNil(t, block.ToolResult.Content[1].Image, "nested image block inside tool_result must also normalize")
+		assert.Equal(t, "png", block.ToolResult.Content[1].Image.Format)
+	})
+}
+
+func TestBedrockContentBlock_AnthropicThinkingNormalized(t *testing.T) {
+	raw := `{"type":"thinking","thinking":"Let me check the time.","signature":"sig_abc"}`
+
+	var block BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+	require.NotNil(t, block.ReasoningContent)
+	require.NotNil(t, block.ReasoningContent.ReasoningText)
+	require.NotNil(t, block.ReasoningContent.ReasoningText.Text)
+	assert.Equal(t, "Let me check the time.", *block.ReasoningContent.ReasoningText.Text)
+	require.NotNil(t, block.ReasoningContent.ReasoningText.Signature)
+	assert.Equal(t, "sig_abc", *block.ReasoningContent.ReasoningText.Signature)
+}
+
+// TestBedrockContentBlock_ConverseShapeUnaffected is the regression guard for the claim that
+// the new UnmarshalJSON is a strict superset: genuine Converse-shaped blocks (used by the
+// /bedrock/converse route) have no top-level "type" field, so they must be parsed identically
+// to the pre-fix behavior.
+func TestBedrockContentBlock_ConverseShapeUnaffected(t *testing.T) {
+	raw := `{"toolUse":{"toolUseId":"tooluse_1","name":"get_time","input":{}}}`
+
+	var block BedrockContentBlock
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &block))
+
+	require.NotNil(t, block.ToolUse)
+	assert.Equal(t, "tooluse_1", block.ToolUse.ToolUseID)
+	assert.Equal(t, "get_time", block.ToolUse.Name)
+	assert.Nil(t, block.Image)
+	assert.Nil(t, block.ToolResult)
+	assert.Nil(t, block.ReasoningContent)
+}
+
+// TestToBedrockConverseRequest_InvokeAnthropicNativeContentBlocks is the full-pipeline
+// regression test for issue #5560, using the exact two reproduction payloads from the report:
+// an image block and a tool_use/tool_result pair sent to the InvokeModel route in Anthropic's
+// native (non-Converse) shape must survive invoke -> Converse -> Bifrost conversion intact.
+func TestToBedrockConverseRequest_InvokeAnthropicNativeContentBlocks(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("image block survives (issue Test 1)", func(t *testing.T) {
+		raw := `{
+			"anthropic_version": "bedrock-2023-05-31",
+			"max_tokens": 1024,
+			"messages": [{"role":"user","content":[
+				{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + pngBase64Fixture + `"}},
+				{"type":"text","text":"What color is this image? One word."}
+			]}]
+		}`
+
+		var req BedrockInvokeRequest
+		require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+		converseReq := req.ToBedrockConverseRequest()
+		require.NotNil(t, converseReq)
+
+		bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostReq)
+
+		var foundImage bool
+		for _, msg := range bifrostReq.Input {
+			if msg.Content == nil {
+				continue
+			}
+			for _, cb := range msg.Content.ContentBlocks {
+				if cb.Type == schemas.ResponsesInputMessageContentBlockTypeImage {
+					require.NotNil(t, cb.ResponsesInputMessageContentBlockImage)
+					require.NotNil(t, cb.ResponsesInputMessageContentBlockImage.ImageURL)
+					assert.Equal(t, "data:image/png;base64,"+pngBase64Fixture, *cb.ResponsesInputMessageContentBlockImage.ImageURL)
+					foundImage = true
+				}
+			}
+		}
+		assert.True(t, foundImage, "expected an input_image content block to survive the invoke->Converse->Bifrost pipeline")
+	})
+
+	t.Run("tool_use/tool_result pair survives (issue Test 2)", func(t *testing.T) {
+		raw := `{
+			"anthropic_version": "bedrock-2023-05-31",
+			"max_tokens": 1024,
+			"tools": [{"name":"get_time","description":"get current time","input_schema":{"type":"object","properties":{}}}],
+			"messages": [
+				{"role":"user","content":[{"type":"text","text":"what time is it"}]},
+				{"role":"assistant","content":[{"type":"tool_use","id":"toolu_xyz789","name":"get_time","input":{}}]},
+				{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_xyz789","content":"3:45 PM"}]}
+			]
+		}`
+
+		var req BedrockInvokeRequest
+		require.NoError(t, sonic.Unmarshal([]byte(raw), &req))
+
+		converseReq := req.ToBedrockConverseRequest()
+		require.NotNil(t, converseReq)
+
+		bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostReq)
+
+		var foundToolCall, foundToolResult bool
+		for _, msg := range bifrostReq.Input {
+			if msg.Type == nil || msg.ResponsesToolMessage == nil {
+				continue
+			}
+			switch *msg.Type {
+			case schemas.ResponsesMessageTypeFunctionCall:
+				if msg.ResponsesToolMessage.CallID != nil && *msg.ResponsesToolMessage.CallID == "toolu_xyz789" {
+					require.NotNil(t, msg.ResponsesToolMessage.Name)
+					assert.Equal(t, "get_time", *msg.ResponsesToolMessage.Name)
+					foundToolCall = true
+				}
+			case schemas.ResponsesMessageTypeFunctionCallOutput:
+				if msg.ResponsesToolMessage.CallID != nil && *msg.ResponsesToolMessage.CallID == "toolu_xyz789" {
+					require.NotNil(t, msg.ResponsesToolMessage.Output)
+					require.NotNil(t, msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr)
+					assert.Equal(t, "3:45 PM", *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr)
+					foundToolResult = true
+				}
+			}
+		}
+		assert.True(t, foundToolCall, "expected the tool_use block to survive as a function_call message")
+		assert.True(t, foundToolResult, "expected the tool_result block to survive as a function_call_output message")
+	})
+}
+
+// TestConvertSingleBedrockMessageToBifrostMessages_ImageBlock unit-tests Change 2 in isolation,
+// using a struct-literal (Converse-native, non-JSON) BedrockContentBlock so it's independent of
+// the UnmarshalJSON normalization above. This proves the fix for the broader gap identified
+// during investigation: convertSingleBedrockMessageToBifrostMessages had no Image branch at all,
+// so genuine /bedrock/converse traffic dropped images too, not just InvokeModel's Anthropic-shaped input.
+func TestConvertSingleBedrockMessageToBifrostMessages_ImageBlock(t *testing.T) {
+	imgBytes := pngBase64Fixture
+	msg := &BedrockMessage{
+		Role: BedrockMessageRoleUser,
+		Content: []BedrockContentBlock{
+			{Image: &BedrockImageSource{
+				Format: "png",
+				Source: BedrockImageSourceData{Bytes: &imgBytes},
+			}},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := convertSingleBedrockMessageToBifrostMessages(ctx, msg, false)
+
+	require.Len(t, result, 1)
+	require.NotNil(t, result[0].Content)
+	require.Len(t, result[0].Content.ContentBlocks, 1)
+
+	cb := result[0].Content.ContentBlocks[0]
+	assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeImage, cb.Type)
+	require.NotNil(t, cb.ResponsesInputMessageContentBlockImage)
+	require.NotNil(t, cb.ResponsesInputMessageContentBlockImage.ImageURL)
+	assert.Equal(t, "data:image/png;base64,"+imgBytes, *cb.ResponsesInputMessageContentBlockImage.ImageURL)
 }

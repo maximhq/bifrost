@@ -196,8 +196,9 @@ Sources:
 
 ### InvokeModel API (`POST /model/{modelId}/invoke`)
 
-- [ ] **Direct invoke** with provider-native body (Anthropic shape, Cohere shape, etc.)
-- [ ] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`)
+- [x] **Direct invoke** with Anthropic-native provider body, incl. image/tool_use/tool_result content blocks — folder 37 (#5560)
+- [ ] **Direct invoke** with Cohere-native provider body
+- [x] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`) — folder 36 (#5629), folder 37 (#5560)
 - [ ] **Async invocation jobs** (`POST /model-invocation-job` + list + get + stop)
 
 ### Cross-region inference profiles

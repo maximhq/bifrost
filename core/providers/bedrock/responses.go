@@ -4289,6 +4289,44 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				outputMessages = append(outputMessages, toolMsg)
 			}
 
+		} else if block.Image != nil {
+			// Image content
+			role := convertBedrockRoleToBifrostRole(msg.Role)
+
+			imageBlock := schemas.ResponsesMessageContentBlock{
+				Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{},
+			}
+			if block.Image.Source.Bytes == nil {
+				continue
+			}
+			mediaType := "image/jpeg"
+			switch block.Image.Format {
+			case "png":
+				mediaType = "image/png"
+			case "gif":
+				mediaType = "image/gif"
+			case "webp":
+				mediaType = "image/webp"
+			}
+			dataURL := *block.Image.Source.Bytes
+			if !strings.HasPrefix(dataURL, "data:") {
+				dataURL = fmt.Sprintf("data:%s;base64,%s", mediaType, dataURL)
+			}
+			imageBlock.ResponsesInputMessageContentBlockImage.ImageURL = &dataURL
+
+			bifrostMsg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{imageBlock},
+				},
+			}
+			if isOutputMessage {
+				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+			}
+			outputMessages = append(outputMessages, bifrostMsg)
+
 		} else if block.Document != nil {
 			// Document content
 			role := convertBedrockRoleToBifrostRole(msg.Role)
@@ -4409,6 +4447,12 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					},
 				},
 			}
+			// Anthropic's tool_result.is_error normalizes to Status "error" in invoke.go's
+			// UnmarshalJSON; surface it the same way the native Anthropic provider does
+			// (anthropic/responses.go) so a failed tool call isn't read back as a success.
+			if block.ToolResult.Status != nil && *block.ToolResult.Status == "error" {
+				resultMsg.Status = schemas.Ptr("incomplete")
+			}
 			if isOutputMessage {
 				resultMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
 				role := schemas.ResponsesInputMessageRoleAssistant
@@ -4447,7 +4491,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 	// Handle reasoning blocks - prepend reasoning message if we collected any
 	if len(reasoningContentBlocks) > 0 {
 		reasoningMessage := schemas.ResponsesMessage{
-			ID:   schemas.Ptr("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
+			ID:   new("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{},
