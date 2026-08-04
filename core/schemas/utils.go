@@ -1855,6 +1855,54 @@ func BaseModelName(id string) string {
 	return base
 }
 
+// modelVendorPrefixRe matches one leading "<token>." segment whose token is
+// lowercase letters/hyphens only (e.g. "us.", "anthropic.", "eu."). It never
+// matches a token containing a digit, so digit-dotted names such as
+// "gpt-3.5-turbo" or "gemini-1.5-pro" are left untouched.
+var modelVendorPrefixRe = regexp.MustCompile(`^[a-z][a-z-]*\.`)
+
+// bedrockVersionSuffixRe matches a trailing Bedrock version suffix like ":0" or
+// "-v1:0" so it can be stripped from an inference-profile id.
+var bedrockVersionSuffixRe = regexp.MustCompile(`(-v\d+)?:\d+$`)
+
+// NormalizeModelName reduces a provider-specific model id to a stable base name
+// for metric aggregation, so the same logical model does not split across series.
+// It strips Bedrock cross-region / vendor inference-profile prefixes, Bedrock
+// version suffixes, and any trailing date/version suffix. Digit-dotted names
+// without a vendor prefix (e.g. "gpt-3.5-turbo", "gemini-1.5-pro") and OpenAI
+// fine-tune ids ("ft:...") are preserved.
+//
+// Examples:
+//
+//	"us.anthropic.claude-opus-4-20250101-v1:0" → "claude-opus-4"
+//	"anthropic.claude-3-5-sonnet-20241022"     → "claude-3-5-sonnet"
+//	"gpt-4o-mini-2024-07-18"                    → "gpt-4o-mini"
+//	"gpt-3.5-turbo"                             → "gpt-3.5-turbo"
+func NormalizeModelName(model string) string {
+	// Trim surrounding whitespace so a blank/whitespace-only model collapses to ""
+	// (rather than a garbage label) and stray spaces around a real name are dropped.
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return model
+	}
+	// Strip vendor/region prefixes (Bedrock inference profiles). Loop so both the
+	// region and vendor segments come off (e.g. "us.anthropic.").
+	for {
+		stripped := modelVendorPrefixRe.ReplaceAllString(model, "")
+		if stripped == model || stripped == "" {
+			break
+		}
+		model = stripped
+	}
+	// Strip the Bedrock version suffix. Skip OpenAI fine-tune ids, whose trailing
+	// segment is an id, not a version.
+	if !strings.HasPrefix(model, "ft:") {
+		model = bedrockVersionSuffixRe.ReplaceAllString(model, "")
+	}
+	// Strip any trailing date/version suffix.
+	return BaseModelName(model)
+}
+
 // SameBaseModel reports whether two model ids refer to the same base model,
 // ignoring any recognized version suffixes.
 //

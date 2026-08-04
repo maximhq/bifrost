@@ -882,7 +882,7 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	}
 	return BuildBifrostAttributes(
 		getStringAttr(attrs, schemas.AttrProviderName),
-		getStringAttr(attrs, schemas.AttrRequestModel),
+		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
 		method,
 		getStringAttr(attrs, schemas.AttrVirtualKeyID),
 		getStringAttr(attrs, schemas.AttrVirtualKeyName),
@@ -907,7 +907,7 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 	}
 	return BuildBifrostAttributes(
 		string(provider),
-		model,
+		schemas.NormalizeModelName(model),
 		string(requestType),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
@@ -1042,6 +1042,13 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	}
 
 	attrs := finalSpan.Attributes
+
+	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label series.
+	if getStringAttr(attrs, schemas.AttrProviderName) == "" &&
+		strings.TrimSpace(getStringAttr(attrs, schemas.AttrRequestModel)) == "" {
+		return
+	}
+
 	otelAttrs := buildSpanAttrs(finalSpan)
 
 	// Record retries used for this request. Read off the final span (the last attempt's
