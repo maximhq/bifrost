@@ -3329,6 +3329,10 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 		return err
 	}
 	transcriptionReq.File = fileData
+	// Carry the part's filename so the outbound request preserves the container
+	// format; without it the provider falls back to magic-byte sniffing, which
+	// mislabels non-sniffable containers (e.g. m4a/mp4) as audio.mp3.
+	transcriptionReq.Filename = fileHeader.Filename
 
 	// Extract optional parameters
 	if languageValues := form.Value["language"]; len(languageValues) > 0 && languageValues[0] != "" {
