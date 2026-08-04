@@ -993,6 +993,10 @@ func (m *MockConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vi
 	return nil
 }
 
+func (m *MockConfigStore) ReplaceVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string, virtualKeyProviderConfigs []tables.TableVirtualKeyProviderConfig, tx *gorm.DB) error {
+	return nil
+}
+
 func (m *MockConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id uint, tx ...*gorm.DB) error {
 	return nil
 }
