@@ -68,10 +68,9 @@ var EnrichmentDims = []EnrichmentDim{
 	{Name: "routing_rule_name", SpanAttr: AttrBifrostRoutingRuleName, MetricSafe: true},
 	// complexity_tier and complexity_mechanism are set by the governance plugin only
 	// when a routing rule references complexity_tier. Both are closed value sets
-	// (tiers: SIMPLE/MEDIUM/COMPLEX; mechanisms: lexical/skipped, later
-	// semantic/llm), so they are metric-safe. The raw complexity score is
-	// deliberately NOT a dimension — unbounded cardinality; it lives only in the
-	// logstore columns.
+	// (tiers: SIMPLE/MEDIUM/COMPLEX; mechanisms: semantic/skipped, later llm), so
+	// they are metric-safe. The raw complexity score is deliberately NOT a
+	// dimension — unbounded cardinality; it lives only in the logstore columns.
 	{Name: "complexity_tier", SpanAttr: AttrBifrostComplexityTier, MetricSafe: true},
 	{Name: "complexity_mechanism", SpanAttr: AttrBifrostComplexityMechanism, MetricSafe: true},
 	{Name: "team_id", SpanAttr: AttrBifrostTeamID, MetricSafe: true},

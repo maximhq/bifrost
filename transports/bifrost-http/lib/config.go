@@ -1015,11 +1015,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	loadWebhooksConfig(ctx, config, &configData)
 	// 8. Governance config
 	loadGovernanceConfig(ctx, config, &configData)
-	// 8a. Semantic complexity classification demands an external vector store
-	// only when one is actually configured (vector store init ran in step 2).
-	if err := validateComplexitySemanticVectorStore(config, &configData); err != nil {
-		return nil, err
-	}
 	// 9. Auth config
 	loadAuthConfig(ctx, config, &configData)
 	// 10. Plugins
@@ -3021,57 +3016,6 @@ func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.Comp
 	}
 	fileConfig.ConfigHashes = fileHashes
 	return fileConfig, fileHashes, true
-}
-
-// validateComplexitySemanticVectorStore fails startup when config.json requires
-// an external vector store for semantic complexity classification but none is
-// configured, instead of silently classifying with the fallback forever.
-//
-// The same setting reached from the database only warns. It is editable through
-// the governance API, so failing boot on it would strand the operator with no
-// running server to reach the UI that clears it — and the vector store itself is
-// built from config.json alone, so nothing in the database can satisfy the
-// requirement either. Booting degraded is safe: the semantic classifier fails to
-// resolve a store, reports "failed" through the analyzer status endpoint, and
-// every request resolves through the configured fallback.
-func validateComplexitySemanticVectorStore(config *Config, configData *ConfigData) error {
-	if config == nil || config.GovernanceConfig == nil || config.GovernanceConfig.ComplexityAnalyzerConfig == nil {
-		return nil
-	}
-	semantic := config.GovernanceConfig.ComplexityAnalyzerConfig.Semantic
-	if semantic == nil || semantic.VectorStore != configstore.ComplexitySemanticVectorStoreExternal {
-		return nil
-	}
-	if config.VectorStore != nil {
-		return nil
-	}
-	if !fileRequestsExternalComplexityVectorStore(configData) {
-		logger.Error("stored governance complexity analyzer config sets semantic.vector_store to %q but no vector store is configured; semantic complexity classification will report \"failed\" and fall back to %q. Add a vector_store section to config.json, or set semantic.vector_store to %q or %q",
-			configstore.ComplexitySemanticVectorStoreExternal,
-			semantic.Fallback,
-			configstore.ComplexitySemanticVectorStoreAuto,
-			configstore.ComplexitySemanticVectorStoreEmbedded)
-		return nil
-	}
-	return fmt.Errorf("governance.complexity_analyzer_config.semantic.vector_store is %q but no vector store is configured; add a vector_store section to config.json or set it to %q or %q",
-		configstore.ComplexitySemanticVectorStoreExternal,
-		configstore.ComplexitySemanticVectorStoreAuto,
-		configstore.ComplexitySemanticVectorStoreEmbedded)
-}
-
-// fileRequestsExternalComplexityVectorStore reports whether config.json itself
-// asks for the external store. It reads the raw file value rather than the
-// merged result so the source stays unambiguous even when the file's semantic
-// section failed validation and was dropped in favor of the stored one.
-func fileRequestsExternalComplexityVectorStore(configData *ConfigData) bool {
-	if configData == nil || configData.Governance == nil || configData.Governance.ComplexityAnalyzerConfig == nil {
-		return false
-	}
-	semantic := configData.Governance.ComplexityAnalyzerConfig.Semantic
-	if semantic == nil {
-		return false
-	}
-	return strings.ToLower(strings.TrimSpace(semantic.VectorStore)) == configstore.ComplexitySemanticVectorStoreExternal
 }
 
 // mergeComplexityAnalyzerConfigFromFile uses defaults as the first split-mode
@@ -6148,8 +6092,13 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				Models:            models,
 				BlacklistedModels: blacklisted,
 				Weight:            bifrost.Ptr(key.Weight),
-				Provider:          string(providerKey),
-				ConfigHash:        key.ConfigHash,
+				// Callers pick a provider from this list, so a key that cannot
+				// serve has to be distinguishable from one that can: a provider
+				// whose every key is disabled looks configured but fails at
+				// request time.
+				Enabled:    key.Enabled,
+				Provider:   string(providerKey),
+				ConfigHash: key.ConfigHash,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy

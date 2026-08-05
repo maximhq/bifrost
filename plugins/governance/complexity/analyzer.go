@@ -2,9 +2,15 @@ package complexity
 
 import "math"
 
-// ComplexityAnalyzer computes complexity scores from normalized text input.
-// It holds immutable tierBoundaries and matcher configuration after construction,
-// so it is safe for concurrent use.
+// ComplexityAnalyzer computes complexity scores from normalized text input by
+// keyword matching. It holds immutable tierBoundaries and matcher configuration
+// after construction, so it is safe for concurrent use.
+//
+// Nothing on the request path calls it any more: the semantic classifier is the
+// only mechanism that publishes a tier (see the compute closure in
+// plugins/governance/main.go), and a request semantic cannot serve is recorded
+// as "skipped" rather than scored here. Retained because stored configs still
+// carry its tier boundaries and keyword lists.
 type ComplexityAnalyzer struct {
 	tierBoundaries TierBoundaries
 	matcher        *compiledKeywordMatcher
