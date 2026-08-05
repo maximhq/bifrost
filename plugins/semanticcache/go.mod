@@ -5,8 +5,8 @@ go 1.26.5
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.7.5
-	github.com/maximhq/bifrost/framework v1.5.5
+	github.com/maximhq/bifrost/core v1.7.6
+	github.com/maximhq/bifrost/framework v1.5.6
 	github.com/maximhq/bifrost/plugins/mocker v1.5.19
 )
 
@@ -46,6 +46,7 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/fasthttp/websocket v1.5.12 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/analysis v0.24.2 // indirect
@@ -89,6 +90,7 @@ require (
 	github.com/qdrant/go-client v1.16.2 // indirect
 	github.com/redis/go-redis/v9 v9.17.2 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
+	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
