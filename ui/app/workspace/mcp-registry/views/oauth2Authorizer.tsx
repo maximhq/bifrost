@@ -2,9 +2,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { useCompleteOAuthFlowMutation, useLazyGetOAuthConfigStatusQuery } from "@/lib/store/apis/mcpApi";
-import { cn } from "@/lib/utils";
 import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Loader2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { IconWrap, InfoBox, StepDots, UiVariant } from "./authorizerUi";
 
 interface OAuth2AuthorizerProps {
 	open: boolean;
@@ -30,86 +30,13 @@ interface OAuth2AuthorizerProps {
 
 type Status = "confirm" | "polling" | "blocked" | "success" | "failed";
 
-// ── Icon slot ────────────────────────────────────────────────────────────────
-
-function IconWrap({ status }: { status: Status }) {
-	const base = "flex size-9 shrink-0 items-center justify-center rounded-md";
-
-	if (status === "polling") {
-		return (
-			<div className={cn(base, "bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-300")}>
-				<Loader2 className="size-4 animate-spin" />
-			</div>
-		);
-	}
-	if (status === "success") {
-		return (
-			<div className={cn(base, "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300")}>
-				<CheckCircle2 className="size-4" />
-			</div>
-		);
-	}
-	if (status === "failed") {
-		return (
-			<div className={cn(base, "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300")}>
-				<XCircle className="size-4" />
-			</div>
-		);
-	}
-	if (status === "blocked") {
-		return (
-			<div className={cn(base, "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300")}>
-				<AlertTriangle className="size-4" />
-			</div>
-		);
-	}
-	// confirm (default)
-	return (
-		<div className={cn(base, "bg-muted text-muted-foreground")}>
-			<ShieldCheck className="size-4" />
-		</div>
-	);
-}
-
-// ── Info box ──────────────────────────────────────────────────────────────────
-
-function InfoBox({
-	variant = "default",
-	icon,
-	children,
-}: {
-	variant?: "default" | "success" | "danger" | "warning";
-	icon: React.ReactNode;
-	children: React.ReactNode;
-}) {
-	return (
-		<div
-			className={cn("flex gap-3 rounded-md border p-3.5 text-sm", {
-				"border-border bg-muted/40 text-muted-foreground": variant === "default",
-				"border-green-200/60 bg-green-50/70 text-green-800 dark:border-green-800/40 dark:bg-green-950/40 dark:text-green-200":
-					variant === "success",
-				"border-red-200/60 bg-red-50/70 text-red-800 dark:border-red-800/40 dark:bg-red-950/40 dark:text-red-200": variant === "danger",
-				"border-amber-200/60 bg-amber-50/70 text-amber-800 dark:border-amber-800/40 dark:bg-amber-950/40 dark:text-amber-200":
-					variant === "warning",
-			})}
-		>
-			<span className="mt-0.5 shrink-0">{icon}</span>
-			<div className="space-y-1 leading-relaxed">{children}</div>
-		</div>
-	);
-}
-
-// ── Step dots ─────────────────────────────────────────────────────────────────
-
-function StepDots({ active, total }: { active: number; total: number }) {
-	return (
-		<div className="flex items-center gap-1">
-			{Array.from({ length: total }).map((_, i) => (
-				<div key={i} className={cn("size-1.5 rounded-full transition-colors", i < active ? "bg-blue-500" : "bg-border")} />
-			))}
-		</div>
-	);
-}
+const STATUS_ICON: Record<Status, { variant: UiVariant; icon: React.ReactNode }> = {
+	confirm: { variant: "muted", icon: <ShieldCheck className="size-4" /> },
+	polling: { variant: "info", icon: <Loader2 className="size-4 animate-spin" /> },
+	blocked: { variant: "warning", icon: <AlertTriangle className="size-4" /> },
+	success: { variant: "success", icon: <CheckCircle2 className="size-4" /> },
+	failed: { variant: "danger", icon: <XCircle className="size-4" /> },
+};
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -125,7 +52,11 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	initialPopup,
 	isReauthorize,
 }) => {
-	const [status, setStatus] = useState<Status>(isPerUserOauth ? "confirm" : "polling");
+	// Both auth types start on the confirm step and only open the popup from a
+	// direct onClick: window.open() called from anywhere else (e.g. an effect
+	// reacting to an async fetch resolving) loses the browser's "user
+	// activation" and gets silently popup-blocked.
+	const [status, setStatus] = useState<Status>("confirm");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	const popupRef = useRef<Window | null>(null);
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -167,7 +98,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			if (cancelledRef.current) return;
 			const errMsg = getErrorMessage(error);
 			if ((error as any)?.status === 409 && onConflict) {
-				setStatus(isPerUserOauth ? "confirm" : "polling");
+				setStatus("confirm");
 				setErrorMessage(null);
 				isCompletingRef.current = false;
 				onConflict(errMsg);
@@ -177,7 +108,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			setErrorMessage(errMsg);
 			onError(errMsg);
 		}
-	}, [oauthConfigId, completeOAuth, onSuccess, onError, onConflict, isPerUserOauth]);
+	}, [oauthConfigId, completeOAuth, onSuccess, onError, onConflict]);
 
 	const handleOAuthFailed = useCallback(
 		(reason: string) => {
@@ -282,15 +213,6 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		return () => window.removeEventListener("message", handleMessage);
 	}, [checkOAuthStatus, handleOAuthFailed]);
 
-	// Auto-open popup for non-per-user OAuth flows.
-	const openPopupRef = useRef(openPopup);
-	useEffect(() => {
-		openPopupRef.current = openPopup;
-	});
-	useEffect(() => {
-		if (open && !isPerUserOauth) openPopupRef.current();
-	}, [open, isPerUserOauth]);
-
 	useEffect(() => {
 		return () => {
 			stopPolling();
@@ -301,8 +223,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	const handleRetry = () => {
 		setErrorMessage(null);
 		isCompletingRef.current = false;
-		setStatus(isPerUserOauth ? "confirm" : "polling");
-		if (!isPerUserOauth) openPopup();
+		setStatus("confirm");
 	};
 
 	const handleCancel = () => {
@@ -354,7 +275,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 				{/* Header */}
 				<DialogHeader className="border-b px-5 py-4 text-left">
 					<div className="flex items-start gap-3">
-						<IconWrap status={status} />
+						<IconWrap variant={STATUS_ICON[status].variant} icon={STATUS_ICON[status].icon} />
 						<div className="min-w-0 space-y-0.5">
 							<DialogTitle className="text-sm leading-snug font-medium">{titles[status]}</DialogTitle>
 							<DialogDescription className="text-xs leading-relaxed">{subtitles[status]}</DialogDescription>
