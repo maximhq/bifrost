@@ -3,6 +3,8 @@
 // maintain by hand in the checked-in Postman collection.
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { buildTokenParityMatrix } from "./lib/token-parity-matrix.mjs";
+import { buildPromptCachingHitVerificationItems } from "./lib/prompt-caching-extension.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -324,6 +326,7 @@ const generatedFolders = [
     description: "Generated at harness runtime. Ensures each interactive feature bucket has streaming coverage where the request shape supports stream:true.",
     item: streamingFeatureItems,
   },
+  buildTokenParityMatrix(),
 ];
 
 const findFolder = (items, name) => {
@@ -345,6 +348,21 @@ const generatedNames = new Set(generatedFolders.map((f) => f.name));
 backlog.item = (backlog.item || []).filter((entry) => !generatedNames.has(entry.name));
 backlog.item.push(...generatedFolders);
 
+// Extends the existing hand-written Round 16 folder in place (not a new generated folder -
+// see prompt-caching-extension.mjs for why) with real cache-hit verification rows. Idempotent
+// regen: strip any rows this generator previously added (by name prefix) before re-adding, same
+// pattern as the generatedFolders replace-by-name above, just at row granularity instead of
+// folder granularity since we're appending into someone else's folder, not owning it outright.
+const cachingFolder = findFolder(collection.item, "Cross-Cut Round 16: Prompt Caching Matrix");
+if (!cachingFolder) {
+  console.error("[augment-provider-harness] Cross-Cut Round 16 folder not found");
+  process.exit(1);
+}
+const cachingItems = buildPromptCachingHitVerificationItems();
+const CACHING_PREFIX = "Prompt caching hit-verification:";
+cachingFolder.item = (cachingFolder.item || []).filter((entry) => !(entry.name || "").startsWith(CACHING_PREFIX));
+cachingFolder.item.push(...cachingItems);
+
 writeFileSync(out, `${JSON.stringify(collection, null, 2)}\n`);
-const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0);
+const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0) + cachingItems.length;
 console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests`);

@@ -528,6 +528,9 @@ type ResponsesParameters struct {
 	// the combination; providers without the concept ignore it.
 	IncludeServerSideToolInvocations *bool `json:"include_server_side_tool_invocations,omitempty"`
 
+	// ContextManagement configures automatic context window management.
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -3004,10 +3007,10 @@ type ResponsesToolComputerUsePreview struct {
 // ResponsesToolWebSearch represents a tool web search
 type ResponsesToolWebSearch struct {
 	ExternalWebAccess  *bool                               `json:"external_web_access,omitempty"`
-	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"` // Filters for the search
+	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"`              // Filters for the search
 	SearchContentTypes []string                            `json:"search_content_types,omitempty"` // "text" | "image"
-	SearchContextSize  *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
-	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
+	SearchContextSize  *string                             `json:"search_context_size,omitempty"`  // "low" | "medium" | "high"
+	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`        // The approximate location of the user
 
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search

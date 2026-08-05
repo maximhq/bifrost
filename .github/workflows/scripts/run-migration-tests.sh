@@ -2132,6 +2132,66 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET server_side_fallback_model = 'gpt-4-turbo' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
+
+  # config_keys.bedrock_batch_role_arn (added via add_bedrock_batch_role_arn_column)
+  # Set to NULL for coverage, matching the bedrock_mantle_* SecretVar columns above.
+  if column_exists_postgres "config_keys" "bedrock_batch_role_arn"; then
+    echo "UPDATE config_keys SET bedrock_batch_role_arn = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # framework_configs.live_models_sync_interval (added via add_live_models_sync_interval_column)
+  if column_exists_postgres "framework_configs" "live_models_sync_interval"; then
+    echo "UPDATE framework_configs SET live_models_sync_interval = 3600 WHERE id = 1;" >> "$output_file"
+  fi
+
+  # governance_budgets.override_amount, override_mode, override_cycles_remaining,
+  # override_cycles_total, override_anchor_reset (added via budget override columns migration)
+  if column_exists_postgres "governance_budgets" "override_amount"; then
+    echo "UPDATE governance_budgets SET override_amount = 500.00 WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_amount = 1000.00 WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_budgets" "override_mode"; then
+    echo "UPDATE governance_budgets SET override_mode = 'cycles' WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_mode = 'forever' WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_budgets" "override_cycles_remaining"; then
+    echo "UPDATE governance_budgets SET override_cycles_remaining = 2 WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_cycles_remaining = 0 WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_budgets" "override_cycles_total"; then
+    echo "UPDATE governance_budgets SET override_cycles_total = 3 WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_cycles_total = 0 WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_budgets" "override_anchor_reset"; then
+    echo "UPDATE governance_budgets SET override_anchor_reset = $now WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_anchor_reset = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_pricing_overrides.user_id (added via add_pricing_override_user_id_column)
+  if column_exists_postgres "governance_pricing_overrides" "user_id"; then
+    echo "UPDATE governance_pricing_overrides SET user_id = 'user-migration-test-001' WHERE id = 'pricing-override-migration-002';" >> "$output_file"
+    echo "UPDATE governance_pricing_overrides SET user_id = NULL WHERE id = 'pricing-override-migration-001';" >> "$output_file"
+  fi
+
+  # sidekiq.partitioning_key (added via add_sidekiq_partitioning_key_column)
+  if column_exists_postgres "sidekiq" "partitioning_key"; then
+    echo "UPDATE sidekiq SET partitioning_key = 'migration-test-partition-001' WHERE id = 'sidekiq-migration-test-001';" >> "$output_file"
+    echo "UPDATE sidekiq SET partitioning_key = '' WHERE id = 'sidekiq-migration-test-002';" >> "$output_file"
+  fi
+
+  # logs.service_tier, speed, inference_geo (added for Anthropic/OpenAI service-tier billing)
+  if column_exists_postgres "logs" "service_tier"; then
+    echo "UPDATE logs SET service_tier = 'priority' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET service_tier = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
+  if column_exists_postgres "logs" "speed"; then
+    echo "UPDATE logs SET speed = 'fast' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET speed = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
+  if column_exists_postgres "logs" "inference_geo"; then
+    echo "UPDATE logs SET inference_geo = 'us' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET inference_geo = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -3315,6 +3375,69 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = 'gpt-4-turbo' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # config_keys.bedrock_batch_role_arn (added via add_bedrock_batch_role_arn_column)
+  # Set to NULL for coverage, matching the bedrock_mantle_* SecretVar columns above.
+  if column_exists_sqlite "$config_db" "config_keys" "bedrock_batch_role_arn"; then
+    echo "UPDATE config_keys SET bedrock_batch_role_arn = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # framework_configs.live_models_sync_interval (added via add_live_models_sync_interval_column)
+  if column_exists_sqlite "$config_db" "framework_configs" "live_models_sync_interval"; then
+    echo "UPDATE framework_configs SET live_models_sync_interval = 3600 WHERE id = 1;" >> "$output_file"
+  fi
+
+  # governance_budgets.override_amount, override_mode, override_cycles_remaining,
+  # override_cycles_total, override_anchor_reset (added via budget override columns migration)
+  # NOTE: one UPDATE per column - extract_faker_columns only picks up the first
+  # "SET col =" per line, so a combined multi-column UPDATE would silently hide
+  # the other columns from faker coverage validation.
+  if column_exists_sqlite "$config_db" "governance_budgets" "override_amount"; then
+    echo "UPDATE governance_budgets SET override_amount = 500.00 WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_amount = 1000.00 WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$config_db" "governance_budgets" "override_mode"; then
+    echo "UPDATE governance_budgets SET override_mode = 'cycles' WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_mode = 'forever' WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$config_db" "governance_budgets" "override_cycles_remaining"; then
+    echo "UPDATE governance_budgets SET override_cycles_remaining = 2 WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_cycles_remaining = 0 WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$config_db" "governance_budgets" "override_cycles_total"; then
+    echo "UPDATE governance_budgets SET override_cycles_total = 3 WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_cycles_total = 0 WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$config_db" "governance_budgets" "override_anchor_reset"; then
+    echo "UPDATE governance_budgets SET override_anchor_reset = $now WHERE id = 'budget-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_budgets SET override_anchor_reset = NULL WHERE id = 'budget-migration-test-2';" >> "$output_file"
+  fi
+
+  # governance_pricing_overrides.user_id (added via add_pricing_override_user_id_column)
+  if column_exists_sqlite "$config_db" "governance_pricing_overrides" "user_id"; then
+    echo "UPDATE governance_pricing_overrides SET user_id = 'user-migration-test-001' WHERE id = 'pricing-override-migration-002';" >> "$output_file"
+    echo "UPDATE governance_pricing_overrides SET user_id = NULL WHERE id = 'pricing-override-migration-001';" >> "$output_file"
+  fi
+
+  # sidekiq.partitioning_key (added via add_sidekiq_partitioning_key_column)
+  if column_exists_sqlite "$config_db" "sidekiq" "partitioning_key"; then
+    echo "UPDATE sidekiq SET partitioning_key = 'migration-test-partition-001' WHERE id = 'sidekiq-migration-test-001';" >> "$output_file"
+    echo "UPDATE sidekiq SET partitioning_key = '' WHERE id = 'sidekiq-migration-test-002';" >> "$output_file"
+  fi
+
+  # logs.service_tier, speed, inference_geo (added for Anthropic/OpenAI service-tier billing)
+  if column_exists_sqlite "$logs_db" "logs" "service_tier"; then
+    echo "UPDATE logs SET service_tier = 'priority' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET service_tier = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$logs_db" "logs" "speed"; then
+    echo "UPDATE logs SET speed = 'fast' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET speed = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
+  if column_exists_sqlite "$logs_db" "logs" "inference_geo"; then
+    echo "UPDATE logs SET inference_geo = 'us' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET inference_geo = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
   fi
 }
 

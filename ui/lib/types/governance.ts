@@ -106,6 +106,10 @@ export interface VirtualKey {
 	customer?: Customer;
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	// Read-only, server-computed: true when the VK is governed by an access profile.
+	// Lets the UI lock edits and show the managed-key notice without the separately
+	// RBAC-gated access-profile lookup.
+	is_access_profile_managed?: boolean;
 	config_hash?: string; // Present when config is synced from config.json
 }
 

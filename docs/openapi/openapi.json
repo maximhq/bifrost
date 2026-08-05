@@ -69206,6 +69206,43 @@
           }
         }
       },
+      "ContextManagement": {
+        "description": "Automatic context window management. The wire shape depends on the target provider: OpenAI-compatible providers accept an array of {type, compact_threshold} entries; Anthropic-compatible providers accept an object with an \"edits\" array (compact_20260112, clear_tool_uses_20250919, clear_thinking_20251015).\n",
+        "oneOf": [
+          {
+            "type": "array",
+            "description": "OpenAI native shape — an array of context-management entries.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "Entry type. Currently only \"compaction\" is supported."
+                },
+                "compact_threshold": {
+                  "type": "integer",
+                  "description": "Token threshold at which compaction should be triggered for this entry."
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          {
+            "type": "object",
+            "description": "Anthropic native shape — an object with an \"edits\" array.",
+            "properties": {
+              "edits": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        ]
+      },
       "ResponsesRequest": {
         "type": "object",
         "required": [
@@ -69697,6 +69734,9 @@
           },
           "conversation": {
             "type": "string"
+          },
+          "context_management": {
+            "$ref": "#/components/schemas/ContextManagement"
           },
           "include": {
             "type": "array",
@@ -74814,6 +74854,9 @@
           },
           "stream": {
             "type": "boolean"
+          },
+          "context_management": {
+            "$ref": "#/components/schemas/ContextManagement"
           },
           "instructions": {
             "type": "string",

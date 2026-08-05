@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"sync"
@@ -3734,10 +3735,8 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 
 		if bifrostReq.Params.ExtraParams != nil {
-			anthropicReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
-			for k, v := range bifrostReq.Params.ExtraParams {
-				anthropicReq.ExtraParams[k] = v
-			}
+			anthropicReq.ExtraParams = make(map[string]any, len(bifrostReq.Params.ExtraParams))
+			maps.Copy(anthropicReq.ExtraParams, bifrostReq.Params.ExtraParams)
 			if cacheControlRaw, exists := anthropicReq.ExtraParams["cache_control"]; exists {
 				parsed := false
 				switch v := cacheControlRaw.(type) {
@@ -3803,18 +3802,6 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				delete(anthropicReq.ExtraParams, "inference_geo")
 				anthropicReq.InferenceGeo = inferenceGeo
 			}
-			if cmVal := bifrostReq.Params.ExtraParams["context_management"]; cmVal != nil {
-				if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
-					delete(anthropicReq.ExtraParams, "context_management")
-					anthropicReq.ContextManagement = cm
-				} else if data, err := providerUtils.MarshalSorted(cmVal); err == nil {
-					var cm ContextManagement
-					if sonic.Unmarshal(data, &cm) == nil {
-						delete(anthropicReq.ExtraParams, "context_management")
-						anthropicReq.ContextManagement = &cm
-					}
-				}
-			}
 			if tbVal, exists := bifrostReq.Params.ExtraParams["task_budget"]; exists {
 				// Always consume provider-specific key from passthrough extras.
 				delete(anthropicReq.ExtraParams, "task_budget")
@@ -3872,6 +3859,30 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				delete(anthropicReq.ExtraParams, "fallback_credit_token")
 				if token, ok := tokenVal.(string); ok && token != "" {
 					anthropicReq.FallbackCreditToken = &token
+				}
+			}
+		}
+
+		extraContextManagement := bifrostReq.Params.ExtraParams["context_management"]
+		delete(anthropicReq.ExtraParams, "context_management")
+
+		if features, ok := ProviderFeatures[bifrostReq.Provider]; !ok || features.ContextManagementField {
+			if len(bifrostReq.Params.ContextManagement) > 0 {
+				var cm ContextManagement
+				if err := sonic.Unmarshal(bifrostReq.Params.ContextManagement, &cm); err == nil {
+					anthropicReq.ContextManagement = &cm
+				}
+			}
+			// Use the captured extra only when the neutral field didn't already
+			// produce a typed value.
+			if anthropicReq.ContextManagement == nil && extraContextManagement != nil {
+				if cm, ok := extraContextManagement.(*ContextManagement); ok && cm != nil {
+					anthropicReq.ContextManagement = cm
+				} else if data, err := providerUtils.MarshalSorted(extraContextManagement); err == nil {
+					var cm ContextManagement
+					if sonic.Unmarshal(data, &cm) == nil {
+						anthropicReq.ContextManagement = &cm
+					}
 				}
 			}
 		}

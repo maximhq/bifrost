@@ -174,6 +174,13 @@
           "    __ends('/audio/transcriptions') ||",
           "    __ends('/images/generations');",
           "  if (!__isInference) { return; }",
+          "  var __isDirectProvider =",
+          "    __u.indexOf('https://api.openai.com/') === 0 ||",
+          "    __u.indexOf('https://api.anthropic.com/') === 0 ||",
+          "    __u.indexOf('https://generativelanguage.googleapis.com/') === 0 ||",
+          "    __u.indexOf('-aiplatform.googleapis.com/') !== -1 ||",
+          "    __u.indexOf('https://bedrock-runtime.') === 0;",
+          "  if (__isDirectProvider) { return; }",
           "  var __required = [",
           "    'x-bifrost-request-type',",
           "    'x-bifrost-provider',",
@@ -222,6 +229,11 @@
     {
       "key": "bedrockModel",
       "value": "global.anthropic.claude-opus-4-7",
+      "type": "string"
+    },
+    {
+      "key": "bedrockOpenaiModel",
+      "value": "openai.gpt-oss-120b-1:0",
       "type": "string"
     },
     {

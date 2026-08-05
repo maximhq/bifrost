@@ -136,6 +136,15 @@ https://www.googleapis.com/auth/admin.directory.group.member.readonly
 5. Configure **Attribute → Role / Team / Business Unit** mappings to map groups or organizational units to Bifrost roles and teams.
 6. Toggle **Enabled** and click **Save Configuration**.
 
+<Note>
+  In the **Attribute-to-Role Mappings** section, all matching rules are evaluated. If several rules match, Bifrost picks one using your chosen resolution strategy:
+
+  - **The role with the most permissions** (default)
+  - **The first matching role, by list order** (drag rows to set priority)
+
+  If no rule matches, no role is assigned and login is denied.
+</Note>
+
 ### Using `config.json`
 
 ```json

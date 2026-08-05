@@ -109,6 +109,33 @@ List the commits in the window for changelog writing:
 git log ${BASE}..HEAD --oneline --no-merges -- <module>/
 ```
 
+#### Detect Database Migrations and Reversibility
+
+Check whether `framework/configstore/migrations.go` changed in the release window — this is where every gorm-migrator DB migration for config/log stores is registered:
+
+```bash
+git diff ${BASE}..HEAD --name-only -- framework/configstore/migrations.go
+```
+
+If it changed, find the new migration entries added to the registry list (each is `{IDs: []string{"..."}, run: migrationXxx}`):
+
+```bash
+git diff ${BASE}..HEAD -- framework/configstore/migrations.go | grep '^+.*IDs:'
+```
+
+For each new migration, read its `migrationXxx` function and inspect the `Rollback:` closure inside its `migrator.Migration` — this codebase requires every migration to define one, and it is the authoritative signal for reversibility:
+
+- If `Rollback:` actually undoes the change (drops the added column/table/index it just created), the migration is **reversible**.
+- If `Rollback:` returns an error explaining why it can't safely revert (e.g. "dropping this column would permanently destroy saved state"), the migration is **non-reversible** — note the stated reason, it belongs in the changelog verbatim or paraphrased.
+
+```bash
+grep -n "^func migrationXxx" -A 30 framework/configstore/migrations.go | sed -n '/Rollback: func/,/^\t\t}/p'
+```
+
+Also check whether the migration only adds nullable columns/new tables (safe for a rolling deploy — older binaries ignore the new columns) versus drops/renames/backfills existing data (unsafe to run concurrently with an older binary during a rolling upgrade).
+
+Summarize findings for the user before writing the changelog — one line per new migration: name, reversible or not, and the one-line reason.
+
 ### Step 3: Classify Changes and Determine Bump Types
 
 Present the identified changes to the user and ask what type of version bump each changed module needs.
@@ -276,6 +303,10 @@ The transports changelog uses a categorized format with bold names. Write it usi
 - **Bug Name** — Description of what was fixed
 - **Bug Name** — Description of what was fixed
 
+## 🗄️ Database Migrations
+
+- **migration_id** — What it changes. Reversible: rolls back cleanly by dropping the added column/table. / Non-reversible: <reason from the Rollback closure>.
+
 ## 🐙 Closed GitHub Issues
 
 - [#1234](https://github.com/maximhq/bifrost/issues/1234) — Issue title
@@ -291,6 +322,7 @@ The transports changelog uses a categorized format with bold names. Write it usi
 - Breaking changes get a `<Warning>` or `<Note>` block indented under the entry
 - Omit sections that have no entries (e.g., if there are no features, skip the Features section)
 - If the release has only cascading bumps and no meaningful features or fixes, add a `## 🔧 Maintenance` section with an entry like: `- **Dependency Upgrades** — Bumped core to v1.5.0 and framework to v1.3.0 across all modules`
+- Always include a `## 🗄️ Database Migrations` section (see "Detect Database Migrations and Reversibility" above) — unlike the other sections, this one is never omitted. If `framework/configstore/migrations.go` changed in the release window, add one bullet per new migration, named by its migration ID, stating what it changes, and explicitly saying **Reversible** or **Non-reversible** with the one-line reason pulled from the `Rollback:` closure. Non-reversible migrations should stand out — consider a `<Warning>` block for any that drop or transform existing data, since those are unsafe to roll back mid-deploy. If `migrations.go` did NOT change in the release window, still add the section with a single line: `- No new database migrations in this release.`
 - Add a `## 🐙 Closed GitHub Issues` section listing **every** issue closed in this release (see "Collect Closed GitHub Issues" below). Each entry MUST be a markdown link to the issue: `- [#NUMBER](https://github.com/maximhq/bifrost/issues/NUMBER) — Issue title`. Omit the section only if no issues were closed.
 
 ### Step 6: Update Version Files
