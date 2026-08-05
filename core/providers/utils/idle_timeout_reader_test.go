@@ -772,8 +772,12 @@ func TestReleaseStreamingResponse_BoundsDrainAndDropsConnection(t *testing.T) {
 
 	select {
 	case err := <-body.errCh:
-		if err == nil {
-			t.Fatal("expected a non-nil error on the forced close so fasthttp drops the connection instead of reusing it")
+		// ReleaseStreamingResponse reuses ErrStreamIdleTimeout for this forced
+		// close (the same sentinel NewIdleTimeoutReader's timer uses) rather
+		// than a drain-specific error, since both are the same failure mode:
+		// no data within the configured stream idle timeout.
+		if !errors.Is(err, ErrStreamIdleTimeout) {
+			t.Fatalf("expected ErrStreamIdleTimeout on the forced close, got %v", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("drain timeout never force-closed the body stream")

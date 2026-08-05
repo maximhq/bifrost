@@ -3192,12 +3192,6 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 	}
 }
 
-// ErrStreamDrainTimeout is used as the CloseWithError argument when the
-// post-terminal-chunk drain in ReleaseStreamingResponse exceeds its bound. A
-// non-nil error forces fasthttp to close the underlying connection instead of
-// returning it to the idle pool (see client.go's customStreamBody callback).
-var ErrStreamDrainTimeout = errors.New("stream drain timeout: upstream did not terminate its body in time")
-
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 //
 // The drain is bounded by GetStreamIdleTimeout(ctx). This runs after the SSE
@@ -3262,7 +3256,7 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		// reader/requestStream. Leaking resp to GC is the same trade-off used
 		// elsewhere in this function when ownership of the close is uncertain.
 		getLogger().Warn("streaming response body drain timed out; dropping connection instead of reusing it")
-		closeBodyStream(bodyStream, ErrStreamDrainTimeout)
+		closeBodyStream(bodyStream, ErrStreamIdleTimeout)
 		return
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
