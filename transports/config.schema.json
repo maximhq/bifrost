@@ -902,6 +902,11 @@
                 "minimum": 1,
                 "description": "Associated access profile ID for direct access profile assignment (mutually exclusive with team_id and customer_id)"
               },
+              "is_access_profile_managed": {
+                "type": "boolean",
+                "description": "Read-only, server-computed flag: true when the virtual key is governed by an access profile. Never persisted and ignored if set in config.json.",
+                "readOnly": true
+              },
               "rate_limit_id": {
                 "type": "string",
                 "description": "Associated rate limit ID"
