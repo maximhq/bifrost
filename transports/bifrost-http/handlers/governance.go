@@ -1381,13 +1381,32 @@ func (h *GovernanceHandler) updateComplexityAnalyzerConfig(ctx *fasthttp.Request
 	SendJSON(ctx, normalized)
 }
 
+// resetComplexityAnalyzerConfig restores the built-in tier boundaries and
+// reference phrase lists. The semantic block is deliberately carried over
+// rather than reset: it is the operator's provider, model, and embedding
+// settings — not something this endpoint has a default for — and clearing it
+// would take classification offline until they re-entered it. Resetting the
+// phrases is a routine editing action; losing the classifier is not.
 func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
 		return
 	}
 
+	current, err := h.configStore.GetComplexityAnalyzerConfig(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to read complexity analyzer config: %v", err))
+		return
+	}
+
 	defaults := complexity.DefaultAnalyzerConfig()
+	if current != nil && current.Semantic != nil {
+		defaults.Semantic = current.Semantic
+		// The section hash rides along with the block it describes. Dropping it
+		// would make the next boot read config.json's semantic section as a
+		// change and overwrite what this reset just preserved.
+		defaults.ConfigHashes.SemanticSettings = current.ConfigHashes.SemanticSettings
+	}
 	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
 		return
