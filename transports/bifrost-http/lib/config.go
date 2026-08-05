@@ -3028,7 +3028,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.ModelConfigs {
 				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil {
+					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
 					}
 				}
@@ -3088,7 +3088,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.Budgets {
 				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
+					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
 					}
 				}
@@ -3102,7 +3102,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.RateLimits {
 				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil {
+					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
 					}
 				}
@@ -3260,7 +3260,7 @@ func updateGovernanceConfigInStore(
 				// Delete stale budgets one by one — mirrors the team/VK reconcile pattern.
 				for _, existingID := range existingIDs {
 					if !desiredSet[existingID] {
-						if err := config.ConfigStore.DeleteBudget(ctx, existingID, tx); err != nil {
+						if err := config.ConfigStore.DeleteBudget(ctx, existingID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 							return fmt.Errorf("failed to delete stale budget %s for customer %s: %w", existingID, customer.ID, err)
 						}
 					}

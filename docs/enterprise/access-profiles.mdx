@@ -177,6 +177,28 @@ Access profile budgets apply uniformly to everyone assigned the template. When y
 
 For example, if Alice is on the Engineering profile but you want to add a separate $20/month cap on Claude Opus just for her, you can create a user-scoped model limit for Alice without changing what the Engineering profile gives everyone else. These limits stack independently alongside the profile budget; both must pass for a request to be allowed, and they are not affected by profile propagation. See [Give one user an individual per-model budget](#give-one-user-an-individual-per-model-budget) for steps for the above.
 
+To temporarily raise the profile budget itself for one user, add a **budget override** from the User Detail Sheet instead. An override is additive and leaves the base limit, current usage, and reset schedule untouched:
+
+```text
+Effective limit = Base budget + Override amount
+```
+
+Choose **for a number of reset cycles** (the current cycle counts as the first) or **until removed**. Overrides propagate cluster-wide and survive profile cloning and propagation, and setting one requires the `AccessProfiles.Update` permission. Programmatically:
+
+```bash
+# Add or replace an override
+curl -X PUT "$BIFROST_URL/api/users/$USER_ID/access-profiles/$PROFILE_ID/budgets/$BUDGET_ID/override" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 100, "mode": "cycles", "cycles": 2}'
+
+# Remove it
+curl -X DELETE "$BIFROST_URL/api/users/$USER_ID/access-profiles/$PROFILE_ID/budgets/$BUDGET_ID/override" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Use `"mode": "forever"` (omitting `cycles`) to keep the override active until it is deleted. The response returns the persisted budget plus its `effective_max_limit`. For the equivalent on a standalone virtual key, see [Budget Overrides](/features/governance/virtual-keys#budget-overrides).
+
 ### Edit, duplicate, delete
 
 Each row action exposes:

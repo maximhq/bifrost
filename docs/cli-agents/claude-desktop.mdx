@@ -139,6 +139,122 @@ The Chat tab supports MCP servers configured in `claude_desktop_config.json`. Co
 MCP servers in `claude_desktop_config.json` are for the **Chat tab only**. For MCP in the Code tab, configure servers in `~/.claude.json` or your project's `.mcp.json` file. See [MCP Gateway](/mcp/gateway) for full setup details.
 </Note>
 
+### Behind a VPN or Private Network (MCPB)
+
+The `mcpServers` config above only works if Claude Desktop's connector infrastructure can reach your Bifrost host directly. If Bifrost's `/mcp` endpoint is only reachable from inside a VPN or private network, a direct connection won't work - Claude Desktop's remote connectors are proxied through Anthropic's server-side infrastructure, which has no route into your private network.
+
+The fix is to package a local proxy as an [MCPB (MCP Bundle)](https://claude.com/docs/connectors/building/mcpb) extension. Unlike remote connectors, an MCPB runs locally on your machine via stdio, so it has the same network access as any other process on your laptop - including your VPN. It bridges Claude Desktop to Bifrost's MCP endpoint using [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) as a stdio-to-HTTP proxy, handling the OAuth login and token refresh against Bifrost for you.
+
+**1. Install the MCPB CLI:**
+
+```bash
+npm install -g @anthropic-ai/mcpb
+```
+
+**2. Create a project** which includes a `manifest.json` describing the extension and a `package.json` pulling in `mcp-remote`:
+
+```json manifest.json
+{
+  "manifest_version": "0.3",
+  "name": "bifrost-mcp",
+  "display_name": "Bifrost MCP",
+  "version": "1.0.0",
+  "description": "Connects Claude Desktop to a VPN-only Bifrost MCP server over a local proxy.",
+  "author": { "name": "Your Name" },
+  "server": {
+    "type": "node",
+    "entry_point": "node_modules/mcp-remote/dist/proxy.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/node_modules/mcp-remote/dist/proxy.js",
+        "${user_config.server_url}",
+        "3335"
+      ]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32"],
+    "runtimes": { "node": ">=18.0.0" }
+  },
+  "user_config": {
+    "server_url": {
+      "type": "string",
+      "title": "Bifrost MCP URL",
+      "description": "The Streamable HTTP MCP endpoint of your Bifrost instance. Must use HTTPS.",
+      "default": "<BIFROST_BASE_URL>/mcp",
+      "required": true
+    }
+  }
+}
+```
+
+```json package.json
+{
+  "name": "bifrost-mcpb",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "mcp-remote": "0.1.38"
+  }
+}
+```
+
+<Note>
+`mcp-remote` refuses to connect to any non-HTTPS, non-local URL unless you explicitly opt out.
+
+If your Bifrost deployment is only reachable over plain `http://` (e.g. a trusted, network-isolated VPN segment) and you still need to point at it, add `--allow-http` to `mcp_config.args` in `manifest.json`:
+
+```json
+"args": [
+  "${__dirname}/node_modules/mcp-remote/dist/proxy.js",
+  "${user_config.server_url}",
+  "3335",
+  "--allow-http"
+]
+```
+</Note>
+
+**3. Install dependencies and pack:**
+
+```bash
+npm install --omit=dev
+npx @anthropic-ai/mcpb pack .
+```
+
+This produces a `bifrost-mcp.mcpb` file - a single portable archive.
+
+**4. Install it in Claude Desktop** by double-clicking the `.mcpb` file (or via Settings → Extensions → Advanced settings → Install Extension…). Confirm the `server_url`, then grant permissions. On first use it opens your browser to complete OAuth login against Bifrost; tokens are cached locally under `~/.mcp-auth`.
+
+<Note>
+To skip the OAuth browser flow entirely and authenticate with a Bifrost virtual key instead, pass it as a static header using `mcp-remote`'s `--header` flag. Add a `virtual_key` field to `user_config` and reference it from `mcp_config.args`:
+
+```json
+"user_config": {
+  "server_url": { "...": "..." },
+  "virtual_key": {
+    "type": "string",
+    "title": "Bifrost Virtual Key",
+    "description": "Bifrost virtual key sent as a Bearer token.",
+    "sensitive": true,
+    "required": true
+  }
+}
+```
+
+```json
+"args": [
+  "${__dirname}/node_modules/mcp-remote/dist/proxy.js",
+  "${user_config.server_url}",
+  "3335",
+  "--header",
+  "Authorization:Bearer ${user_config.virtual_key}"
+]
+```
+
+Marking the field `sensitive: true` masks it in the Claude Desktop extension settings UI. With a valid `Authorization` header present, `mcp-remote` connects directly and never opens a browser for OAuth.
+</Note>
+
 ## Enterprise Deployment
 
 For organization-wide Bifrost routing, deploy a `managed-settings.json` file via MDM (Jamf, Kandji, Intune):

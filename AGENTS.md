@@ -486,6 +486,8 @@ Bifrost uses `github.com/valyala/fasthttp` for provider HTTP calls. The API is d
 
 JSON marshaling in hot paths uses `github.com/bytedance/sonic` for performance. `core/schemas/` uses standard `encoding/json` for custom marshaling (e.g., `NetworkConfig`). Don't mix them accidentally.
 
+For reading or writing a **single field** (or a handful) inside a larger raw JSON payload, prefer `github.com/tidwall/gjson`/`github.com/tidwall/sjson` over decoding into `map[string]interface{}` and re-encoding — the shared helpers `providerUtils.GetJSONField`/`SetRawJSONField`/`DeleteJSONField`/`JSONFieldExists`/`GetJSONSubtree` (`core/providers/utils/utils.go`) wrap these and should be reused where the path is a lookup on an already-in-scope `[]byte`/`json.RawMessage`. Full-document decode into a map/struct is still correct when you need the whole shape (e.g. re-marshaling an entire object to normalize it) — the point is not to round-trip an entire object through a `map[string]interface{}` just to inspect one key. When marshaling back out, always use `providerUtils.MarshalSorted` (never a raw `sonic.Marshal`/`json.Marshal`), since unsorted map keys reorder nondeterministically and break prompt-cache-relevant byte stability.
+
 ### 14. Atomic Pointer for Hot Config Reload
 
 `Bifrost` uses `atomic.Pointer` for providers and plugins lists. On updates: create new slice → atomically swap pointer. **Never mutate the slice in place** — concurrent readers would see partial state.
@@ -552,6 +554,10 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 ---
 
 ## Testing
+
+### Bug fixes: red before green
+
+Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 

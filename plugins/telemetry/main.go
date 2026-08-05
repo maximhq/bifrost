@@ -832,10 +832,25 @@ func extractProviderCacheTokens(result *schemas.BifrostResponse) (read, write, w
 // It records:
 //   - Request latency
 //   - Total request count
+// canonicalEntitySet resolves one entity dimension from context: plural arrays,
+// else scalar as a set of one, canonicalized.
+func canonicalEntitySet(ctx context.Context, idsKey, namesKey, scalarIDKey, scalarNameKey schemas.BifrostContextKey) (idsCSV, namesCSV string) {
+	ids, _ := ctx.Value(idsKey).([]string)
+	names, _ := ctx.Value(namesKey).([]string)
+	if len(ids) == 0 {
+		if id := bifrost.GetStringFromContext(ctx, scalarIDKey); id != "" {
+			ids = []string{id}
+			names = []string{bifrost.GetStringFromContext(ctx, scalarNameKey)}
+		}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
+}
+
 func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
-	// Determine effective model label and alias label (mirrors applyModelAlias logic in logging)
+	// Effective model + alias (mirrors logging's applyModelAlias). model is normalized
+	// so it doesn't split across series; alias keeps the raw requested name.
 	model := originalModel
 	alias := ""
 	if resolvedModel != "" {
@@ -843,6 +858,16 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		if resolvedModel != originalModel {
 			alias = originalModel
 		}
+	}
+	model = schemas.NormalizeModelName(model)
+
+	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label
+	// series. Decrement ActiveRequests first, since PreLLMHook incremented it.
+	if provider == "" && model == "" {
+		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
+			p.ActiveRequests.WithLabelValues(string(method)).Dec()
+		}
+		return result, bifrostErr, nil
 	}
 
 	startTime, ok := ctx.Value(startTimeKey).(time.Time)
@@ -869,12 +894,11 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 	routingEngineUsed := strings.Join(routingEngines, ",")
 
-	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
-	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
-	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
-	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
-	businessUnitID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitID)
-	businessUnitName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitName)
+	// Team/customer/BU sets: plural arrays, else scalar as a set of one. Emitted
+	// under the singular label names for dashboard compatibility.
+	teamIDs, teamNames := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName)
+	customerID, customerName := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName)
+	businessUnitID, businessUnitName := canonicalEntitySet(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
@@ -890,8 +914,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"selected_key_id":     selectedKeyID,
 		"selected_key_name":   selectedKeyName,
 		"fallback_index":      strconv.Itoa(fallbackIndex),
-		"team_id":             teamID,
-		"team_name":           teamName,
+		"team_id":             teamIDs,
+		"team_name":           teamNames,
 		"customer_id":         customerID,
 		"customer_name":       customerName,
 		"business_unit_id":    businessUnitID,
@@ -949,7 +973,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		for _, record := range attemptTrail {
 			if record.TriggeredRotation && record.FailReason != nil {
 				p.KeyRotationEventsTotal.WithLabelValues(
-					string(provider), originalModel, record.KeyID, record.KeyName, *record.FailReason,
+					string(provider), model, record.KeyID, record.KeyName, *record.FailReason,
 				).Inc()
 			}
 			if record.FailReason != nil {
