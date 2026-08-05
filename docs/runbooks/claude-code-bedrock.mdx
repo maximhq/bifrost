@@ -42,29 +42,6 @@ In Bifrost, go to **Models > Model Providers > AWS Bedrock**, then add or edit t
   />
 </Frame>
 
-Under **Deployments**, map each model name to its Bedrock model ID. For example:
-
-```json
-{
-  "name": "bedrock-claude-code",
-  "models": [
-    "claude-opus-4-8",
-    "claude-sonnet-5",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5"
-  ],
-  "weight": 1.0,
-  "bedrock_key_config": {
-    "deployments": {
-      "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
-      "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
-      "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
-      "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-    }
-  }
-}
-```
-
 <Warning>
 Deployment mappings do not automatically expand a restricted provider key's model allowlist. If `models` is not `*`, include every deployment name in `models` exactly as it appears in `deployments`.
 </Warning>

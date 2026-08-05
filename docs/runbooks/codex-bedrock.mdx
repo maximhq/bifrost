@@ -43,33 +43,6 @@ In Bifrost, go to **Models > Model Providers > AWS Bedrock**, then add or edit t
   />
 </Frame>
 
-Under **Deployments**, map each model name to its Bedrock model ID. For example:
-
-```json
-{
-  "name": "bedrock-codex",
-  "models": [
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "gpt-5.4"
-  ],
-  "weight": 1.0,
-  "bedrock_key_config": {
-    "deployments": {
-      "gpt-5.6-sol": "openai.gpt-5.6-sol",
-      "gpt-5.6-terra": "openai.gpt-5.6-terra",
-      "gpt-5.6-luna": "openai.gpt-5.6-luna",
-      "gpt-5.5": "openai.gpt-5.5",
-      "gpt-5.4": "openai.gpt-5.4"
-    }
-  }
-}
-```
-
-You only need to add the models that you intend to expose to Codex.
-
 <Warning>
 Deployment mappings do not automatically expand a restricted provider key's model allowlist. If `models` is not `*`, include every deployment name in `models` exactly as it appears in `deployments`.
 </Warning>
