@@ -6188,26 +6188,25 @@ func executeRequestWithRetries[T any](
 
 		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
 		// header forwarding) as span attributes so observability backends see the
-		// same set Bifrost forwards to the upstream provider.
-		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
-			for name, values := range extraHeaders {
-				if name == "" || len(values) == 0 {
-					continue
-				}
-				// Never export credential-bearing headers verbatim. The transport
-				// layer denylists most sensitive headers, but plain authorization /
-				// set-cookie can still reach here, and core SDK callers bypass that
-				// guard entirely. Keep the key (presence is useful) but redact the value.
-				if schemas.IsSensitiveHeader(name) {
-					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, schemas.RedactedAttrValue)
-					continue
-				}
-				if len(values) == 1 {
-					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, values[0])
-				} else {
-					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, values)
+		// same set Bifrost forwards to the upstream provider. Credential-bearing values
+		// are redacted and the virtual key is dropped; see extraHeaderSpanAttribute.
+		exportHeaderAttributes := func(headers map[string][]string) {
+			for name, values := range headers {
+				if value, export := extraHeaderSpanAttribute(name, values); export {
+					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, value)
 				}
 			}
+		}
+		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+			exportHeaderAttributes(extraHeaders)
+		}
+		// The Anthropic OAuth passthrough set no longer reaches ExtraHeaders (only the
+		// Anthropic provider forwards it), but the caller metadata it carries — x-app,
+		// x-claude-code-session-id, x-stainless-* — is what attribution keys on, and it was
+		// traced before the split. Merge it back in so observability is unchanged. Tracing
+		// only: this does not put those headers back on any provider request.
+		if passthrough, ok := ctx.Value(schemas.BifrostContextKeyPassthroughHeaders).(map[string][]string); ok {
+			exportHeaderAttributes(passthrough)
 		}
 
 		// Populate LLM request attributes (messages, parameters, etc.)

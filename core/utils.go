@@ -376,6 +376,30 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 // should stay tied to the caller's trace) and
 // BifrostContextKeySkipPluginPipeline (whether the internal request runs the
 // plugin pipeline is the caller's decision).
+// virtualKeyHeader carries Bifrost's own virtual key. IsSensitiveHeader does not match it
+// (no api-key/authorization/secret substring, no -token suffix), so it would otherwise be
+// exported to traces verbatim.
+const virtualKeyHeader = "x-bf-vk"
+
+// extraHeaderSpanAttribute returns the span-attribute value for a caller-supplied header and
+// whether it should be exported at all. The virtual key is dropped outright; other
+// credential-bearing headers keep their key (presence is useful) with the value redacted.
+func extraHeaderSpanAttribute(name string, values []string) (any, bool) {
+	if name == "" || len(values) == 0 {
+		return nil, false
+	}
+	if strings.EqualFold(name, virtualKeyHeader) {
+		return nil, false
+	}
+	if schemas.IsSensitiveHeader(name) {
+		return schemas.RedactedAttrValue, true
+	}
+	if len(values) == 1 {
+		return values[0], true
+	}
+	return values, true
+}
+
 func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	// Key routing.
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
@@ -392,6 +416,7 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyLargePayloadMode)
 	ctx.ClearValue(schemas.BifrostContextKeyLargeResponseMode)
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
+	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
 }
 
@@ -596,6 +621,19 @@ func RedactSensitiveString(s string) string {
 	return s[:4] + "[REDACTED]" + s[len(s)-4:]
 }
 
+// externalURLDNSLookupTimeout bounds the DNS resolution in ValidateExternalURL. The
+// package-level net.LookupIP has no context/deadline of its own, so a hung or blackholed
+// resolver (rather than a fast refusal) can block the caller indefinitely -- this timeout
+// closes that gap regardless of the caller's own retry/timeout logic, since those only
+// bound the HTTP request that follows resolution, not resolution itself.
+const externalURLDNSLookupTimeout = 5 * time.Second
+
+// lookupIPAddr is a seam over (&net.Resolver{}).LookupIPAddr so tests can substitute a
+// resolver that blocks until its context is canceled, proving externalURLDNSLookupTimeout
+// actually cuts off an in-flight lookup rather than only a lookup whose context had
+// already expired before it started.
+var lookupIPAddr = (&net.Resolver{}).LookupIPAddr
+
 // ValidateExternalURL validates a URL for security concerns (SSRF protection).
 // When allowPrivateNetwork is true, RFC 1918 private IPs are permitted (for k8s/LAN deployments).
 // Link-local addresses (169.254.x.x, fe80::) are always blocked regardless of allowPrivateNetwork.
@@ -617,10 +655,18 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	if hostname == "" {
 		return fmt.Errorf("URL must have a hostname")
 	}
-	// Resolve hostname to IP addresses
-	ips, err := net.LookupIP(hostname)
+	// Resolve hostname to IP addresses. Bounded via net.Resolver.LookupIPAddr (not the
+	// package-level net.LookupIP, which has no way to accept a deadline) so a stalled
+	// resolver fails fast instead of hanging the caller forever.
+	lookupCtx, cancel := context.WithTimeout(context.Background(), externalURLDNSLookupTimeout)
+	defer cancel()
+	addrs, err := lookupIPAddr(lookupCtx, hostname)
 	if err != nil {
 		return fmt.Errorf("failed to resolve hostname: %w", err)
+	}
+	ips := make([]net.IP, len(addrs))
+	for i, addr := range addrs {
+		ips[i] = addr.IP
 	}
 	for _, ip := range ips {
 		if ip.IsLoopback() {

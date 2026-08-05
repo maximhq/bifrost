@@ -198,18 +198,12 @@ func (h *syncFloat64Histogram) Record(ctx context.Context, value float64, opts .
 
 // NewMetricsExporter creates a new OTEL metrics exporter
 func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
-	// Generate a unique instance ID for this node
-	instanceID, err := os.Hostname()
-	if err != nil {
-		instanceID = fmt.Sprintf("bifrost-%d", time.Now().UnixNano())
-	}
-
-	// Create resource with service info
+	// Resource attrs; serviceInstanceID is also emitted as a datapoint label.
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewSchemaless(
 			semconv.ServiceName(config.ServiceName),
-			semconv.ServiceInstanceID(instanceID),
+			semconv.ServiceInstanceID(serviceInstanceID),
 		),
 	)
 	if err != nil {
@@ -571,7 +565,21 @@ func (m *MetricsExporter) RecordHTTPResponseSize(ctx context.Context, sizeBytes 
 // Retry depth is intentionally NOT included here; it is reported via the dedicated
 // bifrost_request_retries histogram (recorded once per request) rather than as a label
 // on every per-attempt counter.
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamID, teamName, customerID, customerName string) []attribute.KeyValue {
+// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted
+// as both a resource attribute and a datapoint label so per-replica breakdown works
+// even when the collector drops resource attributes.
+var serviceInstanceID = resolveServiceInstanceID()
+
+func resolveServiceInstanceID() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return fmt.Sprintf("bifrost-%d", time.Now().UnixNano())
+}
+
+// team/customer/businessUnit args are canonical comma-joined sets; label names stay
+// singular (team_id, ...) for dashboard compatibility.
+func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("provider", provider),
 		attribute.String("model", model),
@@ -581,10 +589,13 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("selected_key_id", selectedKeyID),
 		attribute.String("selected_key_name", selectedKeyName),
 		attribute.Int("fallback_index", fallbackIndex),
-		attribute.String("team_id", teamID),
-		attribute.String("team_name", teamName),
-		attribute.String("customer_id", customerID),
-		attribute.String("customer_name", customerName),
+		attribute.String("team_id", teamIDs),
+		attribute.String("team_name", teamNames),
+		attribute.String("customer_id", customerIDs),
+		attribute.String("customer_name", customerNames),
+		attribute.String("business_unit_id", businessUnitIDs),
+		attribute.String("business_unit_name", businessUnitNames),
+		attribute.String("service_instance_id", serviceInstanceID),
 	}
 }
 

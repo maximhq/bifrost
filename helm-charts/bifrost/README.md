@@ -4,13 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.32
+**Latest Version:** 2.1.33
 
 ## Changelog
 
-### Upcoming
+### 2.1.33
 
-- Added `bifrost.guardrails.rules[].target` (`llm` by default or `mcp`) to select whether a guardrail rule applies to LLM traffic or MCP tool calls. Renders into `guardrails_config.guardrail_rules[].target`.
+- Fixed Helm schema validation failure for multi-profile OTEL configs (`bifrost.plugins.otel.config.profiles`), introduced by the `export_timeout` default in 2.1.32.
 
 ### 2.1.32
 

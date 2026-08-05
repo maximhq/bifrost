@@ -548,6 +548,112 @@ users-access-profile-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+users-access-profile-budget-override:
+  put:
+    operationId: updateUserAccessProfileBudgetOverride
+    summary: Set a user's access-profile budget override
+    description: |
+      Sets or replaces the spending override on one budget of a single user's copy of an access profile.
+      The override is additive — while it is active the budget is enforced against
+      `max_limit + override_amount` — and it leaves the budget's base limit, current usage, and reset
+      schedule untouched. Only this user is affected; the access profile template and every other user
+      assigned to it keep their original limits.
+
+      Use `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows
+      (the current window counts as the first), or `mode: forever` to keep the override until it is deleted.
+      A finite grant is anchored to the profile's reset window — calendar-aligned profiles anchor at the
+      calendar period start — so every node in a cluster derives the same number of remaining cycles.
+      The change is propagated cluster-wide and survives access-profile cloning and propagation.
+
+      Requires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy
+      of the profile, not on the shared template.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: target_user_id
+        in: path
+        required: true
+        description: ID of the user whose access-profile budget is being overridden
+        schema:
+          type: string
+      - name: profile_id
+        in: path
+        required: true
+        description: ID of the access profile assigned to the user
+        schema:
+          type: integer
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the user's copy of the access profile
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/BudgetOverrideRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Budget override applied successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: User access profile or budget not found, or the profile is outside the caller's access scope
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteUserAccessProfileBudgetOverride
+    summary: Remove a user's access-profile budget override
+    description: |
+      Removes any active override from the user's budget, so it is enforced against its base `max_limit`
+      again. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a
+      cleared grant cannot be re-derived. Safe to call on a budget that has no override.
+
+      Requires the `AccessProfiles.Update` permission.
+    tags:
+      - Access Profiles
+    parameters:
+      - name: target_user_id
+        in: path
+        required: true
+        description: ID of the user whose access-profile budget override is being removed
+        schema:
+          type: string
+      - name: profile_id
+        in: path
+        required: true
+        description: ID of the access profile assigned to the user
+        schema:
+          type: integer
+      - name: budget_id
+        in: path
+        required: true
+        description: ID of a budget on the user's copy of the access profile
+        schema:
+          type: string
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Budget override removed successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BudgetOverrideResponse'
+      '404':
+        description: User access profile or budget not found, or the profile is outside the caller's access scope
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 users-access-profile-virtual-keys:
   post:
     operationId: addUserAccessProfileVirtualKey

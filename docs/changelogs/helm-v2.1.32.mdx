@@ -5,6 +5,10 @@ description: "Helm v2.1.32 changelog - 2026-07-24"
 
 <Update label="Bifrost Helm" description="v2.1.32">
 
+<Warning>
+**Known issue - use v2.1.33 instead.** Multi-profile OTEL configs (`bifrost.plugins.otel.config.profiles`) fail Helm schema validation on this version (`Additional property export_timeout is not allowed`), blocking render and deploy. Fixed in v2.1.33.
+</Warning>
+
 ## Changelog
 
 - Extended `bifrost.accessProfiles[].provider_configs[]` with `blacklisted_models` (denylist that wins over `allowed_models`; `["*"]` blocks every model, while an empty or omitted list blocks none), `weight` (load-balancer seed weight; `null` opts out), and `model_budgets[]` (per-model budget groups; each entry requires `model_name` and may carry optional `budgets[]` and a `rate_limit`). These pass through into `access_profiles[].provider_configs[]`.
