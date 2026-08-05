@@ -262,6 +262,11 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	upstream := session.Upstream()
 	upstreamFromPool := true
 
+	var proxyConfig *schemas.ProxyConfig
+	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(req.Provider); cfgErr == nil && providerCfg != nil {
+		proxyConfig = providerCfg.ProxyConfig
+	}
+
 	// Validate the pinned upstream matches the current request's provider/key.
 	hasForwardedHeaders := hasWebSocketForwardedHeaders(ctx)
 	if upstream != nil && !upstream.IsClosed() &&
@@ -275,7 +280,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	// those dials either leaks metadata across clients or explodes pool key cardinality.
 	if hasForwardedHeaders {
 		headers := mergeWebSocketHeaders(ctx, wsProvider.WebSocketHeaders(key))
-		upstream, err = bfws.DialUpstream(wsURL, headers, req.Provider, key.ID)
+		upstream, err = bfws.DialUpstream(wsURL, headers, req.Provider, key.ID, proxyConfig)
 		if err != nil {
 			logger.Warn("failed to dial upstream WS connection for %s with forwarded headers: %v, falling back to HTTP bridge", req.Provider, err)
 			return false
@@ -291,7 +296,7 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 
 		headers := mergeWebSocketHeaders(ctx, wsProvider.WebSocketHeaders(key))
 
-		upstream, err = h.pool.Get(poolKey, headers)
+		upstream, err = h.pool.Get(poolKey, headers, proxyConfig)
 		if err != nil {
 			logger.Warn("failed to get upstream WS connection for %s: %v, falling back to HTTP bridge", req.Provider, err)
 			return false

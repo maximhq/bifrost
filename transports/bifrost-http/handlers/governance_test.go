@@ -1757,6 +1757,7 @@ func TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets(t *
 				Budgets: []configstoreTables.TableBudget{
 					{ID: "b-ap", MaxLimit: 500, CurrentUsage: 42, ResetDuration: "1d", LastReset: cycleStart},
 				},
+				Managed:     true,
 				UsageUserID: "user-1",
 			}, nil
 		},
@@ -1793,6 +1794,144 @@ func TestGetVirtualKeyQuota_ExternalResolverReplacesWithAccessProfileBudgets(t *
 	}
 	if len(call.VirtualKeyIDs) != 0 {
 		t.Fatalf("expected no VK scoping on the AP usage query, got %#v", call.VirtualKeyIDs)
+	}
+}
+
+// TestGetVirtualKeyQuota_ExternalResolverRateLimitOnly verifies a rate-limit-only
+// external result (AP has a rate limit but no budget): the AP rate limit REPLACES the
+// VK's own rate limit, and the VK's own budget mirror rows are dropped rather than
+// reported — an AP-managed VK whose profile has no budget genuinely has no budget, and
+// the VK's own rows are untracked $0 mirrors. Pins the empty-budget semantics shared by
+// the quota and detail/list paths.
+func TestGetVirtualKeyQuota_ExternalResolverRateLimitOnly(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	active := true
+	cycleStart := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
+	tokMax := int64(1000)
+	store := &mockQuotaConfigStore{
+		vk: &configstoreTables.TableVirtualKey{
+			ID:       "vk-1",
+			Name:     "AP Key",
+			IsActive: &active,
+			// Native mirror rate limit — must be replaced by the AP one below.
+			RateLimit: &configstoreTables.TableRateLimit{ID: "rl-vk"},
+		},
+		modelConfigs: []configstoreTables.TableModelConfig{
+			{
+				ID:        "mc-vk",
+				Scope:     configstoreTables.ModelConfigScopeVirtualKey,
+				ScopeID:   schemas.Ptr("vk-1"),
+				ModelName: configstoreTables.ModelConfigAllModels,
+				// VK mirror budget: zero usage — must NOT appear once the VK is AP-managed.
+				Budgets: []configstoreTables.TableBudget{
+					{ID: "b-vk", MaxLimit: 100, CurrentUsage: 0, ResetDuration: "1d", LastReset: cycleStart},
+				},
+			},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore: store,
+		externalQuotaBudgetResolver: func(_ context.Context, vk *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			if vk.ID != "vk-1" {
+				return nil, nil
+			}
+			// AP-managed VK whose profile carries a rate limit but no budget.
+			return &ExternalQuotaBudgetResult{
+				RateLimit:   &configstoreTables.TableRateLimit{ID: "ap-rl", TokenMaxLimit: &tokMax, TokenCurrentUsage: 250},
+				Managed:     true,
+				UsageUserID: "user-1",
+			}, nil
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-vk", "sk-bf-secret")
+
+	h.getVirtualKeyQuota(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp quotaResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	// No AP budget → no budgets reported (the VK's own b-vk mirror is dropped, not surfaced).
+	if len(resp.Budgets) != 0 {
+		t.Fatalf("expected no budgets for a rate-limit-only AP-managed VK, got %#v", resp.Budgets)
+	}
+	// The AP rate limit replaces the VK's own rl-vk.
+	if resp.RateLimit == nil || resp.RateLimit.ID != "ap-rl" || resp.RateLimit.TokenCurrentUsage != 250 {
+		t.Fatalf("expected the access-profile rate limit ap-rl (usage 250), got %#v", resp.RateLimit)
+	}
+}
+
+// TestApplyExternalBudgets_RateLimitOnlyDropsNativeBudgets pins the detail/list-path
+// twin of the quota semantics: for an AP-managed VK whose external result carries a rate
+// limit but no budget, applyExternalBudgets drops the VK's own mirror budgets (rather
+// than preserving them) and swaps in the AP rate limit — so getVirtualKey/getVirtualKeys
+// agree with getVirtualKeyQuota.
+func TestApplyExternalBudgets_RateLimitOnlyDropsNativeBudgets(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		externalQuotaBudgetResolver: func(_ context.Context, _ *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			return &ExternalQuotaBudgetResult{
+				RateLimit: &configstoreTables.TableRateLimit{ID: "ap-rl"},
+				Managed:   true,
+			}, nil
+		},
+	}
+	vk := &configstoreTables.TableVirtualKey{
+		ID: "vk-1",
+		Budgets: []configstoreTables.TableBudget{
+			{ID: "b-vk-mirror", MaxLimit: 100, CurrentUsage: 0},
+		},
+		RateLimit: &configstoreTables.TableRateLimit{ID: "rl-vk-mirror"},
+	}
+
+	h.applyExternalBudgets(context.Background(), vk)
+
+	if len(vk.Budgets) != 0 {
+		t.Fatalf("expected native mirror budgets dropped for a rate-limit-only AP result, got %#v", vk.Budgets)
+	}
+	if vk.RateLimit == nil || vk.RateLimit.ID != "ap-rl" {
+		t.Fatalf("expected the AP rate limit ap-rl to replace the native rl-vk-mirror, got %#v", vk.RateLimit)
+	}
+	if !vk.IsAccessProfileManaged {
+		t.Fatalf("expected IsAccessProfileManaged=true for an AP-managed VK")
+	}
+}
+
+// TestApplyExternalBudgets_ManagedWithNoGovernanceFlagsAndClears verifies that a VK the
+// resolver reports as managed but whose profile has NO budget and NO rate limit is still
+// flagged managed (so the UI locks edits / shows the notice) and has its untracked mirror
+// budget and rate-limit rows cleared rather than shown.
+func TestApplyExternalBudgets_ManagedWithNoGovernanceFlagsAndClears(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		externalQuotaBudgetResolver: func(_ context.Context, _ *configstoreTables.TableVirtualKey) (*ExternalQuotaBudgetResult, error) {
+			return &ExternalQuotaBudgetResult{Managed: true}, nil
+		},
+	}
+	vk := &configstoreTables.TableVirtualKey{
+		ID:        "vk-1",
+		Budgets:   []configstoreTables.TableBudget{{ID: "b-vk-mirror", MaxLimit: 100, CurrentUsage: 0}},
+		RateLimit: &configstoreTables.TableRateLimit{ID: "rl-vk-mirror"},
+	}
+
+	h.applyExternalBudgets(context.Background(), vk)
+
+	if !vk.IsAccessProfileManaged {
+		t.Fatalf("expected IsAccessProfileManaged=true")
+	}
+	if len(vk.Budgets) != 0 {
+		t.Fatalf("expected mirror budgets cleared for a managed VK with no AP budget, got %#v", vk.Budgets)
+	}
+	if vk.RateLimit != nil {
+		t.Fatalf("expected mirror rate limit cleared for a managed VK with no AP rate limit, got %#v", vk.RateLimit)
 	}
 }
 

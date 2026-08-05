@@ -238,6 +238,12 @@ type TableVirtualKey struct {
 	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
 	Budgets   []TableBudget   `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"` // Multiple budgets with different reset intervals
 
+	// IsAccessProfileManaged is a read-only, computed flag (never persisted): true when
+	// the VK is governed by an access profile, so the UI can lock edits and show the
+	// managed-key notice without a separate, differently-gated access-profile lookup.
+	// Populated on the governance read paths from the external resolver; false in OSS.
+	IsAccessProfileManaged bool `gorm:"-" json:"is_access_profile_managed,omitempty"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`

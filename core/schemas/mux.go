@@ -430,7 +430,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				reasoningType := ResponsesMessageTypeReasoning
 				reasoningRole := ResponsesInputMessageRoleAssistant
 				rm := ResponsesMessage{
-					ID:   Ptr("rs_" + GetRandomString(50)),
+					ID:   new("rs_" + GetRandomString(50)),
 					Type: &reasoningType,
 					Role: &reasoningRole,
 				}
@@ -451,7 +451,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			reasoningRole := ResponsesInputMessageRoleAssistant
 			reasoningText := *am.Reasoning
 			messages = append(messages, ResponsesMessage{
-				ID:   Ptr("rs_" + GetRandomString(50)),
+				ID:   new("rs_" + GetRandomString(50)),
 				Type: &reasoningType,
 				Role: &reasoningRole,
 				Content: &ResponsesMessageContent{

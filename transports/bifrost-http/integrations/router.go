@@ -2756,22 +2756,44 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Producer goroutine: processes the stream channel, formats events, sends to reader
 	go func() {
-		// Separate defers ensure each cleanup runs even if an earlier one panics (LIFO order)
-		defer reader.Done()
-		defer schemas.ReleaseHTTPRequest(httpReq)
+		// Create encoder for AWS Event Stream if needed
+		var eventStreamEncoder *eventstream.Encoder
+		if config.Type == RouteConfigTypeBedrock {
+			eventStreamEncoder = eventstream.NewEncoder()
+		}
+
+		// Client-disconnect detection below is otherwise purely reactive: cancel() only
+		// fires when a downstream write actually fails, which only happens when this loop
+		// attempts one. A periodic no-op heartbeat forces an extra write attempt during
+		// otherwise-idle gaps, closing the window where a fast/bursty upstream finishes
+		// before a disconnect is ever discovered (see lib.StartSSEHeartbeat's doc).
+		//
+		// Bedrock uses binary AWS EventStream framing, not SSE, and has no safe no-op frame:
+		// real AWS Bedrock never emits synthetic frames, and unlike botocore, other official
+		// AWS SDKs (e.g. Go SDK v2) don't silently drop an unmodeled `:event-type` -- they
+		// surface it to the caller as a typed union member (types.UnknownUnionMember). So
+		// Bedrock streams stay on purely reactive (write-failure-based) disconnect detection.
+		var heartbeatDone chan struct{}
+		var heartbeatExited <-chan struct{}
+		if config.Type != RouteConfigTypeBedrock {
+			heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
+		}
+
 		defer func() {
+			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
+			// could still be mid-send on it panics ("send on closed channel"). See
+			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
+			if heartbeatDone != nil {
+				lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
+			}
+			schemas.ReleaseHTTPRequest(httpReq)
+			reader.Done()
 			// Complete the trace after streaming finishes
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
 			if traceCompleter != nil {
 				traceCompleter(nil)
 			}
 		}()
-
-		// Create encoder for AWS Event Stream if needed
-		var eventStreamEncoder *eventstream.Encoder
-		if config.Type == RouteConfigTypeBedrock {
-			eventStreamEncoder = eventstream.NewEncoder()
-		}
 
 		// sendConvertedStreamError converts a sanitized BifrostError through the
 		// integration's error converter and emits it in the route's native SSE
@@ -3311,6 +3333,18 @@ func (g *GenericRouter) handlePassthroughNonStream(
 	ctx.Response.SetBody(resp.Body)
 }
 
+// passthroughHeartbeatEligible reports whether a resolved passthrough response
+// content-type is safe for the SSE-comment heartbeat. handlePassthroughStream proxies
+// raw upstream bytes 1:1, and content-type isn't always SSE -- e.g. Vertex/Gemini's
+// non-alt=sse mode returns an incrementally-delivered JSON array with
+// Content-Type: application/json. The media type is compared exactly (case-insensitively,
+// ignoring parameters like "; charset=utf-8") so lookalikes such as
+// "text/event-stream+json" or "text/event-streaming" aren't treated as SSE.
+func passthroughHeartbeatEligible(contentType string) bool {
+	mediaType, _, _ := strings.Cut(contentType, ";")
+	return strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream")
+}
+
 func (g *GenericRouter) handlePassthroughStream(
 	ctx *fasthttp.RequestCtx,
 	bifrostCtx *schemas.BifrostContext,
@@ -3407,8 +3441,26 @@ func (g *GenericRouter) handlePassthroughStream(
 	reader := lib.NewSSEStreamReader()
 	ctx.Response.SetBodyStream(reader, -1)
 
+	// This path proxies raw upstream bytes 1:1, and content-type isn't always SSE (see the
+	// resolution above) -- e.g. Vertex/Gemini's non-alt=sse mode returns an incrementally
+	// delivered JSON array. Injecting an SSE comment or any other bytes into a non-SSE stream
+	// whose framing we don't control would corrupt it: unlike an SSE comment line or an
+	// unrecognized Bedrock EventStream event-type, there is no protocol guarantee that extra
+	// bytes here are safely ignorable. So the heartbeat only runs when the resolved
+	// content-type is actually SSE.
+	var heartbeatDone chan struct{}
+	var heartbeatExited <-chan struct{}
+	if passthroughHeartbeatEligible(contentType) {
+		heartbeatDone, heartbeatExited = lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
+	}
+
 	go func() {
 		defer func() {
+			if heartbeatDone != nil {
+				// Must run before reader.Done(): closing eventCh while the heartbeat
+				// goroutine could still be mid-send on it panics ("send on closed channel").
+				lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
+			}
 			if traceCompleter != nil {
 				traceCompleter(nil)
 			}

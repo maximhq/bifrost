@@ -100,8 +100,8 @@ const readCoverageMarkdown = () => {
 // mdToHtml converts a small subset of markdown (headings, tables, paragraphs,
 // code spans, inline emphasis, line breaks) to HTML — just enough to render
 // the coverage section the analyzer emits. Not a general-purpose converter.
-const mdToHtml = (md) => {
-  if (!md) return "<p><em>No coverage data found. Run <code>make run-provider-harness-test</code> first to generate <code>tmp/harness-failures.md</code>.</em></p>";
+const mdToHtml = (md, emptyMessage) => {
+  if (!md) return emptyMessage || "<p><em>No coverage data found. Run <code>make run-provider-harness-test</code> first to generate <code>tmp/harness-failures.md</code>.</em></p>";
   const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const inline = (s) => escapeHtml(s)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -145,6 +145,15 @@ const mdToHtml = (md) => {
 };
 
 const COVERAGE_HTML = mdToHtml(readCoverageMarkdown());
+
+// Direct-Provider vs Bifrost Token Parity Matrix report (tests/e2e/api/runners/
+// render-token-parity-report.mjs writes this whole-file, no section-extraction needed).
+const TOKEN_PARITY_MD = args["token-parity-md"] || "tmp/harness-token-parity.md";
+const readTokenParityMarkdown = () => (existsSync(TOKEN_PARITY_MD) ? readFileSync(TOKEN_PARITY_MD, "utf8") : "");
+const TOKEN_PARITY_HTML = mdToHtml(
+  readTokenParityMarkdown(),
+  '<p><em>No token parity data found. Run FOLDER="Cross-Cut Round 33: Direct-Provider vs Bifrost Token Parity Matrix (generated)" first to generate <code>tmp/harness-token-parity.md</code>.</em></p>'
+);
 
 const VIEWER_HTML = `<!doctype html>
 <html lang="en">
@@ -240,6 +249,10 @@ const VIEWER_HTML = `<!doctype html>
 <details class="coverage-block" open>
   <summary>Coverage matrices &amp; gaps</summary>
   <div class="coverage-body">${COVERAGE_HTML}</div>
+</details>
+<details class="coverage-block" open>
+  <summary>Direct-Provider vs Bifrost token parity</summary>
+  <div class="coverage-body">${TOKEN_PARITY_HTML}</div>
 </details>
 <main id="list"></main>
 <script>

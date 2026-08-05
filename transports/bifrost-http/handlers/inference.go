@@ -2003,12 +2003,31 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			transportLogs = logs
 		}
 
+		// Client-disconnect detection is otherwise purely reactive: cancel() only fires when
+		// a downstream SendEvent write actually fails, which only happens when this loop
+		// attempts one. If the upstream provider delivers its whole response in a few
+		// large/fast chunks, this loop may never attempt another write during the window
+		// where the client has already disconnected, so the disconnect goes undetected and
+		// the request logs as a false success (observed live: Vertex's streamGenerateContent
+		// delivers fewer, larger deltas than direct Gemini for the same prompt, giving the
+		// write-failure detector too few chances to fire before the stream finished).
+		// A periodic no-op heartbeat forces an extra write attempt during otherwise-idle
+		// gaps, closing that window without touching fasthttp's connection internals.
+		heartbeatDone, heartbeatExited := lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
+
 		defer func() {
+			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
+			// could still be mid-send on it panics ("send on closed channel"). See
+			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
+			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
 			runCompleter(false)
+			// Safe now: the heartbeat goroutine has fully exited (waited on above), so no
+			// other goroutine can be mid-send on eventCh when this closes it. Closing it
+			// while a send was still in flight would panic ("send on closed channel").
 			reader.Done()
 			// Complete the trace after streaming finishes, passing transport plugin logs.
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.

@@ -139,7 +139,7 @@ export default function VirtualKeyDetailSheet({
 				</SheetHeader>
 
 				<div className="space-y-6 px-8 py-4">
-					<ManagedVirtualKeyNotice managingProfile={managingProfile} />
+					<ManagedVirtualKeyNotice isManagedByProfile={isManagedByProfile} managingProfile={managingProfile} />
 
 					{assignedUsers.length > 0 ? (
 						<div className="space-y-1">
@@ -481,7 +481,7 @@ export default function VirtualKeyDetailSheet({
 									<span className="text-muted-foreground ml-2 text-xs font-normal">(from {managingProfile.name})</span>
 								) : null}
 							</h3>
-							{isManagedByProfile ? <ViewUserDetailsButton userId={managingProfile?.user_id} /> : null}
+							{isManagedByProfile && managingProfile?.user_id ? <ViewUserDetailsButton userId={managingProfile.user_id} /> : null}
 						</div>
 
 						{displayBudgets && displayBudgets.length > 0 ? (
