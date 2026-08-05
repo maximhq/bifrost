@@ -15,18 +15,19 @@ import (
 // NOTE: Any changes to the provider configuration should be reflected in the GenerateConfigHash function
 // That helps us detect changes between config file and database config
 type TableProvider struct {
-	ID                       uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name                     string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
-	NetworkConfigJSON        string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.NetworkConfig
-	ConcurrencyBufferJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
-	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
-	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
-	OpenAIConfigJSON         string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.OpenAIConfig
-	SendBackRawRequest       bool      `json:"send_back_raw_request"`
-	SendBackRawResponse      bool      `json:"send_back_raw_response"`
-	StoreRawRequestResponse  bool      `json:"store_raw_request_response"`
-	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
+	ID                          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name                        string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
+	NetworkConfigJSON           string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.NetworkConfig
+	ConcurrencyBufferJSON       string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
+	ProxyConfigJSON             string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
+	CustomProviderConfigJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
+	OpenAIConfigJSON            string    `gorm:"type:text" json:"-"`
+	ProviderRequestIDConfigJSON string    `gorm:"type:text" json:"-"` // JSON serialized schemas.ProviderRequestIDConfig
+	SendBackRawRequest          bool      `json:"send_back_raw_request"`
+	SendBackRawResponse         bool      `json:"send_back_raw_response"`
+	StoreRawRequestResponse     bool      `json:"store_raw_request_response"`
+	CreatedAt                   time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt                   time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Relationships
 	Keys []TableKey `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"keys"`
@@ -37,8 +38,9 @@ type TableProvider struct {
 	ProxyConfig              *schemas.ProxyConfig              `gorm:"-" json:"proxy_config,omitempty"`
 
 	// Custom provider fields
-	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
-	OpenAIConfig         *schemas.OpenAIConfig         `gorm:"-" json:"openai_config,omitempty"`
+	CustomProviderConfig *schemas.CustomProviderConfig    `gorm:"-" json:"custom_provider_config,omitempty"`
+	OpenAIConfig         *schemas.OpenAIConfig            `gorm:"-" json:"openai_config,omitempty"`
+	ProviderRequestID    *schemas.ProviderRequestIDConfig `gorm:"-" json:"provider_request_id,omitempty"`
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -108,6 +110,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		p.OpenAIConfigJSON = string(data)
 	} else {
 		p.OpenAIConfigJSON = ""
+	}
+	if p.ProviderRequestID != nil {
+		data, err := json.Marshal(p.ProviderRequestID)
+		if err != nil {
+			return err
+		}
+		p.ProviderRequestIDConfigJSON = string(data)
+	} else {
+		p.ProviderRequestIDConfigJSON = ""
 	}
 	// Validate governance fields
 	if p.BudgetID != nil && strings.TrimSpace(*p.BudgetID) == "" {
@@ -180,6 +191,14 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 		p.OpenAIConfig = &openaiConfig
 	}
 
+	p.ProviderRequestID = nil
+	if p.ProviderRequestIDConfigJSON != "" {
+		var config schemas.ProviderRequestIDConfig
+		if err := json.Unmarshal([]byte(p.ProviderRequestIDConfigJSON), &config); err != nil {
+			return err
+		}
+		p.ProviderRequestID = &config
+	}
+
 	return nil
 }
-

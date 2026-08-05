@@ -59913,25 +59913,6 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "default": 100
-            }
-          },
-          {
-            "name": "all",
-            "in": "query",
-            "description": "When true, returns every ranked entity with no row cap. Intended for\nexports (CSV / PDF), which must not be truncated.\n",
-            "schema": {
-              "type": "boolean",
-              "default": false
-            }
           }
         ],
         "security": [
@@ -60291,25 +60272,6 @@
             "description": "Comma-separated list of MCP server labels to filter the MCP section by",
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "default": 100
-            }
-          },
-          {
-            "name": "all",
-            "in": "query",
-            "description": "When true, returns every ranked entity with no row cap. Intended for\nexports (CSV / PDF), which must not be truncated.\n",
-            "schema": {
-              "type": "boolean",
-              "default": false
             }
           }
         ],
@@ -79733,6 +79695,25 @@
           }
         }
       },
+      "ProviderRequestIDConfig": {
+        "type": "object",
+        "description": "Configuration for capturing an upstream provider request ID from a response header.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether provider request ID capture is enabled. The provider_request_id object is disabled when omitted; this field is required when the object is present."
+          },
+          "header_name": {
+            "type": "string",
+            "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+            "description": "Optional response header to capture. Sensitive headers such as Authorization are rejected. OpenAI, Anthropic, Azure, and compatible custom providers have built-in defaults."
+          }
+        },
+        "additionalProperties": false
+      },
       "ProviderResponse": {
         "type": "object",
         "description": "Provider configuration response",
@@ -79880,6 +79861,9 @@
                 }
               }
             }
+          },
+          "provider_request_id": {
+            "$ref": "#/components/schemas/ProviderRequestIDConfig"
           },
           "provider_status": {
             "type": "string",
@@ -80069,6 +80053,9 @@
                 }
               }
             }
+          },
+          "provider_request_id": {
+            "$ref": "#/components/schemas/ProviderRequestIDConfig"
           }
         }
       },
@@ -80216,6 +80203,9 @@
                 }
               }
             }
+          },
+          "provider_request_id": {
+            "$ref": "#/components/schemas/ProviderRequestIDConfig"
           }
         }
       },

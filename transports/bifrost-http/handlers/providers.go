@@ -94,11 +94,12 @@ type ProviderResponse struct {
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                             `json:"store_raw_request_response"`       // Capture raw request/response for internal logging only
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
-	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`          // OpenAI-specific configuration
-	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
-	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
-	Description              string                           `json:"description,omitempty"`            // Error/status description
-	ConfigHash               string                           `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
+	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`
+	ProviderRequestID        *schemas.ProviderRequestIDConfig `json:"provider_request_id,omitempty"` // Upstream provider request ID capture configuration
+	ProviderStatus           ProviderStatus                   `json:"provider_status"`               // Health/initialization status of the provider
+	Status                   string                           `json:"status,omitempty"`              // Operational status (e.g., list_models_failed)
+	Description              string                           `json:"description,omitempty"`         // Error/status description
+	ConfigHash               string                           `json:"config_hash,omitempty"`         // Hash of config.json version, used for change detection
 }
 
 // ListProvidersResponse represents the response for listing all providers
@@ -123,6 +124,7 @@ type providerCreatePayload struct {
 	StoreRawRequestResponse  *bool                             `json:"store_raw_request_response,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	ProviderRequestID        *schemas.ProviderRequestIDConfig  `json:"provider_request_id,omitempty"`
 }
 
 type providerUpdatePayload struct {
@@ -133,7 +135,8 @@ type providerUpdatePayload struct {
 	SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"`
 	StoreRawRequestResponse  *bool                            `json:"store_raw_request_response,omitempty"`
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"`
-	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"` // OpenAI-specific configuration
+	OpenAIConfig             *schemas.OpenAIConfig            `json:"openai_config,omitempty"`
+	ProviderRequestID        *schemas.ProviderRequestIDConfig `json:"provider_request_id,omitempty"` // Upstream provider request ID capture configuration
 }
 
 // RegisterRoutes registers all provider management routes
@@ -331,12 +334,19 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		StoreRawRequestResponse:  payload.StoreRawRequestResponse != nil && *payload.StoreRawRequestResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 		OpenAIConfig:             payload.OpenAIConfig,
+		ProviderRequestID:        payload.ProviderRequestID,
 	}
 	// Validate custom provider configuration before persisting
 	if err := lib.ValidateCustomProvider(config, payload.Provider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid custom provider config: %v", err))
 		return
 	}
+	requestIDConfig := &schemas.ProviderConfig{CustomProviderConfig: config.CustomProviderConfig, ProviderRequestID: config.ProviderRequestID}
+	if err := schemas.NormalizeProviderRequestIDConfig(payload.Provider, requestIDConfig); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider request ID config: %v", err))
+		return
+	}
+	config.ProviderRequestID = requestIDConfig.ProviderRequestID
 	// Add provider to store (env vars will be processed by store)
 	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
@@ -373,6 +383,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			ProviderRequestID:        config.ProviderRequestID,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -458,6 +469,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
 		OpenAIConfig:             oldConfigRaw.OpenAIConfig,
+		ProviderRequestID:        oldConfigRaw.ProviderRequestID,
 		StoreRawRequestResponse:  oldConfigRaw.StoreRawRequestResponse,
 		Status:                   oldConfigRaw.Status,
 		Description:              oldConfigRaw.Description,
@@ -526,6 +538,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
 	config.OpenAIConfig = payload.OpenAIConfig
+	if payload.ProviderRequestID != nil {
+		config.ProviderRequestID = payload.ProviderRequestID
+	}
 	if payload.SendBackRawRequest != nil {
 		config.SendBackRawRequest = *payload.SendBackRawRequest
 	}
@@ -535,6 +550,17 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	if payload.StoreRawRequestResponse != nil {
 		config.StoreRawRequestResponse = *payload.StoreRawRequestResponse
 	}
+	var providerRequestID *schemas.ProviderRequestIDConfig
+	if config.ProviderRequestID != nil {
+		providerRequestIDCopy := *config.ProviderRequestID
+		providerRequestID = &providerRequestIDCopy
+	}
+	requestIDConfig := &schemas.ProviderConfig{CustomProviderConfig: config.CustomProviderConfig, ProviderRequestID: providerRequestID}
+	if err := schemas.NormalizeProviderRequestIDConfig(provider, requestIDConfig); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid provider request ID config: %v", err))
+		return
+	}
+	config.ProviderRequestID = requestIDConfig.ProviderRequestID
 
 	// Add provider to store if it doesn't exist (upsert behavior)
 	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
@@ -591,6 +617,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawResponse:      config.SendBackRawResponse,
 			StoreRawRequestResponse:  config.StoreRawRequestResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			ProviderRequestID:        config.ProviderRequestID,
 			Status:                   config.Status,
 			Description:              config.Description,
 		}, ProviderStatusActive)
@@ -1253,6 +1280,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		StoreRawRequestResponse:  config.StoreRawRequestResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		OpenAIConfig:             config.OpenAIConfig,
+		ProviderRequestID:        config.ProviderRequestID,
 		ProviderStatus:           status,
 		Status:                   config.Status,
 		Description:              config.Description,

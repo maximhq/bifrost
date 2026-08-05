@@ -308,6 +308,10 @@ func (c *filterDataCache) release(entry *filterDataCacheEntry) {
 	entry.mu.Unlock()
 }
 
+func parseProviderRequestIDFilter(ctx *fasthttp.RequestCtx) string {
+	return strings.TrimSpace(string(ctx.QueryArgs().Peek("provider_request_id")))
+}
+
 func parseParentRequestIDFilter(ctx *fasthttp.RequestCtx) string {
 	if parentRequestID := string(ctx.QueryArgs().Peek("parent_request_id")); strings.TrimSpace(parentRequestID) != "" {
 		return parentRequestID
@@ -628,6 +632,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if parentRequestID := parseParentRequestIDFilter(ctx); parentRequestID != "" {
 		filters.ParentRequestID = parentRequestID
 	}
+	if providerRequestID := parseProviderRequestIDFilter(ctx); providerRequestID != "" {
+		filters.ProviderRequestID = providerRequestID
+	}
 	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
 		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)
 	}
@@ -884,6 +891,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if parentRequestID := parseParentRequestIDFilter(ctx); parentRequestID != "" {
 		filters.ParentRequestID = parentRequestID
 	}
+	if providerRequestID := parseProviderRequestIDFilter(ctx); providerRequestID != "" {
+		filters.ProviderRequestID = providerRequestID
+	}
 	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
 		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)
 	}
@@ -1048,6 +1058,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if parentRequestID := parseParentRequestIDFilter(ctx); parentRequestID != "" {
 		filters.ParentRequestID = parentRequestID
+	}
+	if providerRequestID := parseProviderRequestIDFilter(ctx); providerRequestID != "" {
+		filters.ProviderRequestID = providerRequestID
 	}
 	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
 		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)

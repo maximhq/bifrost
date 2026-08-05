@@ -318,6 +318,38 @@ denylist := map[string]bool{
 
 This denylist is applied to both static and dynamic headers to prevent security vulnerabilities.
 
+### Capture Provider Request IDs
+
+Provider APIs commonly return a request identifier in a response header. Bifrost can capture this identifier and attach it to request logs for provider-side debugging. Capture is **disabled by default** and must be enabled per provider.
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	switch provider {
+	case schemas.OpenAI:
+		return &schemas.ProviderConfig{
+			ProviderRequestID: &schemas.ProviderRequestIDConfig{
+				Enabled: true,
+			},
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	}
+	return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+Bifrost uses built-in response-header defaults for OpenAI (`x-request-id`), Anthropic (`request-id`), and Azure (`apim-request-id`). Custom providers inherit the default for their `CustomProviderConfig.BaseProviderType`. For another provider or gateway, configure `HeaderName` explicitly:
+
+```go
+ProviderRequestID: &schemas.ProviderRequestIDConfig{
+	Enabled:    true,
+	HeaderName: "x-correlation-id",
+},
+```
+
+Header names are normalized to lowercase and must be valid HTTP header tokens. Authentication and API-key headers, such as `authorization` and `x-api-key`, are rejected. Captured values are limited to 512 characters; oversized values are discarded without logging their contents.
+
+When the logging plugin is enabled, the final provider request ID and the bounded retry/fallback trail are available on the log entry. Gateway users can also filter logs by an exact provider request ID.
+
 ### Setting Up a Proxy
 
 Route requests through proxies for compliance, security, or geographic requirements. This example shows both HTTP proxy for OpenAI and authenticated SOCKS5 proxy for Anthropic, useful for corporate environments or regional access.

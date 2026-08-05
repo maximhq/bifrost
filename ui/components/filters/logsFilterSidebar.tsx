@@ -123,6 +123,7 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					<CustomerFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<BusinessUnitFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<SessionFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ProviderRequestIDFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<StopReasonFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<MetadataFilters filters={filters} onFiltersChange={onFiltersChange} />
@@ -332,7 +333,14 @@ function SearchableCheckboxList({
 					onCheckedChange={() => onToggle(item.key)}
 					testId={
 						testIdPrefix
-							? `${testIdPrefix}-checkbox-${normalizeTestIdKey ? item.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : item.key}`
+							? `${testIdPrefix}-checkbox-${
+									normalizeTestIdKey
+										? item.key
+												.toLowerCase()
+												.replace(/[^a-z0-9]+/g, "-")
+												.replace(/^-+|-+$/g, "")
+										: item.key
+								}`
 							: undefined
 					}
 				/>
@@ -448,7 +456,10 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 		isLoading,
 	} = useGetAvailableFilterDataQuery({ dimensions: ["apps"] }, { skip: !opened && !hasActive });
 	const availableApps = useMemo(() => (filterData?.apps as string[] | undefined) || [], [filterData]);
-	const items = useMemo(() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })), [availableApps, filters.apps]);
+	const items = useMemo(
+		() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })),
+		[availableApps, filters.apps],
+	);
 
 	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
 
@@ -885,6 +896,29 @@ function SessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponen
 					placeholder="Parent request ID"
 					className="h-8 border-0 pl-8 text-sm"
 					data-testid="session-filter-input"
+					autoFocus
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ProviderRequestIDFilter
+// ---------------------------------------------------------------------------
+
+function ProviderRequestIDFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.provider_request_id;
+	return (
+		<FilterSection title="Provider Request ID" defaultOpen={defaultOpen || hasActive} testId="provider-request-id-filter-toggle">
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.provider_request_id || ""}
+					onChange={(e) => onFiltersChange({ ...filters, provider_request_id: e.target.value })}
+					placeholder="Exact upstream request ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="provider-request-id-filter-input"
 					autoFocus
 				/>
 			</div>
