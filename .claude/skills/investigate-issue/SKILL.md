@@ -33,7 +33,7 @@ If any section is missing, go back and complete it before presenting the report.
 4. **Analyze impact** -- Cross-reference codebase findings with documentation to identify side effects, dependencies, and breaking changes
 5. **Suggest tests** -- If changes touch `core/`, recommend specific LLM and MCP test additions
 6. **Present the plan** -- Show findings and recommended changes to the user
-7. **Implement with approval** -- After plan approval, make changes one at a time with user confirmation
+7. **Implement with approval** -- After plan approval, make changes one at a time with user confirmation. For Bug issues, tests are written and confirmed failing (red) before the fix is implemented (green), per AGENTS.md's "Bug fixes: red before green" rule
 
 ## Step 1: Fetch the Issue
 
@@ -511,18 +511,29 @@ Copy the research table from Step 3e here. If you skipped Step 3e, go back and d
 
 Once the user approves the plan:
 
-### 7a. Create a Todo List
+### 7a. Bug issues: red before green (per AGENTS.md "Testing" section)
 
-Create a todo item for each change in the plan:
+If the issue was classified as **Bug** in Step 2a, tests are written and confirmed failing *before* any fix code is written:
+
+1. Write (or extend) the test(s) from the Test Plan first, targeting the actual root cause identified in Step 3/4 -- not a placeholder.
+2. Run them and confirm they fail **for the expected reason** (the missing behavior/field/branch) -- not a compile error, typo, or unrelated panic.
+3. Only then implement the fix changes from the plan (Step 7c below).
+4. Re-run the same tests and confirm they now pass. Do not consider the change complete until red-then-green is shown for each new/extended test.
+
+This does not apply to Feature or Docs-classified issues -- AGENTS.md scopes "red before green" to bug fixes specifically, not all work. For those, tests are still added per the Test Plan, but there's no requirement to write them before the implementation.
+
+### 7b. Create a Todo List
+
+Create a todo item for each change in the plan. For Bug issues, order test-writing before the corresponding fix so the red-before-green sequence in 7a is reflected in the todo list itself:
 ```
-1. Change 1: <description> -- pending
-2. Change 2: <description> -- pending
-3. Update test: <description> -- pending
-4. Add new test: <description> -- pending
+1. Write failing test: <description> -- pending      (Bug issues only; confirm red before continuing)
+2. Change 1: <description> -- pending
+3. Change 2: <description> -- pending
+4. Update existing test: <description> -- pending
 5. Verify all tests pass -- pending
 ```
 
-### 7b. For Each Change
+### 7c. For Each Change
 
 Before making any edit, present the change to the user:
 
@@ -542,7 +553,7 @@ Before making any edit, present the change to the user:
 
 Wait for user approval before applying. If user says "no", skip and move to the next change. If user says "modify", discuss and adjust.
 
-### 7c. After All Changes
+### 7d. After All Changes
 
 Once all approved changes are applied:
 
@@ -561,7 +572,7 @@ Once all approved changes are applied:
    make run-e2e FLOW=<feature>
    ```
 
-2. Report results to the user
+2. Report results to the user, including the red-then-green transcript/summary for Bug issues (what failed before, what passes now)
 3. If tests fail, investigate and propose fixes (with approval)
 
 ## Error Handling
