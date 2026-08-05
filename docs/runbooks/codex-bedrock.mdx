@@ -31,10 +31,10 @@ In this guide, a **deployment name** is the stable alias that you configure on a
 Sources: [GPT-5.6 Sol](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-sol.html), [GPT-5.6 Terra](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-terra.html), [GPT-5.6 Luna](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-luna.html), [GPT-5.5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-55.html), and [GPT-5.4](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-54.html).
 
 <Warning>
-These GPT models use Bedrock model IDs. The AWS model cards mark global inference as unsupported, so do not prepend `global.` or `us.` and do not add a `-v1:0` suffix in the deployment name. Configure them under Bifrost's **AWS Bedrock** provider, not the classic **AWS Bedrock** provider.
+These GPT models use Bedrock model IDs. The AWS model cards mark global inference as unsupported, so do not prepend `global.` or `us.` and do not add a `-v1:0` suffix. Configure them under Bifrost's **AWS Bedrock** provider.
 </Warning>
 
-The recommended deployment names are Bifrost aliases, not AWS-defined identifiers. You may choose another name, but the value selected in Codex must match the Bifrost deployment name exactly and should retain the `bedrock/` provider prefix.
+The recommended deployment names are Bifrost deployment mappings, not AWS-defined identifiers. You may choose another name, but the value selected in Codex must match the Bifrost deployment name exactly and should retain the `bedrock/` provider prefix.
 
 ## 1. Configure the Bedrock provider in Bifrost
 
@@ -47,7 +47,7 @@ In Bifrost, go to **Models > Model Providers > AWS Bedrock**, then add or edit t
   />
 </Frame>
 
-Under **Aliases**, map each deployment name to its Bedrock model ID. For example:
+Under **Deployments**, map each model name to its Bedrock model ID. For example:
 
 ```json
 {
@@ -59,31 +59,14 @@ Under **Aliases**, map each deployment name to its Bedrock model ID. For example
     "gpt-5.5",
     "gpt-5.4"
   ],
-  "aliases": {
-    "gpt-5.6-sol": {
-      "model_id": "openai.gpt-5.6-sol",
-      "model_name": "gpt-5.6-sol",
-      "model_family": "openai"
-    },
-    "gpt-5.6-terra": {
-      "model_id": "openai.gpt-5.6-terra",
-      "model_name": "gpt-5.6-terra",
-      "model_family": "openai"
-    },
-    "gpt-5.6-luna": {
-      "model_id": "openai.gpt-5.6-luna",
-      "model_name": "gpt-5.6-luna",
-      "model_family": "openai"
-    },
-    "gpt-5.5": {
-      "model_id": "openai.gpt-5.5",
-      "model_name": "gpt-5.5",
-      "model_family": "openai"
-    },
-    "gpt-5.4": {
-      "model_id": "openai.gpt-5.4",
-      "model_name": "gpt-5.4",
-      "model_family": "openai"
+  "weight": 1.0,
+  "bedrock_key_config": {
+    "deployments": {
+      "gpt-5.6-sol": "openai.gpt-5.6-sol",
+      "gpt-5.6-terra": "openai.gpt-5.6-terra",
+      "gpt-5.6-luna": "openai.gpt-5.6-luna",
+      "gpt-5.5": "openai.gpt-5.5",
+      "gpt-5.4": "openai.gpt-5.4"
     }
   }
 }
@@ -92,10 +75,10 @@ Under **Aliases**, map each deployment name to its Bedrock model ID. For example
 You only need to add the models that you intend to expose to Codex.
 
 <Warning>
-Aliases do not automatically expand a restricted provider key's model allowlist. If `models` is not `*`, include every deployment name in `models` exactly as it appears in `aliases`.
+Deployment mappings do not automatically expand a restricted provider key's model allowlist. If `models` is not `*`, include every deployment name in `models` exactly as it appears in `deployments`.
 </Warning>
 
-See [Aliasing Models](/providers/aliasing-models#static-aliasing) for the complete alias configuration reference and [AWS Bedrock](/providers/supported-providers/bedrock) for provider behavior.
+See [AWS Bedrock](/providers/supported-providers/bedrock) for provider behavior.
 
 ## 2. Configure the virtual key
 

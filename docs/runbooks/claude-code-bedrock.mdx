@@ -23,7 +23,7 @@ The following mappings are sample configurations based on the model IDs in the l
 | Claude Opus 4.8 | `global.anthropic.claude-opus-4-8` | `claude-opus-4-8` | `bedrock/claude-opus-4-8` |
 | Claude Sonnet 5 | `global.anthropic.claude-sonnet-5` | `claude-sonnet-5` | `bedrock/claude-sonnet-5` |
 | Claude Sonnet 4.6 | `global.anthropic.claude-sonnet-4-6` | `claude-sonnet-4-6` | `bedrock/claude-sonnet-4-6` |
-| Claude Haiku 4.5 | `global.anthropic.claude-haiku-4-5-20251001-v1:0` | `claude-haiku-4-5-20251001` | `bedrock/claude-haiku-4-5` |
+| Claude Haiku 4.5 | `global.anthropic.claude-haiku-4-5-20251001-v1:0` | `claude-haiku-4-5-20251001` | `bedrock/claude-haiku-4-5-2025-1001` |
 
 Sources: [Claude Opus 4.8](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-8.html), [Claude Sonnet 5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5.html), [Claude Sonnet 4.6](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4-6.html), and [Claude Haiku 4.5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html).
 
@@ -42,7 +42,7 @@ In Bifrost, go to **Models > Model Providers > AWS Bedrock**, then add or edit t
   />
 </Frame>
 
-Under **Aliases**, map each deployment name to its Bedrock model ID. For example:
+Under **Deployments**, map each model name to its Bedrock model ID. For example:
 
 ```json
 {
@@ -53,33 +53,20 @@ Under **Aliases**, map each deployment name to its Bedrock model ID. For example
     "claude-sonnet-4-6",
     "claude-haiku-4-5"
   ],
-  "aliases": {
-    "claude-opus-4-8": {
-      "model_id": "global.anthropic.claude-opus-4-8",
-      "model_name": "claude-opus-4-8",
-      "model_family": "anthropic"
-    },
-    "claude-sonnet-5": {
-      "model_id": "global.anthropic.claude-sonnet-5",
-      "model_name": "claude-sonnet-5",
-      "model_family": "anthropic"
-    },
-    "claude-sonnet-4-6": {
-      "model_id": "global.anthropic.claude-sonnet-4-6",
-      "model_name": "claude-sonnet-4-6",
-      "model_family": "anthropic"
-    },
-    "claude-haiku-4-5": {
-      "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-      "model_name": "claude-haiku-4-5-20251001",
-      "model_family": "anthropic"
+  "weight": 1.0,
+  "bedrock_key_config": {
+    "deployments": {
+      "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
+      "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
+      "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
+      "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
   }
 }
 ```
 
 <Warning>
-Aliases do not automatically expand a restricted provider key's model allowlist. If `models` is not `*`, include every deployment name in `models` exactly as it appears in `aliases`.
+Deployment mappings do not automatically expand a restricted provider key's model allowlist. If `models` is not `*`, include every deployment name in `models` exactly as it appears in `deployments`.
 </Warning>
 
 ### Allow Claude Code headers
