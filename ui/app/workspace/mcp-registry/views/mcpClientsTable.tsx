@@ -49,6 +49,7 @@ import {
 	X,
 } from "lucide-react";
 import { ReactNode, useEffect, useMemo, useState } from "react";
+import { IconWrap, InfoBox } from "./authorizerUi";
 import MCPClientSheet from "./mcpClientSheet";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
@@ -99,9 +100,9 @@ function MCPClientActionsMenu({
 					className="h-8 w-8"
 					aria-label="MCP server actions"
 					data-testid={`mcp-client-actions-${client.config.client_id}-btn`}
-					disabled={isReconnecting || isReauthorizing}
+					disabled={isReconnecting || isReauthorizing || isVerifyingExchange}
 				>
-					{isReconnecting || isAuthorizing || isReauthorizing ? (
+					{isReconnecting || isAuthorizing || isReauthorizing || isVerifyingExchange ? (
 						<Loader2 className="h-4 w-4 animate-spin" />
 					) : (
 						<MoreHorizontal className="h-4 w-4" />
@@ -692,13 +693,32 @@ export default function MCPClientsTable({
 			    info box, outline-cancel + default-continue footer) so token_exchange
 			    reverification reads as the same kind of admin-credential action,
 			    not a destructive one. */}
-			<Dialog open={!!exchangeVerifyClient} onOpenChange={(next) => !next && setExchangeVerifyClient(null)}>
+			<Dialog
+					open={!!exchangeVerifyClient}
+					onOpenChange={(next) => {
+						// Keep the dialog open (with a spinner) for the duration of the
+						// verify call itself, so there's visible feedback while the
+						// backend does the token exchange + live connect + tools/list
+						// round trip, instead of closing immediately on "Continue" and
+						// leaving nothing on screen until the toast lands.
+						if (!next && !(exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id))) {
+							setExchangeVerifyClient(null);
+						}
+					}}
+				>
 				<DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
 					<DialogHeader className="border-b px-5 py-4 text-left">
 						<div className="flex items-start gap-3">
-							<div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md">
-								<KeyRound className="size-4" />
-							</div>
+							<IconWrap
+								variant={exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? "info" : "muted"}
+								icon={
+									exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
+										<Loader2 className="size-4 animate-spin" />
+									) : (
+										<KeyRound className="size-4" />
+									)
+								}
+							/>
 							<div className="min-w-0 space-y-0.5">
 								<DialogTitle className="text-sm leading-snug font-medium">Re-verify as me</DialogTitle>
 								<DialogDescription className="text-xs leading-relaxed">
@@ -708,26 +728,22 @@ export default function MCPClientsTable({
 						</div>
 					</DialogHeader>
 					<div className="space-y-3 px-5 py-4">
-						<div className="border-border bg-muted/40 text-muted-foreground flex gap-3 rounded-md border p-3.5 text-sm">
-							<span className="mt-0.5 shrink-0">
-								<KeyRound className="size-4" />
-							</span>
-							<div className="space-y-1 leading-relaxed">
-								<p>
-									This exchanges your own signed-in identity to renew Bifrost&apos;s discovery credential for{" "}
-									<strong>{exchangeVerifyClient?.config.name}</strong>.
-								</p>
-								<p className="text-muted-foreground/80 text-xs">
-									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests,
-									whose tokens are exchanged automatically on every request. You only need this if the credential badge shows
-									it&apos;s expired, but running it any time is safe.
-								</p>
-							</div>
-						</div>
+						<InfoBox icon={<KeyRound className="size-4" />}>
+							<p>
+								This exchanges your own signed-in identity to renew Bifrost&apos;s discovery credential for{" "}
+								<strong>{exchangeVerifyClient?.config.name}</strong>.
+							</p>
+							<p className="text-muted-foreground/80 text-xs">
+								That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests,
+								whose tokens are exchanged automatically on every request. You only need this if the credential badge shows
+								it&apos;s expired, but running it any time is safe.
+							</p>
+						</InfoBox>
 						<div className="flex justify-end gap-2">
 							<Button
 								size="sm"
 								variant="outline"
+								disabled={exchangeVerifyClient ? verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) : false}
 								onClick={() => setExchangeVerifyClient(null)}
 								data-testid="verify-exchange-cancel-btn"
 							>
@@ -735,12 +751,18 @@ export default function MCPClientsTable({
 							</Button>
 							<Button
 								size="sm"
-								onClick={() => {
-									if (exchangeVerifyClient) void handleVerifyExchange(exchangeVerifyClient);
+								disabled={exchangeVerifyClient ? verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) : false}
+								onClick={async () => {
+									if (!exchangeVerifyClient) return;
+									const client = exchangeVerifyClient;
+									await handleVerifyExchange(client);
 									setExchangeVerifyClient(null);
 								}}
 								data-testid="verify-exchange-confirm-btn"
 							>
+								{exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
+									<Loader2 className="size-3.5 animate-spin" />
+								) : null}
 								Continue
 							</Button>
 						</div>
@@ -944,8 +966,10 @@ export default function MCPClientsTable({
 													</Link>
 												) : isPerUserAuth ? (
 													// Token exchange: no stored sessions to link to, and not in an
-													// actionable state — nothing to surface here.
-													null
+													// actionable state (pending_verification/needs_reauth handled
+													// above), so nothing meaningful to surface: render the same
+													// blank placeholder other empty cells in this table use.
+													<span className="text-muted-foreground">-</span>
 												) : (
 													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state.replace(/_/g, " ")}</Badge>
 												)}
