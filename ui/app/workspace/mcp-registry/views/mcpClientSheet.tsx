@@ -39,6 +39,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
+import { AuthorizeMCPClientDialog } from "./authorizeMCPClientDialog";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
 
 interface MCPClientSheetProps {
@@ -118,6 +119,8 @@ export default function MCPClientSheet({
 		mcpClientId: string;
 		isPerUserOauth?: boolean;
 	} | null>(null);
+	const [showAuthorizeDialog, setShowAuthorizeDialog] = useState(false);
+	const needsAuthorize = mcpClient.state === "pending_tools" && mcpClient.config.auth_type === "per_user_oauth";
 	// Persists names for newly added VKs so they survive search result changes
 	const [localVKNames, setLocalVKNames] = useState<Record<string, string>>({});
 
@@ -451,6 +454,17 @@ export default function MCPClientSheet({
 								<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 									{mcpClient.config.name}
 									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state}</Badge>
+									{needsAuthorize && (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={() => setShowAuthorizeDialog(true)}
+											data-testid="mcp-client-connect-btn"
+										>
+											Connect
+										</Button>
+									)}
 								</SheetTitle>
 								<SheetDescription>MCP server configuration and available tools</SheetDescription>
 							</div>
@@ -1438,6 +1452,20 @@ export default function MCPClientSheet({
 						oauthConfigId={oauthFlow.oauthConfigId}
 						mcpClientId={oauthFlow.mcpClientId}
 						isPerUserOauth={oauthFlow.isPerUserOauth}
+					/>
+				)}
+				{showAuthorizeDialog && (
+					<AuthorizeMCPClientDialog
+						open={showAuthorizeDialog}
+						onClose={() => setShowAuthorizeDialog(false)}
+						onAuthorized={() => {
+							setShowAuthorizeDialog(false);
+							toast({ title: "Success", description: "MCP client authorized successfully" });
+							onSubmitSuccess();
+						}}
+						mcpClientId={mcpClient.config.client_id}
+						mcpClientName={mcpClient.config.name}
+						hasConnectionString={!!mcpClient.config.connection_string?.value || !!mcpClient.config.connection_string?.ref}
 					/>
 				)}
 			</Sheet>

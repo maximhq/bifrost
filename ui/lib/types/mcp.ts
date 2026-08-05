@@ -114,6 +114,11 @@ export interface CreateMCPClientRequest {
 	is_ping_available?: boolean;
 }
 
+// Body for POST /mcp/client/{id}/authorize — see authorizeMCPClient in mcp.go for why this endpoint exists.
+export interface AuthorizeMCPClientRequest {
+	oauth_config: OAuthConfig;
+}
+
 export interface OAuthFlowResponse {
 	status: "pending_oauth";
 	message: string;

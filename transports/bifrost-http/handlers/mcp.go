@@ -81,6 +81,7 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.updateMCPClient, middlewares...))
 	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.deleteMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
+	r.POST("/api/mcp/client/{id}/authorize", lib.ChainMiddlewares(h.authorizeMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
 }
 
@@ -543,6 +544,98 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 	})
 }
 
+// AuthorizeMCPClientRequest is the body for POST /api/mcp/client/{id}/authorize.
+type AuthorizeMCPClientRequest struct {
+	OauthConfig *OAuthConfigRequest `json:"oauth_config"`
+}
+
+// authorizeMCPClient handles POST /api/mcp/client/{id}/authorize - (re)initiates
+// the per-user OAuth handshake for an existing 'per_user_oauth' MCP client.
+//
+// This exists for clients that reached pending_tools without ever completing
+// that handshake — e.g. one seeded via config.json, which is written straight
+// to the database and so never goes through addMCPClient's OAuth-initiation
+// branch. reconnectMCPClient can't help here either: per-user auth types
+// explicitly opt out of the shared-reconnect model (ErrMCPReconnectNotApplicable).
+//
+// Mirrors addMCPClient's per_user_oauth branch, but targets an existing client
+// ID instead of minting a new one. completeMCPClientOAuth already has an
+// isUpdateFlow branch that updates a client in place when the pending config's
+// ID matches an existing row, so no changes are needed there — this only
+// supplies the missing initiation half.
+func (h *MCPHandler) authorizeMCPClient(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+	id, err := getIDFromCtx(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
+		return
+	}
+
+	var existingConfig *schemas.MCPClientConfig
+	if h.store.MCPConfig != nil {
+		for i, client := range h.store.MCPConfig.ClientConfigs {
+			if client.ID == id {
+				existingConfig = h.store.MCPConfig.ClientConfigs[i]
+				break
+			}
+		}
+	}
+	if existingConfig == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
+		return
+	}
+
+	var req AuthorizeMCPClientRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	if err := validateAuthorizeMCPClientRequest(existingConfig, req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+
+	flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, buildOAuthInitiationRequest(req.OauthConfig, redirectURI, existingConfig.ConnectionString.GetValue()))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+		return
+	}
+
+	pendingConfig := *existingConfig
+	pendingConfig.OauthConfigID = &flowInitiation.OauthConfigID
+
+	if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
+		logger.Error(fmt.Sprintf("[Authorize MCP Client] Failed to store pending MCP client: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store pending MCP client: %v", err))
+		return
+	}
+
+	sendPendingOAuthResponse(ctx, flowInitiation, id, "OAuth authorization required to discover tools for this MCP client.")
+}
+
+// validateAuthorizeMCPClientRequest is extracted from authorizeMCPClient so
+// these guards are unit-testable without a fasthttp context or config store.
+func validateAuthorizeMCPClientRequest(existingConfig *schemas.MCPClientConfig, req AuthorizeMCPClientRequest) error {
+	if existingConfig.AuthType != schemas.MCPAuthTypePerUserOauth {
+		return fmt.Errorf("authorize is only applicable to MCP clients using auth_type 'per_user_oauth'")
+	}
+	if existingConfig.Disabled {
+		return fmt.Errorf("cannot authorize a disabled MCP client: enable the client first")
+	}
+	if req.OauthConfig == nil {
+		return fmt.Errorf("oauth_config is required")
+	}
+	if !req.OauthConfig.ClientID.IsSet() && existingConfig.ConnectionString.GetValue() == "" {
+		return fmt.Errorf("either oauth_config.client_id must be provided, or the client must have a connection_string set for OAuth discovery and dynamic client registration")
+	}
+	return nil
+}
+
 // OAuthConfigRequest represents OAuth configuration in the request
 type OAuthConfigRequest struct {
 	ClientID        *schemas.SecretVar `json:"client_id"`
@@ -552,6 +645,49 @@ type OAuthConfigRequest struct {
 	RegistrationURL string             `json:"registration_url"`
 	Scopes          []string           `json:"scopes"`
 	Resource        string             `json:"resource"`
+}
+
+// buildOAuthInitiationRequest maps an OAuthConfigRequest onto the
+// OAuthInitiationRequest shape InitiateOAuthFlow expects. Shared by every
+// place that starts an OAuth flow from client-supplied OAuth app config:
+// addMCPClient's 'oauth' and 'per_user_oauth' branches, and authorizeMCPClient.
+func buildOAuthInitiationRequest(oauthConfig *OAuthConfigRequest, redirectURI, serverURL string) OAuthInitiationRequest {
+	return OAuthInitiationRequest{
+		ClientID:        oauthConfig.ClientID,
+		ClientSecret:    oauthConfig.ClientSecret,
+		AuthorizeURL:    oauthConfig.AuthorizeURL,
+		TokenURL:        oauthConfig.TokenURL,
+		RegistrationURL: oauthConfig.RegistrationURL,
+		RedirectURI:     redirectURI,
+		Scopes:          oauthConfig.Scopes,
+		ServerURL:       serverURL,
+		Resource:        oauthConfig.Resource,
+	}
+}
+
+// sendPendingOAuthResponse writes the standard 'pending_oauth' response body,
+// including the complete_url/status_url/next_steps hints so API/CLI callers
+// can complete the flow without consulting docs. Shared by addMCPClient's
+// 'oauth' branch and authorizeMCPClient — both flows resume the same way,
+// via completeMCPClientOAuth. (addMCPClient's 'per_user_oauth' branch has a
+// deliberately different, simpler response: that flow is an admin test login
+// completed automatically by the caller, not something scripted step-by-step.)
+func sendPendingOAuthResponse(ctx *fasthttp.RequestCtx, flowInitiation *schemas.OAuth2FlowInitiation, mcpClientID, message string) {
+	SendJSON(ctx, map[string]any{
+		"status":          "pending_oauth",
+		"message":         message,
+		"oauth_config_id": flowInitiation.OauthConfigID,
+		"authorize_url":   flowInitiation.AuthorizeURL,
+		"expires_at":      flowInitiation.ExpiresAt,
+		"mcp_client_id":   mcpClientID,
+		"complete_url":    fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID),
+		"status_url":      fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID),
+		"next_steps": []string{
+			"1. Open authorize_url in a browser to approve access",
+			"2. Poll status_url to check when status becomes 'authorized'",
+			"3. POST complete_url to activate the MCP client",
+		},
+	})
 }
 
 // MCPClientRequest represents the full MCP client creation request with OAuth support.
@@ -777,17 +913,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 		redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
 
-		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
-			ClientID:        req.OauthConfig.ClientID,
-			ClientSecret:    req.OauthConfig.ClientSecret,
-			AuthorizeURL:    req.OauthConfig.AuthorizeURL,
-			TokenURL:        req.OauthConfig.TokenURL,
-			RegistrationURL: req.OauthConfig.RegistrationURL,
-			RedirectURI:     redirectURI,
-			Scopes:          req.OauthConfig.Scopes,
-			ServerURL:       req.ConnectionString.GetValue(),
-			Resource:        req.OauthConfig.Resource,
-		})
+		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, buildOAuthInitiationRequest(req.OauthConfig, redirectURI, req.ConnectionString.GetValue()))
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 			return
@@ -870,17 +996,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// Initiate OAuth flow
 		// ServerURL comes from ConnectionString (MCP server URL for OAuth discovery)
 		// ClientID is optional - will be obtained via dynamic registration if not provided
-		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
-			ClientID:        req.OauthConfig.ClientID,
-			ClientSecret:    req.OauthConfig.ClientSecret,
-			AuthorizeURL:    req.OauthConfig.AuthorizeURL,
-			TokenURL:        req.OauthConfig.TokenURL,
-			RegistrationURL: req.OauthConfig.RegistrationURL,
-			RedirectURI:     redirectURI,
-			Scopes:          req.OauthConfig.Scopes,
-			ServerURL:       req.ConnectionString.GetValue(),
-			Resource:        req.OauthConfig.Resource,
-		})
+		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, buildOAuthInitiationRequest(req.OauthConfig, redirectURI, req.ConnectionString.GetValue()))
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
 			return
@@ -929,25 +1045,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		// Return OAuth flow initiation response with actionable next-step hints
-		// so API/CLI users know how to complete the flow without consulting docs.
-		completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
-		statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
-		SendJSON(ctx, map[string]any{
-			"status":          "pending_oauth",
-			"message":         "OAuth authorization required",
-			"oauth_config_id": flowInitiation.OauthConfigID,
-			"authorize_url":   flowInitiation.AuthorizeURL,
-			"expires_at":      flowInitiation.ExpiresAt,
-			"mcp_client_id":   req.ClientID,
-			"complete_url":    completeURL,
-			"status_url":      statusURL,
-			"next_steps": []string{
-				"1. Open authorize_url in a browser to approve access",
-				"2. Poll status_url to check when status becomes 'authorized'",
-				"3. POST complete_url to activate the MCP client",
-			},
-		})
+		sendPendingOAuthResponse(ctx, flowInitiation, req.ClientID, "OAuth authorization required")
 		return
 	}
 

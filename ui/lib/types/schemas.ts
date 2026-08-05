@@ -1190,6 +1190,29 @@ export const mcpClientUpdateSchema = z.object({
 		.optional(),
 });
 
+const optionalHttpUrl = (fieldLabel: string) =>
+	z
+		.union([
+			z
+				.string()
+				.url("Must be a valid URL")
+				.refine((url) => url.startsWith("https://") || url.startsWith("http://"), {
+					message: `${fieldLabel} must be a valid HTTP or HTTPS URL`,
+				}),
+			z.string().length(0),
+		])
+		.optional();
+
+// OAuth app config collected by AuthorizeMCPClientDialog when (re)authorizing
+// an existing per_user_oauth MCP client stuck in "pending_tools".
+export const mcpAuthorizeOAuthConfigSchema = z.object({
+	authorize_url: optionalHttpUrl("Authorize URL"),
+	token_url: optionalHttpUrl("Token URL"),
+	registration_url: optionalHttpUrl("Registration URL"),
+});
+
+export type MCPAuthorizeOAuthConfigSchema = z.infer<typeof mcpAuthorizeOAuthConfigSchema>;
+
 // Global proxy type schema
 export const globalProxyTypeSchema = z.enum(["http", "socks5", "tcp"]);
 
