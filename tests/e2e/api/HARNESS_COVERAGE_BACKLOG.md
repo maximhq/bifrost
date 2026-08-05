@@ -196,8 +196,9 @@ Sources:
 
 ### InvokeModel API (`POST /model/{modelId}/invoke`)
 
-- [ ] **Direct invoke** with provider-native body (Anthropic shape, Cohere shape, etc.)
-- [ ] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`)
+- [x] **Direct invoke** with Anthropic-native provider body, incl. image/tool_use/tool_result content blocks — folder 37 (#5560)
+- [ ] **Direct invoke** with Cohere-native provider body
+- [x] **Invoke streaming** (`POST /model/{modelId}/invoke-with-response-stream`) — folder 36 (#5629), folder 37 (#5560)
 - [ ] **Async invocation jobs** (`POST /model-invocation-job` + list + get + stop)
 
 ### Cross-region inference profiles
@@ -367,6 +368,9 @@ These exercise Bifrost's translation layer between provider shapes — every che
 - [~] **Tool choice forced cross-cut** (OpenAI + Bedrock + Vertex Claude via Cross-Cut Round 4; **Anthropic + Gemini + Azure still missing**)
 - [ ] **Computer use via cross-model** (`anthropic/claude-...` with computer_2025x tools - verifies Bifrost's translation; currently only tested via /anthropic drop-in and `vertex/claude-opus-4-7` preview at L1279)
 - [~] **Extended/adaptive thinking via cross-model** (Anthropic enabled + Bedrock enabled/adaptive + Vertex Claude enabled/adaptive covered; **anthropic-direct adaptive Opus 4.7 still missing**)
+- [x] **OpenAI Responses reasoning item id/encrypted_content round-trip via Anthropic drop-in** (`/anthropic/v1/messages` → openai/gpt-5: turn-1 `redacted_thinking` block replayed on turn 2 without OpenAI's item-id mismatch 400 — pins #5186; folder 38)
+- [~] **Reasoning/thinking multi-turn replay across the criss-cross matrix** (folder 39: OpenAI-shaped request → Anthropic model reverse direction, plus native-chat Anthropic-origin `reasoning_details` replay per #4943 previously uncovered by the harness; Gemini `thoughtSignature` replay (distinct smuggling mechanism from the OpenAI/Anthropic encrypted_content envelope, #5186 — deserves its own replay-matrix folder) and Azure-hosted-reasoning-model coverage still open)
+- [ ] **Native `/v1/chat/completions` `reasoning_details` id-loss for OpenAI-origin encrypted reasoning** (same bug *class* as #5186 but a separate code path: `core/schemas/mux.go` `ToChatMessages` never populates `ChatReasoningDetails.ID` on egress, and `ToResponsesMessages` mints a fresh `rs_` id on replay regardless, unaffected by the `/anthropic` surface fix. No tracked issue yet — file one before adding a harness case; a currently-red case with no owner/fix-in-flight breaks this collection's regression-pin convention.)
 - [x] **Prompt caching via cross-model** (Anthropic + Bedrock 1h + Vertex Claude 1h covered)
 - [~] **System message cross-cut** (Vertex Claude added in Round 4; Azure added in Round 4; **other providers were already implicit via cross-cut entries** - if explicit test needed, file a ticket)
 - [~] **Multi-turn conversation cross-cut** (Vertex Claude added in Round 4; remaining providers still cross-cut-implicit only)

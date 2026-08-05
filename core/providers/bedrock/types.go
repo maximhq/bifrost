@@ -684,18 +684,21 @@ type BedrockInvokeMessagesResponse struct {
 
 // BedrockInvokeMessagesContentBlock represents a content block in an Anthropic Messages response.
 type BedrockInvokeMessagesContentBlock struct {
-	Type     string      `json:"type"`
-	Text     string      `json:"text,omitempty"`
-	ID       string      `json:"id,omitempty"`
-	Name     string      `json:"name,omitempty"`
-	Input    interface{} `json:"input,omitempty"`
-	Thinking string      `json:"thinking,omitempty"`
+	Type      string      `json:"type"`
+	Text      string      `json:"text,omitempty"`
+	ID        string      `json:"id,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Input     interface{} `json:"input,omitempty"`
+	Thinking  string      `json:"thinking,omitempty"`
+	Signature string      `json:"signature,omitempty"`
 }
 
 // BedrockInvokeMessagesUsage represents token usage in an Anthropic Messages response.
 type BedrockInvokeMessagesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // BedrockInvokeAI21Response represents AI21 Jamba's InvokeModel response format.

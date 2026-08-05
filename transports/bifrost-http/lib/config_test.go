@@ -993,6 +993,10 @@ func (m *MockConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vi
 	return nil
 }
 
+func (m *MockConfigStore) ReplaceVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string, virtualKeyProviderConfigs []tables.TableVirtualKeyProviderConfig, tx *gorm.DB) error {
+	return nil
+}
+
 func (m *MockConfigStore) DeleteVirtualKeyProviderConfig(ctx context.Context, id uint, tx ...*gorm.DB) error {
 	return nil
 }
@@ -14111,6 +14115,75 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 	}
 
 	t.Log("✓ All dashboard-added entities preserved on reload")
+}
+
+// TestSQLite_SourceOfTruthConfigJSON_ModelConfigOwnedBudgetPruned reproduces the
+// startup crash where an API-created model-config-owned budget (present in DB, absent
+// from config.json) made Bifrost fail to boot under source_of_truth=config.json.
+//
+// The prune runs the model_configs loop before the budgets loop: deleting the model
+// config cascade-deletes its owned budget, so the later budgets loop finds the row
+// already gone. Before the fix DeleteBudget's ErrNotFound was fatal; now it is tolerated.
+func TestSQLite_SourceOfTruthConfigJSON_ModelConfigOwnedBudgetPruned(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	// config.json declares a kept model config + a kept standalone budget, so both the
+	// model_configs and budgets sections are present and the prune loops run.
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Governance = &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{
+			{ID: "file-budget", MaxLimit: 100.0, ResetDuration: "1d"},
+		},
+		ModelConfigs: []tables.TableModelConfig{
+			{ID: "file-model", ModelName: "gpt-file", Scope: "global"},
+		},
+	}
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+
+	// Simulate API creation: a model config and its owned budget, neither in config.json.
+	require.NoError(t, config1.ConfigStore.CreateModelConfig(ctx, &tables.TableModelConfig{
+		ID: "api-model", ModelName: "gpt-api", Scope: "global",
+	}))
+	require.NoError(t, config1.ConfigStore.CreateBudget(ctx, &tables.TableBudget{
+		ID: "api-budget", MaxLimit: 50.0, ResetDuration: "1M",
+	}))
+	// Link the budget to the model config (sets model_config_id, as the API does).
+	require.NoError(t, config1.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		return tx.Model(&tables.TableBudget{}).
+			Where("id = ?", "api-budget").
+			UpdateColumn("model_config_id", "api-model").Error
+	}))
+	config1.Close(ctx)
+
+	// Reload with config.json as source of truth. This must not crash.
+	configData.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, configData)
+
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	gov2, err := config2.ConfigStore.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+
+	budgetIDs := make(map[string]bool)
+	for _, b := range gov2.Budgets {
+		budgetIDs[b.ID] = true
+	}
+	modelIDs := make(map[string]bool)
+	for _, m := range gov2.ModelConfigs {
+		modelIDs[m.ID] = true
+	}
+
+	require.True(t, budgetIDs["file-budget"], "file budget should be preserved")
+	require.True(t, modelIDs["file-model"], "file model config should be preserved")
+	require.False(t, budgetIDs["api-budget"], "API budget should be pruned")
+	require.False(t, modelIDs["api-model"], "API model config should be pruned")
 }
 
 // TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning verifies config.json SOT prunes DB-only rows across sections.

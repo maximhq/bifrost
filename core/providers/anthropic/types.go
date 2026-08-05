@@ -26,8 +26,21 @@ const (
 	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
 	// AnthropicStructuredOutputsBetaHeader is required for strict tool validation and output_format.
 	AnthropicStructuredOutputsBetaHeader = "structured-outputs-2025-11-13"
-	// AnthropicAdvancedToolUseBetaHeader is required for defer_loading, input_examples, and allowed_callers.
+	// AnthropicAdvancedToolUseBetaHeader now gates only allowed_callers (programmatic
+	// tool calling) — see AnthropicToolSearchBetaHeader below for defer_loading, which
+	// used to be part of this bundle but is gated by its own beta as of current docs.
+	// https://platform.claude.com/docs/en/build-with-claude/overview ("Programmatic tool calling" row)
 	AnthropicAdvancedToolUseBetaHeader = "advanced-tool-use-2025-11-20"
+	// AnthropicToolSearchBetaHeader is required for tool.defer_loading and the
+	// tool_search_tool_* server tool. Available on the Claude API, Vertex AI,
+	// Azure AI Foundry, and Claude in Amazon Bedrock (Mantle) — but NOT on classic
+	// Amazon Bedrock's Converse API, which Bifrost's Bedrock provider always uses
+	// for tool-bearing requests. AWS's own docs restrict this feature to the
+	// InvokeModel/InvokeModelWithResponseStream APIs, never Converse:
+	// https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-tool-use.html
+	// https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+	// Do not gate this on AdvancedToolUse, and do not add a bundle fallback for Bedrock.
+	AnthropicToolSearchBetaHeader = "tool-search-tool-2025-10-19"
 	// AnthropicToolExamplesBetaHeader is required for tool.input_examples as a
 	// standalone feature (Bedrock supports this narrow header without the full
 	// advanced-tool-use-2025-11-20 bundle).
@@ -97,6 +110,7 @@ const (
 	// Use these with strings.HasPrefix when filtering headers per provider,
 	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
 	AnthropicAdvancedToolUseBetaHeaderPrefix     = "advanced-tool-use-"
+	AnthropicToolSearchBetaHeaderPrefix          = "tool-search-tool-"
 	AnthropicToolExamplesBetaHeaderPrefix        = "tool-examples-"
 	AnthropicStructuredOutputsBetaHeaderPrefix   = "structured-outputs-"
 	AnthropicPromptCachingScopeBetaHeaderPrefix  = "prompt-caching-scope-"
@@ -147,9 +161,9 @@ type ProviderFeatureSupport struct {
 	Bash                   bool // bash client tool (cite: A, B-header)
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
 	TextEditor             bool // text_editor client tool (cite: A)
-	ToolSearch             bool // tool_search server tool — tool-search-tool-2025-10-19 (cite: A, B-header)
+	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). NOT supported on classic Amazon Bedrock: AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse, which is the only API Bifrost's Bedrock provider uses for tool-bearing requests.
 	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
-	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: defer_loading + input_examples + allowed_callers (cite: A)
+	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
 	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
 	StructuredOutputs      bool // strict tool validation / output_format (cite: A)
 	PromptCachingScope     bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
@@ -229,11 +243,15 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
 	// Notably NOT supported per docs: MCP, Skills, FilesAPI, WebFetch,
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
-	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
+	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope,
+	// ToolSearch (tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
+	// only per AWS's own docs; Bifrost's Bedrock provider always dispatches
+	// tool-bearing requests via Converse, so this can never work end-to-end —
+	// see the ToolSearch field comment above for citations).
 	schemas.Bedrock: {
 		WebSearchNova: true, // nova_grounding — Responses path only
 		CodeExecNova:  true, // nova_code_interpreter — Responses path only
-		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true,
 		ContainerBasic:         true,
 		StructuredOutputs:      true, // documented on Bedrock per A overview matrix
 		Compaction:             true, // compact-2026-01-12 per B-header

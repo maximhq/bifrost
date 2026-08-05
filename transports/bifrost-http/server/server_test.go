@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"reflect"
 	"runtime"
 	"slices"
 	"sync"
@@ -13,8 +14,142 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
+
+// reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
+type reloadVirtualKeyConfigStore struct {
+	configstore.ConfigStore
+	vk *configstoreTables.TableVirtualKey
+}
+
+// RetryOnNotFound executes the supplied lookup once for deterministic tests.
+func (s *reloadVirtualKeyConfigStore) RetryOnNotFound(ctx context.Context, fn func(context.Context) (any, error), _ int, _ time.Duration) (any, error) {
+	return fn(ctx)
+}
+
+// GetVirtualKey returns the configured persisted virtual key.
+func (s *reloadVirtualKeyConfigStore) GetVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
+	return s.vk, nil
+}
+
+// GetModelConfigsByScopeAndScopeIDs returns no scoped model configs.
+func (s *reloadVirtualKeyConfigStore) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string) ([]configstoreTables.TableModelConfig, error) {
+	return nil, nil
+}
+
+// reloadVirtualKeyGovernanceStore counts snapshot calls while delegating all
+// mutation and direct lookup behavior to a real in-memory store.
+type reloadVirtualKeyGovernanceStore struct {
+	governance.GovernanceStore
+	governanceDataCalls int
+}
+
+// GetGovernanceData records any accidental full-snapshot lookup.
+func (s *reloadVirtualKeyGovernanceStore) GetGovernanceData(context.Context) *governance.GovernanceData {
+	s.governanceDataCalls++
+	return nil
+}
+
+// reloadVirtualKeyPlugin exposes the test governance store.
+type reloadVirtualKeyPlugin struct {
+	governance.BaseGovernancePlugin
+	store governance.GovernanceStore
+}
+
+// GetName returns the standard governance plugin name.
+func (p *reloadVirtualKeyPlugin) GetName() string { return governance.PluginName }
+
+// GetGovernanceStore returns the test governance store.
+func (p *reloadVirtualKeyPlugin) GetGovernanceStore() governance.GovernanceStore { return p.store }
+
+// reloadVirtualKeyToolManager provides an empty MCP tool set.
+type reloadVirtualKeyToolManager struct{}
+
+// GetAvailableMCPTools returns no tools.
+func (reloadVirtualKeyToolManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool {
+	return nil
+}
+
+// ExecuteChatMCPTool is unused by these tests.
+func (reloadVirtualKeyToolManager) ExecuteChatMCPTool(context.Context, *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	return nil, nil
+}
+
+// ExecuteResponsesMCPTool is unused by these tests.
+func (reloadVirtualKeyToolManager) ExecuteResponsesMCPTool(context.Context, *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	return nil, nil
+}
+
+// hasVKMCPServer reports whether the handler still caches a server for a secret.
+func hasVKMCPServer(handler *handlers.MCPServerHandler, value string) bool {
+	servers := reflect.ValueOf(handler).Elem().FieldByName("vkMCPServers")
+	return servers.MapIndex(reflect.ValueOf(value)).IsValid()
+}
+
+// TestReloadVirtualKeyDeletesOnlyRotatedOldMCPServer pins the old-secret cleanup
+// semantics and verifies the direct ID lookup avoids GetGovernanceData.
+func TestReloadVirtualKeyDeletesOnlyRotatedOldMCPServer(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	tests := []struct {
+		name          string
+		oldValue      string
+		newValue      string
+		seedOldVK     bool
+		wantOldServer bool
+	}{
+		{name: "rotated set secret deletes old server", oldValue: "sk-bf-old", newValue: "sk-bf-new", seedOldVK: true, wantOldServer: false},
+		{name: "unchanged secret keeps old server", oldValue: "sk-bf-same", newValue: "sk-bf-same", seedOldVK: true, wantOldServer: true},
+		{name: "unset old secret keeps old server", oldValue: "", newValue: "sk-bf-new", seedOldVK: true, wantOldServer: true},
+		{name: "missing old virtual key keeps old server", oldValue: "sk-bf-old", newValue: "sk-bf-new", seedOldVK: false, wantOldServer: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+			if err != nil {
+				t.Fatalf("create governance store: %v", err)
+			}
+			oldVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "old", Value: *schemas.NewSecretVar(tt.oldValue)}
+			if tt.seedOldVK {
+				baseStore.CreateVirtualKeyInMemory(ctx, oldVK)
+			}
+			store := &reloadVirtualKeyGovernanceStore{GovernanceStore: baseStore}
+			plugin := &reloadVirtualKeyPlugin{store: store}
+			persistedVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "new", Value: *schemas.NewSecretVar(tt.newValue)}
+			config := &lib.Config{
+				ConfigStore:  &reloadVirtualKeyConfigStore{vk: persistedVK},
+				ClientConfig: &configstore.ClientConfig{},
+			}
+			plugins := []schemas.BasePlugin{plugin}
+			config.BasePlugins.Store(&plugins)
+			mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, store)
+			if err != nil {
+				t.Fatalf("create MCP handler: %v", err)
+			}
+			mcpHandler.SyncVKMCPServer(oldVK)
+			server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config, MCPServerHandler: mcpHandler}
+
+			if _, err := server.ReloadVirtualKey(ctx, persistedVK.ID); err != nil {
+				t.Fatalf("ReloadVirtualKey returned unexpected error: %v", err)
+			}
+			if store.governanceDataCalls != 0 {
+				t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
+			}
+
+			oldServerExists := hasVKMCPServer(mcpHandler, tt.oldValue)
+			if tt.wantOldServer && !oldServerExists {
+				t.Fatal("old MCP server was deleted")
+			}
+			if !tt.wantOldServer && oldServerExists {
+				t.Fatal("old MCP server still exists after secret rotation")
+			}
+		})
+	}
+}
 
 // TestConfig is a sample config struct for testing
 type TestConfig struct {

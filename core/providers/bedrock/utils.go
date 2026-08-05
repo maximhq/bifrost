@@ -258,11 +258,20 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// Filter provider-unsupported server tools once; both convertToolConfig and
 	// collectBedrockServerTools consume the same filtered set, and
 	// buildBedrockServerToolChoice resolves pinned names against it.
-	filteredTools, _ := anthropic.ValidateChatToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock)
+	filteredTools, providerDropped := anthropic.ValidateChatToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock)
 
 	// Convert tool config (function/custom tools → Converse toolConfig.tools).
-	if toolConfig := convertToolConfigFromFiltered(ctx, bifrostReq.Model, bifrostReq.Params, filteredTools); toolConfig != nil {
+	// capModel (not bifrostReq.Model) — convertToolConfigFromFiltered's IsNova2Model
+	// check needs the canonical model, or a Nova2 alias whose raw string doesn't
+	// literally contain "nova-2" fails the check and drops web_search/code_execution
+	// instead of converting them. Mirrors ToBedrockResponsesRequest, which already
+	// passes capModel to the same check.
+	toolConfig, modelDropped := convertToolConfigFromFiltered(ctx, capModel, bifrostReq.Params, filteredTools)
+	if toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
+	}
+	if dropped := append(append([]string{}, providerDropped...), modelDropped...); len(dropped) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyDroppedUnsupportedTools, dropped)
 	}
 
 	// Tunnel Bedrock-supported Anthropic server tools through Converse's
@@ -1661,6 +1670,15 @@ func collectBedrockServerToolsFromFiltered(filtered []schemas.ChatTool) (serverT
 		if tool.Function != nil || tool.Custom != nil {
 			continue
 		}
+		// web_search_*/code_execution_* survive ValidateChatToolsForProvider via
+		// the WebSearchNova/CodeExecNova carve-out, but they're handled exclusively
+		// by convertToolConfigFromFiltered's Nova system-tool conversion
+		// (toolConfig.tools[].systemTool) — tunneling them here too would send
+		// Bedrock two conflicting representations of the same tool.
+		typeStr := string(tool.Type)
+		if strings.HasPrefix(typeStr, "web_search_") || strings.HasPrefix(typeStr, "code_execution_") {
+			continue
+		}
 		bytes, err := providerUtils.MarshalSorted(tool)
 		if err != nil {
 			continue
@@ -1824,7 +1842,8 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 	}
 	// Strip unsupported server tools before the conversion loop.
 	filtered, _ := anthropic.ValidateChatToolsForProvider(params.Tools, schemas.Bedrock)
-	return convertToolConfigFromFiltered(nil, model, params, filtered)
+	toolConfig, _ := convertToolConfigFromFiltered(nil, model, params, filtered)
+	return toolConfig
 }
 
 // convertToolConfigFromFiltered is the inner variant that accepts a
@@ -1836,12 +1855,33 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 // this function can consult the resolved alias and honor explicit
 // AliasConfig.ModelFamily overrides. Test paths may pass nil — family
 // detection then falls back to substring matching on model.
-func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, params *schemas.ChatParameters, filtered []schemas.ChatTool) *BedrockToolConfig {
-	if params == nil {
+// convertToNovaSystemTool builds the Bedrock system-tool substitute for an
+// Anthropic web_search/code_execution server tool — the only way either
+// survives on Bedrock, and only for Nova2 models (nova_grounding /
+// nova_code_interpreter). Returns nil when the model isn't Nova2, so the
+// caller drops the tool instead. Shared by the Chat (convertToolConfigFromFiltered)
+// and Responses (ToBedrockResponsesRequest) builders so there is one model-aware
+// rule instead of two independently-maintained ones.
+func convertToNovaSystemTool(systemToolName BedrockSystemToolType, isNova2 bool) *BedrockTool {
+	if !isNova2 {
 		return nil
 	}
+	return &BedrockTool{SystemTool: &BedrockSystemTool{Name: systemToolName}}
+}
 
+// convertToolConfigFromFiltered returns the built ToolConfig plus any tool type
+// strings dropped here because the model isn't Nova2 (web_search/code_execution
+// survive ValidateChatToolsForProvider via the Nova carve-out but only actually
+// work on Nova2 models). Callers combine this with ValidateChatToolsForProvider's
+// own dropped list for a complete picture.
+func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string) {
+	if params == nil {
+		return nil, nil
+	}
+
+	isNova2 := schemas.IsNova2Model(model)
 	var bedrockTools []BedrockTool
+	var droppedForModel []string
 	for _, tool := range filtered {
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
@@ -1881,6 +1921,23 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, pa
 					CachePoint: newBedrockCachePoint(tool.CacheControl.TTL),
 				})
 			}
+		} else if typeStr := string(tool.Type); strings.HasPrefix(typeStr, "web_search_") || strings.HasPrefix(typeStr, "code_execution_") {
+			// web_search/code_execution survive ValidateChatToolsForProvider only
+			// via the WebSearchNova/CodeExecNova carve-out — the only Bedrock
+			// models that actually support them are Nova2, via the nova_grounding /
+			// nova_code_interpreter system tools. Anything else here (already
+			// filtered by ValidateChatToolsForProvider) falls through and is
+			// silently dropped, matching the pre-existing behavior for
+			// unsupported server tools.
+			systemToolName := BedrockSystemToolNovaGrounding
+			if strings.HasPrefix(typeStr, "code_execution_") {
+				systemToolName = BedrockSystemToolNovaCodeInterpreter
+			}
+			if bt := convertToNovaSystemTool(systemToolName, isNova2); bt != nil {
+				bedrockTools = append(bedrockTools, *bt)
+			} else {
+				droppedForModel = append(droppedForModel, typeStr)
+			}
 		}
 	}
 
@@ -1890,7 +1947,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, pa
 	// doesn't support), omit ToolConfig entirely so the request is valid and
 	// the model simply answers without tool access.
 	if len(bedrockTools) == 0 {
-		return nil
+		return nil, droppedForModel
 	}
 
 	toolConfig := &BedrockToolConfig{
@@ -1940,7 +1997,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, pa
 		}
 	}
 
-	return toolConfig
+	return toolConfig, droppedForModel
 }
 
 // convertToolChoice converts Bifrost tool choice to Bedrock format
@@ -1988,21 +2045,22 @@ func convertToolChoice(toolChoice schemas.ChatToolChoice) *BedrockToolChoice {
 func extractToolsFromConversationHistory(ctx context.Context, messages []schemas.ChatMessage) (bool, []BedrockTool) {
 	hasToolContent := false
 	toolsMap := make(map[string]BedrockTool)
+	var toolNames []string // Insertion-order tracking for toolsMap
 
 	for _, msg := range messages {
-		hasToolContent = checkMessageForToolContent(ctx, msg, toolsMap) || hasToolContent
+		hasToolContent = checkMessageForToolContent(ctx, msg, toolsMap, &toolNames) || hasToolContent
 	}
 
 	tools := make([]BedrockTool, 0, len(toolsMap))
-	for _, tool := range toolsMap {
-		tools = append(tools, tool)
+	for _, toolName := range toolNames {
+		tools = append(tools, toolsMap[toolName])
 	}
 
 	return hasToolContent, tools
 }
 
 // checkMessageForToolContent checks a single message for tool content and updates the tools map
-func checkMessageForToolContent(ctx context.Context, msg schemas.ChatMessage, toolsMap map[string]BedrockTool) bool {
+func checkMessageForToolContent(ctx context.Context, msg schemas.ChatMessage, toolsMap map[string]BedrockTool, toolNames *[]string) bool {
 	hasContent := false
 
 	// Check assistant tool calls
@@ -2012,6 +2070,7 @@ func checkMessageForToolContent(ctx context.Context, msg schemas.ChatMessage, to
 			if toolCall.Function.Name != nil {
 				toolName := bedrockAliasToolName(ctx, *toolCall.Function.Name)
 				if _, exists := toolsMap[toolName]; !exists {
+					*toolNames = append(*toolNames, toolName)
 					// Create a complete schema object for extracted tools
 					schemaObject := map[string]interface{}{
 						"type":       "object",
