@@ -609,15 +609,30 @@ func TestSetupStreamCancellation_NoPanicOnCancelledContext(t *testing.T) {
 type countingStreamCloser struct {
 	closeCount atomic.Int32
 	readCount  atomic.Int32
+	lastErr    atomic.Value // holds closeErrBox, set by CloseWithError
 }
+
+// closeErrBox wraps the error passed to CloseWithError so a nil error can
+// still be stored in the atomic.Value (Store panics on a bare nil interface).
+type closeErrBox struct{ err error }
 
 func (c *countingStreamCloser) Read([]byte) (int, error) {
 	c.readCount.Add(1)
 	return 0, io.EOF
 }
 
-func (c *countingStreamCloser) CloseWithError(error) error {
+func (c *countingStreamCloser) CloseWithError(err error) error {
 	c.closeCount.Add(1)
+	c.lastErr.Store(closeErrBox{err})
+	return nil
+}
+
+// LastCloseError returns the error passed to the most recent CloseWithError
+// call, or nil if CloseWithError has not been called yet.
+func (c *countingStreamCloser) LastCloseError() error {
+	if box, ok := c.lastErr.Load().(closeErrBox); ok {
+		return box.err
+	}
 	return nil
 }
 
@@ -755,8 +770,15 @@ func (c *blockingErrCloser) CloseWithError(err error) error {
 func TestReleaseStreamingResponse_BoundsDrainAndDropsConnection(t *testing.T) {
 	t.Parallel()
 
+	const idleTimeout = 30 * time.Millisecond
+	// CI-safe slack over the configured idle timeout: generous enough to
+	// absorb scheduler jitter on a loaded CI runner, but tight enough to
+	// prove the drain is bounded by idleTimeout rather than some much larger
+	// (or absent) fallback.
+	const upperBound = 20 * idleTimeout
+
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
-	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 30*time.Millisecond)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleTimeout)
 
 	body := newBlockingErrCloser()
 	resp := fasthttp.AcquireResponse()
@@ -766,12 +788,20 @@ func TestReleaseStreamingResponse_BoundsDrainAndDropsConnection(t *testing.T) {
 	ReleaseStreamingResponse(ctx, resp)
 	elapsed := time.Since(start)
 
-	if elapsed > 2*time.Second {
-		t.Fatalf("ReleaseStreamingResponse blocked for %v on a never-terminating body stream; want it bounded by the configured stream idle timeout", elapsed)
+	if elapsed > upperBound {
+		t.Fatalf("ReleaseStreamingResponse blocked for %v on a never-terminating body stream; want it bounded by ~%v (%v idle timeout + CI slack)", elapsed, upperBound, idleTimeout)
 	}
 
 	select {
 	case err := <-body.errCh:
+		// Measured from the same start as elapsed above, so this pins down
+		// *when* the forced close happened, not just that ReleaseStreamingResponse
+		// eventually returned — the two are distinct because the drain goroutine
+		// races the idle timer independently of the caller.
+		closedAt := time.Since(start)
+		if closedAt > upperBound {
+			t.Fatalf("CloseWithError fired %v after start; want within %v of the %v idle timeout", closedAt, upperBound, idleTimeout)
+		}
 		// ReleaseStreamingResponse reuses ErrStreamIdleTimeout for this forced
 		// close (the same sentinel NewIdleTimeoutReader's timer uses) rather
 		// than a drain-specific error, since both are the same failure mode:
@@ -809,6 +839,9 @@ func TestReleaseStreamingResponse_NormalDrainReleasesWithoutForcingClose(t *test
 	}
 	if got := body.closeCount.Load(); got != 1 {
 		t.Fatalf("expected exactly one CloseWithError call via the normal resp.CloseBodyStream() path, got %d", got)
+	}
+	if err := body.LastCloseError(); err != nil {
+		t.Fatalf("expected the normal drain path to close with a nil error (not the idle-timeout forced-close branch), got %v", err)
 	}
 }
 
