@@ -108,10 +108,12 @@ func (r *SSEStreamReader) SendDone() bool {
 	return r.Send([]byte("data: [DONE]\n\n"))
 }
 
-// sseHeartbeatFrame is an SSE comment line -- per the WHATWG SSE spec, a line
-// beginning with ':' is a comment that every compliant client ignores. It never
-// surfaces to application code as a real event.
-var sseHeartbeatFrame = []byte(": heartbeat\n\n")
+// sseHeartbeatFrame is an SSE comment line that every compliant client ignores.
+// Deliberately no trailing blank line: that's the event-dispatch signal, and
+// some deployed decoders (e.g. openai-go ssestream < v3.43.0) dispatch an empty
+// event on it and abort the stream (#5874). A bare comment line is still a real
+// socket write, which is all the disconnect probe needs.
+var sseHeartbeatFrame = []byte(": heartbeat\n")
 
 // SendHeartbeat sends a no-op SSE comment line purely to force an additional
 // downstream write attempt. Client-disconnect detection in this reader is
