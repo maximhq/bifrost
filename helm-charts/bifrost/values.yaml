@@ -952,6 +952,9 @@ bifrost:
       #   - attribute: "groups"
       #     value: "bifrost-admins"
       #     role: "admin"
+      # # Strategy for picking one role when a user resolves to more than one:
+      # # "highestPermissionCount" (default) = role with the most permissions; "order" = evaluate top to bottom, first matching rule wins.
+      # roleResolutionStrategy: "highestPermissionCount"
       # attributeTeamMappings:
       #   - attribute: "groups"
       #     value: "*"            # pass-through: every group becomes a team
