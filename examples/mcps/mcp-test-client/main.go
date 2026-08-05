@@ -5,8 +5,9 @@
 // MCP server accepts:
 //
 //   - header credentials: a virtual key (x-bf-vk / Authorization: Bearer /
-//     x-api-key) or a session id (x-bf-mcp-session-id), used for the
-//     `headers` and `both` server auth modes; and
+//     x-api-key), a JWT (Authorization: Bearer), or a session id
+//     (x-bf-mcp-session-id), used for the `headers` and `both` server auth
+//     modes; and
 //   - OAuth: full RFC 9728/8414 discovery + dynamic client registration + PKCE
 //     authorization-code flow, used for the `both` and `oauth` server modes.
 //
@@ -75,6 +76,7 @@ func main() {
 	vk := flag.String("vk", "", "virtual key, sent as x-bf-vk (auth=headers)")
 	bearer := flag.String("bearer", "", "virtual key sent as Authorization: Bearer (auth=headers)")
 	apiKey := flag.String("api-key", "", "virtual key sent as x-api-key (auth=headers)")
+	jwt := flag.String("jwt", "", "JWT sent as Authorization: Bearer (auth=headers; mutually exclusive with -bearer)")
 	session := flag.String("session", "", "session id, sent as x-bf-mcp-session-id (auth=headers)")
 	flag.Var(extra, "header", "extra header \"Key: Value\" (repeatable, any auth)")
 	scope := flag.String("scope", "mcp", "comma-separated OAuth scopes (auth=oauth)")
@@ -89,6 +91,13 @@ func main() {
 	}
 	if *bearer != "" {
 		headers["Authorization"] = "Bearer " + *bearer
+	}
+	if *jwt != "" {
+		if *bearer != "" {
+			fmt.Fprintln(os.Stderr, "error: -bearer and -jwt both set Authorization: Bearer and are mutually exclusive")
+			os.Exit(1)
+		}
+		headers["Authorization"] = "Bearer " + *jwt
 	}
 	if *apiKey != "" {
 		headers["x-api-key"] = *apiKey
