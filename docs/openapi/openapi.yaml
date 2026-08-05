@@ -1612,6 +1612,8 @@ components:
       $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
 
     # Governance - Pricing Overrides
+    PricingOverrideScopeKind:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideScopeKind'
     PricingOverrideRequestType:
       $ref: './schemas/management/governance.yaml#/PricingOverrideRequestType'
     PricingPatch:
