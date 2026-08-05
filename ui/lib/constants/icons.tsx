@@ -818,6 +818,25 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	modelark: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				fill="currentColor"
+				fillRule="evenodd"
+				height={resolvedSize}
+				style={{ flex: "none", lineHeight: "1" }}
+				viewBox="0 0 24 24"
+				width={resolvedSize}
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>ModelArk</title>
+				<path d="M12 1.5 1.5 7.5v9L12 22.5l10.5-6v-9L12 1.5zm0 2.31 8.5 4.857v8.666L12 20.19l-8.5-4.857V8.667L12 3.81zM9.75 8.25v7.5l6.5-3.75-6.5-3.75z"></path>
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons

@@ -465,6 +465,9 @@
         },
         "sarvam": {
           "$ref": "#/$defs/provider"
+        },
+        "modelark": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true

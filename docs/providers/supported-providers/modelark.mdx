@@ -1,0 +1,175 @@
+---
+title: "ModelArk"
+description: "BytePlus ModelArk API conversion guide - text-to-video and image-to-video generation with the Seedance and Dreamina model families"
+icon: "film"
+---
+
+## Overview
+
+ModelArk is BytePlus' hosted inference platform for the Volcengine ARK models. Bifrost supports its asynchronous content-generation task API, which backs the Seedance and Dreamina video models. Key characteristics:
+
+- **Single generation endpoint** - text-to-video and image-to-video are the same call; the presence of an image content part selects image-to-video
+- **Task-based** - generation returns a task ID immediately, and the clip is fetched by retrieving that task
+- **Pre-signed output URLs** - completed tasks expose a temporary TOS link to the rendered MP4
+
+### Supported Operations
+
+| Operation | Supported | Endpoint |
+|-----------|-----------|----------|
+| Video Generation | ✅ | `/contents/generations/tasks` |
+| Video Retrieve | ✅ | `/contents/generations/tasks/{task_id}` |
+| Video Download | ✅ | via Retrieve + URL download |
+| Video Delete | ❌ | - |
+| Video List | ❌ | - |
+| Video Remix | ❌ | - |
+
+<Warning>
+**Unsupported Operations**: Chat Completions, Text Completions, Responses, Embeddings, Speech, Transcription, Rerank, OCR, Image Generation, Batches, Files, and List Models.
+</Warning>
+
+---
+
+# 1. Video Generation
+
+## Generate (`POST /v1/videos`)
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | ModelArk model, e.g. `seedance-1-0-pro-fast-251015` |
+| `prompt` | string | ❌ | Text description of the video; required unless `input_reference` is set |
+| `input_reference` | string | ❌ | First-frame image for image-to-video, as an HTTPS URL or a base64 data URI |
+| `seconds` | string | ❌ | Duration in seconds, sent as `duration` |
+| `size` | string | ❌ | Resolution as `WxH` (e.g. `1280x720`); mapped to ModelArk's frame-height tier `resolution` (`720p`) |
+| `seed` | int | ❌ | Sampling seed |
+| `audio` | bool | ❌ | Enable audio generation, sent as `generate_audio` |
+
+**Extra Params**
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `ratio` | string | Aspect ratio such as `16:9`, `3:4` or `adaptive` (default: `adaptive`) |
+| `watermark` | bool | Burn ModelArk's watermark into the output |
+| `callback_url` | string | Endpoint ModelArk calls when the task reaches a terminal state |
+
+Any other extra param is merged into the request body unchanged, so model-specific fields such as `draft` reach ModelArk without a Bifrost release.
+
+**Filtered Parameters**
+
+- `negative_prompt` - not supported by the ModelArk task API
+- `video_uri` - ModelArk has no video-to-video endpoint
+
+**Generation Modes** (auto-detected from inputs)
+
+- **Text-to-video**: `prompt` only
+- **Image-to-video**: `input_reference`, optionally with `prompt`
+
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) with `id`, `status`, `videos[]`
+
+**Bifrost statuses** (normalized): `queued` → `in_progress` → `completed` / `failed`
+
+These values are the normalized view returned by Bifrost's API. ModelArk's native statuses are: `queued`, `running`, `succeeded`, `failed`, `cancelled`.
+
+## Retrieve / Download
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Get status | `GET /v1/videos/{id}` | Poll until `status: completed` |
+| Download content | `GET /v1/videos/{id}/content` | Returns raw video bytes (MP4) |
+
+## Caveats
+
+<Accordion title="Models must be activated before use">
+**Severity**: High
+**Behavior**: ModelArk rejects tasks for models the account has not enabled, returning the error code `ModelNotOpen`.
+**Impact**: Every request for that model fails until the model is activated in the Ark Console; retrying does not help.
+</Accordion>
+
+<Accordion title="Output URLs expire">
+**Severity**: Medium
+**Behavior**: A completed task exposes a pre-signed TOS URL rather than durable storage.
+**Impact**: Download the clip promptly; the link stops working once its signature expires.
+</Accordion>
+
+<Accordion title="Resolution is a tier, not exact dimensions">
+**Severity**: Low
+**Behavior**: `size` is converted to ModelArk's `resolution` tier by frame height, so `1280x720` becomes `720p`. A size that is neither `WxH` nor a tier is dropped.
+**Impact**: The rendered aspect ratio comes from `ratio` (or the source image under `adaptive`), not from the width in `size`.
+</Accordion>
+
+---
+
+## Authentication
+
+**Bearer token:**
+
+```
+Authorization: Bearer <ARK_API_KEY>
+```
+
+Keys are issued per account in the BytePlus ModelArk console.
+
+## Configuration
+
+**HTTP Settings:**
+
+- **Base URL**: `https://ark.ap-southeast.bytepluses.com/api/v3` (default)
+- **Max Connections**: from `NetworkConfig.MaxConnsPerHost`
+- **Timeouts**: from `NetworkConfig.DefaultRequestTimeoutInSeconds`
+
+Set `base_url` on the provider to target a different ModelArk region.
+
+---
+
+## Setup & Configuration
+
+Configure ModelArk as a provider.
+
+<Tabs>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "modelark": {
+      "keys": [
+        {
+          "name": "modelark-key-1",
+          "value": "env.MODELARK_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.ModelArk:
+    return []schemas.Key{{
+        Name:   "modelark-key-1",
+        Value:  *schemas.NewSecretVar("env.MODELARK_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Reference Links
+
+- [BytePlus ModelArk API Documentation](https://docs.byteplus.com/en/docs/ModelArk)
+- [Seedance video models](https://docs.byteplus.com/en/docs/ModelArk/1366799)
