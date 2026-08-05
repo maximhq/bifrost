@@ -391,7 +391,13 @@ func (l *Log) BeforeCreate(tx *gorm.DB) error {
 	if l.CreatedAt.IsZero() {
 		l.CreatedAt = time.Now().UTC()
 	}
-	return l.SerializeFields()
+	if err := l.SerializeFields(); err != nil {
+		return err
+	}
+	if tx.Name() == "postgres" {
+		sanitizePostgresModelTextFields(l)
+	}
+	return nil
 }
 
 // AfterFind GORM hook to deserialize JSON fields
@@ -1116,7 +1122,13 @@ func (l *MCPToolLog) BeforeCreate(tx *gorm.DB) error {
 	if l.Timestamp.IsZero() {
 		l.Timestamp = time.Now().UTC()
 	}
-	return l.SerializeFields()
+	if err := l.SerializeFields(); err != nil {
+		return err
+	}
+	if tx.Name() == "postgres" {
+		sanitizePostgresModelTextFields(l)
+	}
+	return nil
 }
 
 // AfterFind GORM hook to deserialize JSON fields
