@@ -39,7 +39,11 @@ export function useVirtualKeyUsage(vk: VirtualKey | null | undefined): {
 	// Only treat the VK as AP-managed when an AP explicitly lists this VK in its virtual_key_ids.
 	// No fallback to "first active" / "first AP" — that misattributed budgets in multi-AP setups.
 	const managingProfile = vk ? userAPs.find((p) => p.virtual_key_ids?.includes(vk.id)) : undefined;
-	const isManagedByProfile = managingProfile !== undefined;
+	// The server-computed flag is the source of truth for "is this managed" — it does not
+	// depend on the RBAC-gated access-profile call. managingProfile still resolves the profile
+	// name/actions when the caller can view access profiles; without that permission the VK is
+	// still known to be managed (lock + notice), just without the profile name.
+	const isManagedByProfile = (vk?.is_access_profile_managed ?? false) || managingProfile !== undefined;
 
 	const displayBudgets: Budget[] | undefined = managingProfile
 		? (managingProfile.budgets ?? []).map((line) => ({
