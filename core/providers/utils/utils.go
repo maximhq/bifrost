@@ -3192,7 +3192,22 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 	}
 }
 
+// ErrStreamDrainTimeout is used as the CloseWithError argument when the
+// post-terminal-chunk drain in ReleaseStreamingResponse exceeds its bound. A
+// non-nil error forces fasthttp to close the underlying connection instead of
+// returning it to the idle pool (see client.go's customStreamBody callback).
+var ErrStreamDrainTimeout = errors.New("stream drain timeout: upstream did not terminate its body in time")
+
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
+//
+// The drain is bounded by GetStreamIdleTimeout(ctx). This runs after the SSE
+// loop's own idle-timeout reader has already been stopped (stopIdleTimeout
+// fires before this is called), so without a bound here nothing protects
+// against an upstream that holds the chunked body open past its terminal
+// event (observed against bedrock_mantle): io.Copy would block forever,
+// parking the calling goroutine in this defer and, because it runs before the
+// defer that closes the provider's response channel, wedging the SSE
+// producer loop so the client never sees `data: [DONE]`.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
 	if resp == nil {
 		return
@@ -3217,11 +3232,38 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
 	}()
-	// Drain any remaining data from the body stream before releasing.
-	// This prevents "whitespace in header" errors when the connection is reused
-	// (see: https://github.com/valyala/fasthttp/issues/1743).
-	if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-		getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+	// Drain any remaining data from the body stream before releasing. This
+	// prevents "whitespace in header" errors when the connection is reused
+	// (see: https://github.com/valyala/fasthttp/issues/1743). Bounded: run the
+	// copy in its own goroutine and race it against the idle timeout instead of
+	// blocking this goroutine (and thus the defer chain above it) indefinitely
+	// on an upstream that never sends its terminating chunk.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		defer func() {
+			if r := recover(); r != nil {
+				getLogger().Debug("stream already closed during bounded drain in ReleaseStreamingResponse: %v\n", r)
+			}
+		}()
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
+	}()
+	select {
+	case <-drained:
+	case <-time.After(GetStreamIdleTimeout(ctx)):
+		// Upstream never terminated its body. Force-close the connection so it
+		// is dropped rather than reused, and unblock the drain goroutine above
+		// (it will exit on its own once the Read it's parked in errors out).
+		// Do not call resp.CloseBodyStream()/fasthttp.ReleaseResponse below:
+		// the drain goroutine still owns bodyStream and may be mid-Read: a
+		// second concurrent close/release here would double-Put the pooled
+		// reader/requestStream. Leaking resp to GC is the same trade-off used
+		// elsewhere in this function when ownership of the close is uncertain.
+		getLogger().Warn("streaming response body drain timed out; dropping connection instead of reusing it")
+		closeBodyStream(bodyStream, ErrStreamDrainTimeout)
+		return
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
 	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close

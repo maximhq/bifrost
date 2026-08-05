@@ -717,6 +717,97 @@ func TestReleaseStreamingResponse_SkipsWhenAlreadyClaimed(t *testing.T) {
 	fasthttp.ReleaseResponse(resp)
 }
 
+// blockingErrCloser models an upstream body stream that never terminates on
+// its own (e.g. bedrock_mantle holding its chunked body open past the
+// terminal SSE event): Read blocks until CloseWithError is called. It
+// implements fasthttp's ReadCloserWithError (Read + CloseWithError), the
+// interface resp.bodyStream satisfies for a real streaming response.
+type blockingErrCloser struct {
+	unblock chan struct{}
+	errCh   chan error
+	once    sync.Once
+}
+
+func newBlockingErrCloser() *blockingErrCloser {
+	return &blockingErrCloser{unblock: make(chan struct{}), errCh: make(chan error, 1)}
+}
+
+func (c *blockingErrCloser) Read([]byte) (int, error) {
+	<-c.unblock
+	return 0, io.EOF
+}
+
+func (c *blockingErrCloser) CloseWithError(err error) error {
+	c.once.Do(func() {
+		c.errCh <- err
+		close(c.unblock)
+	})
+	return nil
+}
+
+// TestReleaseStreamingResponse_BoundsDrainAndDropsConnection reproduces the
+// bedrock_mantle hang: the upstream body stream never terminates, so an
+// unbounded io.Copy in the drain would block ReleaseStreamingResponse (and
+// thus the whole defer chain that closes the provider's response channel)
+// forever. The drain must be bounded by the configured stream idle timeout
+// and force-close the connection with a non-nil error on timeout, so
+// fasthttp drops it instead of returning it to the idle pool.
+func TestReleaseStreamingResponse_BoundsDrainAndDropsConnection(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 30*time.Millisecond)
+
+	body := newBlockingErrCloser()
+	resp := fasthttp.AcquireResponse()
+	resp.SetBodyStream(body, -1)
+
+	start := time.Now()
+	ReleaseStreamingResponse(ctx, resp)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("ReleaseStreamingResponse blocked for %v on a never-terminating body stream; want it bounded by the configured stream idle timeout", elapsed)
+	}
+
+	select {
+	case err := <-body.errCh:
+		if err == nil {
+			t.Fatal("expected a non-nil error on the forced close so fasthttp drops the connection instead of reusing it")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drain timeout never force-closed the body stream")
+	}
+
+	// resp is intentionally leaked here (not released): the drain goroutine
+	// may still be shutting down and could race a concurrent ReleaseResponse,
+	// same GC-leak trade-off as TestReleaseStreamingResponse_SkipsWhenAlreadyClaimed.
+}
+
+// TestReleaseStreamingResponse_NormalDrainReleasesWithoutForcingClose asserts
+// that when the upstream body terminates promptly, ReleaseStreamingResponse
+// takes its original fast path unchanged: it drains via resp.CloseBodyStream()
+// (not the forced-close branch), so the connection remains eligible for reuse.
+func TestReleaseStreamingResponse_NormalDrainReleasesWithoutForcingClose(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, time.Second)
+
+	body := &countingStreamCloser{}
+	resp := fasthttp.AcquireResponse()
+	resp.SetBodyStream(body, -1)
+
+	ReleaseStreamingResponse(ctx, resp)
+
+	if got := body.readCount.Load(); got == 0 {
+		t.Fatal("expected ReleaseStreamingResponse to drain the body stream")
+	}
+	if got := body.closeCount.Load(); got != 1 {
+		t.Fatalf("expected exactly one CloseWithError call via the normal resp.CloseBodyStream() path, got %d", got)
+	}
+}
+
 // TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection covers the
 // pre-response error path: fasthttp.Do can fail before installing a body stream.
 // Releasing that empty response must not mark the request context as
