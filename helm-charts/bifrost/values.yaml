@@ -86,6 +86,62 @@ service:
   port: 8080
   annotations: {}
 
+# Prometheus Operator ServiceMonitor for scraping Bifrost's native /metrics endpoint.
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com/v1), e.g. from
+# kube-prometheus-stack.
+serviceMonitor:
+  enabled: false
+  # Extra labels on the ServiceMonitor object. Match your Prometheus instance's
+  # serviceMonitorSelector, e.g. `release: kube-prometheus-stack`.
+  additionalLabels: {}
+  # Namespace to create the ServiceMonitor in. Defaults to the release namespace.
+  namespace: ""
+  # Path Bifrost exposes Prometheus metrics on.
+  path: /metrics
+  # Scrape interval. Empty string uses the Prometheus global default.
+  interval: 30s
+  # Per-scrape timeout. Empty string uses the Prometheus default.
+  scrapeTimeout: 10s
+  # Scrape scheme: http (default) or https.
+  scheme: ""
+  # TLS settings for the scrape endpoint (https). See the ServiceMonitor spec.
+  tlsConfig: {}
+  # Authenticate the scrape with Bifrost's admin credentials.
+  #
+  # Bifrost's auth middleware is global: when auth is on (bifrost.authConfig.isEnabled
+  # or bifrost.governance.authConfig.isEnabled) /metrics requires credentials too —
+  # only /health, /api/session/login, /api/session/is-auth-enabled, /api/oauth/callback
+  # and /api/info are always open. An unauthenticated scrape gets a 401 and the target
+  # silently sits at up=0: Prometheus looks healthy but stores no Bifrost metrics.
+  # Turn this on whenever auth is enabled.
+  basicAuth:
+    enabled: false
+    # Secret holding the admin credentials. Defaults to the existingSecret already
+    # configured under bifrost.governance.authConfig (preferred) or bifrost.authConfig,
+    # so rotating the admin password rotates the scrape credentials with it. Prometheus
+    # can only read credentials from a Secret, so inline adminUsername/adminPassword
+    # will not work — use existingSecret there, or point this at a Secret yourself.
+    # The Secret must exist in the ServiceMonitor's namespace (see `namespace` above).
+    existingSecret: ""
+    # Keys within that Secret. Default to the usernameKey/passwordKey of the authConfig
+    # the secret was resolved from, falling back to "username" / "password".
+    usernameKey: ""
+    passwordKey: ""
+  # Bearer-token auth for the scrape, as an alternative to basicAuth (mutually
+  # exclusive with it). Passed through to the endpoint's `authorization` field, e.g.
+  #   authorization:
+  #     type: Bearer
+  #     credentials:
+  #       name: bifrost-scrape-token
+  #       key: token
+  authorization: {}
+  # Keep target labels on collision instead of letting Prometheus prefix them.
+  honorLabels: false
+  # relabel_configs applied before scraping.
+  relabelings: []
+  # metric_relabel_configs applied to scraped samples (e.g. drop high-cardinality series).
+  metricRelabelings: []
+
 # Single ingress (legacy format):
 ingress:
   enabled: false
