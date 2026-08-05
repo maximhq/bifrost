@@ -289,6 +289,16 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			}
 			responseCount++
 
+			// Safety check to prevent infinite loops, enforced as a hard cap
+			// before processing this chunk's content (rather than after,
+			// which would let the first over-cap chunk through) - and as a
+			// test failure, not a silent break, so a runaway/incomplete
+			// stream can't still pass validation on whatever partial tool
+			// call happened to accumulate before the cap was hit.
+			if responseCount > sarvamAdjustedMaxChunks(testConfig.Provider, 500) {
+				t.Fatalf("❌ Received too many streaming chunks (over %d), something might be wrong", sarvamAdjustedMaxChunks(testConfig.Provider, 500))
+			}
+
 			// Process tool calls from this chunk
 			if response.BifrostChatResponse.Choices != nil {
 				for _, choice := range response.BifrostChatResponse.Choices {
@@ -303,10 +313,6 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 						}
 					}
 				}
-			}
-
-			if responseCount > 500 {
-				break
 			}
 		}
 
@@ -404,6 +410,16 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 							}
 						}
 						responseCount++
+
+						// Safety check to prevent infinite loops, enforced as a hard
+						// cap before processing this chunk's content (rather than
+						// after, which would let the first over-cap chunk through).
+						if responseCount > sarvamAdjustedMaxChunks(testConfig.Provider, 500) {
+							return ResponsesStreamValidationResult{
+								Passed: false,
+								Errors: []string{"❌ Received too many streaming chunks, something might be wrong"},
+							}
+						}
 
 						if response.BifrostResponsesStreamResponse != nil {
 							streamResp := response.BifrostResponsesStreamResponse
@@ -509,14 +525,6 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 									// Use the complete arguments from the done event
 									accumulator.AccumulateResponsesToolCall(callID, name, streamResp.Arguments, itemID)
 								}
-							}
-						}
-
-						// Safety check to prevent infinite loops
-						if responseCount > 500 {
-							return ResponsesStreamValidationResult{
-								Passed: false,
-								Errors: []string{"❌ Received too many streaming chunks, something might be wrong"},
 							}
 						}
 

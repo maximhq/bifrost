@@ -14,6 +14,22 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// sarvamAdjustedMaxChunks widens a streaming infinite-loop safety cap to 3000
+// for Sarvam and leaves it at defaultMax for every other provider. Sarvam's
+// chat models have verbose, on-by-default reasoning that streams far more
+// chunks than other providers before content/tool-call deltas finish -
+// ~1400+ observed live for a single long-form prompt - so the generic caps
+// used across this package (500 for chat/responses streaming, 300 for
+// responses lifecycle events, 100-500 for the tool-call-streaming variants)
+// can cut a Sarvam stream short and produce a false failure rather than
+// catching a real infinite loop.
+func sarvamAdjustedMaxChunks(provider schemas.ModelProvider, defaultMax int) int {
+	if provider == schemas.Sarvam {
+		return 3000
+	}
+	return defaultMax
+}
+
 // Shared test texts for TTS->SST round-trip validation
 const (
 	// Basic test text for simple round-trip validation
