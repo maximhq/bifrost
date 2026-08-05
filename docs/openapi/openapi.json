@@ -47739,15 +47739,15 @@
             "in": "query",
             "description": "Filter by scope kind",
             "schema": {
-              "type": "string",
-              "enum": [
-                "global",
-                "provider",
-                "provider_key",
-                "virtual_key",
-                "virtual_key_provider",
-                "virtual_key_provider_key"
-              ]
+              "$ref": "#/components/schemas/PricingOverrideScopeKind"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Filter by user ID (for user* scopes)",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -47772,6 +47772,32 @@
             "description": "Filter by provider key ID",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive substring match against the pricing override name. A non-empty value switches the response to the paginated shape.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results to return. A non-empty `limit`, `offset`, or `search` value switches the response to the paginated shape.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of results to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         ],
@@ -83787,6 +83813,21 @@
           }
         }
       },
+      "PricingOverrideScopeKind": {
+        "type": "string",
+        "description": "Scope that determines which requests a pricing override applies to. The virtual_key* family is checked before the user* family during cost resolution, which is checked before the provider/global scopes; within a family, more identifiers present means a more specific match.\n",
+        "enum": [
+          "global",
+          "provider",
+          "provider_key",
+          "virtual_key",
+          "virtual_key_provider",
+          "virtual_key_provider_key",
+          "user",
+          "user_provider",
+          "user_provider_key"
+        ]
+      },
       "PricingOverrideRequestType": {
         "type": "string",
         "description": "Request type for pricing override filtering. Stream variants are treated identically to their base type - specifying `chat_completion` covers both streaming and non-streaming chat requests.\n",
@@ -83833,11 +83874,41 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_flex": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_flex": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic research preview). Flat rate across the full context window - no 128k/200k/272k tiering."
+          },
+          "output_cost_per_token_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic research preview). Flat rate across the full context window - no 128k/200k/272k tiering."
+          },
           "input_cost_per_character": {
             "type": "number",
             "minimum": 0
           },
           "input_cost_per_token_above_128k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_image_above_128k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_video_per_second_above_128k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_audio_per_second_above_128k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -83849,7 +83920,39 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_above_200k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
           "output_cost_per_token_above_200k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_200k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_flex_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_flex_above_272k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -83869,11 +83972,15 @@
             "type": "number",
             "minimum": 0
           },
-          "cache_read_input_token_cost_priority": {
+          "cache_read_input_token_cost_above_200k_tokens_priority": {
             "type": "number",
             "minimum": 0
           },
-          "cache_read_input_image_token_cost": {
+          "cache_creation_input_token_cost_above_1hr": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_1hr_above_200k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -83881,11 +83988,62 @@
             "type": "number",
             "minimum": 0
           },
-          "input_cost_per_image": {
+          "cache_read_input_token_cost_priority": {
             "type": "number",
             "minimum": 0
           },
-          "output_cost_per_image": {
+          "cache_read_input_token_cost_flex": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_image_token_cost": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_flex_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_flex": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_flex_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "cache_creation_input_token_cost_above_1hr_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "cache_read_input_token_cost_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "input_cost_per_image": {
             "type": "number",
             "minimum": 0
           },
@@ -83893,15 +84051,39 @@
             "type": "number",
             "minimum": 0
           },
+          "output_cost_per_image": {
+            "type": "number",
+            "minimum": 0
+          },
           "output_cost_per_pixel": {
             "type": "number",
             "minimum": 0
           },
-          "input_cost_per_image_token": {
+          "output_cost_per_image_premium_image": {
             "type": "number",
             "minimum": 0
           },
-          "output_cost_per_image_token": {
+          "output_cost_per_image_above_512_and_512_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_512_and_512_pixels_and_premium_image": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_and_premium_image": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_2048_and_2048_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_4096_and_4096_pixels": {
             "type": "number",
             "minimum": 0
           },
@@ -83921,31 +84103,15 @@
             "type": "number",
             "minimum": 0
           },
-          "output_cost_per_image_premium_image": {
+          "input_cost_per_image_token": {
             "type": "number",
             "minimum": 0
           },
-          "output_cost_per_image_above_512_and_512_pixels": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_cost_per_image_above_1024_and_1024_pixels": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_cost_per_image_above_2048_and_2048_pixels": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_cost_per_image_above_4096_and_4096_pixels": {
+          "output_cost_per_image_token": {
             "type": "number",
             "minimum": 0
           },
           "input_cost_per_audio_token": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_cost_per_audio_token": {
             "type": "number",
             "minimum": 0
           },
@@ -83958,6 +84124,10 @@
             "minimum": 0
           },
           "input_cost_per_video_per_second": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_audio_token": {
             "type": "number",
             "minimum": 0
           },
@@ -83976,6 +84146,19 @@
           "code_interpreter_cost_per_session": {
             "type": "number",
             "minimum": 0
+          },
+          "inference_geo_us_multiplier": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Anthropic data-residency multiplier applied when usage.inference_geo == \"us\"."
+          },
+          "ocr_cost_per_page": {
+            "type": "number",
+            "minimum": 0
+          },
+          "annotation_cost_per_page": {
+            "type": "number",
+            "minimum": 0
           }
         }
       },
@@ -83992,16 +84175,14 @@
             "description": "Human-readable label"
           },
           "scope_kind": {
-            "type": "string",
-            "enum": [
-              "global",
-              "provider",
-              "provider_key",
-              "virtual_key",
-              "virtual_key_provider",
-              "virtual_key_provider_key"
+            "$ref": "#/components/schemas/PricingOverrideScopeKind"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
             ],
-            "description": "Scope that determines which requests this override applies to"
+            "description": "Required for user* scopes"
           },
           "virtual_key_id": {
             "type": [
@@ -84015,14 +84196,14 @@
               "string",
               "null"
             ],
-            "description": "Required for provider and virtual_key_provider scopes"
+            "description": "Required for provider, virtual_key_provider, and user_provider scopes"
           },
           "provider_key_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Required for provider_key and virtual_key_provider_key scopes"
+            "description": "Required for provider_key, virtual_key_provider_key, and user_provider_key scopes"
           },
           "match_type": {
             "type": "string",
@@ -84085,15 +84266,11 @@
             "description": "Human-readable label"
           },
           "scope_kind": {
+            "$ref": "#/components/schemas/PricingOverrideScopeKind"
+          },
+          "user_id": {
             "type": "string",
-            "enum": [
-              "global",
-              "provider",
-              "provider_key",
-              "virtual_key",
-              "virtual_key_provider",
-              "virtual_key_provider_key"
-            ]
+            "description": "Required for user* scopes"
           },
           "virtual_key_id": {
             "type": "string",
@@ -84101,11 +84278,11 @@
           },
           "provider_id": {
             "type": "string",
-            "description": "Required for provider and virtual_key_provider scopes"
+            "description": "Required for provider, virtual_key_provider, and user_provider scopes"
           },
           "provider_key_id": {
             "type": "string",
-            "description": "Required for provider_key and virtual_key_provider_key scopes"
+            "description": "Required for provider_key, virtual_key_provider_key, and user_provider_key scopes"
           },
           "match_type": {
             "type": "string",
@@ -84140,15 +84317,11 @@
             "description": "Human-readable label"
           },
           "scope_kind": {
+            "$ref": "#/components/schemas/PricingOverrideScopeKind"
+          },
+          "user_id": {
             "type": "string",
-            "enum": [
-              "global",
-              "provider",
-              "provider_key",
-              "virtual_key",
-              "virtual_key_provider",
-              "virtual_key_provider_key"
-            ]
+            "description": "Required for user* scopes"
           },
           "virtual_key_id": {
             "type": "string",
@@ -84156,11 +84329,11 @@
           },
           "provider_id": {
             "type": "string",
-            "description": "Required for provider and virtual_key_provider scopes"
+            "description": "Required for provider, virtual_key_provider, and user_provider scopes"
           },
           "provider_key_id": {
             "type": "string",
-            "description": "Required for provider_key and virtual_key_provider_key scopes"
+            "description": "Required for provider_key, virtual_key_provider_key, and user_provider_key scopes"
           },
           "match_type": {
             "type": "string",
@@ -84199,6 +84372,7 @@
       },
       "ListPricingOverridesResponse": {
         "type": "object",
+        "description": "When `limit`, `offset`, or `search` is supplied, `count` reflects the returned page while `total_count` reflects the full matching set. Otherwise (backward-compatible, non-paginated path) `total_count` equals `count` and `limit`/`offset` describe the full unpaged result.\n",
         "properties": {
           "pricing_overrides": {
             "type": "array",
@@ -84208,7 +84382,19 @@
           },
           "count": {
             "type": "integer",
-            "description": "Total number of overrides returned"
+            "description": "Number of overrides in this response"
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Total number of overrides matching the filters"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size used for this response"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset used for this response"
           }
         }
       },
