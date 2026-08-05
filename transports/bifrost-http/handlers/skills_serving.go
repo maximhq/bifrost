@@ -1321,6 +1321,10 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 	return path.Join(skillName, file.Path)
 }
 
+// lookupSkillByPathParamTimeout bounds the DB lookup in lookupSkillByPathParam. It must
+// never be derived from the request's *fasthttp.RequestCtx (see that function's comment).
+const lookupSkillByPathParamTimeout = 10 * time.Second
+
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.
 func (h *SkillsServingHandler) lookupSkillByPathParam(ctx *fasthttp.RequestCtx) (*tables.TableSkill, bool) {
 	name, ok := decodeStringPathParam(ctx, "skill-name", "skill name")
@@ -1328,7 +1332,20 @@ func (h *SkillsServingHandler) lookupSkillByPathParam(ctx *fasthttp.RequestCtx) 
 		return nil, false
 	}
 
-	skill, err := h.store.GetSkillByName(ctx, name)
+	// Must not pass ctx (a *fasthttp.RequestCtx) directly as the context.Context here: its
+	// Done() returns a server-wide channel (fasthttp.Server.done), closed only on server
+	// shutdown -- not per-request (fasthttp's own documented tradeoff, since allocating a
+	// channel per request is expensive). GetSkillByName's nested Preload("Files")/
+	// Preload("Files.Blob") queries make database/sql spawn an internal cancellation-watcher
+	// goroutine per query whenever ctx.Done() != nil, and that goroutine reads
+	// RequestCtx.s.done unsynchronized against Server.Shutdown()'s write of s.done = nil --
+	// a data race confirmed under -race. Deriving from context.Background() instead (as
+	// allSkillsZipDownload/genericZipDownload already do for their streaming bodies) avoids
+	// ever handing the raw RequestCtx to anything that watches Done() asynchronously.
+	lookupCtx, cancel := context.WithTimeout(context.Background(), lookupSkillByPathParamTimeout)
+	defer cancel()
+
+	skill, err := h.store.GetSkillByName(lookupCtx, name)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("skill %q not found", name))

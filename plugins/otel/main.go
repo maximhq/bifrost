@@ -839,6 +839,52 @@ func getStringAttr(attrs map[string]any, key string) string {
 	return ""
 }
 
+// getStringSliceAttr reads an array-valued span attribute ([]string or []any).
+func getStringSliceAttr(attrs map[string]any, key string) []string {
+	if attrs == nil {
+		return nil
+	}
+	switch v := attrs[key].(type) {
+	case []string:
+		return v
+	case []any:
+		// Preserve index so id/name arrays stay aligned; non-strings become "".
+		out := make([]string, len(v))
+		for i, e := range v {
+			out[i], _ = e.(string)
+		}
+		return out
+	}
+	return nil
+}
+
+// entitySetFromAttrs resolves one entity dimension from span attrs: plural arrays,
+// else scalar as a set of one, canonicalized.
+func entitySetFromAttrs(attrs map[string]any, idsKey, namesKey, scalarIDKey, scalarNameKey string) (idsCSV, namesCSV string) {
+	ids := getStringSliceAttr(attrs, idsKey)
+	names := getStringSliceAttr(attrs, namesKey)
+	if len(ids) == 0 {
+		if id := getStringAttr(attrs, scalarIDKey); id != "" {
+			ids = []string{id}
+			names = []string{getStringAttr(attrs, scalarNameKey)}
+		}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
+}
+
+// entitySetFromContext is entitySetFromAttrs for the request context path.
+func entitySetFromContext(ctx context.Context, idsKey, namesKey, scalarIDKey, scalarNameKey schemas.BifrostContextKey) (idsCSV, namesCSV string) {
+	ids, _ := ctx.Value(idsKey).([]string)
+	names, _ := ctx.Value(namesKey).([]string)
+	if len(ids) == 0 {
+		if id := bifrost.GetStringFromContext(ctx, scalarIDKey); id != "" {
+			ids = []string{id}
+			names = []string{bifrost.GetStringFromContext(ctx, scalarNameKey)}
+		}
+	}
+	return schemas.CanonicalEntitySet(ids, names)
+}
+
 func getIntAttr(attrs map[string]any, key string) int {
 	if attrs == nil {
 		return 0
@@ -880,19 +926,24 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	if method == "" {
 		method = span.Name
 	}
+	teamIDs, teamNames := entitySetFromAttrs(attrs, schemas.AttrBifrostTeamIDs, schemas.AttrBifrostTeamNames, schemas.AttrTeamID, schemas.AttrTeamName)
+	customerIDs, customerNames := entitySetFromAttrs(attrs, schemas.AttrBifrostCustomerIDs, schemas.AttrBifrostCustomerNames, schemas.AttrCustomerID, schemas.AttrCustomerName)
+	buIDs, buNames := entitySetFromAttrs(attrs, schemas.AttrBifrostBusinessUnitIDs, schemas.AttrBifrostBusinessUnitNames, schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
 	return BuildBifrostAttributes(
 		getStringAttr(attrs, schemas.AttrProviderName),
-		getStringAttr(attrs, schemas.AttrRequestModel),
+		schemas.NormalizeModelName(getStringAttr(attrs, schemas.AttrRequestModel)),
 		method,
 		getStringAttr(attrs, schemas.AttrVirtualKeyID),
 		getStringAttr(attrs, schemas.AttrVirtualKeyName),
 		getStringAttr(attrs, schemas.AttrSelectedKeyID),
 		getStringAttr(attrs, schemas.AttrSelectedKeyName),
 		getIntAttr(attrs, schemas.AttrFallbackIndex),
-		getStringAttr(attrs, schemas.AttrTeamID),
-		getStringAttr(attrs, schemas.AttrTeamName),
-		getStringAttr(attrs, schemas.AttrCustomerID),
-		getStringAttr(attrs, schemas.AttrCustomerName),
+		teamIDs,
+		teamNames,
+		customerIDs,
+		customerNames,
+		buIDs,
+		buNames,
 	)
 }
 
@@ -905,19 +956,24 @@ func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifro
 	if resolvedModel != "" {
 		model = resolvedModel
 	}
+	teamIDs, teamNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName)
+	customerIDs, customerNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName)
+	buIDs, buNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName)
 	return BuildBifrostAttributes(
 		string(provider),
-		model,
+		schemas.NormalizeModelName(model),
 		string(requestType),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID),
 		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName),
 		bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName),
+		teamIDs,
+		teamNames,
+		customerIDs,
+		customerNames,
+		buIDs,
+		buNames,
 	)
 }
 
@@ -1008,6 +1064,12 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		if span.Kind != schemas.SpanKindLLMCall && span.Kind != schemas.SpanKindRetry {
 			continue
 		}
+		// Skip spans with no provider and no model (avoid empty-label series); also
+		// excludes them from final-span selection below.
+		if getStringAttr(span.Attributes, schemas.AttrProviderName) == "" &&
+			strings.TrimSpace(getStringAttr(span.Attributes, schemas.AttrRequestModel)) == "" {
+			continue
+		}
 
 		spanAttrs := buildSpanAttrs(span)
 
@@ -1042,6 +1104,13 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	}
 
 	attrs := finalSpan.Attributes
+
+	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label series.
+	if getStringAttr(attrs, schemas.AttrProviderName) == "" &&
+		strings.TrimSpace(getStringAttr(attrs, schemas.AttrRequestModel)) == "" {
+		return
+	}
+
 	otelAttrs := buildSpanAttrs(finalSpan)
 
 	// Record retries used for this request. Read off the final span (the last attempt's

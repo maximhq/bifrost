@@ -1,4 +1,3 @@
-## 🐞 Fixed
-
 - **GigaChat Key Reconciliation**: Include GigaChat authentication and TLS configuration in key reconciliation hashes. [@krakenalt](https://github.com/krakenalt)
-- **SSRF Hardening on Plugin Downloads (breaking)**: Custom plugin (`.so`) downloads now go through an SSRF-hardened HTTP client - the download is refused if the URL resolves to a loopback, private (RFC 1918), CGNAT, link-local, or otherwise non-public address, including on every server restart since already-configured plugins are re-verified at boot. Deployments hosting a plugin on an internal/private-network URL must add that host to the new `server.plugin_download_private_allowlist` config (see the `transports` changelog) or switch to a local file path.
+- feat: add proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)
+- perf: bulk virtual key provider replacement and direct VK lookup to eliminate per-provider round trips in the config store (#5844)

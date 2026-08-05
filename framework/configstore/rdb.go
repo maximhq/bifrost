@@ -3755,6 +3755,218 @@ func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, vir
 	return nil
 }
 
+// Bounds for the set-based provider-config replacement below. They exist to keep
+// a single statement's payload predictable no matter how many providers a caller
+// supplies: without them, a virtual key with thousands of providers would build
+// one enormous multi-row INSERT or one enormous IN (...) list.
+const (
+	// Max rows per INSERT statement.
+	virtualKeyProviderConfigInsertBatchSize = 100
+	// Max values per IN (...) predicate.
+	virtualKeyProviderConfigIDChunkSize = 1000
+)
+
+// providerKeyName identifies a key by the pair that is actually unique for it.
+// Key names are only unique within a provider, so a bare name is not a safe map
+// key when several providers are being resolved in one pass.
+type providerKeyName struct {
+	provider string
+	name     string
+}
+
+// unresolvedKeyIdentifier renders a key reference for an error message, using
+// whichever identifier the caller actually supplied. index is the key's position
+// within its provider config and is only used when the reference is entirely
+// blank, so the error can still point at something.
+func unresolvedKeyIdentifier(key tables.TableKey, index int) string {
+	switch {
+	case key.KeyID != "":
+		return fmt.Sprintf("key_id=%s", key.KeyID)
+	case key.Name != "":
+		return fmt.Sprintf("name=%s", key.Name)
+	default:
+		return fmt.Sprintf("key[%d]", index)
+	}
+}
+
+// ReplaceVirtualKeyProviderConfigs atomically swaps a virtual key's entire provider
+// config set — deleting the old rows and inserting the new ones — inside the caller's
+// transaction.
+//
+// Why this exists: the previous call site looped over old configs calling
+// DeleteVirtualKeyProviderConfig, then looped over new ones calling
+// CreateVirtualKeyProviderConfig. That is ~4 statements per provider per virtual key,
+// which dominated wall-clock time for callers that rewrite provider configs across
+// thousands of virtual keys in one operation.
+// This does the same work as a handful of set-based statements instead.
+//
+// Delete parity with DeleteVirtualKeyProviderConfig is deliberate and must be preserved:
+// it removes the config-key join rows, the budgets owned by the config, the config row
+// itself, and the config's rate limit. Anything added there must be added here too.
+//
+// Callers should note it mutates providerConfigs in place: IDs are zeroed before insert,
+// then populated by the database, and Keys is detached so GORM does not auto-upsert the
+// association (the join rows are written explicitly below).
+//
+// Requires an existing transaction so a partial replacement can never be committed.
+func (s *RDBConfigStore) ReplaceVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string, providerConfigs []tables.TableVirtualKeyProviderConfig, txDB *gorm.DB) error {
+	if txDB == nil {
+		return fmt.Errorf("ReplaceVirtualKeyProviderConfigs requires a transaction, got nil tx")
+	}
+	txDB = txDB.WithContext(ctx)
+
+	// Phase 1: read the outgoing rows. Locked FOR UPDATE so a concurrent writer
+	// cannot delete or repoint them between this read and the deletes below.
+	var oldConfigs []tables.TableVirtualKeyProviderConfig
+	if err := dbForUpdate(txDB).Where("virtual_key_id = ?", virtualKeyID).Order("id").Find(&oldConfigs).Error; err != nil {
+		return err
+	}
+	oldIDs := make([]uint, 0, len(oldConfigs))
+	oldRateLimitIDs := make([]string, 0, len(oldConfigs))
+	for i := range oldConfigs {
+		oldIDs = append(oldIDs, oldConfigs[i].ID)
+		if oldConfigs[i].RateLimitID != nil {
+			oldRateLimitIDs = append(oldRateLimitIDs, *oldConfigs[i].RateLimitID)
+		}
+	}
+	// Phase 2: delete children before parents. Join rows and budgets reference the
+	// config row, so they must go first or the FKs would block the delete.
+	for start := 0; start < len(oldIDs); start += virtualKeyProviderConfigIDChunkSize {
+		end := min(start+virtualKeyProviderConfigIDChunkSize, len(oldIDs))
+		ids := oldIDs[start:end]
+		if err := txDB.Where("table_virtual_key_provider_config_id IN ?", ids).Delete(&tables.TableVirtualKeyProviderConfigKey{}).Error; err != nil {
+			return err
+		}
+		if err := txDB.Where("provider_config_id IN ?", ids).Delete(&tables.TableBudget{}).Error; err != nil {
+			return err
+		}
+		if err := txDB.Where("id IN ?", ids).Delete(&tables.TableVirtualKeyProviderConfig{}).Error; err != nil {
+			return err
+		}
+	}
+	// Rate limits are deleted last: the config row holds the FK to them, so they
+	// only become unreferenced once every config chunk above is gone.
+	for start := 0; start < len(oldRateLimitIDs); start += virtualKeyProviderConfigIDChunkSize {
+		end := min(start+virtualKeyProviderConfigIDChunkSize, len(oldRateLimitIDs))
+		if err := txDB.Where("id IN ?", oldRateLimitIDs[start:end]).Delete(&tables.TableRateLimit{}).Error; err != nil {
+			return err
+		}
+	}
+	// An empty incoming set means "remove all providers", which the deletes above
+	// have already done.
+	if len(providerConfigs) == 0 {
+		return nil
+	}
+
+	// Phase 3: collect the key references that still need resolving. A key carried
+	// over with a populated ID is already resolved; the rest are identified either
+	// by KeyID (UI input) or by name alone (config-file input). Both forms are
+	// gathered here and resolved in batched passes so the whole set costs a
+	// handful of queries rather than one per key.
+	keyIDs := make([]string, 0)
+	namesByProvider := make(map[string][]string)
+	for i := range providerConfigs {
+		providerConfigs[i].ID = 0
+		providerConfigs[i].VirtualKeyID = virtualKeyID
+		for j := range providerConfigs[i].Keys {
+			key := providerConfigs[i].Keys[j]
+			if key.ID > 0 {
+				continue
+			}
+			if key.KeyID != "" {
+				keyIDs = append(keyIDs, key.KeyID)
+			}
+			// A key can carry both, because KeyID lookup is allowed to miss and
+			// fall back to the name. Queue the name in that case too.
+			if key.Name != "" {
+				provider := providerConfigs[i].Provider
+				namesByProvider[provider] = append(namesByProvider[provider], key.Name)
+			}
+		}
+	}
+	resolvedByKeyID := make(map[string]tables.TableKey, len(keyIDs))
+	for start := 0; start < len(keyIDs); start += virtualKeyProviderConfigIDChunkSize {
+		end := min(start+virtualKeyProviderConfigIDChunkSize, len(keyIDs))
+		var keys []tables.TableKey
+		if err := txDB.Where("key_id IN ?", keyIDs[start:end]).Find(&keys).Error; err != nil {
+			return err
+		}
+		for i := range keys {
+			resolvedByKeyID[keys[i].KeyID] = keys[i]
+		}
+	}
+	// Names are only unique within a provider, so they are batched per provider
+	// and keyed by the pair. The provider count is bounded by the incoming config
+	// set, and each provider's names are chunked like every other IN (...) here.
+	resolvedByName := make(map[providerKeyName]tables.TableKey)
+	for provider, names := range namesByProvider {
+		for start := 0; start < len(names); start += virtualKeyProviderConfigIDChunkSize {
+			end := min(start+virtualKeyProviderConfigIDChunkSize, len(names))
+			var keys []tables.TableKey
+			if err := txDB.Where("provider = ? AND name IN ?", provider, names[start:end]).Find(&keys).Error; err != nil {
+				return err
+			}
+			for i := range keys {
+				resolvedByName[providerKeyName{provider: provider, name: keys[i].Name}] = keys[i]
+			}
+		}
+	}
+	// Phase 4: pair each config with its resolved keys. Collect every unresolved
+	// reference before failing so the error names all of them at once, and so an
+	// unresolved key aborts the transaction rather than silently dropping a grant.
+	var unresolved []string
+	keysByConfig := make([][]tables.TableKey, len(providerConfigs))
+	for i := range providerConfigs {
+		for j := range providerConfigs[i].Keys {
+			key := providerConfigs[i].Keys[j]
+			if key.ID == 0 {
+				// Same precedence as the single-config path: KeyID wins, and a
+				// KeyID that fails to resolve falls back to the name rather than
+				// failing outright.
+				resolvedKey, ok := resolvedByKeyID[key.KeyID]
+				if !ok && key.Name != "" {
+					resolvedKey, ok = resolvedByName[providerKeyName{provider: providerConfigs[i].Provider, name: key.Name}]
+				}
+				if !ok {
+					unresolved = append(unresolved, unresolvedKeyIdentifier(key, j))
+					continue
+				}
+				key = resolvedKey
+			}
+			keysByConfig[i] = append(keysByConfig[i], key)
+		}
+		providerConfigs[i].Keys = nil
+	}
+	if len(unresolved) > 0 {
+		return &ErrUnresolvedKeys{Identifiers: unresolved}
+	}
+
+	// Phase 5: insert. Config rows first so the database assigns their IDs, which
+	// the join rows below need.
+	// CreateInBatches already splits the slice into batchSize-sized INSERTs, so the
+	// bound is enforced here without an extra chunking loop. Keys is omitted because
+	// the join rows are written explicitly below.
+	if err := txDB.Omit("Keys").CreateInBatches(providerConfigs, virtualKeyProviderConfigInsertBatchSize).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	joinRows := make([]tables.TableVirtualKeyProviderConfigKey, 0)
+	for i := range providerConfigs {
+		for j := range keysByConfig[i] {
+			joinRows = append(joinRows, tables.TableVirtualKeyProviderConfigKey{
+				TableVirtualKeyProviderConfigID: providerConfigs[i].ID,
+				TableKeyID:                      keysByConfig[i][j].ID,
+			})
+		}
+	}
+	if len(joinRows) == 0 {
+		return nil
+	}
+	if err := txDB.CreateInBatches(joinRows, virtualKeyProviderConfigInsertBatchSize).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
 // UpdateVirtualKeyProviderConfig updates a virtual key provider config in the database.
 func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *tables.TableVirtualKeyProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {

@@ -1413,6 +1413,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															form.setValue("teamId", pendingTeamId, {
 																shouldDirty: true,
 															});
+															void form.trigger("entityType");
 														}
 														setPendingTeamId(null);
 														setShowReassignTeamWarning(false);
@@ -1550,7 +1551,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 								<div className="space-y-4">
 									<Label className="text-sm font-medium">Entity Assignment</Label>
 
-									<div className="grid grid-cols-1 items-center gap-2 md:grid-cols-2">
+									<div className="grid grid-cols-1 items-start gap-2 md:grid-cols-2">
 										<FormField
 											control={form.control}
 											name="entityType"
@@ -1567,42 +1568,16 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															},
 														]}
 														value={field.value}
-														onValueChange={async (value) => {
+														onValueChange={(value) => {
 															const val = value ?? "none";
 															field.onChange(val);
 															// Switching type clears both ids and lets the user pick;
 															// there is no entity list loaded to default from.
-															if (val === "team") {
-																form.setValue("teamId", "", {
-																	shouldDirty: true,
-																	shouldValidate: true,
-																});
-																form.setValue("customerId", "", {
-																	shouldDirty: true,
-																	shouldValidate: true,
-																});
-																await form.trigger(["teamId", "customerId", "entityType"]);
-															} else if (val === "customer") {
-																form.setValue("customerId", "", {
-																	shouldDirty: true,
-																	shouldValidate: true,
-																});
-																form.setValue("teamId", "", {
-																	shouldDirty: true,
-																	shouldValidate: true,
-																});
-																await form.trigger(["teamId", "customerId", "entityType"]);
-															} else {
-																form.setValue("teamId", "", {
-																	shouldDirty: true,
-																	shouldValidate: true,
-																});
-																form.setValue("customerId", "", {
-																	shouldDirty: true,
-																	shouldValidate: true,
-																});
-																await form.trigger(["teamId", "customerId", "entityType"]);
-															}
+															// Defer validation until submit or until an entity is chosen —
+															// eager trigger left a stuck refine error on entityType.
+															form.setValue("teamId", "", { shouldDirty: true });
+															form.setValue("customerId", "", { shouldDirty: true });
+															form.clearErrors(["entityType", "teamId", "customerId"]);
 														}}
 														disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
 														disableSearch
@@ -1634,6 +1609,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																	setShowReassignTeamWarning(true);
 																} else {
 																	field.onChange(newVal);
+																	// Refine error lives on entityType; re-run so a valid
+																	// team selection clears the assignment-type message.
+																	void form.trigger("entityType");
 																}
 															}}
 															// The already-assigned team may fall outside the
@@ -1665,7 +1643,10 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 														<FormLabel className="font-normal">Select Customer</FormLabel>
 														<CustomerSelector
 															value={field.value || ""}
-															onChange={(val) => field.onChange(val)}
+															onChange={(val) => {
+																field.onChange(val);
+																void form.trigger("entityType");
+															}}
 															fallbackOption={
 																field.value
 																	? {

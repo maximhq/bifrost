@@ -5064,6 +5064,12 @@
           "maximum": 300,
           "description": "Deprecated in the profiles wrapper; configure metrics_push_interval per profile instead."
         },
+        "export_timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Deprecated in the profiles wrapper; configure export_timeout per profile instead."
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {

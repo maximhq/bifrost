@@ -109,6 +109,7 @@ type BudgetAndRateLimitStatus struct {
 type GovernanceStore interface {
 	GetGovernanceData(ctx context.Context) *GovernanceData
 	GetVirtualKey(ctx context.Context, vkValue string) (*configstoreTables.TableVirtualKey, bool)
+	GetVirtualKeyByID(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, bool)
 	// Budget crud.
 	// UpsertBudgetConfig preserves in-memory CurrentUsage/LastReset on replacement —
 	// use it for every config publish (fresh load or admin edit) so a concurrent
