@@ -6,10 +6,9 @@ import (
 	"testing"
 )
 
-// Benchmarks AppendToContextList, which backs BifrostContextKeyRoutingEnginesUsed,
-// BifrostContextKeyMCPAddedTools and (via AppendRoutingEngineLog) the routing engine
-// log. Each append does a slices.Contains scan plus a full slice realloc, so building
-// a list of n entries is O(n^2).
+// Benchmarks AppendToContextList, which backs BifrostContextKeyRoutingEnginesUsed
+// and BifrostContextKeyMCPAddedTools. Its slices.Contains scan grows with the
+// existing list on every append, so building a distinct list is O(n^2).
 func benchAppendDistinct(b *testing.B, n int) {
 	vals := make([]string, n)
 	for i := range vals {
@@ -55,27 +54,96 @@ func BenchmarkSetValue_RestrictedWritesBlocked(b *testing.B) {
 	}
 }
 
-// Reserved keys are silently dropped; confirms the map lookup preserves that.
+// Reserved keys are silently preserved while non-reserved operations still run.
 func TestReservedKeyWritesStillBlocked(t *testing.T) {
-	ctx := NewBifrostContext(context.Background(), NoDeadline)
-	ctx.SetValue(BifrostContextKeyRequestID, "before-block")
-	ctx.BlockRestrictedWrites()
-	ctx.SetValue(BifrostContextKeyRequestID, "after-block")
-	if got, _ := ctx.Value(BifrostContextKeyRequestID).(string); got != "before-block" {
-		t.Fatalf("reserved key write not blocked: got %q, want %q", got, "before-block")
+	tests := []struct {
+		name                string
+		apply               func(*BifrostContext, BifrostContextKey) any
+		wantNonReserved     any
+		wantReservedReturn  any
+		checkReservedReturn bool
+	}{
+		{
+			name: "SetValue",
+			apply: func(ctx *BifrostContext, key BifrostContextKey) any {
+				ctx.SetValue(key, "after-block")
+				return nil
+			},
+			wantNonReserved: "after-block",
+		},
+		{
+			name: "ClearValue",
+			apply: func(ctx *BifrostContext, key BifrostContextKey) any {
+				ctx.ClearValue(key)
+				return nil
+			},
+			wantNonReserved: nil,
+		},
+		{
+			name: "GetAndSetValue",
+			apply: func(ctx *BifrostContext, key BifrostContextKey) any {
+				return ctx.GetAndSetValue(key, "after-block")
+			},
+			wantNonReserved:     "after-block",
+			wantReservedReturn:  "before-block",
+			checkReservedReturn: true,
+		},
 	}
-	// Non-reserved keys must still be writable while blocked.
-	ctx.SetValue(BifrostContextKeyUserID, "u-1")
-	if got, _ := ctx.Value(BifrostContextKeyUserID).(string); got != "u-1" {
-		t.Fatalf("non-reserved key write dropped: got %q", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := NewBifrostContext(context.Background(), NoDeadline)
+			ctx.SetValue(BifrostContextKeyRequestID, "before-block")
+			ctx.SetValue(BifrostContextKeyUserID, "before-block")
+			ctx.BlockRestrictedWrites()
+
+			reservedReturn := tt.apply(ctx, BifrostContextKeyRequestID)
+			if tt.checkReservedReturn && reservedReturn != tt.wantReservedReturn {
+				t.Fatalf("reserved operation returned %v, want %v", reservedReturn, tt.wantReservedReturn)
+			}
+			if got := ctx.Value(BifrostContextKeyRequestID); got != "before-block" {
+				t.Fatalf("reserved value changed: got %v, want before-block", got)
+			}
+
+			tt.apply(ctx, BifrostContextKeyUserID)
+			if got := ctx.Value(BifrostContextKeyUserID); got != tt.wantNonReserved {
+				t.Fatalf("non-reserved operation got %v, want %v", got, tt.wantNonReserved)
+			}
+		})
 	}
 }
 
-// isReservedKey must report membership of reservedKeys, and nothing else.
+// isReservedKey must report the canonical reserved-key contract, not merely
+// agree with the implementation map under test.
 func TestIsReservedKey(t *testing.T) {
-	for k := range reservedKeys {
-		if !isReservedKey(k) {
-			t.Fatalf("key %v in reservedKeys but isReservedKey returned false", k)
+	canonicalReservedKeys := []BifrostContextKey{
+		BifrostContextKeyVirtualKey,
+		BifrostContextKeyAPIKeyName,
+		BifrostContextKeyAPIKeyID,
+		BifrostContextKeyDirectKey,
+		BifrostContextKeyRequestID,
+		BifrostContextKeyFallbackRequestID,
+		BifrostContextKeySelectedKeyID,
+		BifrostContextKeySelectedKeyName,
+		BifrostContextKeyNumberOfRetries,
+		BifrostContextKeyFallbackIndex,
+		BifrostContextKeySkipKeySelection,
+		BifrostContextKeyPassthroughHeaders,
+		BifrostContextKeySkipBudgetAndRateLimits,
+		BifrostContextKeyURLPath,
+		BifrostContextKeyDeferTraceCompletion,
+		BifrostContextKeyAttemptTrail,
+		BifrostContextKeyStreamGated,
+		BifrostContextKeyMCPHealthCheckRequest,
+		BifrostContextKeyUpstreamLatency,
+		BifrostContextKeyRoutingInfo,
+	}
+	if len(reservedKeys) != len(canonicalReservedKeys) {
+		t.Fatalf("reserved key count = %d, want %d", len(reservedKeys), len(canonicalReservedKeys))
+	}
+	for _, key := range canonicalReservedKeys {
+		if !isReservedKey(key) {
+			t.Errorf("canonical key %v is not reserved", key)
 		}
 	}
 	if isReservedKey(BifrostContextKeyUserID) {
@@ -83,8 +151,8 @@ func TestIsReservedKey(t *testing.T) {
 	}
 }
 
-// Routing engine logs must stay in append order and keep duplicates (they carry
-// distinct timestamps, so they are not set-semantics data).
+// Routing engine logs must stay in append order and preserve repeated messages;
+// they are event data, not a set.
 func TestRoutingEngineLogOrderAndDuplicates(t *testing.T) {
 	ctx := NewBifrostContext(context.Background(), NoDeadline)
 	ctx.AppendRoutingEngineLog("governance", LogLevelInfo, "first")

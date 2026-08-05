@@ -13,7 +13,7 @@ var NoDeadline time.Time
 
 // reservedKeys are the context keys whose writes are dropped once
 // BlockRestrictedWrites is set. The guarded write paths (SetValue/ClearValue/
-// SetValues) consult this on every write, so it is a set rather than a slice:
+// GetAndSetValue) consult this on every write, so it is a set rather than a slice:
 // membership is the only thing ever asked of it.
 var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyVirtualKey:              {},
@@ -663,14 +663,12 @@ func (bc *BifrostContext) AppendRoutingEngineLog(engineName string, level LogLev
 	if bc == nil {
 		return
 	}
-	// Appended inline rather than through AppendToContextList, for two reasons.
-	// Its dedup scan can never hit here: RoutingEngineLogEntry carries a
-	// Timestamp, so no two entries are ever equal. And going through the generic
-	// costs an extra ~100 allocations per 50 appends versus this concrete type
-	// assertion (measured), because []T through a type parameter does not
-	// specialise the way []RoutingEngineLogEntry does. Routing logs are the
-	// highest-volume context list (53 call sites), so both matter here and
-	// nowhere else.
+	// Appended inline rather than through AppendToContextList because routing
+	// logs are event data that intentionally preserve duplicates. The concrete
+	// append also costs ~100 fewer allocations per 50 entries than the generic
+	// helper (measured), because []T through a type parameter does not specialise
+	// the way []RoutingEngineLogEntry does. Routing logs are the highest-volume
+	// context list (53 call sites), so both semantics and allocation cost matter.
 	existing, _ := bc.Value(BifrostContextKeyRoutingEngineLogs).([]RoutingEngineLogEntry)
 	bc.SetValue(BifrostContextKeyRoutingEngineLogs, append(existing, RoutingEngineLogEntry{
 		Engine:    engineName,
