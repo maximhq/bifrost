@@ -245,6 +245,7 @@ func materializeBedrockDocument(
 	filename *string,
 	fileType *string,
 	textHandling bedrockDocumentTextHandling,
+	allowEmptySource bool,
 ) (*BedrockDocumentSource, error) {
 	document := &BedrockDocumentSource{
 		Name:   "document",
@@ -291,6 +292,9 @@ func materializeBedrockDocument(
 	}
 
 	if fileData == nil {
+		if allowEmptySource {
+			return document, nil
+		}
 		return nil, nil
 	}
 
@@ -1322,6 +1326,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			block.File.Filename,
 			block.File.FileType,
 			bedrockDocumentKnownTextOnly,
+			true,
 		)
 		if err != nil {
 			return nil, err
