@@ -65,6 +65,7 @@ export const ModelPlaceholders = {
 	runware: "e.g. runware:100@1, runware:101@1",
 	fireworks: "e.g. accounts/fireworks/models/deepseek-v3p2",
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
+	saladcloud: "e.g. qwen3.6-35b-a3b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 };
 
@@ -98,6 +99,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	vllm: false,
 	fireworks: true,
 	sarvam: true,
+	saladcloud: true,
 	wafer: true,
 };
 

@@ -1,3 +1,4 @@
+- feat: add first-class Salad AI Gateway support for `qwen3.6-35b-a3b`, including chat, streaming, Responses compatibility, vision, tools, structured output, and model discovery
 - feat: add proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)
 - feat: add `WithFasthttpBufferSizes` option to `HTTPClientFactory` for configurable SCIM read/write buffers, fixing failures when IdP token endpoints return headers larger than the 4KB default (#5808)
 - fix: move SSE heartbeat handling into a common structure so client-disconnect detection is proactive instead of only firing on the next write attempt (#5850)
