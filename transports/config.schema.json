@@ -439,6 +439,9 @@
         "parasail": {
           "$ref": "#/$defs/provider"
         },
+        "saladcloud": {
+          "$ref": "#/$defs/provider"
+        },
         "perplexity": {
           "$ref": "#/$defs/provider"
         },
@@ -8393,6 +8396,7 @@
             "opencode-zen",
             "sgl",
             "parasail",
+            "saladcloud",
             "perplexity",
             "cerebras",
             "deepseek",
