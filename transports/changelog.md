@@ -1,5 +1,7 @@
 ## ✨ Features
 
+- **Salad AI Gateway Configuration**: Added `saladcloud` to the generated transport configuration schema.
+
 - **WebSocket Proxy Support** — Realtime and Responses WebSocket connections now route through the configured provider-level proxy (HTTP, SOCKS5, env-based) instead of always dialing direct
 - **Configurable SCIM Buffer Sizes** — Added `WithFasthttpBufferSizes` option to `HTTPClientFactory` so IdP token endpoints returning headers larger than the 4KB default no longer fail SCIM/OAuth clients
 
