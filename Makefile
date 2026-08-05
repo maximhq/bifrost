@@ -34,17 +34,18 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
 	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
 
-# Loads secrets into the current recipe shell. Reads USE_INFISICAL env var:
-#   USE_INFISICAL=1  -> source secrets from Infisical (`infisical export --path <p>`)
-#   anything else    -> source ./.env (legacy default)
-# Honors INFISICAL_PATH (default /local) when USE_INFISICAL=1.
+# Loads secrets into the current recipe shell. Infisical is the default source (Reads
+# USE_INFISICAL env var):
+#   USE_INFISICAL=0|n|N|no|NO|false|FALSE  -> source ./.env instead (explicit opt-out)
+#   anything else (including unset)        -> source secrets from Infisical (`infisical export --path <p>`)
+# Honors INFISICAL_PATH (default /local) when sourcing from Infisical.
 # After invoking `$(EXPOSE_ENV);`, all subsequent commands inherit the secrets
 # - no per-command prefix needed.
 # Use as: `$(EXPOSE_ENV); <your command>`
 define EXPOSE_ENV
 	case "$$USE_INFISICAL" in \
-		1|y|Y|yes|YES|true|TRUE) USE_INFISICAL_RESOLVED=1 ;; \
-		*) USE_INFISICAL_RESOLVED=0 ;; \
+		0|n|N|no|NO|false|FALSE) USE_INFISICAL_RESOLVED=0 ;; \
+		*) USE_INFISICAL_RESOLVED=1 ;; \
 	esac; \
 	if [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
 		if ! which infisical > /dev/null 2>&1; then \
@@ -1842,7 +1843,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  Composes with PROVIDER and FEATURE (predicates AND together)."; \
 		printf '  %-18s %s\n' "BASE_URL=<url>"  "Bifrost gateway URL (default: http://localhost:8080). Skips auto-start if /health responds."; \
 		printf '  %-18s %s\n' "APP_DIR=<dir>"   "Config dir passed to 'make dev' if Bifrost isn't already running (default: tests/integrations/python)."; \
-		printf '  %-18s %s\n' "FOLDER=\"<name>\"" "Newman --folder: scope to a single Postman folder (e.g. \"8. Cross-Model\"). Applied AFTER filtering."; \
+		printf '  %-18s %s\n' "FOLDER=\"<name>\"" "Scope to a single Postman folder (substring match, e.g. \"8. Cross-Model\"). Pre-filters (like PROVIDER/FEATURE) AND is"; \
+		printf '  %-18s %s\n' ""                "  passed to newman's own --folder as the final scope. In parallel mode (default), provider forks with zero items"; \
+		printf '  %-18s %s\n' ""                "  in that folder are skipped cleanly instead of forked-then-failed - use with PROVIDER=<one> to run a single fork."; \
 		printf '  %-18s %s\n' "ENV_FILE=<path>" "Postman environment JSON with real keys (kept out of git)."; \
 		printf '  %-18s %s\n' "VIEWER_PORT=N"   "Port for the interactive HTML viewer (default: 8090). Ignored if CI=1."; \
 		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only."; \
@@ -1854,6 +1857,17 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_BUCKET" "Env-sourced (.env/Infisical): GCS bucket for Vertex file ops (forwarded to Newman as vertexGcsBucket)."; \
 		printf '  %-18s %s\n' "VERTEX_GCS_PREFIX" "Env-sourced: GCS object prefix for Vertex file ops (forwarded as vertexGcsPrefix)."; \
+		printf '\n%s\n' "$(CYAN)Token Parity Matrix$(NC) ('Cross-Cut Round 33', generated - FOLDER or FEATURE=\"token parity\" to target it)"; \
+		printf '  %s\n' "Runs the same 3-round conversation directly against each provider AND through Bifrost, asserts usage lands in the same"; \
+		printf '  %s\n' "range, and writes tmp/harness-token-parity.md. Reuses the SAME env vars tests/integrations/python/config.json already reads"; \
+		printf '  %s\n' "for Bifrost's own provider config (sourced via .env/Infisical, same as everything else in this target - no separate setup):"; \
+		printf '  %s\n' "  openai/anthropic/gemini: OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY -> {{openaiKey}}/{{anthropicKey}}/{{genaiKey}}."; \
+		printf '  %s\n' "  bedrock:  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION (same creds Bifrost's own bedrock provider uses), plus {{bedrockModel}} via ENV_FILE."; \
+		printf '  %s\n' "  vertex:   VERTEX_PROJECT_ID / GOOGLE_LOCATION for project/region, plus gcloud CLI on PATH + authenticated ('gcloud auth login') -"; \
+		printf '  %s\n' "            the Makefile mints a fresh OAuth access token per run (VERTEX_CREDENTIALS in config.json is a service-account key,"; \
+		printf '  %s\n' "            not a bearer token Postman can use directly, so this is the one leg that still needs its own auth step)."; \
+		printf '  %s\n' "  ENV_FILE still overrides any of the above if set - these are just sane defaults from what's already injected."; \
+		printf '  %s\n' "  Skipped cells (provider genuinely can't do it, e.g. OpenAI+PDF, Anthropic+audio/video) are listed in the folder description."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
 		printf '  %s\n' "make run-provider-harness-test                       # full provider sweep"; \
@@ -1876,6 +1890,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/parallel-status"        "Per-provider pass/fail summary (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/newman-report.html"     "htmlextra report (sequential mode only — PARALLEL=0)."; \
 		printf '  %-30s %s\n' "tmp/stream-cancel-report.json" "Server-side stream cancellation probe report."; \
+		printf '  %-30s %s\n' "tmp/harness-token-parity-*.json" "Per-newman-process token parity fragments (one per provider fork in parallel mode)."; \
+		printf '  %-30s %s\n' "tmp/harness-token-parity.md"     "Direct-vs-Bifrost token usage table (prompt/completion/cached/total per backend+modality) - see Token Parity Matrix above."; \
+		printf '  %-30s %s\n' ""                                "  Same table is also injected into tmp/newman-report.html when present (sequential mode / PARALLEL=0 only)."; \
 		printf '\n'; \
 		exit 0; \
 	fi
@@ -1900,26 +1917,43 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
 	APP_DIR_VAL="$(or $(APP_DIR),tests/integrations/python)"; \
 	VIEWER_PORT_VAL="$(or $(VIEWER_PORT),8090)"; \
-	DBVERIFY_REPORTER=""; DBVERIFY_ARGS=""; DBVERIFY_READY=0; \
-	if [ "$(DB_VERIFY)" != "0" ]; then \
-		if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
-			DBVERIFY_READY=1; \
+	DBVERIFY_REPORTER=""; DBVERIFY_ARGS=""; DBVERIFY_READY=0; E2E_DEPS_READY=0; \
+	if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
+		E2E_DEPS_READY=1; \
+	else \
+		$(ECHO) "$(YELLOW)Installing e2e reporter deps (dbverify, token-parity)...$(NC)"; \
+		if (cd tests/e2e/api && npm install --silent); then \
+			E2E_DEPS_READY=1; \
 		else \
-			$(ECHO) "$(YELLOW)Installing dbverify reporter deps...$(NC)"; \
-			if (cd tests/e2e/api && npm install --silent); then \
-				DBVERIFY_READY=1; \
-			else \
-				$(ECHO) "$(YELLOW)dbverify dep install failed; cost checks disabled for this run (set DB_VERIFY=0 to silence)$(NC)"; \
-			fi; \
+			$(ECHO) "$(YELLOW)e2e reporter dep install failed; dbverify cost checks and the token-parity reporter are disabled for this run$(NC)"; \
 		fi; \
-		if [ "$$DBVERIFY_READY" = "1" ]; then \
-			export NODE_PATH="$(CURDIR)/tests/e2e/api/node_modules$${NODE_PATH:+:$$NODE_PATH}"; \
-			DBVERIFY_REPORTER=",dbverify"; \
-			LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
-			export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
-			DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
-			$(ECHO) "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+	fi; \
+	if [ "$$E2E_DEPS_READY" = "1" ]; then \
+		export NODE_PATH="$(CURDIR)/tests/e2e/api/node_modules$${NODE_PATH:+:$$NODE_PATH}"; \
+	fi; \
+	if [ "$(DB_VERIFY)" != "0" ] && [ "$$E2E_DEPS_READY" = "1" ]; then \
+		DBVERIFY_READY=1; \
+		DBVERIFY_REPORTER=",dbverify"; \
+		LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
+		export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
+		DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
+		$(ECHO) "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+	fi; \
+	TOKEN_PARITY_REPORTER=""; \
+	if [ "$$E2E_DEPS_READY" = "1" ]; then \
+		TOKEN_PARITY_REPORTER=",token-parity"; \
+	fi; \
+	rm -f tmp/harness-token-parity-*.json; \
+	if command -v gcloud > /dev/null 2>&1; then \
+		VERTEX_ACCESS_TOKEN_VAL="$$(gcloud auth print-access-token 2>/dev/null)"; \
+		if [ -n "$$VERTEX_ACCESS_TOKEN_VAL" ]; then \
+			$(ECHO) "$(CYAN)Vertex direct-call access token minted via gcloud (expires in ~1h).$(NC)"; \
+		else \
+			$(ECHO) "$(YELLOW)gcloud present but 'gcloud auth print-access-token' failed - Vertex direct-provider parity cells will 401 (run 'gcloud auth login' to fix).$(NC)"; \
 		fi; \
+	else \
+		VERTEX_ACCESS_TOKEN_VAL=""; \
+		$(ECHO) "$(YELLOW)gcloud not found - Vertex direct-provider parity cells will 401 (install the gcloud CLI and auth to enable them).$(NC)"; \
 	fi; \
 	STARTED_BY_US=0; \
 	cleanup() { \
@@ -2003,13 +2037,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	COLLECTION_FILE="tmp/harness-augmented.json"; \
 	FEATURE_ANY_FLAG=""; \
 	if [ -n "$$PICKED_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$PICKED_FEATURES"; fi; \
-	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ]; then \
-		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), feature-any=$$PICKED_FEATURES, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
+	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ]; then \
+		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$PICKED_FEATURES, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/filter-collection.mjs \
 			--source "$$COLLECTION_FILE" \
 			--out tmp/harness-filtered.json \
 			$(if $(PROVIDER),--provider $(PROVIDER),) \
 			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$$FEATURE_ANY_FLAG \
 			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { $(ECHO) "$(RED)Filter step failed$(NC)"; exit 1; }; \
 		COLLECTION_FILE="tmp/harness-filtered.json"; \
@@ -2031,7 +2066,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--source "$$COLLECTION_FILE" \
 				--out "tmp/harness-filtered-$$p.json" \
 				--provider "$$p" \
-				$(if $(FEATURE),--feature "$(FEATURE)",) > /dev/null 2>&1; then \
+				$(if $(FEATURE),--feature "$(FEATURE)",) \
+				$(if $(FOLDER),--folder "$(FOLDER)",) > /dev/null 2>&1; then \
+				$(ECHO) "$(YELLOW)[$$p] filter step failed - skipping$(NC)"; \
+				continue; \
+			fi; \
+			P_ITEM_COUNT=$$(grep -c '"request":' "tmp/harness-filtered-$$p.json" 2>/dev/null); \
+			P_ITEM_COUNT=$${P_ITEM_COUNT:-0}; \
+			if [ "$$P_ITEM_COUNT" -eq 0 ]; then \
 				$(ECHO) "$(YELLOW)[$$p] filter produced no items - skipping$(NC)"; \
 				continue; \
 			fi; \
@@ -2045,9 +2087,19 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 					$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
 					$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+					$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+					$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+					$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+					$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
+					$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
+					$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
+					$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
+					$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
+					$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
 					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 					$(if $(FOLDER),--folder "$(FOLDER)",) \
-					--reporters cli,json$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
+					--reporters cli,json$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
+					$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-$$p.json"} \
 					--reporter-json-export "tmp/newman-report-$$p.json" 2>&1 | sed "s/^/[$$p] /" \
 			) > "tmp/newman-cli-$$p.log" 2>&1 & \
 			BG_PID=$$!; \
@@ -2128,9 +2180,19 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
+				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
+				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
+				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
+				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
+				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
+				$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-sequential.json"} \
 				--reporter-json-export tmp/newman-report.json \
 				--reporter-htmlextra-export tmp/newman-report.html \
 				--reporter-htmlextra-title "Bifrost Provider Harness" \
@@ -2152,9 +2214,19 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
 				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
 				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
+				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
+				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
+				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
+				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
+				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
+				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER $$DBVERIFY_ARGS \
+				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
+				$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-sequential.json"} \
 				--reporter-json-export tmp/newman-report.json \
 				--reporter-htmlextra-export tmp/newman-report.html \
 				--reporter-htmlextra-title "Bifrost Provider Harness" \
@@ -2180,6 +2252,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		--bifrost-log tmp/bifrost-dev.log \
 		--out tmp/harness-failures.md || true; \
 	$(ECHO) "$(GREEN)Failure breakdown: tmp/harness-failures.md$(NC)"; \
+	if ls tmp/harness-token-parity-*.json >/dev/null 2>&1; then \
+		$(ECHO) "$(CYAN)Rendering token parity report...$(NC)"; \
+		$(USE_NODE); node tests/e2e/api/runners/render-token-parity-report.mjs \
+			--glob "tmp/harness-token-parity-*.json" \
+			--out tmp/harness-token-parity.md \
+			--html tmp/newman-report.html || true; \
+		$(ECHO) "$(GREEN)Token parity report: tmp/harness-token-parity.md (also injected into tmp/newman-report.html when present - sequential mode / PARALLEL=0 only)$(NC)"; \
+	fi; \
 	if [ -n "$(CI)" ] || [ -n "$$CI" ]; then \
 		$(ECHO) "$(CYAN)CI mode - skipping interactive viewer. Upload tmp/newman-report.html, tmp/harness-failures.md, and tmp/bifrost-dev.log as workflow artifacts.$(NC)"; \
 	else \

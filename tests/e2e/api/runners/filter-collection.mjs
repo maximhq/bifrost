@@ -32,6 +32,11 @@ const FEATURE_PARTS = (args.feature || "").toLowerCase().split(",").map((s) => s
 // --feature-any is the OR-of-keywords counterpart of --feature (which ANDs). Item passes
 // if it matches at least one keyword. Combines with --feature/--provider via AND.
 const FEATURE_ANY_PARTS = (args["feature-any"] || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
+// --folder is a pre-filter mirroring newman's own --folder flag, so a provider fork with zero
+// items inside the target folder gets skipped cleanly (existing "no items - skipping" logic in
+// the run-provider-harness-test Makefile target) instead of being forked and only then failing
+// with newman's "Unable to find a folder or request" once it tries to apply --folder itself.
+const FOLDER = (args.folder || "").toLowerCase();
 const RERUN_FAILED = args["rerun-failed"] === "true";
 const REPORT = args.report || "tmp/newman-report.json";
 
@@ -39,8 +44,8 @@ if (!SOURCE || !OUT) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !RERUN_FAILED) {
-  console.error("[filter-collection] need at least one of: --provider, --feature, --feature-any, --rerun-failed");
+if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !FOLDER && !RERUN_FAILED) {
+  console.error("[filter-collection] need at least one of: --provider, --feature, --feature-any, --folder, --rerun-failed");
   process.exit(2);
 }
 
@@ -61,8 +66,15 @@ const PROVIDER_KEYWORDS = {
 // taxonomy ("Structured Output cross-cut", "Vertex Features", ...) so PROVIDER and
 // FEATURE filters need to see them, otherwise a row named "openai/gpt-4o-mini" inside
 // folder "Structured Output cross-cut" is invisible to FEATURE="cross-cut".
+// Strips long base64-alphabet runs (40+ chars) before matching - embedded media payloads
+// (base64 images/PDFs/audio/video, e.g. in the Token Parity Matrix) are long enough that a
+// short PROVIDER_KEYWORDS substring like "o1" or "gpt-" can appear in them by pure chance,
+// causing an item to be spuriously claimed by the wrong provider partition. Real searchable
+// text (model names, prompts, folder names) never runs 40+ contiguous base64-alphabet chars.
+const stripBase64Blobs = (s) => s.replace(/[A-Za-z0-9+/]{40,}={0,2}/g, "");
+
 const buildHaystack = (item, ancestorNames) =>
-  (JSON.stringify(item) + " " + ancestorNames.join(" ")).toLowerCase();
+  stripBase64Blobs(JSON.stringify(item) + " " + ancestorNames.join(" ")).toLowerCase();
 
 // Structural keywords - matched against route shape, not name substring. Lets users
 // say FEATURE="cross-cut,structured output" and have it work for every row routed via
@@ -116,6 +128,19 @@ const itemMatchesProvider = (item, ancestorNames) => {
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
   if (PROVIDER === "bedrock_mantle") return isMantle;
   if (isMantle) return false;
+  // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
+  // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
+  // Route them exclusively to vertex.
+  const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
+  if (PROVIDER === "vertex") return isVertex;
+  if (isVertex && (PROVIDER === "gemini" || PROVIDER === "anthropic")) return false;
+  // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
+  // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
+  // otherwise be claimed by the openai partition too - same collision class as above. Route
+  // them exclusively to bedrock (they already match PROVIDER_KEYWORDS.bedrock's "bedrock"
+  // keyword with no extra logic needed for that direction).
+  const isBedrockOpenai = haystack.includes("bedrock_openai");
+  if (isBedrockOpenai && PROVIDER === "openai") return false;
   return keywords.some((k) => haystack.includes(k));
 };
 
@@ -129,6 +154,13 @@ const itemMatchesFeatureAny = (item, ancestorNames) => {
 	if (!FEATURE_ANY_PARTS.length) return true;
 	const haystack = buildHaystack(item, ancestorNames);
 	return FEATURE_ANY_PARTS.some((p) => matchesKeyword(item, ancestorNames, haystack, p));
+};
+
+// Matched against ancestor folder names specifically (not the whole item body) so a request
+// whose prompt text happens to mention a folder's name doesn't get pulled in from elsewhere.
+const itemMatchesFolder = (item, ancestorNames) => {
+	if (!FOLDER) return true;
+	return ancestorNames.some((name) => name.toLowerCase().includes(FOLDER));
 };
 
 let failedNames = null;
@@ -156,6 +188,7 @@ const passes = (item, ancestorNames) => {
   return itemMatchesProvider(item, ancestorNames) &&
     itemMatchesFeature(item, ancestorNames) &&
     itemMatchesFeatureAny(item, ancestorNames) &&
+    itemMatchesFolder(item, ancestorNames) &&
     itemMatchesRerunFailed(item);
 };
 
