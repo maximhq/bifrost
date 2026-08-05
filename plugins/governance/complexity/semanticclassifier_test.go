@@ -57,7 +57,7 @@ func TestSemanticClassifierNamesMatchedExemplarFromReusedGeneration(t *testing.T
 		require.NoError(t, store.Close(context.Background(), SemanticVectorStoreNamespace))
 	})
 
-	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreExternal)
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
 	_, _, err = warmSemanticExemplars(context.Background(), store, &config, testSemanticEmbedding, nil)
 	require.NoError(t, err)
 
@@ -211,15 +211,31 @@ func TestSemanticClassifierAppliesMinSimilarity(t *testing.T) {
 	}
 }
 
-// TestSemanticClassifierRejectsUnavailableExternalStore keeps the external
-// mode fail-closed rather than silently replacing an operator-selected backend.
-func TestSemanticClassifierRejectsUnavailableExternalStore(t *testing.T) {
+// TestSemanticClassifierFallsBackWhenNoStoreIsConfigured pins the one behavior
+// that makes "vector_store" safe to pick from the UI: selecting it on a
+// deployment that has no vector_store section must degrade to the embedded
+// store and keep serving, never fail the config or take classification offline.
+func TestSemanticClassifierFallsBackWhenNoStoreIsConfigured(t *testing.T) {
 	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
-	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreExternal)
+	t.Cleanup(func() {
+		require.NoError(t, classifier.Close())
+	})
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
+	require.NoError(t, classifier.ValidateConfig(&config))
 
-	err := classifier.ValidateConfig(&config)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires a configured Bifrost VectorStore")
+	classifier.SetEmbeddingFunc(testSemanticEmbedding)
+	classifier.Configure(&config)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusReady
+	}, time.Second, 10*time.Millisecond)
+
+	assert.NotNil(t, classifier.ownedStore, "a missing configured store must be replaced by the embedded one")
+	assert.Same(t, classifier.ownedStore, classifier.store)
+
+	result, err := classifier.Classify(context.Background(), ComplexityInput{LastUserText: "simple request"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.Accepted)
 }
 
 // TestWarmSemanticExemplarsReusesMatchingMarker reuses a persisted generation
@@ -267,7 +283,7 @@ func TestWarmSemanticExemplarsUsesBackendCompatibleLifecycle(t *testing.T) {
 	})
 
 	store := &semanticLifecycleProbeStore{VectorStore: backingStore}
-	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreExternal)
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
 
 	loaded, namespace, err := warmSemanticExemplars(context.Background(), store, &config, testSemanticEmbedding, nil)
 	require.NoError(t, err)
@@ -281,10 +297,10 @@ func TestWarmSemanticExemplarsUsesBackendCompatibleLifecycle(t *testing.T) {
 	assert.Equal(t, uuid.Version(5), markerID.Version())
 }
 
-func TestSemanticClassifierDefersAutoStoreUntilDependenciesAreWired(t *testing.T) {
+func TestSemanticClassifierDefersStoreSelectionUntilDependenciesAreWired(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	classifier := NewSemanticClassifier(context.Background(), logger)
-	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreAuto)
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
 	classifier.Configure(&config)
 
 	assert.Nil(t, classifier.ownedStore)
@@ -302,7 +318,7 @@ func TestSemanticClassifierDefersAutoStoreUntilDependenciesAreWired(t *testing.T
 	})
 
 	classifier.SetConfiguredStore(configuredStore)
-	assert.Nil(t, classifier.ownedStore, "auto mode must not allocate a private store before the embedding executor is wired")
+	assert.Nil(t, classifier.ownedStore, "vector_store mode must not allocate a private store before the embedding executor is wired")
 	classifier.SetEmbeddingFunc(testSemanticEmbedding)
 
 	require.Eventually(t, func() bool {
@@ -537,7 +553,7 @@ func TestSemanticClassifierRetainsPreviousExternalGeneration(t *testing.T) {
 	classifier.SetConfiguredStore(store)
 	classifier.SetEmbeddingFunc(testSemanticEmbedding)
 
-	v1 := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreExternal)
+	v1 := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
 	v1.Semantic.EmbeddingModel = "model-v1"
 	classifier.Configure(&v1)
 	require.Eventually(t, func() bool {
@@ -784,4 +800,65 @@ func makeSemanticTestPhrases(prefix string, count int) []string {
 		phrases[index] = fmt.Sprintf("%s exemplar %d", prefix, index)
 	}
 	return phrases
+}
+
+// TestSemanticClassifierRearmsForProviderOnlyWhenFailed pins the recovery path
+// for the state an operator can otherwise not escape: warmup fails because the
+// provider cannot serve (every key disabled), they fix the provider, and the
+// classifier has no other reason to try again — writes to the complexity
+// configuration are the only other trigger, and nothing about it has changed.
+func TestSemanticClassifierRearmsForProviderOnlyWhenFailed(t *testing.T) {
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(func() {
+		require.NoError(t, classifier.Close())
+	})
+
+	// Flipped after the failing generation settles, standing in for the operator
+	// re-enabling the key. Set through the classifier's own lock so the warmup
+	// goroutine cannot read it mid-write.
+	var serving atomic.Bool
+	classifier.SetEmbeddingFunc(func(_ context.Context, _ *SemanticConfig, text string) ([]float32, error) {
+		if !serving.Load() {
+			return nil, fmt.Errorf("synthetic provider failure")
+		}
+		switch text {
+		case "simple exemplar":
+			return []float32{1, 0}, nil
+		case "medium exemplar":
+			return []float32{0, 1}, nil
+		case "complex exemplar":
+			return []float32{-1, 0}, nil
+		}
+		return nil, fmt.Errorf("unexpected text %q", text)
+	})
+
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	classifier.Configure(&config)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusFailed
+	}, time.Second, 10*time.Millisecond, "warmup should fail while the provider cannot serve")
+
+	// A provider this classifier does not embed through is none of its business:
+	// re-arming on every provider edit would re-embed every phrase for nothing.
+	serving.Store(true)
+	classifier.RearmForProvider(schemas.ModelProvider("anthropic"))
+	require.Never(t, func() bool {
+		return classifier.Status().State != SemanticStatusFailed
+	}, 200*time.Millisecond, 20*time.Millisecond, "an unrelated provider must not restart warmup")
+
+	classifier.RearmForProvider(config.Semantic.Provider)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusReady
+	}, time.Second, 10*time.Millisecond, "the configured provider coming back should restart warmup")
+
+	// Healthy classifiers stay put: warmup re-embeds every phrase, so reacting to
+	// unrelated key edits on a serving provider would bill tokens for no gain.
+	classifier.mu.Lock()
+	revisionBefore := classifier.revision
+	classifier.mu.Unlock()
+	classifier.RearmForProvider(config.Semantic.Provider)
+	classifier.mu.Lock()
+	revisionAfter := classifier.revision
+	classifier.mu.Unlock()
+	assert.Equal(t, revisionBefore, revisionAfter, "a ready classifier must not re-embed on a provider change")
 }

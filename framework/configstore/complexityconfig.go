@@ -34,8 +34,10 @@ func (b *ComplexityTierBoundaries) Validate() error {
 }
 
 // ComplexityEditableKeywordConfig contains the user-editable per-tier lists.
-// The same lists feed both classifiers: the lexical matcher treats entries as
-// keywords, the semantic classifier embeds them as exemplars.
+// Entries are reference phrases for the semantic classifier, which embeds them
+// as exemplars. The lexical matcher also reads them as keywords, but it no
+// longer publishes a tier, so nothing an operator writes here reaches routing
+// by that path.
 type ComplexityEditableKeywordConfig struct {
 	SimpleKeywords  []string `json:"simple_keywords"`
 	MediumKeywords  []string `json:"medium_keywords"`
@@ -108,21 +110,13 @@ func hasAnyComplexityField(fields map[string]json.RawMessage, names ...string) b
 	return false
 }
 
-// Fallback behaviors when semantic classification is unavailable (executor not
-// wired, warmup incomplete) or exceeds its timeout.
-const (
-	ComplexitySemanticFallbackLexical = "lexical"
-	ComplexitySemanticFallbackNone    = "none"
-)
-
 // Vector store selection modes for exemplar embeddings. "embedded" (the
-// default) uses the built-in chromem store; "auto" opts into the configured
-// external store when present, falling back to embedded otherwise;
-// "external" makes a missing external store a startup error.
+// default) uses the built-in chromem store; "vector_store" uses the vector
+// store configured for Bifrost, falling back to the embedded store when none
+// is configured.
 const (
-	ComplexitySemanticVectorStoreAuto     = "auto"
-	ComplexitySemanticVectorStoreEmbedded = "embedded"
-	ComplexitySemanticVectorStoreExternal = "external"
+	ComplexitySemanticVectorStoreEmbedded   = "embedded"
+	ComplexitySemanticVectorStoreConfigured = "vector_store"
 )
 
 // MaxComplexitySemanticPhraseCharacters bounds one exemplar's input size.
@@ -130,8 +124,8 @@ const (
 const MaxComplexitySemanticPhraseCharacters = 2000
 
 // Semantic message-history bounds. The ceiling keeps one classification
-// embedding cheap and bounded; the analyzer's lexical conversation window uses
-// the same depth.
+// embedding cheap and bounded. The dormant lexical analyzer happens to scan a
+// conversation window of the same depth; the two are not wired together.
 const (
 	DefaultComplexitySemanticMessageHistoryCount = 1
 	MaxComplexitySemanticMessageHistoryCount     = 10
@@ -150,11 +144,11 @@ type ComplexitySemanticConfig struct {
 	Timeout        time.Duration         `json:"timeout,omitempty"`
 	// MinSimilarity is the floor a nearest-exemplar match must clear before its
 	// tier is used. Without it the nearest exemplar always wins, however
-	// unrelated the request is — semantic classification would never abstain,
-	// unlike the lexical analyzer, which returns no tier when it sees no signal.
-	// A match below the floor is treated exactly like an unavailable classifier
-	// and resolves through Fallback. Zero (the default) disables the floor and
-	// restores "nearest exemplar always wins".
+	// unrelated the request is, and semantic classification could never abstain.
+	// This is the only way it abstains. A match below the floor is treated
+	// exactly like an unavailable classifier: no tier is published and the
+	// request is recorded as "skipped". Zero (the default) disables the floor
+	// and restores "nearest exemplar always wins".
 	//
 	// The value is compared against the VectorStore backend's own similarity
 	// score, and those scales are not identical: chromem, Qdrant, Pinecone, and
@@ -268,9 +262,6 @@ func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
 	if out.Timeout == 0 {
 		out.Timeout = DefaultComplexitySemanticTimeout
 	}
-	if out.Fallback == "" {
-		out.Fallback = ComplexitySemanticFallbackLexical
-	}
 	if out.VectorStore == "" {
 		out.VectorStore = ComplexitySemanticVectorStoreEmbedded
 	}
@@ -307,10 +298,10 @@ func (c *ComplexitySemanticConfig) Validate() error {
 		)
 	}
 	switch c.VectorStore {
-	case ComplexitySemanticVectorStoreAuto, ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreExternal:
+	case ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreConfigured:
 	default:
-		return fmt.Errorf("semantic vector_store must be %q, %q, or %q, got %q",
-			ComplexitySemanticVectorStoreAuto, ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreExternal, c.VectorStore)
+		return fmt.Errorf("semantic vector_store must be %q or %q, got %q",
+			ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreConfigured, c.VectorStore)
 	}
 	return nil
 }
@@ -459,7 +450,7 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 }
 
 // validateComplexitySemanticPhrases bounds individual inputs and rejects
-// ambiguous labels without changing lexical-only semantics.
+// phrases labelled with more than one tier.
 func validateComplexitySemanticPhrases(keywords ComplexityEditableKeywordConfig) error {
 	type tierPhrases struct {
 		name   string

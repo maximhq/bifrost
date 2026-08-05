@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -406,12 +407,12 @@ func TestComplexityAnalyzerConfigPutAcceptsLegacyKeywordsAndWritesCanonicalShape
 	}
 }
 
-// TestComplexityAnalyzerConfigPutRejectsUnavailableExternalSemanticStore proves
-// runtime dependency validation runs before an invalid config reaches storage.
-func TestComplexityAnalyzerConfigPutRejectsUnavailableExternalSemanticStore(t *testing.T) {
+// TestComplexityAnalyzerConfigPutRejectsRuntimeValidationFailure proves runtime
+// dependency validation runs before an invalid config reaches storage.
+func TestComplexityAnalyzerConfigPutRejectsRuntimeValidationFailure(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
-	manager := &mockComplexityGovernanceManager{validationErr: errors.New("semantic vector_store \"external\" requires a configured Bifrost VectorStore")}
+	manager := &mockComplexityGovernanceManager{validationErr: errors.New("semantic classifier rejected the config")}
 	handler := &GovernanceHandler{
 		configStore:       store,
 		governanceManager: manager,
@@ -421,7 +422,7 @@ func TestComplexityAnalyzerConfigPutRejectsUnavailableExternalSemanticStore(t *t
 		Provider:       schemas.ModelProvider("openai"),
 		EmbeddingModel: "text-embedding-3-small",
 		Timeout:        time.Second,
-		VectorStore:    configstore.ComplexitySemanticVectorStoreExternal,
+		VectorStore:    configstore.ComplexitySemanticVectorStoreConfigured,
 	}
 
 	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, config))
@@ -430,8 +431,8 @@ func TestComplexityAnalyzerConfigPutRejectsUnavailableExternalSemanticStore(t *t
 	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	}
-	if !strings.Contains(string(ctx.Response.Body()), "requires a configured Bifrost VectorStore") {
-		t.Fatalf("expected external store validation error, got %s", string(ctx.Response.Body()))
+	if !strings.Contains(string(ctx.Response.Body()), "semantic classifier rejected the config") {
+		t.Fatalf("expected the runtime validation error to reach the client, got %s", string(ctx.Response.Body()))
 	}
 	if manager.reloadCalls != 0 {
 		t.Fatalf("invalid config must not reload, got %d reloads", manager.reloadCalls)
@@ -630,6 +631,70 @@ func TestComplexityAnalyzerConfigResetOverwritesLegacyThreeBoundaryRow(t *testin
 	}
 	if strings.Contains(entry.Value, "complex_reasoning") {
 		t.Fatalf("expected reset to drop legacy complex_reasoning key, raw row: %s", entry.Value)
+	}
+}
+
+// TestComplexityAnalyzerConfigResetPreservesSemanticBlock pins the boundary of
+// what "restore defaults" owns. The phrase lists and boundaries have built-in
+// defaults to go back to; the embedding provider, model, and settings
+// do not — resetting them would silently take classification offline and make
+// the operator re-enter settings the button never claimed to touch.
+func TestComplexityAnalyzerConfigResetPreservesSemanticBlock(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	custom := complexity.DefaultAnalyzerConfig()
+	custom.Keywords.SimpleKeywords = []string{"only phrase the operator wrote"}
+	custom.Semantic = &complexity.SemanticConfig{
+		Provider:       schemas.ModelProvider("openai"),
+		EmbeddingModel: "text-embedding-3-small",
+		Timeout:        time.Second,
+		VectorStore:    configstore.ComplexitySemanticVectorStoreConfigured,
+	}
+	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
+		t.Fatalf("seed custom config: %v", err)
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.resetComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("expected a stored config after reset")
+	}
+	if stored.Semantic == nil {
+		t.Fatal("reset must keep the embedding configuration, got a nil semantic block")
+	}
+	if stored.Semantic.EmbeddingModel != "text-embedding-3-small" {
+		t.Fatalf("expected the semantic block carried over intact, got %+v", stored.Semantic)
+	}
+	if stored.Semantic.VectorStore != configstore.ComplexitySemanticVectorStoreConfigured {
+		t.Fatalf("expected vector_store preserved, got %q", stored.Semantic.VectorStore)
+	}
+	// The phrase lists are what reset actually owns, so they must be back to
+	// defaults rather than merely surviving alongside the semantic block.
+	if slices.Contains(stored.Keywords.SimpleKeywords, "only phrase the operator wrote") {
+		t.Fatalf("expected default simple phrases after reset, got %v", stored.Keywords.SimpleKeywords)
+	}
+	// The response body drives the form the operator is looking at; if it
+	// omitted the block the UI would show an unconfigured classifier.
+	var body complexity.AnalyzerConfig
+	if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+		t.Fatalf("decode reset response: %v", err)
+	}
+	if body.Semantic == nil || body.Semantic.EmbeddingModel != "text-embedding-3-small" {
+		t.Fatalf("expected the reset response to carry the semantic block, got %s", string(ctx.Response.Body()))
 	}
 }
 

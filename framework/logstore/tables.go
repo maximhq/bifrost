@@ -57,7 +57,7 @@ type SearchFilters struct {
 	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
 	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
 	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity classification mechanism (lexical, skipped)
+	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity classification mechanism (semantic, skipped)
 	TeamIDs              []string          `json:"team_ids,omitempty"`
 	CustomerIDs          []string          `json:"customer_ids,omitempty"`
 	UserIDs              []string          `json:"user_ids,omitempty"`
@@ -195,7 +195,7 @@ type Log struct {
 	RoutingRuleID           *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName         *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	ComplexityTier          *string   `gorm:"type:varchar(50);index:idx_logs_complexity_tier" json:"complexity_tier,omitempty"`           // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); NULL when no routing rule demanded complexity
-	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism" json:"complexity_mechanism,omitempty"` // How the complexity tier was classified ("lexical", "skipped"; later "semantic", "llm")
+	ComplexityMechanism     *string   `gorm:"type:varchar(50);index:idx_logs_complexity_mechanism" json:"complexity_mechanism,omitempty"` // How the complexity tier was classified ("semantic", "skipped"; later "llm"). NULL means no routing rule referenced complexity_tier, so classification never ran
 	ComplexityScore         *float64  `gorm:"column:complexity_score" json:"complexity_score,omitempty"`                                  // Raw complexity score behind the tier; unindexed (detail-view only)
 	SelectedPromptName      *string   `gorm:"type:varchar(255)" json:"selected_prompt_name"`
 	SelectedPromptVersion   *string   `gorm:"type:varchar(64)" json:"selected_prompt_version"`
