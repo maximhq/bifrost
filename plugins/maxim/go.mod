@@ -3,8 +3,8 @@ module github.com/maximhq/bifrost/plugins/maxim
 go 1.26.5
 
 require (
-	github.com/maximhq/bifrost/core v1.7.5
-	github.com/maximhq/bifrost/framework v1.5.5
+	github.com/maximhq/bifrost/core v1.7.6
+	github.com/maximhq/bifrost/framework v1.5.6
 	github.com/maximhq/maxim-go v0.2.1
 )
 
@@ -63,6 +63,7 @@ require (
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
+	github.com/fasthttp/websocket v1.5.12 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
@@ -123,6 +124,7 @@ require (
 	github.com/qdrant/go-client v1.16.2 // indirect
 	github.com/redis/go-redis/v9 v9.17.2 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
+	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
