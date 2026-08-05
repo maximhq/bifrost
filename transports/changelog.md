@@ -16,6 +16,7 @@
 - **Bedrock Invoke Content Retention** — Bedrock's InvokeModel route now correctly decodes Anthropic's type-discriminated image/tool_use/tool_result blocks instead of silently dropping them
 - **Bedrock Document Message Placeholder** — Messages containing a document block without accompanying text no longer get rejected by Bedrock's Converse API
 - **VK Provider Bulk Replace** — Virtual key provider config replacement is now a single bulk operation instead of per-provider round trips, fixing a hot-path slowdown at scale
+- **Mistral OCR Blocks** — Forward `include_blocks` and `confidence_scores_granularity` to Mistral OCR (`/v1/ocr`) and carry provider-native `pages[].blocks` through the response (thanks [@hugochinchilla](https://github.com/hugochinchilla)!)
 
 ## 🗄️ Database Migrations
 
@@ -24,6 +25,7 @@
 ## 🐙 Closed GitHub Issues
 
 - [#5010](https://github.com/maximhq/bifrost/issues/5010) — Server-side SSE keepalive (comment heartbeat) to keep long-idle streams alive through intermediaries
+- [#5137](https://github.com/maximhq/bifrost/issues/5137) — Mistral OCR drops include_blocks and never returns pages[].blocks
 - [#5186](https://github.com/maximhq/bifrost/issues/5186) — Anthropic-surface replay of OpenAI encrypted reasoning mints a fresh item id, OpenAI 400s with "Encrypted content item_id did not match the target item id"
 
 ## 🔧 Maintenance

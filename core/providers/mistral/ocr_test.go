@@ -89,16 +89,18 @@ func TestToMistralOCRRequest(t *testing.T) {
 					DocumentURL: schemas.Ptr("https://example.com/doc.pdf"),
 				},
 				Params: &schemas.OCRParameters{
-					IncludeImageBase64:       schemas.Ptr(true),
-					Pages:                    []int{0, 1, 2},
-					ImageLimit:               schemas.Ptr(10),
-					ImageMinSize:             schemas.Ptr(100),
-					TableFormat:              schemas.Ptr("html"),
-					ExtractHeader:            schemas.Ptr(true),
-					ExtractFooter:            schemas.Ptr(false),
-					BBoxAnnotationFormat:     schemas.Ptr("json"),
-					DocumentAnnotationFormat: schemas.Ptr("markdown"),
-					DocumentAnnotationPrompt: schemas.Ptr("Summarize this document"),
+					IncludeImageBase64:          schemas.Ptr(true),
+					IncludeBlocks:               schemas.Ptr(true),
+					Pages:                       []int{0, 1, 2},
+					ImageLimit:                  schemas.Ptr(10),
+					ImageMinSize:                schemas.Ptr(100),
+					TableFormat:                 schemas.Ptr("html"),
+					ExtractHeader:               schemas.Ptr(true),
+					ExtractFooter:               schemas.Ptr(false),
+					ConfidenceScoresGranularity: schemas.Ptr("block"),
+					BBoxAnnotationFormat:        schemas.Ptr("json"),
+					DocumentAnnotationFormat:    schemas.Ptr("markdown"),
+					DocumentAnnotationPrompt:    schemas.Ptr("Summarize this document"),
 				},
 			},
 			validate: func(t *testing.T, result *MistralOCRRequest) {
@@ -109,6 +111,8 @@ func TestToMistralOCRRequest(t *testing.T) {
 
 				require.NotNil(t, result.IncludeImageBase64)
 				assert.True(t, *result.IncludeImageBase64)
+				require.NotNil(t, result.IncludeBlocks)
+				assert.True(t, *result.IncludeBlocks)
 				assert.Equal(t, []int{0, 1, 2}, result.Pages)
 				require.NotNil(t, result.ImageLimit)
 				assert.Equal(t, 10, *result.ImageLimit)
@@ -120,6 +124,8 @@ func TestToMistralOCRRequest(t *testing.T) {
 				assert.True(t, *result.ExtractHeader)
 				require.NotNil(t, result.ExtractFooter)
 				assert.False(t, *result.ExtractFooter)
+				require.NotNil(t, result.ConfidenceScoresGranularity)
+				assert.Equal(t, "block", *result.ConfidenceScoresGranularity)
 				require.NotNil(t, result.BBoxAnnotationFormat)
 				assert.Equal(t, "json", *result.BBoxAnnotationFormat)
 				require.NotNil(t, result.DocumentAnnotationFormat)
@@ -141,12 +147,14 @@ func TestToMistralOCRRequest(t *testing.T) {
 			validate: func(t *testing.T, result *MistralOCRRequest) {
 				require.NotNil(t, result)
 				assert.Nil(t, result.IncludeImageBase64)
+				assert.Nil(t, result.IncludeBlocks)
 				assert.Nil(t, result.Pages)
 				assert.Nil(t, result.ImageLimit)
 				assert.Nil(t, result.ImageMinSize)
 				assert.Nil(t, result.TableFormat)
 				assert.Nil(t, result.ExtractHeader)
 				assert.Nil(t, result.ExtractFooter)
+				assert.Nil(t, result.ConfidenceScoresGranularity)
 				assert.Nil(t, result.BBoxAnnotationFormat)
 				assert.Nil(t, result.DocumentAnnotationFormat)
 				assert.Nil(t, result.DocumentAnnotationPrompt)
@@ -308,6 +316,106 @@ func TestToBifrostOCRResponse(t *testing.T) {
 				require.NotNil(t, result)
 				require.NotNil(t, result.DocumentAnnotation)
 				assert.Equal(t, "This is a legal contract.", *result.DocumentAnnotation)
+			},
+		},
+		{
+			name: "response with blocks passes through as opaque values",
+			input: &MistralOCRResponse{
+				Model: "mistral-ocr-latest",
+				Pages: []MistralOCRPage{
+					{
+						Index:    0,
+						Markdown: "Page with blocks",
+						Blocks: &[]any{
+							map[string]any{
+								"type": "text",
+								"text": "Hello",
+								"bbox": []any{float64(1), float64(2), float64(3), float64(4)},
+							},
+							map[string]any{
+								"type": "table",
+								"rows": float64(3),
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
+				require.NotNil(t, result)
+				require.Len(t, result.Pages, 1)
+				require.NotNil(t, result.Pages[0].Blocks)
+				require.Len(t, *result.Pages[0].Blocks, 2)
+				first, ok := (*result.Pages[0].Blocks)[0].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "text", first["type"])
+				assert.Equal(t, "Hello", first["text"])
+			},
+		},
+		{
+			name: "populated blocks survive full JSON round-trip",
+			input: func() *MistralOCRResponse {
+				mistralJSON := []byte(`{
+					"model": "mistral-ocr-4-0",
+					"pages": [{
+						"index": 0,
+						"markdown": "hi",
+						"blocks": [
+							{"type":"text","content":"Hello","top_left_x":1,"top_left_y":2,"bottom_right_x":3,"bottom_right_y":4},
+							{"type":"text","content":"World","top_left_x":5,"top_left_y":6,"bottom_right_x":7,"bottom_right_y":8}
+						]
+					}]
+				}`)
+				var r MistralOCRResponse
+				require.NoError(t, sonic.Unmarshal(mistralJSON, &r))
+				return &r
+			}(),
+			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
+				require.NotNil(t, result)
+				require.NotNil(t, result.Pages[0].Blocks)
+				require.Len(t, *result.Pages[0].Blocks, 2)
+
+				out, err := sonic.Marshal(result)
+				require.NoError(t, err)
+				body := string(out)
+				assert.Contains(t, body, `"blocks":[`, "blocks must appear in top-level JSON")
+				assert.Contains(t, body, `"content":"Hello"`, "block content must survive")
+				assert.Contains(t, body, `"top_left_x":1`, "bbox coord must survive")
+				assert.Contains(t, body, `"content":"World"`)
+			},
+		},
+		{
+			name: "response with explicitly empty blocks preserves presence",
+			input: &MistralOCRResponse{
+				Model: "mistral-ocr-latest",
+				Pages: []MistralOCRPage{
+					{Index: 0, Markdown: "Page with empty blocks", Blocks: &[]any{}},
+				},
+			},
+			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
+				require.NotNil(t, result)
+				require.Len(t, result.Pages, 1)
+				require.NotNil(t, result.Pages[0].Blocks, "empty blocks must survive as non-nil pointer")
+				assert.Len(t, *result.Pages[0].Blocks, 0)
+
+				out, err := sonic.Marshal(result.Pages[0])
+				require.NoError(t, err)
+				assert.Contains(t, string(out), `"blocks":[]`, "empty blocks must serialize as [], not be omitted")
+			},
+		},
+		{
+			name: "response with absent blocks stays absent",
+			input: &MistralOCRResponse{
+				Model: "mistral-ocr-latest",
+				Pages: []MistralOCRPage{{Index: 0, Markdown: "Page without blocks"}},
+			},
+			validate: func(t *testing.T, result *schemas.BifrostOCRResponse) {
+				require.NotNil(t, result)
+				require.Len(t, result.Pages, 1)
+				assert.Nil(t, result.Pages[0].Blocks)
+
+				out, err := sonic.Marshal(result.Pages[0])
+				require.NoError(t, err)
+				assert.NotContains(t, string(out), `"blocks"`, "absent blocks must not appear in output")
 			},
 		},
 		{

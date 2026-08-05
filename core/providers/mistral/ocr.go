@@ -34,12 +34,14 @@ func ToMistralOCRRequest(req *schemas.BifrostOCRRequest) *MistralOCRRequest {
 
 	if req.Params != nil {
 		mistralReq.IncludeImageBase64 = req.Params.IncludeImageBase64
+		mistralReq.IncludeBlocks = req.Params.IncludeBlocks
 		mistralReq.Pages = req.Params.Pages
 		mistralReq.ImageLimit = req.Params.ImageLimit
 		mistralReq.ImageMinSize = req.Params.ImageMinSize
 		mistralReq.TableFormat = req.Params.TableFormat
 		mistralReq.ExtractHeader = req.Params.ExtractHeader
 		mistralReq.ExtractFooter = req.Params.ExtractFooter
+		mistralReq.ConfidenceScoresGranularity = req.Params.ConfidenceScoresGranularity
 		mistralReq.BBoxAnnotationFormat = req.Params.BBoxAnnotationFormat
 		mistralReq.DocumentAnnotationFormat = req.Params.DocumentAnnotationFormat
 		mistralReq.DocumentAnnotationPrompt = req.Params.DocumentAnnotationPrompt
@@ -88,6 +90,7 @@ func (r *MistralOCRResponse) ToBifrostOCRResponse() *schemas.BifrostOCRResponse 
 					Width:  p.Dimensions.Width,
 				}
 			}
+			page.Blocks = p.Blocks
 			resp.Pages[i] = page
 		}
 	}
