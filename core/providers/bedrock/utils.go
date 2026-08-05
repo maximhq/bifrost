@@ -3,6 +3,7 @@ package bedrock
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -187,15 +188,14 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
-type bedrockDocumentTextHandling uint8
+type bedrockDocumentSourceRequirement uint8
 
 const (
-	// Chat file_data is documented as base64. Preserve the historical chat
-	// behavior that treated only the explicitly supported text formats as raw
-	// text; other text/* payloads remain encoded bytes.
-	bedrockDocumentKnownTextOnly bedrockDocumentTextHandling = iota
-	// Responses historically treated every text/* file_data value as raw text.
-	bedrockDocumentAllTextMediaTypes
+	bedrockDocumentSourceRequired bedrockDocumentSourceRequirement = iota
+	// Chat file blocks can carry a provider-native file ID without inline data.
+	// Preserve the resulting document placeholder until that path has a native
+	// Bedrock file-ID representation.
+	bedrockDocumentSourceOptional
 )
 
 func normalizeBedrockDocumentType(fileType string) string {
@@ -218,7 +218,7 @@ func bedrockDocumentFormat(fileType string) (format string, isText bool, matched
 	case normalized == "text/plain" || normalized == "txt":
 		return "txt", true, true
 	case strings.HasPrefix(normalized, "text/"):
-		return "txt", false, true
+		return "txt", true, true
 	case normalized == "application/msword" || normalized == "doc":
 		return "doc", false, true
 	case strings.Contains(normalized, "wordprocessingml") || normalized == "docx":
@@ -244,8 +244,7 @@ func materializeBedrockDocument(
 	fileURL *string,
 	filename *string,
 	fileType *string,
-	textHandling bedrockDocumentTextHandling,
-	allowEmptySource bool,
+	sourceRequirement bedrockDocumentSourceRequirement,
 ) (*BedrockDocumentSource, error) {
 	document := &BedrockDocumentSource{
 		Name:   "document",
@@ -265,9 +264,7 @@ func materializeBedrockDocument(
 			document.Format = format
 			declaredFormatMatched = true
 		}
-		isText = knownText ||
-			(textHandling == bedrockDocumentAllTextMediaTypes &&
-				strings.HasPrefix(normalizeBedrockDocumentType(*fileType), "text/"))
+		isText = knownText
 	}
 
 	if fileURL != nil && *fileURL != "" {
@@ -292,28 +289,43 @@ func materializeBedrockDocument(
 	}
 
 	if fileData == nil {
-		if allowEmptySource {
+		if sourceRequirement == bedrockDocumentSourceOptional {
 			return document, nil
 		}
 		return nil, nil
 	}
 
 	data := *fileData
-	if strings.HasPrefix(data, "data:") {
-		urlInfo := schemas.ExtractURLTypeInfo(data)
+	if len(data) >= len("data:") && strings.EqualFold(data[:len("data:")], "data:") {
+		dataURL := "data:" + data[len("data:"):]
+		urlInfo := schemas.ExtractURLTypeInfo(dataURL)
 		if urlInfo.DataURLWithoutPrefix == nil {
 			return nil, fmt.Errorf("invalid document data URL")
 		}
+		if urlInfo.Type != schemas.ImageContentTypeBase64 {
+			return nil, fmt.Errorf("document data URL must use base64 encoding")
+		}
+		dataURLIsText := false
 		if urlInfo.MediaType != nil && *urlInfo.MediaType != "" {
-			if !declaredFormatMatched {
-				if format, _, matched := bedrockDocumentFormat(*urlInfo.MediaType); matched {
+			if format, sourceIsText, matched := bedrockDocumentFormat(*urlInfo.MediaType); matched {
+				dataURLIsText = sourceIsText
+				if !declaredFormatMatched {
 					document.Format = format
-				} else {
-					return nil, fmt.Errorf("unsupported Bedrock document format %q", *urlInfo.MediaType)
 				}
+			} else if !declaredFormatMatched {
+				return nil, fmt.Errorf("unsupported Bedrock document format %q", *urlInfo.MediaType)
 			}
 		} else if hasDeclaredType && !declaredFormatMatched {
 			return nil, fmt.Errorf("unsupported Bedrock document format %q", *fileType)
+		}
+		if dataURLIsText {
+			decoded, err := base64.StdEncoding.DecodeString(*urlInfo.DataURLWithoutPrefix)
+			if err != nil {
+				return nil, fmt.Errorf("invalid base64 document data URL: %w", err)
+			}
+			text := string(decoded)
+			document.Source.Text = &text
+			return document, nil
 		}
 		document.Source.Bytes = urlInfo.DataURLWithoutPrefix
 		return document, nil
@@ -1027,8 +1039,10 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 // placeholder has to be non-whitespace to survive both.
 const bedrockDocumentPlaceholderText = "."
 
-// hasBedrockDocumentBlock reports whether any of the content blocks is a document
-// block, i.e. whether the message needs an accompanying text block.
+// hasBedrockDocumentBlock reports whether a top-level message content block is a
+// document, i.e. whether the message needs an accompanying text block. It must
+// not recurse into ToolResult.Content: Bedrock models document there as a valid
+// ToolResultContentBlock union member without the message-level text requirement.
 func hasBedrockDocumentBlock(blocks []BedrockContentBlock) bool {
 	for _, b := range blocks {
 		if b.Document != nil {
@@ -1325,8 +1339,7 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			block.File.FileURL,
 			block.File.Filename,
 			block.File.FileType,
-			bedrockDocumentKnownTextOnly,
-			true,
+			bedrockDocumentSourceOptional,
 		)
 		if err != nil {
 			return nil, err

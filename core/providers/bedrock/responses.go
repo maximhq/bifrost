@@ -3460,8 +3460,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 									file.FileURL,
 									file.Filename,
 									file.FileType,
-									bedrockDocumentAllTextMediaTypes,
-									false,
+									bedrockDocumentSourceRequired,
 								)
 								if err != nil {
 									return nil, nil, fmt.Errorf("bedrock: converting tool result document: %w", err)
@@ -4651,8 +4650,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						file.FileURL,
 						file.Filename,
 						file.FileType,
-						bedrockDocumentAllTextMediaTypes,
-						false,
+						bedrockDocumentSourceRequired,
 					)
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert document in responses content block: %w", err)

@@ -110,12 +110,12 @@ func TestToolResultDocumentUnknownDataURLTypePreservesDeclaredFormat(t *testing.
 	}
 }
 
-func TestChatDocumentGenericTextTypeKeepsRawBase64(t *testing.T) {
-	rawBase64 := "PHJvb3QvPg=="
+func TestChatDocumentGenericTextTypeTreatsRawDataAsText(t *testing.T) {
+	rawData := "PHJvb3QvPg=="
 	blocks, err := convertContentBlock(context.Background(), schemas.ChatContentBlock{
 		Type: schemas.ChatContentBlockTypeFile,
 		File: &schemas.ChatInputFile{
-			FileData: &rawBase64,
+			FileData: &rawData,
 			Filename: schemas.Ptr("document.xml"),
 			FileType: schemas.Ptr("text/xml"),
 		},
@@ -130,11 +130,11 @@ func TestChatDocumentGenericTextTypeKeepsRawBase64(t *testing.T) {
 	if document.Format != "txt" {
 		t.Fatalf("expected Bedrock txt format, got %q", document.Format)
 	}
-	if document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != rawBase64 {
-		t.Fatalf("expected raw base64 bytes to remain unchanged, got %#v", document.Source)
+	if document.Source == nil || document.Source.Text == nil || *document.Source.Text != rawData {
+		t.Fatalf("expected no-prefix file data to remain literal text, got %#v", document.Source)
 	}
-	if document.Source.Text != nil {
-		t.Fatalf("expected raw base64 not to be treated as literal text, got %q", *document.Source.Text)
+	if document.Source.Bytes != nil {
+		t.Fatalf("expected DocumentSource union to contain only text, got bytes %#v", document.Source.Bytes)
 	}
 }
 
@@ -166,6 +166,50 @@ func TestToolResultTextDocumentUsesSingleSourceMember(t *testing.T) {
 	}
 	if source.Bytes != nil {
 		t.Fatalf("expected DocumentSource union to contain only text, got bytes %#v", source.Bytes)
+	}
+}
+
+func TestToolResultTextDocumentDataURLUsesSingleSourceMember(t *testing.T) {
+	tests := []struct {
+		name    string
+		dataURL string
+	}{
+		{name: "lowercase scheme", dataURL: "data:text/plain;base64,SGVsbG8gZnJvbSB0aGUgdG9vbA=="},
+		{name: "mixed-case scheme", dataURL: "DaTa:text/plain;base64,SGVsbG8gZnJvbSB0aGUgdG9vbA=="},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dataURL := tt.dataURL
+			input := []schemas.ResponsesMessage{
+				toolResultDocumentMessage([]schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+						ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+							FileData: &dataURL,
+							Filename: schemas.Ptr("result.txt"),
+							FileType: schemas.Ptr("text/plain"),
+						},
+					},
+				}),
+			}
+
+			messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), input, false)
+			if err != nil {
+				t.Fatalf("unexpected conversion error for %q: %v", dataURL, err)
+			}
+			toolResult := requireBedrockToolResultDocument(t, messages)
+			if len(toolResult.Content) != 1 || toolResult.Content[0].Document == nil {
+				t.Fatalf("expected one document block, got %#v", toolResult.Content)
+			}
+			source := toolResult.Content[0].Document.Source
+			if source == nil || source.Text == nil || *source.Text != "Hello from the tool" {
+				t.Fatalf("expected decoded text document source, got %#v", source)
+			}
+			if source.Bytes != nil {
+				t.Fatalf("expected DocumentSource union to contain only text, got bytes %#v", source.Bytes)
+			}
+		})
 	}
 }
 
@@ -305,5 +349,15 @@ func TestToolResultDocumentAnthropicToBedrockRoundTrip(t *testing.T) {
 	}
 	if toolResult.Content[0].Text == nil || toolResult.Content[1].Document == nil {
 		t.Fatalf("expected text then document, got %#v", toolResult.Content)
+	}
+	document := toolResult.Content[1].Document
+	if document.Name != "report_pdf" || document.Format != "pdf" {
+		t.Fatalf("expected normalized report_pdf metadata with pdf format, got %#v", document)
+	}
+	if document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != "JVBERi0xLjQ=" {
+		t.Fatalf("expected original inline document bytes, got %#v", document.Source)
+	}
+	if document.Source.Text != nil {
+		t.Fatalf("expected binary document source to contain only bytes, got text %q", *document.Source.Text)
 	}
 }
