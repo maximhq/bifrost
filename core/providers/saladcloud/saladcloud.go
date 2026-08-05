@@ -3,6 +3,7 @@ package saladcloud
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"time"
 
@@ -13,6 +14,54 @@ import (
 )
 
 const supportedModelID = "qwen3.6-35b-a3b"
+
+const saladCloudChatTemplateKwargsKey = "chat_template_kwargs"
+
+// prepareSaladCloudChatRequest maps Bifrost's provider-neutral reasoning
+// controls to the Qwen chat-template parameter accepted by Salad AI Gateway.
+// A nil reasoning configuration is left untouched so Salad keeps its default
+// thinking behavior.
+func prepareSaladCloudChatRequest(request *schemas.BifrostChatRequest) *schemas.BifrostChatRequest {
+	if request == nil || request.Params == nil || request.Params.Reasoning == nil {
+		return request
+	}
+
+	saladRequest := *request
+	params := *request.Params
+	params.ExtraParams = maps.Clone(params.ExtraParams)
+	if params.ExtraParams == nil {
+		params.ExtraParams = make(map[string]interface{})
+	}
+
+	if _, hasCustomThinkingConfig := params.ExtraParams[saladCloudChatTemplateKwargsKey]; !hasCustomThinkingConfig {
+		params.ExtraParams[saladCloudChatTemplateKwargsKey] = map[string]interface{}{
+			"enable_thinking": isSaladCloudThinkingEnabled(params.Reasoning),
+		}
+	}
+
+	// Salad's Qwen endpoint uses chat_template_kwargs rather than the
+	// OpenAI-specific reasoning_effort field.
+	params.Reasoning = nil
+	saladRequest.Params = &params
+	return &saladRequest
+}
+
+func isSaladCloudThinkingEnabled(reasoning *schemas.ChatReasoning) bool {
+	if reasoning.Enabled != nil {
+		return *reasoning.Enabled
+	}
+	return reasoning.Effort == nil || *reasoning.Effort != "none"
+}
+
+func enableSaladCloudExtraParamPassthrough(ctx *schemas.BifrostContext) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	previousValue := ctx.GetAndSetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return func() {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, previousValue)
+	}
+}
 
 // SaladCloudProvider implements the Provider interface for Salad AI Gateway.
 type SaladCloudProvider struct {
@@ -110,6 +159,9 @@ func (provider *SaladCloudProvider) TextCompletionStream(ctx *schemas.BifrostCon
 
 // ChatCompletion performs a chat completion request to the SaladCloud API.
 func (provider *SaladCloudProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	request = prepareSaladCloudChatRequest(request)
+	restorePassthrough := enableSaladCloudExtraParamPassthrough(ctx)
+	defer restorePassthrough()
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
@@ -132,6 +184,9 @@ func (provider *SaladCloudProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // Uses SaladCloud's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *SaladCloudProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	request = prepareSaladCloudChatRequest(request)
+	restorePassthrough := enableSaladCloudExtraParamPassthrough(ctx)
+	defer restorePassthrough()
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
