@@ -36,17 +36,24 @@ func TestConvertToolResultWithEmptyContent(t *testing.T) {
 	}
 }
 
-// TestConvertToolResultWithUnsupportedBlocks verifies tool_result content made
-// solely of block types the converter does not map (e.g. document) still
-// yields a serializable output.
-func TestConvertToolResultWithUnsupportedBlocks(t *testing.T) {
+// TestConvertToolResultWithDocumentBlock verifies a document-only tool result
+// remains serializable and retains its canonical Bifrost file block.
+func TestConvertToolResultWithDocumentBlock(t *testing.T) {
 	role := schemas.ResponsesInputMessageRoleUser
 	blocks := []AnthropicContentBlock{
 		{
 			Type:      AnthropicContentBlockTypeToolResult,
 			ToolUseID: schemas.Ptr("toolu_doc"),
 			Content: &AnthropicContent{ContentBlocks: []AnthropicContentBlock{
-				{Type: AnthropicContentBlockTypeDocument},
+				{
+					Type:  AnthropicContentBlockTypeDocument,
+					Title: schemas.Ptr("report.pdf"),
+					Source: &AnthropicBlockSource{SourceObj: &AnthropicSource{
+						Type:      "base64",
+						MediaType: schemas.Ptr("application/pdf"),
+						Data:      schemas.Ptr("JVBERi0xLjQ="),
+					}},
+				},
 			}},
 		},
 	}
@@ -54,6 +61,41 @@ func TestConvertToolResultWithUnsupportedBlocks(t *testing.T) {
 	msgs := convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &role, false)
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 converted message, got %d", len(msgs))
+	}
+	output := msgs[0].Output
+	if output == nil || len(output.ResponsesFunctionToolCallOutputBlocks) != 1 {
+		t.Fatalf("expected one preserved document block, got %#v", output)
+	}
+	if output.ResponsesFunctionToolCallOutputBlocks[0].Type != schemas.ResponsesInputMessageContentBlockTypeFile {
+		t.Fatalf("expected canonical file block, got %#v", output.ResponsesFunctionToolCallOutputBlocks[0])
+	}
+	if _, err := schemas.MarshalSorted(msgs); err != nil {
+		t.Fatalf("converted messages must marshal, got: %v", err)
+	}
+}
+
+func TestConvertToolResultDropsUnsupportedContentBlock(t *testing.T) {
+	role := schemas.ResponsesInputMessageRoleUser
+	blocks := []AnthropicContentBlock{
+		{
+			Type:      AnthropicContentBlockTypeToolResult,
+			ToolUseID: schemas.Ptr("toolu_unsupported"),
+			Content: &AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{Type: AnthropicContentBlockTypeThinking},
+			}},
+		},
+	}
+
+	msgs := convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &role, false)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 converted message, got %d", len(msgs))
+	}
+	output := msgs[0].Output
+	if output == nil {
+		t.Fatal("expected non-nil tool message output")
+	}
+	if len(output.ResponsesFunctionToolCallOutputBlocks) != 0 {
+		t.Fatalf("expected unsupported block to be dropped, got %#v", output.ResponsesFunctionToolCallOutputBlocks)
 	}
 	if _, err := schemas.MarshalSorted(msgs); err != nil {
 		t.Fatalf("converted messages must marshal, got: %v", err)
