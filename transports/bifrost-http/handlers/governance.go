@@ -115,6 +115,13 @@ type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables
 type ExternalQuotaBudgetResult struct {
 	// Budgets replaces the VK's own budget rows in the quota response.
 	Budgets []configstoreTables.TableBudget
+	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise:
+	// the access-profile rate limit that carries the real usage for an AP-managed VK).
+	RateLimit *configstoreTables.TableRateLimit
+	// Managed reports that the VK is access-profile-managed. Set independently of
+	// Budgets/RateLimit so the flag reaches the response even when the profile has
+	// neither — it drives the managed-key UI (lock + notice).
+	Managed bool
 	// UsageUserID, when non-empty, scopes the per_model_usage query to this user id
 	// instead of the VK id.
 	UsageUserID string
@@ -746,6 +753,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 		}
 	}
 
+
 	// Resulting budget count: the desired set if provided, else the existing set.
 	finalBudgetCount := len(mc.Budgets)
 	if d.budgetsProvided {
@@ -917,6 +925,37 @@ func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []c
 	for i := range vks {
 		applyVKGovernanceFromModelConfigs(&vks[i], byKey)
 	}
+}
+
+// applyExternalBudgets swaps a VK's own budget and rate-limit rows for the ones
+// that actually govern its spend when an external resolver supplies them
+// (enterprise: the access-profile budgets and rate limit that carry the real usage
+// for an AP-managed VK, in place of the VK's own untracked mirror rows). This is the
+// same resolution the self-service quota endpoint performs, applied to the admin
+// read paths so the VK detail/list responses show the effective limits without the
+// caller needing a separate, differently-gated access-profile lookup. No-op in OSS
+// (resolver nil) and for non-AP-managed VKs (resolver returns nil). A resolver error
+// degrades gracefully to the VK's own rows rather than failing the whole read.
+func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
+	if h.externalQuotaBudgetResolver == nil || vk == nil {
+		return
+	}
+	ext, err := h.externalQuotaBudgetResolver(ctx, vk)
+	if err != nil {
+		logger.Error("failed to resolve external budgets for VK %s: %v", vk.ID, err)
+		return
+	}
+	if ext == nil {
+		return
+	}
+	// The VK is access-profile-managed: its own budget/rate-limit rows are untracked
+	// mirrors (reset to current_usage=0 at adoption and never charged), so surface the
+	// AP's governance verbatim. An empty budget slice or nil rate limit means the AP has
+	// none — we must NOT fall back to the misleading VK rows. This mirrors the UI's
+	// managing-profile branch and getVirtualKeyQuota, so all read paths agree.
+	vk.IsAccessProfileManaged = ext.Managed
+	vk.Budgets = ext.Budgets
+	vk.RateLimit = ext.RateLimit
 }
 
 func collectProviderConfigDeleteIDs(
@@ -1151,6 +1190,16 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
+		// The in-memory cache holds no VK↔user assignments (GovernanceData.Users carries
+		// only budget/rate-limit ids), so a user_id filter cannot be applied here. Reject
+		// the combination rather than silently dropping the filter: the database path
+		// fails closed on user_id, and returning every cached key instead would be the
+		// exact inverse of that contract. The other filters keep their long-standing
+		// ignored-under-from_memory behaviour.
+		if len(ctx.QueryArgs().Peek("user_id")) > 0 {
+			SendError(ctx, 400, "user_id filter is not supported with from_memory=true; omit from_memory to filter virtual keys by user")
+			return
+		}
 		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
@@ -1172,6 +1221,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			copy(pcs, vk.ProviderConfigs)
 			clone.ProviderConfigs = pcs
 			applyVKGovernanceFromModelConfigs(&clone, byKey)
+			h.applyExternalBudgets(ctx, &clone)
 			hydratedVKs[i] = &clone
 		}
 		SendJSON(ctx, map[string]interface{}{
@@ -1189,6 +1239,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
+	userID := string(ctx.QueryArgs().Peek("user_id"))
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
@@ -1196,12 +1247,13 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
 			CustomerID:                         customerID,
 			TeamID:                             teamID,
+			UserID:                             userID,
 			SortBy:                             sortBy,
 			Order:                              order,
 			Export:                             isExport,
@@ -1247,6 +1299,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		}
 		// Reverse-map governance from VK-scoped model configs for display.
 		h.hydrateVKListGovernance(ctx, virtualKeys)
+		for i := range virtualKeys {
+			h.applyExternalBudgets(ctx, &virtualKeys[i])
+		}
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
 			"count":        len(virtualKeys),
@@ -1265,6 +1320,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.hydrateVKListGovernance(ctx, virtualKeys)
+	for i := range virtualKeys {
+		h.applyExternalBudgets(ctx, &virtualKeys[i])
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_keys": virtualKeys,
 		"count":        len(virtualKeys),
@@ -1504,6 +1562,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 				copy(pcs, vk.ProviderConfigs)
 				clone.ProviderConfigs = pcs
 				applyVKGovernanceFromModelConfigs(&clone, byKey)
+				h.applyExternalBudgets(ctx, &clone)
 				SendJSON(ctx, map[string]interface{}{
 					"virtual_key": &clone,
 				})
@@ -1524,6 +1583,9 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, vk)
+	// Surface the effective (e.g. access-profile) budgets in place of the VK's own
+	// untracked rows so the admin detail panel matches the self-service quota view.
+	h.applyExternalBudgets(ctx, vk)
 
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key": vk,
@@ -4358,6 +4420,7 @@ func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 type CreatePricingOverrideRequest struct {
 	Name          string                      `json:"name"`
 	ScopeKind     modelcatalog.ScopeKind      `json:"scope_kind"`
+	UserID        *string                     `json:"user_id,omitempty"`
 	VirtualKeyID  *string                     `json:"virtual_key_id,omitempty"`
 	ProviderID    *string                     `json:"provider_id,omitempty"`
 	ProviderKeyID *string                     `json:"provider_key_id,omitempty"`
@@ -4395,6 +4458,7 @@ func (n *nullableString) UnmarshalJSON(b []byte) error {
 type UpdatePricingOverrideRequest struct {
 	Name          *string                      `json:"name,omitempty"`
 	ScopeKind     *modelcatalog.ScopeKind      `json:"scope_kind,omitempty"`
+	UserID        nullableString               `json:"user_id"`
 	VirtualKeyID  nullableString               `json:"virtual_key_id"`
 	ProviderID    nullableString               `json:"provider_id"`
 	ProviderKeyID nullableString               `json:"provider_key_id"`
@@ -4406,9 +4470,12 @@ type UpdatePricingOverrideRequest struct {
 
 func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
 	// Parse filter parameters
-	var scopeKind, virtualKeyID, providerID, providerKeyID *string
+	var scopeKind, userID, virtualKeyID, providerID, providerKeyID *string
 	if v := strings.TrimSpace(string(ctx.QueryArgs().Peek("scope_kind"))); v != "" {
 		scopeKind = &v
+	}
+	if v := strings.TrimSpace(string(ctx.QueryArgs().Peek("user_id"))); v != "" {
+		userID = &v
 	}
 	if v := strings.TrimSpace(string(ctx.QueryArgs().Peek("virtual_key_id"))); v != "" {
 		virtualKeyID = &v
@@ -4429,6 +4496,7 @@ func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
 		params := configstore.PricingOverridesQueryParams{
 			Search:        search,
 			ScopeKind:     scopeKind,
+			UserID:        userID,
 			VirtualKeyID:  virtualKeyID,
 			ProviderID:    providerID,
 			ProviderKeyID: providerKeyID,
@@ -4478,6 +4546,7 @@ func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
 	// Non-paginated path: return all matching overrides (backward compatible)
 	filters := configstore.PricingOverrideFilters{
 		ScopeKind:     scopeKind,
+		UserID:        userID,
 		VirtualKeyID:  virtualKeyID,
 		ProviderID:    providerID,
 		ProviderKeyID: providerKeyID,
@@ -4513,6 +4582,7 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 
 	shape := modelcatalog.PricingOverride{
 		ScopeKind:     req.ScopeKind,
+		UserID:        req.UserID,
 		VirtualKeyID:  req.VirtualKeyID,
 		ProviderID:    req.ProviderID,
 		ProviderKeyID: req.ProviderKeyID,
@@ -4536,6 +4606,7 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 		ID:               uuid.NewString(),
 		Name:             name,
 		ScopeKind:        string(req.ScopeKind),
+		UserID:           normalizeOptionalString(req.UserID),
 		VirtualKeyID:     normalizeOptionalString(req.VirtualKeyID),
 		ProviderID:       normalizeOptionalString(req.ProviderID),
 		ProviderKeyID:    normalizeOptionalString(req.ProviderKeyID),
@@ -4587,6 +4658,7 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 	// Merge request fields onto the existing record; omitted fields keep their current values.
 	merged := modelcatalog.PricingOverride{
 		ScopeKind:     modelcatalog.ScopeKind(existing.ScopeKind),
+		UserID:        existing.UserID,
 		VirtualKeyID:  existing.VirtualKeyID,
 		ProviderID:    existing.ProviderID,
 		ProviderKeyID: existing.ProviderKeyID,
@@ -4598,9 +4670,13 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 		merged.ScopeKind = *req.ScopeKind
 		// Changing scope_kind resets all scope IDs; only what the request
 		// explicitly provides will be kept.
+		merged.UserID = nil
 		merged.VirtualKeyID = nil
 		merged.ProviderID = nil
 		merged.ProviderKeyID = nil
+	}
+	if req.UserID.Set {
+		merged.UserID = req.UserID.Value
 	}
 	if req.VirtualKeyID.Set {
 		merged.VirtualKeyID = req.VirtualKeyID.Value
@@ -4651,6 +4727,7 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 		ID:               id,
 		Name:             nameStr,
 		ScopeKind:        string(merged.ScopeKind),
+		UserID:           normalizeOptionalString(merged.UserID),
 		VirtualKeyID:     normalizeOptionalString(merged.VirtualKeyID),
 		ProviderID:       normalizeOptionalString(merged.ProviderID),
 		ProviderKeyID:    normalizeOptionalString(merged.ProviderKeyID),
@@ -4725,6 +4802,7 @@ var validRoutingScopes = map[string]bool{
 	"team":        true,
 	"customer":    true,
 	"virtual_key": true,
+	"user":        true,
 }
 
 // errRoutingScopeIDNotFound marks a validateRoutingScopeID failure as a genuine
@@ -4760,6 +4838,10 @@ func (h *GovernanceHandler) validateRoutingScopeID(ctx context.Context, scope st
 			}
 			return fmt.Errorf("failed to verify customer: %w", err)
 		}
+	case "user":
+		// User ids live outside the config store (they arrive on requests via
+		// the resolved identity context), so existence cannot be verified
+		// here; the id is matched at eval time against the calling user.
 	}
 	return nil
 }
@@ -4782,7 +4864,7 @@ func validateRoutingScope(scope string) error {
 		return nil // Empty scope will default to "global" later
 	}
 	if !validRoutingScopes[scope] {
-		return fmt.Errorf("invalid scope %q: must be one of: global, team, customer, virtual_key", scope)
+		return fmt.Errorf("invalid scope %q: must be one of: global, team, customer, virtual_key, user", scope)
 	}
 	return nil
 }
@@ -4990,6 +5072,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 	}
 
 	budgetRows := vk.Budgets
+	rateLimit := vk.RateLimit
 	usageUserID := ""
 	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
 		ext, err := resolve(ctx, vk)
@@ -4998,7 +5081,10 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if ext != nil {
+			// AP-managed VK: surface the AP's governance verbatim in place of the VK's own
+			// untracked mirror rows. Empty budgets / nil rate limit mean the AP has none.
 			budgetRows = ext.Budgets
+			rateLimit = ext.RateLimit
 			usageUserID = ext.UsageUserID
 		}
 	}
@@ -5015,7 +5101,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"virtual_key_name": vk.Name,
 		"is_active":        vk.IsActiveValue(),
 		"budgets":          budgets,
-		"rate_limit":       vk.RateLimit,
+		"rate_limit":       rateLimit,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})

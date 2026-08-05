@@ -486,6 +486,8 @@ Bifrost uses `github.com/valyala/fasthttp` for provider HTTP calls. The API is d
 
 JSON marshaling in hot paths uses `github.com/bytedance/sonic` for performance. `core/schemas/` uses standard `encoding/json` for custom marshaling (e.g., `NetworkConfig`). Don't mix them accidentally.
 
+For reading or writing a **single field** (or a handful) inside a larger raw JSON payload, prefer `github.com/tidwall/gjson`/`github.com/tidwall/sjson` over decoding into `map[string]interface{}` and re-encoding — the shared helpers `providerUtils.GetJSONField`/`SetRawJSONField`/`DeleteJSONField`/`JSONFieldExists`/`GetJSONSubtree` (`core/providers/utils/utils.go`) wrap these and should be reused where the path is a lookup on an already-in-scope `[]byte`/`json.RawMessage`. Full-document decode into a map/struct is still correct when you need the whole shape (e.g. re-marshaling an entire object to normalize it) — the point is not to round-trip an entire object through a `map[string]interface{}` just to inspect one key. When marshaling back out, always use `providerUtils.MarshalSorted` (never a raw `sonic.Marshal`/`json.Marshal`), since unsorted map keys reorder nondeterministically and break prompt-cache-relevant byte stability.
+
 ### 14. Atomic Pointer for Hot Config Reload
 
 `Bifrost` uses `atomic.Pointer` for providers and plugins lists. On updates: create new slice → atomically swap pointer. **Never mutate the slice in place** — concurrent readers would see partial state.
@@ -552,6 +554,10 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 ---
 
 ## Testing
+
+### Bug fixes: red before green
+
+Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
 
 ### Always prefer `make test-core` over raw `go test` for provider-level tests
 
@@ -815,6 +821,39 @@ ui/app/<route-name>/
 
 - Shared → `ui/components`
 - Route-specific → `views/` inside route folder
+
+---
+
+### Entity Selectors — never hand-roll an entity picker
+
+Any UI that lets a user pick an existing entity (virtual key, team, customer, user, business unit, …) **must** go through `ui/components/entitySelectors/`. Do not build a new `Select`/`Combobox` + `useState` + debounce + fetch stack for this — that pattern was already duplicated across surfaces and consolidated here.
+
+**Use an existing selector** — import it and pass one of the three modes:
+
+```tsx
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+
+<VirtualKeySelector value={id} onChange={setId} fallbackOption={{ value: row.id, label: row.name }} />   // single
+<VirtualKeySelector multiple value={ids} onChange={setIds} />                                            // multi (chips inside the control)
+<VirtualKeySelector mode="add" onSelect={(o) => appendRow(o)} />                                         // fire-and-forget add
+```
+
+Available today: `virtualKeySelector`, `teamSelector`, `customerSelector` (OSS); `userSelector`, `businessUnitSelector` (enterprise — reached via registry, see below).
+
+**Always pass `fallbackOption` / `fallbackOptions`** when editing an existing row. Selectors fetch nothing until the popover opens, so a preselected id renders as a raw UUID otherwise.
+
+**Adding a selector for a new entity** — write a thin wrapper, never a new picker. Copy `customerSelector.tsx` (the simplest one) and change only what genuinely differs: the list query, the by-id label resolver, and the label/description fields. The wrapper must:
+
+1. Call `useEntitySelectorSearch()` for open/search/debounce state, and pass `skip` to the RTK Query hook — nothing is fetched until the picker opens.
+2. `useMemo` the `options` array. Multi mode feeds it to react-select as `defaultOptions`, which re-syncs on identity change and will loop if the identity churns.
+3. Ship a `LabelResolver` component (`EntityLabelResolverProps`) that fetches one entity by id and calls `onResolved` — this is what keeps selected-but-unfetched ids from rendering as UUIDs.
+4. Type its props as `OwnProps & EntitySelectorModeProps` and extend `EntitySelectorCommonProps`, so all three modes and the shared prop surface come for free.
+5. Default `limit` to `ENTITY_SELECTOR_PAGE_SIZE`; expose a `filters` prop only if the endpoint supports server-side scoping.
+6. Search is **server-side** — never fetch a page and filter it client-side.
+
+Do not edit `entitySelector.tsx` to accommodate one surface. It only carries behaviour identical across every entity; per-entity differences belong in the wrapper, per-surface differences in props (`trigger`, `triggerClassName`, `excludeIds`, `noPortal`, `className`).
+
+**OSS ↔ enterprise placement.** `entitySelector.tsx` and any selector whose API is OSS live in `ui/components/entitySelectors/`. A selector for an enterprise-only API lives in `bifrost-enterprise/enterprise-ui/app/components/entitySelectors/` and OSS must never import it directly — OSS reaches it through a runtime registry (`ui/lib/registries/userPicker.tsx`, `ui/lib/registries/modelLimitScopes.tsx`), with an empty fallback under `ui/app/_fallbacks/enterprise/` so OSS-only builds simply hide the option. Keep single mode prop-compatible with the registry contract (`{ value, onChange, disabled, fallbackOption }`) so the selector can be registered as-is.
 
 ---
 

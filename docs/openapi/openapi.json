@@ -5690,6 +5690,14 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "description": "When `true`, replays the stored response as SSE events instead of a single JSON object",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -5699,6 +5707,817 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResponsesResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "description": "Streaming responses API response (SSE format)",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "response.ping",
+                        "response.created",
+                        "response.in_progress",
+                        "response.completed",
+                        "response.failed",
+                        "response.incomplete",
+                        "response.output_item.added",
+                        "response.output_item.done",
+                        "response.content_part.added",
+                        "response.content_part.done",
+                        "response.output_text.delta",
+                        "response.output_text.done",
+                        "response.refusal.delta",
+                        "response.refusal.done",
+                        "response.function_call_arguments.delta",
+                        "response.function_call_arguments.done",
+                        "response.file_search_call.in_progress",
+                        "response.file_search_call.searching",
+                        "response.file_search_call.results.added",
+                        "response.file_search_call.results.completed",
+                        "response.web_search_call.in_progress",
+                        "response.web_search_call.searching",
+                        "response.web_search_call.completed",
+                        "response.web_search_call.results.added",
+                        "response.web_search_call.results.completed",
+                        "response.web_fetch_call.in_progress",
+                        "response.web_fetch_call.fetching",
+                        "response.web_fetch_call.completed",
+                        "response.reasoning_summary_part.added",
+                        "response.reasoning_summary_part.done",
+                        "response.reasoning_summary_text.delta",
+                        "response.reasoning_summary_text.done",
+                        "response.image_generation_call.completed",
+                        "response.image_generation_call.generating",
+                        "response.image_generation_call.in_progress",
+                        "response.image_generation_call.partial_image",
+                        "response.mcp_call_arguments.delta",
+                        "response.mcp_call_arguments.done",
+                        "response.mcp_call.completed",
+                        "response.mcp_call.failed",
+                        "response.mcp_call.in_progress",
+                        "response.mcp_list_tools.completed",
+                        "response.mcp_list_tools.failed",
+                        "response.mcp_list_tools.in_progress",
+                        "response.code_interpreter_call.in_progress",
+                        "response.code_interpreter_call.interpreting",
+                        "response.code_interpreter_call.completed",
+                        "response.code_interpreter_call_code.delta",
+                        "response.code_interpreter_call_code.done",
+                        "response.output_text.annotation.added",
+                        "response.output_text.annotation.done",
+                        "response.queued",
+                        "response.custom_tool_call_input.delta",
+                        "response.custom_tool_call_input.done",
+                        "error"
+                      ]
+                    },
+                    "sequence_number": {
+                      "type": "integer"
+                    },
+                    "response": {
+                      "$ref": "#/components/schemas/ResponsesResponse"
+                    },
+                    "output_index": {
+                      "type": "integer"
+                    },
+                    "item": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "message",
+                            "file_search_call",
+                            "computer_call",
+                            "computer_call_output",
+                            "web_search_call",
+                            "web_fetch_call",
+                            "function_call",
+                            "function_call_output",
+                            "code_interpreter_call",
+                            "local_shell_call",
+                            "local_shell_call_output",
+                            "mcp_call",
+                            "custom_tool_call",
+                            "custom_tool_call_output",
+                            "image_generation_call",
+                            "mcp_list_tools",
+                            "mcp_approval_request",
+                            "mcp_approval_responses",
+                            "reasoning",
+                            "item_reference",
+                            "refusal"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "in_progress",
+                            "completed",
+                            "incomplete",
+                            "interpreting",
+                            "failed"
+                          ]
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "assistant",
+                            "user",
+                            "system",
+                            "developer"
+                          ]
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "input_text",
+                                      "input_image",
+                                      "input_file",
+                                      "input_audio",
+                                      "output_text",
+                                      "refusal",
+                                      "reasoning_text"
+                                    ]
+                                  },
+                                  "file_id": {
+                                    "type": "string"
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  },
+                                  "signature": {
+                                    "type": "string"
+                                  },
+                                  "image_url": {
+                                    "type": "string"
+                                  },
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "file_data": {
+                                    "type": "string"
+                                  },
+                                  "file_url": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "file_type": {
+                                    "type": "string"
+                                  },
+                                  "input_audio": {
+                                    "type": "object",
+                                    "required": [
+                                      "format",
+                                      "data"
+                                    ],
+                                    "properties": {
+                                      "format": {
+                                        "type": "string",
+                                        "enum": [
+                                          "mp3",
+                                          "wav"
+                                        ]
+                                      },
+                                      "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "annotations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "file_citation",
+                                            "url_citation",
+                                            "container_file_citation",
+                                            "file_path"
+                                          ]
+                                        },
+                                        "index": {
+                                          "type": "integer"
+                                        },
+                                        "file_id": {
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "start_index": {
+                                          "type": "integer"
+                                        },
+                                        "end_index": {
+                                          "type": "integer"
+                                        },
+                                        "filename": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "container_id": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "logprobs": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "bytes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "logprob": {
+                                          "type": "number"
+                                        },
+                                        "token": {
+                                          "type": "string"
+                                        },
+                                        "top_logprobs": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "bytes": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "integer"
+                                                }
+                                              },
+                                              "logprob": {
+                                                "type": "number"
+                                              },
+                                              "token": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "refusal": {
+                                    "type": "string"
+                                  },
+                                  "cache_control": {
+                                    "$ref": "#/components/schemas/CacheControl"
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "call_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "arguments": {
+                          "type": "string"
+                        },
+                        "output": {
+                          "description": "Tool call output. A plain string for function/custom/local-shell tool\noutputs, an array of content blocks for structured function tool\noutputs, or a computer-tool screenshot object for computer_call_output.\n",
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "input_text",
+                                      "input_image",
+                                      "input_file",
+                                      "input_audio",
+                                      "output_text",
+                                      "refusal",
+                                      "reasoning_text"
+                                    ]
+                                  },
+                                  "file_id": {
+                                    "type": "string"
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  },
+                                  "signature": {
+                                    "type": "string"
+                                  },
+                                  "image_url": {
+                                    "type": "string"
+                                  },
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "file_data": {
+                                    "type": "string"
+                                  },
+                                  "file_url": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "file_type": {
+                                    "type": "string"
+                                  },
+                                  "input_audio": {
+                                    "type": "object",
+                                    "required": [
+                                      "format",
+                                      "data"
+                                    ],
+                                    "properties": {
+                                      "format": {
+                                        "type": "string",
+                                        "enum": [
+                                          "mp3",
+                                          "wav"
+                                        ]
+                                      },
+                                      "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "annotations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "file_citation",
+                                            "url_citation",
+                                            "container_file_citation",
+                                            "file_path"
+                                          ]
+                                        },
+                                        "index": {
+                                          "type": "integer"
+                                        },
+                                        "file_id": {
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "start_index": {
+                                          "type": "integer"
+                                        },
+                                        "end_index": {
+                                          "type": "integer"
+                                        },
+                                        "filename": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "container_id": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "logprobs": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "bytes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "logprob": {
+                                          "type": "number"
+                                        },
+                                        "token": {
+                                          "type": "string"
+                                        },
+                                        "top_logprobs": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "bytes": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "integer"
+                                                }
+                                              },
+                                              "logprob": {
+                                                "type": "number"
+                                              },
+                                              "token": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "refusal": {
+                                    "type": "string"
+                                  },
+                                  "cache_control": {
+                                    "$ref": "#/components/schemas/CacheControl"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "description": "Computer tool call output (computer_screenshot).",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "computer_screenshot"
+                                  ]
+                                },
+                                "file_id": {
+                                  "type": "string"
+                                },
+                                "image_url": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "action": {
+                          "type": "object"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "queries": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "results": {
+                          "type": "array",
+                          "items": {
+                            "type": "object"
+                          }
+                        },
+                        "summary": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "text"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "summary_text"
+                                ]
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "encrypted_content": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "content_index": {
+                      "type": "integer"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "part": {
+                      "type": "object",
+                      "required": [
+                        "type"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "input_text",
+                            "input_image",
+                            "input_file",
+                            "input_audio",
+                            "output_text",
+                            "refusal",
+                            "reasoning_text"
+                          ]
+                        },
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "signature": {
+                          "type": "string"
+                        },
+                        "image_url": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "file_data": {
+                          "type": "string"
+                        },
+                        "file_url": {
+                          "type": "string"
+                        },
+                        "filename": {
+                          "type": "string"
+                        },
+                        "file_type": {
+                          "type": "string"
+                        },
+                        "input_audio": {
+                          "type": "object",
+                          "required": [
+                            "format",
+                            "data"
+                          ],
+                          "properties": {
+                            "format": {
+                              "type": "string",
+                              "enum": [
+                                "mp3",
+                                "wav"
+                              ]
+                            },
+                            "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "annotations": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "file_citation",
+                                  "url_citation",
+                                  "container_file_citation",
+                                  "file_path"
+                                ]
+                              },
+                              "index": {
+                                "type": "integer"
+                              },
+                              "file_id": {
+                                "type": "string"
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "start_index": {
+                                "type": "integer"
+                              },
+                              "end_index": {
+                                "type": "integer"
+                              },
+                              "filename": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "container_id": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "logprobs": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "bytes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer"
+                                }
+                              },
+                              "logprob": {
+                                "type": "number"
+                              },
+                              "token": {
+                                "type": "string"
+                              },
+                              "top_logprobs": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "bytes": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "logprob": {
+                                      "type": "number"
+                                    },
+                                    "token": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "refusal": {
+                          "type": "string"
+                        },
+                        "cache_control": {
+                          "$ref": "#/components/schemas/CacheControl"
+                        }
+                      }
+                    },
+                    "delta": {
+                      "type": "string"
+                    },
+                    "signature": {
+                      "type": "string"
+                    },
+                    "logprobs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bytes": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer"
+                            }
+                          },
+                          "logprob": {
+                            "type": "number"
+                          },
+                          "token": {
+                            "type": "string"
+                          },
+                          "top_logprobs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "bytes": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "integer"
+                                  }
+                                },
+                                "logprob": {
+                                  "type": "number"
+                                },
+                                "token": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "refusal": {
+                      "type": "string"
+                    },
+                    "arguments": {
+                      "type": "string"
+                    },
+                    "partial_image_b64": {
+                      "type": "string"
+                    },
+                    "partial_image_index": {
+                      "type": "integer"
+                    },
+                    "annotation": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "file_citation",
+                            "url_citation",
+                            "container_file_citation",
+                            "file_path"
+                          ]
+                        },
+                        "index": {
+                          "type": "integer"
+                        },
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "start_index": {
+                          "type": "integer"
+                        },
+                        "end_index": {
+                          "type": "integer"
+                        },
+                        "filename": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "container_id": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "annotation_index": {
+                      "type": "integer"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "param": {
+                      "type": "string"
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
                 }
               }
             }
@@ -13612,6 +14431,14 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "description": "When `true`, replays the stored response as SSE events instead of a single JSON object",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -13621,6 +14448,817 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResponsesResponse"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "description": "Streaming responses API response (SSE format)",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "response.ping",
+                        "response.created",
+                        "response.in_progress",
+                        "response.completed",
+                        "response.failed",
+                        "response.incomplete",
+                        "response.output_item.added",
+                        "response.output_item.done",
+                        "response.content_part.added",
+                        "response.content_part.done",
+                        "response.output_text.delta",
+                        "response.output_text.done",
+                        "response.refusal.delta",
+                        "response.refusal.done",
+                        "response.function_call_arguments.delta",
+                        "response.function_call_arguments.done",
+                        "response.file_search_call.in_progress",
+                        "response.file_search_call.searching",
+                        "response.file_search_call.results.added",
+                        "response.file_search_call.results.completed",
+                        "response.web_search_call.in_progress",
+                        "response.web_search_call.searching",
+                        "response.web_search_call.completed",
+                        "response.web_search_call.results.added",
+                        "response.web_search_call.results.completed",
+                        "response.web_fetch_call.in_progress",
+                        "response.web_fetch_call.fetching",
+                        "response.web_fetch_call.completed",
+                        "response.reasoning_summary_part.added",
+                        "response.reasoning_summary_part.done",
+                        "response.reasoning_summary_text.delta",
+                        "response.reasoning_summary_text.done",
+                        "response.image_generation_call.completed",
+                        "response.image_generation_call.generating",
+                        "response.image_generation_call.in_progress",
+                        "response.image_generation_call.partial_image",
+                        "response.mcp_call_arguments.delta",
+                        "response.mcp_call_arguments.done",
+                        "response.mcp_call.completed",
+                        "response.mcp_call.failed",
+                        "response.mcp_call.in_progress",
+                        "response.mcp_list_tools.completed",
+                        "response.mcp_list_tools.failed",
+                        "response.mcp_list_tools.in_progress",
+                        "response.code_interpreter_call.in_progress",
+                        "response.code_interpreter_call.interpreting",
+                        "response.code_interpreter_call.completed",
+                        "response.code_interpreter_call_code.delta",
+                        "response.code_interpreter_call_code.done",
+                        "response.output_text.annotation.added",
+                        "response.output_text.annotation.done",
+                        "response.queued",
+                        "response.custom_tool_call_input.delta",
+                        "response.custom_tool_call_input.done",
+                        "error"
+                      ]
+                    },
+                    "sequence_number": {
+                      "type": "integer"
+                    },
+                    "response": {
+                      "$ref": "#/components/schemas/ResponsesResponse"
+                    },
+                    "output_index": {
+                      "type": "integer"
+                    },
+                    "item": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "message",
+                            "file_search_call",
+                            "computer_call",
+                            "computer_call_output",
+                            "web_search_call",
+                            "web_fetch_call",
+                            "function_call",
+                            "function_call_output",
+                            "code_interpreter_call",
+                            "local_shell_call",
+                            "local_shell_call_output",
+                            "mcp_call",
+                            "custom_tool_call",
+                            "custom_tool_call_output",
+                            "image_generation_call",
+                            "mcp_list_tools",
+                            "mcp_approval_request",
+                            "mcp_approval_responses",
+                            "reasoning",
+                            "item_reference",
+                            "refusal"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "in_progress",
+                            "completed",
+                            "incomplete",
+                            "interpreting",
+                            "failed"
+                          ]
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "assistant",
+                            "user",
+                            "system",
+                            "developer"
+                          ]
+                        },
+                        "content": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "input_text",
+                                      "input_image",
+                                      "input_file",
+                                      "input_audio",
+                                      "output_text",
+                                      "refusal",
+                                      "reasoning_text"
+                                    ]
+                                  },
+                                  "file_id": {
+                                    "type": "string"
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  },
+                                  "signature": {
+                                    "type": "string"
+                                  },
+                                  "image_url": {
+                                    "type": "string"
+                                  },
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "file_data": {
+                                    "type": "string"
+                                  },
+                                  "file_url": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "file_type": {
+                                    "type": "string"
+                                  },
+                                  "input_audio": {
+                                    "type": "object",
+                                    "required": [
+                                      "format",
+                                      "data"
+                                    ],
+                                    "properties": {
+                                      "format": {
+                                        "type": "string",
+                                        "enum": [
+                                          "mp3",
+                                          "wav"
+                                        ]
+                                      },
+                                      "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "annotations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "file_citation",
+                                            "url_citation",
+                                            "container_file_citation",
+                                            "file_path"
+                                          ]
+                                        },
+                                        "index": {
+                                          "type": "integer"
+                                        },
+                                        "file_id": {
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "start_index": {
+                                          "type": "integer"
+                                        },
+                                        "end_index": {
+                                          "type": "integer"
+                                        },
+                                        "filename": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "container_id": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "logprobs": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "bytes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "logprob": {
+                                          "type": "number"
+                                        },
+                                        "token": {
+                                          "type": "string"
+                                        },
+                                        "top_logprobs": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "bytes": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "integer"
+                                                }
+                                              },
+                                              "logprob": {
+                                                "type": "number"
+                                              },
+                                              "token": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "refusal": {
+                                    "type": "string"
+                                  },
+                                  "cache_control": {
+                                    "$ref": "#/components/schemas/CacheControl"
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "call_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "arguments": {
+                          "type": "string"
+                        },
+                        "output": {
+                          "description": "Tool call output. A plain string for function/custom/local-shell tool\noutputs, an array of content blocks for structured function tool\noutputs, or a computer-tool screenshot object for computer_call_output.\n",
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "required": [
+                                  "type"
+                                ],
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "input_text",
+                                      "input_image",
+                                      "input_file",
+                                      "input_audio",
+                                      "output_text",
+                                      "refusal",
+                                      "reasoning_text"
+                                    ]
+                                  },
+                                  "file_id": {
+                                    "type": "string"
+                                  },
+                                  "text": {
+                                    "type": "string"
+                                  },
+                                  "signature": {
+                                    "type": "string"
+                                  },
+                                  "image_url": {
+                                    "type": "string"
+                                  },
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "file_data": {
+                                    "type": "string"
+                                  },
+                                  "file_url": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "file_type": {
+                                    "type": "string"
+                                  },
+                                  "input_audio": {
+                                    "type": "object",
+                                    "required": [
+                                      "format",
+                                      "data"
+                                    ],
+                                    "properties": {
+                                      "format": {
+                                        "type": "string",
+                                        "enum": [
+                                          "mp3",
+                                          "wav"
+                                        ]
+                                      },
+                                      "data": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "annotations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "file_citation",
+                                            "url_citation",
+                                            "container_file_citation",
+                                            "file_path"
+                                          ]
+                                        },
+                                        "index": {
+                                          "type": "integer"
+                                        },
+                                        "file_id": {
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "type": "string"
+                                        },
+                                        "start_index": {
+                                          "type": "integer"
+                                        },
+                                        "end_index": {
+                                          "type": "integer"
+                                        },
+                                        "filename": {
+                                          "type": "string"
+                                        },
+                                        "title": {
+                                          "type": "string"
+                                        },
+                                        "url": {
+                                          "type": "string"
+                                        },
+                                        "container_id": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "logprobs": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "bytes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "logprob": {
+                                          "type": "number"
+                                        },
+                                        "token": {
+                                          "type": "string"
+                                        },
+                                        "top_logprobs": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "bytes": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "integer"
+                                                }
+                                              },
+                                              "logprob": {
+                                                "type": "number"
+                                              },
+                                              "token": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "refusal": {
+                                    "type": "string"
+                                  },
+                                  "cache_control": {
+                                    "$ref": "#/components/schemas/CacheControl"
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "type": "object",
+                              "description": "Computer tool call output (computer_screenshot).",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "computer_screenshot"
+                                  ]
+                                },
+                                "file_id": {
+                                  "type": "string"
+                                },
+                                "image_url": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "action": {
+                          "type": "object"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "queries": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "results": {
+                          "type": "array",
+                          "items": {
+                            "type": "object"
+                          }
+                        },
+                        "summary": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "type",
+                              "text"
+                            ],
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "summary_text"
+                                ]
+                              },
+                              "text": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "encrypted_content": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "content_index": {
+                      "type": "integer"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "part": {
+                      "type": "object",
+                      "required": [
+                        "type"
+                      ],
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "input_text",
+                            "input_image",
+                            "input_file",
+                            "input_audio",
+                            "output_text",
+                            "refusal",
+                            "reasoning_text"
+                          ]
+                        },
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "signature": {
+                          "type": "string"
+                        },
+                        "image_url": {
+                          "type": "string"
+                        },
+                        "detail": {
+                          "type": "string"
+                        },
+                        "file_data": {
+                          "type": "string"
+                        },
+                        "file_url": {
+                          "type": "string"
+                        },
+                        "filename": {
+                          "type": "string"
+                        },
+                        "file_type": {
+                          "type": "string"
+                        },
+                        "input_audio": {
+                          "type": "object",
+                          "required": [
+                            "format",
+                            "data"
+                          ],
+                          "properties": {
+                            "format": {
+                              "type": "string",
+                              "enum": [
+                                "mp3",
+                                "wav"
+                              ]
+                            },
+                            "data": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "annotations": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "file_citation",
+                                  "url_citation",
+                                  "container_file_citation",
+                                  "file_path"
+                                ]
+                              },
+                              "index": {
+                                "type": "integer"
+                              },
+                              "file_id": {
+                                "type": "string"
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "start_index": {
+                                "type": "integer"
+                              },
+                              "end_index": {
+                                "type": "integer"
+                              },
+                              "filename": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              },
+                              "container_id": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "logprobs": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "bytes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer"
+                                }
+                              },
+                              "logprob": {
+                                "type": "number"
+                              },
+                              "token": {
+                                "type": "string"
+                              },
+                              "top_logprobs": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "bytes": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "logprob": {
+                                      "type": "number"
+                                    },
+                                    "token": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "refusal": {
+                          "type": "string"
+                        },
+                        "cache_control": {
+                          "$ref": "#/components/schemas/CacheControl"
+                        }
+                      }
+                    },
+                    "delta": {
+                      "type": "string"
+                    },
+                    "signature": {
+                      "type": "string"
+                    },
+                    "logprobs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "bytes": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer"
+                            }
+                          },
+                          "logprob": {
+                            "type": "number"
+                          },
+                          "token": {
+                            "type": "string"
+                          },
+                          "top_logprobs": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "bytes": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "integer"
+                                  }
+                                },
+                                "logprob": {
+                                  "type": "number"
+                                },
+                                "token": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "refusal": {
+                      "type": "string"
+                    },
+                    "arguments": {
+                      "type": "string"
+                    },
+                    "partial_image_b64": {
+                      "type": "string"
+                    },
+                    "partial_image_index": {
+                      "type": "integer"
+                    },
+                    "annotation": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "file_citation",
+                            "url_citation",
+                            "container_file_citation",
+                            "file_path"
+                          ]
+                        },
+                        "index": {
+                          "type": "integer"
+                        },
+                        "file_id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "start_index": {
+                          "type": "integer"
+                        },
+                        "end_index": {
+                          "type": "integer"
+                        },
+                        "filename": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "container_id": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "annotation_index": {
+                      "type": "integer"
+                    },
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "param": {
+                      "type": "string"
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
                 }
               }
             }
@@ -38269,7 +39907,7 @@
       "put": {
         "operationId": "updateTeam",
         "summary": "Update team",
-        "description": "Updates a team. Note that renaming teams is not allowed.",
+        "description": "Updates a team. Note that renaming teams is not allowed.\nAccepts customer_id / customer_ids to attach customers to the team via the team <-> customer many-to-many association, the same association exposed by POST /api/teams/{id}/customers. Attachment is additive and does not detach existing customers.",
         "tags": [
           "Teams"
         ],
@@ -38291,9 +39929,20 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "description": {
+                  "name": {
                     "type": "string",
-                    "description": "Updated team description"
+                    "description": "Team name. Renaming is not allowed - sending a value different from the team's current name returns 400."
+                  },
+                  "customer_id": {
+                    "type": "string",
+                    "description": "Customer to attach to this team. Additive: the customer is attached and any customers already attached are left in place. Re-sending an already-attached customer is a no-op. To detach, use DELETE /api/teams/{id}/customers/{customerId}.\nThis is the team <-> customer many-to-many association that drives governance and DAC customer derivation. It is distinct from the customer_id on PUT /api/governance/teams/{team_id}, which sets the team's budget-hierarchy parent and is not modified by this endpoint."
+                  },
+                  "customer_ids": {
+                    "type": "array",
+                    "description": "Customers to attach to this team, same semantics as customer_id. May be combined with customer_id; the two sets are merged.",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 }
               }
@@ -38318,6 +39967,17 @@
                     },
                     "name": {
                       "type": "string"
+                    },
+                    "attached_customer_ids": {
+                      "type": "array",
+                      "description": "Customers attached by this request. Omitted when the request carried no customer_id or customer_ids.",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "warning": {
+                      "type": "string",
+                      "description": "Present only when the attachment was persisted but refreshing the cached team scope failed. The association is durable; the derived customer scope may lag until the next reload."
                     }
                   }
                 }
@@ -38335,7 +39995,7 @@
             }
           },
           "404": {
-            "description": "Team not found",
+            "description": "Team or customer not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -40043,7 +41703,7 @@
       "post": {
         "operationId": "createPlugin",
         "summary": "Create a new plugin",
-        "description": "Creates a new plugin with the specified configuration.",
+        "description": "Creates a new plugin with the specified configuration.\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
         "tags": [
           "Plugins"
         ],
@@ -40091,6 +41751,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A non-builtin path was supplied and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "409": {
             "description": "Plugin already exists",
@@ -40231,7 +41894,7 @@
       "put": {
         "operationId": "updatePlugin",
         "summary": "Update a plugin",
-        "description": "Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.\nThe response `actualName` field shows the plugin name from GetName() (used as the map key),\nwhich may differ from the display name (`name`).\n",
+        "description": "Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.\nThe response `actualName` field shows the plugin name from GetName() (used as the map key),\nwhich may differ from the display name (`name`).\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
         "tags": [
           "Plugins"
         ],
@@ -40290,6 +41953,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "A non-builtin path was supplied and dashboard authentication is disabled or unconfigured (the request was not genuinely authenticated)"
           },
           "404": {
             "description": "Plugin not found",
@@ -42912,7 +44578,7 @@
           {
             "name": "from_memory",
             "in": "query",
-            "description": "If true, returns virtual keys from in-memory cache instead of database",
+            "description": "If true, returns virtual keys from in-memory cache instead of database. Filtering, sorting and pagination parameters are not applied in this mode; combining it with user_id is rejected with a 400.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -42956,6 +44622,14 @@
             "name": "team_id",
             "in": "query",
             "description": "Filter virtual keys by team ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Filter virtual keys by assigned user ID (enterprise only; matches no virtual keys on OSS builds). Combined with customer_id/team_id using OR.",
             "schema": {
               "type": "string"
             }
@@ -43017,6 +44691,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListVirtualKeysResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -43333,6 +45017,158 @@
           },
           "404": {
             "description": "Virtual key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override": {
+      "put": {
+        "operationId": "updateVirtualKeyBudgetOverride",
+        "summary": "Set virtual key budget override",
+        "description": "Sets or replaces the spending override on one of a virtual key's budgets. The override is additive —\nwhile it is active the budget is enforced against `max_limit + override_amount` — and it leaves the\nbudget's base limit, current usage, and reset schedule untouched.\n\nUse `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows\n(the current window counts as the first), or `mode: forever` to keep the override until it is deleted.\nA finite grant is anchored to the budget's current reset window, so every node in a cluster derives the\nsame number of remaining cycles and a config reload cannot resurrect a spent one.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "description": "Virtual key ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of a budget owned by the virtual key",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BudgetOverrideRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override applied successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetOverrideResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Virtual key or budget not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteVirtualKeyBudgetOverride",
+        "summary": "Remove virtual key budget override",
+        "description": "Removes any active override from the budget, so it is enforced against its base `max_limit` again.\nThe budget's current usage and reset schedule are unchanged, and the removal is permanent — a cleared\ngrant cannot be re-derived. Safe to call on a budget that has no override.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "vk_id",
+            "in": "path",
+            "required": true,
+            "description": "Virtual key ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of a budget owned by the virtual key",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override removed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetOverrideResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Virtual key or budget not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -45909,15 +47745,15 @@
             "in": "query",
             "description": "Filter by scope kind",
             "schema": {
-              "type": "string",
-              "enum": [
-                "global",
-                "provider",
-                "provider_key",
-                "virtual_key",
-                "virtual_key_provider",
-                "virtual_key_provider_key"
-              ]
+              "$ref": "#/components/schemas/PricingOverrideScopeKind"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Filter by user ID (for user* scopes)",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -45942,6 +47778,32 @@
             "description": "Filter by provider key ID",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive substring match against the pricing override name. A non-empty value switches the response to the paginated shape.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of results to return. A non-empty `limit`, `offset`, or `search` value switches the response to the paginated shape.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of results to skip",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         ],
@@ -51116,6 +52978,162 @@
           },
           "404": {
             "description": "User access profile not found"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/{target_user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override": {
+      "put": {
+        "operationId": "updateUserAccessProfileBudgetOverride",
+        "summary": "Set a user's access-profile budget override",
+        "description": "Sets or replaces the spending override on one budget of a single user's copy of an access profile.\nThe override is additive — while it is active the budget is enforced against\n`max_limit + override_amount` — and it leaves the budget's base limit, current usage, and reset\nschedule untouched. Only this user is affected; the access profile template and every other user\nassigned to it keep their original limits.\n\nUse `mode: cycles` with a `cycles` count to grant extra spend for a finite number of reset windows\n(the current window counts as the first), or `mode: forever` to keep the override until it is deleted.\nA finite grant is anchored to the profile's reset window — calendar-aligned profiles anchor at the\ncalendar period start — so every node in a cluster derives the same number of remaining cycles.\nThe change is propagated cluster-wide and survives access-profile cloning and propagation.\n\nRequires the `AccessProfiles.Update` permission. `budget_id` must be a budget on the user's own copy\nof the profile, not on the shared template.\n",
+        "tags": [
+          "Access Profiles"
+        ],
+        "parameters": [
+          {
+            "name": "target_user_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the user whose access-profile budget is being overridden",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the access profile assigned to the user",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of a budget on the user's copy of the access profile",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BudgetOverrideRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override applied successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetOverrideResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User access profile or budget not found, or the profile is outside the caller's access scope"
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteUserAccessProfileBudgetOverride",
+        "summary": "Remove a user's access-profile budget override",
+        "description": "Removes any active override from the user's budget, so it is enforced against its base `max_limit`\nagain. The budget's current usage and reset schedule are unchanged, and the removal is permanent — a\ncleared grant cannot be re-derived. Safe to call on a budget that has no override.\n\nRequires the `AccessProfiles.Update` permission.\n",
+        "tags": [
+          "Access Profiles"
+        ],
+        "parameters": [
+          {
+            "name": "target_user_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the user whose access-profile budget override is being removed",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of the access profile assigned to the user",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "budget_id",
+            "in": "path",
+            "required": true,
+            "description": "ID of a budget on the user's copy of the access profile",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Budget override removed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetOverrideResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User access profile or budget not found, or the profile is outside the caller's access scope"
           },
           "500": {
             "description": "Internal server error",
@@ -57895,6 +59913,25 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 100
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "When true, returns every ranked entity with no row cap. Intended for\nexports (CSV / PDF), which must not be truncated.\n",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "security": [
@@ -58254,6 +60291,25 @@
             "description": "Comma-separated list of MCP server labels to filter the MCP section by",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of ranked rows to return. Defaults to 100. Ignored when\n`all=true`.\n",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 100
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "When true, returns every ranked entity with no row cap. Intended for\nexports (CSV / PDF), which must not be truncated.\n",
+            "schema": {
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -59361,6 +61417,28 @@
                             "additionalProperties": true,
                             "description": "Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)"
                           },
+                          "plugin_logs": {
+                            "type": "string",
+                            "description": "JSON-serialized plugin log entries grouped by plugin name"
+                          },
+                          "redaction_mapping": {
+                            "type": "object",
+                            "properties": {
+                              "input": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              },
+                              "output": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "description": "Phase-scoped placeholder-to-original-value mappings for reversible MCP redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
+                          },
                           "created_at": {
                             "type": "string",
                             "format": "date-time",
@@ -59595,6 +61673,28 @@
                       "type": "object",
                       "additionalProperties": true,
                       "description": "Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)"
+                    },
+                    "plugin_logs": {
+                      "type": "string",
+                      "description": "JSON-serialized plugin log entries grouped by plugin name"
+                    },
+                    "redaction_mapping": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        },
+                        "output": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "Phase-scoped placeholder-to-original-value mappings for reversible MCP redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
                     },
                     "created_at": {
                       "type": "string",
@@ -67182,6 +69282,43 @@
           }
         }
       },
+      "ContextManagement": {
+        "description": "Automatic context window management. The wire shape depends on the target provider: OpenAI-compatible providers accept an array of {type, compact_threshold} entries; Anthropic-compatible providers accept an object with an \"edits\" array (compact_20260112, clear_tool_uses_20250919, clear_thinking_20251015).\n",
+        "oneOf": [
+          {
+            "type": "array",
+            "description": "OpenAI native shape — an array of context-management entries.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "Entry type. Currently only \"compaction\" is supported."
+                },
+                "compact_threshold": {
+                  "type": "integer",
+                  "description": "Token threshold at which compaction should be triggered for this entry."
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          {
+            "type": "object",
+            "description": "Anthropic native shape — an object with an \"edits\" array.",
+            "properties": {
+              "edits": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        ]
+      },
       "ResponsesRequest": {
         "type": "object",
         "required": [
@@ -67673,6 +69810,9 @@
           },
           "conversation": {
             "type": "string"
+          },
+          "context_management": {
+            "$ref": "#/components/schemas/ContextManagement"
           },
           "include": {
             "type": "array",
@@ -72791,6 +74931,9 @@
           "stream": {
             "type": "boolean"
           },
+          "context_management": {
+            "$ref": "#/components/schemas/ContextManagement"
+          },
           "instructions": {
             "type": "string",
             "description": "System instructions for the model"
@@ -77175,7 +79318,7 @@
           },
           "auth_config": {
             "type": "object",
-            "description": "Authentication configuration",
+            "description": "Absent when no admin account has been configured yet (first-time setup). Once an admin account exists, this is always present. Available starting in Bifrost 2.0.0-prerelease3; earlier versions always returned this field.",
             "properties": {
               "admin_username": {
                 "type": "string"
@@ -77500,25 +79643,46 @@
             }
           },
           "auth_config": {
-            "type": "object",
-            "description": "Authentication configuration",
-            "properties": {
-              "admin_username": {
-                "type": "string"
+            "allOf": [
+              {
+                "type": "object",
+                "description": "Authentication configuration",
+                "properties": {
+                  "admin_username": {
+                    "type": "string"
+                  },
+                  "admin_password": {
+                    "type": "string",
+                    "description": "Password (redacted as <redacted> in responses)"
+                  },
+                  "is_enabled": {
+                    "type": "boolean"
+                  },
+                  "disable_auth_on_inference": {
+                    "type": "boolean",
+                    "deprecated": true,
+                    "description": "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
+                  }
+                }
               },
-              "admin_password": {
-                "type": "string",
-                "description": "Password (redacted as <redacted> in responses)"
-              },
-              "is_enabled": {
-                "type": "boolean"
-              },
-              "disable_auth_on_inference": {
-                "type": "boolean",
-                "deprecated": true,
-                "description": "Deprecated and ignored. Use client_config.enforce_auth_on_inference instead."
+              {
+                "type": "object",
+                "properties": {
+                  "setup_token": {
+                    "type": "string",
+                    "description": "Available starting in Bifrost 2.0.0-prerelease3. Bootstrap token, required only when this request creates the very first admin account (i.e. no admin account exists yet). Must match the setup token configured by the operator via setup_token in config.json (or the BIFROST_SETUP_TOKEN environment variable); never persisted or returned by GET /api/config. If the operator hasn't configured a setup token, requests that would create the first admin account are rejected until they do. Once an admin account exists, this field is ignored."
+                  }
+                }
               }
-            }
+            ]
+          }
+        },
+        "example": {
+          "auth_config": {
+            "admin_username": "admin",
+            "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+            "is_enabled": true,
+            "setup_token": "<your-setup-token>"
           }
         }
       },
@@ -80301,10 +82465,18 @@
             }
           },
           "virtual_keys": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Virtual keys owned by this customer. Omitted or returned as null by the paginated list endpoint (`GET /api/governance/customers` with `limit`/`offset`/`search`), which reports `virtual_key_count` instead; use the single-customer endpoint to retrieve the keys themselves.\n",
             "items": {
               "$ref": "#/components/schemas/VirtualKey"
             }
+          },
+          "virtual_key_count": {
+            "type": "integer",
+            "description": "Number of virtual keys owned by this customer. Always populated."
           },
           "config_hash": {
             "type": "string"
@@ -80409,6 +82581,31 @@
           },
           "current_usage": {
             "type": "number"
+          },
+          "override_amount": {
+            "type": "number",
+            "description": "Additional spend added on top of `max_limit` while the override is active. Omitted when no override is set."
+          },
+          "override_mode": {
+            "type": "string",
+            "description": "How long the override stays active. `cycles` keeps it active for a finite number of\nreset windows; `forever` keeps it active until it is removed. Omitted when no override is set.\n",
+            "enum": [
+              "cycles",
+              "forever"
+            ]
+          },
+          "override_cycles_remaining": {
+            "type": "integer",
+            "description": "Reset windows the override is still valid for, including the current one. Positive only\nfor `cycles` mode; recomputed from the original grant on every reset, never decremented in place.\n"
+          },
+          "override_cycles_total": {
+            "type": "integer",
+            "description": "Number of reset windows the current `cycles` override was granted for. Immutable for the life of the grant."
+          },
+          "override_anchor_reset": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Reset-window boundary at which the current `cycles` override was granted. Immutable for the life of the grant."
           },
           "team_id": {
             "type": "string",
@@ -80574,6 +82771,50 @@
               "null"
             ],
             "description": "Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on an existing budget, current usage is reset to zero and last_reset snaps to the current period start.\n"
+          }
+        }
+      },
+      "BudgetOverrideRequest": {
+        "type": "object",
+        "description": "Replaces the active override on one budget. The override is additive: it does not change the\nbudget's `max_limit`, `current_usage`, or reset schedule. Sending this request against a budget\nthat already has an override replaces that override entirely.\n",
+        "required": [
+          "amount",
+          "mode"
+        ],
+        "properties": {
+          "amount": {
+            "type": "number",
+            "description": "Additional spend in dollars added on top of `max_limit` while the override is active. Must be greater than 0 and finite."
+          },
+          "mode": {
+            "type": "string",
+            "description": "`cycles` keeps the override active for `cycles` reset windows starting with the current one.\n`forever` keeps it active until it is removed with a DELETE.\n",
+            "enum": [
+              "cycles",
+              "forever"
+            ]
+          },
+          "cycles": {
+            "type": "integer",
+            "description": "Number of reset windows the override stays active for, counting the current window as the first.\nRequired and must be greater than 0 when `mode` is `cycles`; must be omitted or 0 when `mode` is `forever`.\n",
+            "minimum": 1
+          }
+        }
+      },
+      "BudgetOverrideResponse": {
+        "type": "object",
+        "description": "The persisted budget and the additive limit now in force.",
+        "required": [
+          "budget",
+          "effective_max_limit"
+        ],
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/Budget"
+          },
+          "effective_max_limit": {
+            "type": "number",
+            "description": "`max_limit` plus `override_amount` while an override is active; equal to `max_limit` otherwise."
           }
         }
       },
@@ -81643,6 +83884,21 @@
           }
         }
       },
+      "PricingOverrideScopeKind": {
+        "type": "string",
+        "description": "Scope that determines which requests a pricing override applies to. The virtual_key* family is checked before the user* family during cost resolution, which is checked before the provider/global scopes; within a family, more identifiers present means a more specific match.\n",
+        "enum": [
+          "global",
+          "provider",
+          "provider_key",
+          "virtual_key",
+          "virtual_key_provider",
+          "virtual_key_provider_key",
+          "user",
+          "user_provider",
+          "user_provider_key"
+        ]
+      },
       "PricingOverrideRequestType": {
         "type": "string",
         "description": "Request type for pricing override filtering. Stream variants are treated identically to their base type - specifying `chat_completion` covers both streaming and non-streaming chat requests.\n",
@@ -81689,11 +83945,41 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_flex": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_flex": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic research preview). Flat rate across the full context window - no 128k/200k/272k tiering."
+          },
+          "output_cost_per_token_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic research preview). Flat rate across the full context window - no 128k/200k/272k tiering."
+          },
           "input_cost_per_character": {
             "type": "number",
             "minimum": 0
           },
           "input_cost_per_token_above_128k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_image_above_128k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_video_per_second_above_128k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_audio_per_second_above_128k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -81705,7 +83991,39 @@
             "type": "number",
             "minimum": 0
           },
+          "input_cost_per_token_above_200k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
           "output_cost_per_token_above_200k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_200k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "input_cost_per_token_flex_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_token_flex_above_272k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -81725,11 +84043,15 @@
             "type": "number",
             "minimum": 0
           },
-          "cache_read_input_token_cost_priority": {
+          "cache_read_input_token_cost_above_200k_tokens_priority": {
             "type": "number",
             "minimum": 0
           },
-          "cache_read_input_image_token_cost": {
+          "cache_creation_input_token_cost_above_1hr": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_1hr_above_200k_tokens": {
             "type": "number",
             "minimum": 0
           },
@@ -81737,11 +84059,62 @@
             "type": "number",
             "minimum": 0
           },
-          "input_cost_per_image": {
+          "cache_read_input_token_cost_priority": {
             "type": "number",
             "minimum": 0
           },
-          "output_cost_per_image": {
+          "cache_read_input_token_cost_flex": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_image_token_cost": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_above_272k_tokens_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_read_input_token_cost_flex_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_flex": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_flex_above_272k_tokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_priority": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cache_creation_input_token_cost_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "cache_creation_input_token_cost_above_1hr_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "cache_read_input_token_cost_fast": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Fast mode (Anthropic) cache rate - flat across the full context window, no tiering."
+          },
+          "input_cost_per_image": {
             "type": "number",
             "minimum": 0
           },
@@ -81749,15 +84122,39 @@
             "type": "number",
             "minimum": 0
           },
+          "output_cost_per_image": {
+            "type": "number",
+            "minimum": 0
+          },
           "output_cost_per_pixel": {
             "type": "number",
             "minimum": 0
           },
-          "input_cost_per_image_token": {
+          "output_cost_per_image_premium_image": {
             "type": "number",
             "minimum": 0
           },
-          "output_cost_per_image_token": {
+          "output_cost_per_image_above_512_and_512_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_512_and_512_pixels_and_premium_image": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_1024_and_1024_pixels_and_premium_image": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_2048_and_2048_pixels": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_image_above_4096_and_4096_pixels": {
             "type": "number",
             "minimum": 0
           },
@@ -81777,31 +84174,15 @@
             "type": "number",
             "minimum": 0
           },
-          "output_cost_per_image_premium_image": {
+          "input_cost_per_image_token": {
             "type": "number",
             "minimum": 0
           },
-          "output_cost_per_image_above_512_and_512_pixels": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_cost_per_image_above_1024_and_1024_pixels": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_cost_per_image_above_2048_and_2048_pixels": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_cost_per_image_above_4096_and_4096_pixels": {
+          "output_cost_per_image_token": {
             "type": "number",
             "minimum": 0
           },
           "input_cost_per_audio_token": {
-            "type": "number",
-            "minimum": 0
-          },
-          "output_cost_per_audio_token": {
             "type": "number",
             "minimum": 0
           },
@@ -81814,6 +84195,10 @@
             "minimum": 0
           },
           "input_cost_per_video_per_second": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output_cost_per_audio_token": {
             "type": "number",
             "minimum": 0
           },
@@ -81832,6 +84217,19 @@
           "code_interpreter_cost_per_session": {
             "type": "number",
             "minimum": 0
+          },
+          "inference_geo_us_multiplier": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Anthropic data-residency multiplier applied when usage.inference_geo == \"us\"."
+          },
+          "ocr_cost_per_page": {
+            "type": "number",
+            "minimum": 0
+          },
+          "annotation_cost_per_page": {
+            "type": "number",
+            "minimum": 0
           }
         }
       },
@@ -81848,16 +84246,14 @@
             "description": "Human-readable label"
           },
           "scope_kind": {
-            "type": "string",
-            "enum": [
-              "global",
-              "provider",
-              "provider_key",
-              "virtual_key",
-              "virtual_key_provider",
-              "virtual_key_provider_key"
+            "$ref": "#/components/schemas/PricingOverrideScopeKind"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
             ],
-            "description": "Scope that determines which requests this override applies to"
+            "description": "Required for user* scopes"
           },
           "virtual_key_id": {
             "type": [
@@ -81871,14 +84267,14 @@
               "string",
               "null"
             ],
-            "description": "Required for provider and virtual_key_provider scopes"
+            "description": "Required for provider, virtual_key_provider, and user_provider scopes"
           },
           "provider_key_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Required for provider_key and virtual_key_provider_key scopes"
+            "description": "Required for provider_key, virtual_key_provider_key, and user_provider_key scopes"
           },
           "match_type": {
             "type": "string",
@@ -81941,15 +84337,11 @@
             "description": "Human-readable label"
           },
           "scope_kind": {
+            "$ref": "#/components/schemas/PricingOverrideScopeKind"
+          },
+          "user_id": {
             "type": "string",
-            "enum": [
-              "global",
-              "provider",
-              "provider_key",
-              "virtual_key",
-              "virtual_key_provider",
-              "virtual_key_provider_key"
-            ]
+            "description": "Required for user* scopes"
           },
           "virtual_key_id": {
             "type": "string",
@@ -81957,11 +84349,11 @@
           },
           "provider_id": {
             "type": "string",
-            "description": "Required for provider and virtual_key_provider scopes"
+            "description": "Required for provider, virtual_key_provider, and user_provider scopes"
           },
           "provider_key_id": {
             "type": "string",
-            "description": "Required for provider_key and virtual_key_provider_key scopes"
+            "description": "Required for provider_key, virtual_key_provider_key, and user_provider_key scopes"
           },
           "match_type": {
             "type": "string",
@@ -81996,15 +84388,11 @@
             "description": "Human-readable label"
           },
           "scope_kind": {
+            "$ref": "#/components/schemas/PricingOverrideScopeKind"
+          },
+          "user_id": {
             "type": "string",
-            "enum": [
-              "global",
-              "provider",
-              "provider_key",
-              "virtual_key",
-              "virtual_key_provider",
-              "virtual_key_provider_key"
-            ]
+            "description": "Required for user* scopes"
           },
           "virtual_key_id": {
             "type": "string",
@@ -82012,11 +84400,11 @@
           },
           "provider_id": {
             "type": "string",
-            "description": "Required for provider and virtual_key_provider scopes"
+            "description": "Required for provider, virtual_key_provider, and user_provider scopes"
           },
           "provider_key_id": {
             "type": "string",
-            "description": "Required for provider_key and virtual_key_provider_key scopes"
+            "description": "Required for provider_key, virtual_key_provider_key, and user_provider_key scopes"
           },
           "match_type": {
             "type": "string",
@@ -82055,6 +84443,7 @@
       },
       "ListPricingOverridesResponse": {
         "type": "object",
+        "description": "When `limit`, `offset`, or `search` is supplied, `count` reflects the returned page while `total_count` reflects the full matching set. Otherwise (backward-compatible, non-paginated path) `total_count` equals `count` and `limit`/`offset` describe the full unpaged result.\n",
         "properties": {
           "pricing_overrides": {
             "type": "array",
@@ -82064,7 +84453,19 @@
           },
           "count": {
             "type": "integer",
-            "description": "Total number of overrides returned"
+            "description": "Number of overrides in this response"
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Total number of overrides matching the filters"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size used for this response"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset used for this response"
           }
         }
       },

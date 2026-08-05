@@ -149,6 +149,13 @@ type pluginOrderInfo struct {
 
 type ServerConfig struct {
 	ReadBufferSize int `json:"read_buffer_size,omitempty"`
+
+	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
+	// plugin (.so) downloads may reach even when they resolve to a private/loopback/
+	// link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted
+	// internal artifact hosts. Deploy-time only - read from config.json/environment at
+	// startup, never settable via the plugin admin API. Invalid entries fail server startup.
+	PluginDownloadPrivateAllowlist []string `json:"plugin_download_private_allowlist,omitempty"`
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
@@ -166,7 +173,14 @@ type ConfigData struct {
 	Client        *configstore.ClientConfig `json:"client"`
 	EncryptionKey *schemas.SecretVar        `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
-	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
+	AuthConfig *configstore.AuthConfig `json:"auth_config,omitempty"`
+	// SetupToken is the operator-provisioned bootstrap secret required to create the
+	// very first admin account (see AuthMiddleware.bootstrapToken). It is never
+	// persisted to the config store — only read from this file (or, when absent here,
+	// the BIFROST_SETUP_TOKEN env var) — so every node in a multi-node deployment reads
+	// the same value from its own identical config/env rather than relying on a
+	// per-process generated value.
+	SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
 	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
 	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -425,6 +439,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		Client            *configstore.ClientConfig             `json:"client"`
 		EncryptionKey     *schemas.SecretVar                    `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
+		SetupToken        *schemas.SecretVar                    `json:"setup_token,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
 		Webhooks          []*WebhookEndpointConfig              `json:"webhooks,omitempty"`
@@ -451,6 +466,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.Server = temp.Server
 	cd.EncryptionKey = temp.EncryptionKey
 	cd.AuthConfig = temp.AuthConfig
+	cd.SetupToken = temp.SetupToken
 	cd.Providers = temp.Providers
 	cd.MCP = temp.MCP
 	cd.Webhooks = temp.Webhooks
@@ -556,6 +572,11 @@ type Config struct {
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
+
+	// SetupToken is the resolved operator-provisioned bootstrap secret (see
+	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
+	// configured one. Never persisted — read fresh from config/env on every boot.
+	SetupToken string
 
 	// webhookEndpoints serves webhook endpoint config to the request path and
 	// the delivery worker without database reads. Guarded by muWebhooks;
@@ -920,6 +941,8 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 1a. Vault config acknowledgement (initialization handled by enterprise layer)
 	initVault(&configData)
+	// 1b. Bootstrap setup token (from config file or BIFROST_SETUP_TOKEN env var)
+	config.SetupToken = resolveSetupToken(&configData)
 	// 2. Stores (config, logs, vector) — creates defaults for absent configs
 	if err := initStores(ctx, config, &configData, configDBPath, logsDBPath); err != nil {
 		return nil, err
@@ -3005,7 +3028,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.ModelConfigs {
 				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil {
+					if err := config.ConfigStore.DeleteModelConfig(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete model config %s: %w", existing.ID, err)
 					}
 				}
@@ -3065,7 +3088,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.Budgets {
 				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil {
+					if err := config.ConfigStore.DeleteBudget(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete budget %s: %w", existing.ID, err)
 					}
 				}
@@ -3079,7 +3102,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.RateLimits {
 				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil {
+					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
 					}
 				}
@@ -3237,7 +3260,7 @@ func updateGovernanceConfigInStore(
 				// Delete stale budgets one by one — mirrors the team/VK reconcile pattern.
 				for _, existingID := range existingIDs {
 					if !desiredSet[existingID] {
-						if err := config.ConfigStore.DeleteBudget(ctx, existingID, tx); err != nil {
+						if err := config.ConfigStore.DeleteBudget(ctx, existingID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
 							return fmt.Errorf("failed to delete stale budget %s for customer %s: %w", existingID, customer.ID, err)
 						}
 					}
@@ -3383,18 +3406,12 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
-		// Create routing rules (new from config.json)
-		for _, rule := range routingRulesToAdd {
-			if err := config.ConfigStore.CreateRoutingRule(ctx, &rule, tx); err != nil {
-				return fmt.Errorf("failed to create routing rule %s: %w", rule.ID, err)
-			}
-		}
-
-		// Update routing rules (config.json changed)
-		for _, rule := range routingRulesToUpdate {
-			if err := config.ConfigStore.UpdateRoutingRule(ctx, &rule, tx); err != nil {
-				return fmt.Errorf("failed to update routing rule %s: %w", rule.ID, err)
-			}
+		// Apply routing rules as a batch so the unique-priority-per-scope check runs against
+		// the final state, not intermediate steps. A valid permutation (e.g. swapping two
+		// rules' priorities) transiently duplicates a priority mid-sync but is not a real
+		// conflict; a genuine end-state duplicate still errors.
+		if err := config.ConfigStore.SyncRoutingRules(ctx, routingRulesToAdd, routingRulesToUpdate, tx); err != nil {
+			return fmt.Errorf("failed to sync routing rules: %w", err)
 		}
 
 		// Create pricing overrides (new from config.json)
@@ -4112,12 +4129,14 @@ func ResolveFrameworkPricingConfig(
 	defaultPricingURL := modelcatalog.DefaultPricingURL
 	defaultModelParametersURL := modelcatalog.DefaultModelParametersURL
 	defaultSyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
+	defaultLiveModelsSyncSeconds := int64(modelcatalog.DefaultLiveModelsSyncInterval.Seconds())
 
 	filePricingURL := (*string)(nil)
 	fileModelParametersURL := (*string)(nil)
 	fileSyncSeconds := (*int64)(nil)
 	fileMCPLibraryURL := (*string)(nil)
 	fileMCPLibrarySyncSeconds := (*int64)(nil)
+	fileLiveModelsSyncSeconds := (*int64)(nil)
 	skipURLBackfill := false // prevent DB backfill of unresolved env references
 	skipModelParamsURLBackfill := false
 	skipMCPLibraryURLBackfill := false
@@ -4203,6 +4222,24 @@ func ResolveFrameworkPricingConfig(
 				fileMCPLibrarySyncSeconds = &val
 			}
 		}
+		if fileConfig.Pricing.LiveModelsSyncInterval != nil {
+			val := *fileConfig.Pricing.LiveModelsSyncInterval
+			switch {
+			case val == modelcatalog.LiveModelsSyncDisabled:
+				// Explicit opt-out, not corruption. Passed through untouched so
+				// Phase 3 does not "repair" it back to the default.
+				disabled := modelcatalog.LiveModelsSyncDisabled
+				fileLiveModelsSyncSeconds = &disabled
+			case val < 0:
+				logger.Warn("live_models_sync_interval in config.json is invalid (%d seconds), ignoring — using default (%d seconds)", val, defaultLiveModelsSyncSeconds)
+			case val < modelcatalog.MinimumLiveModelsSyncIntervalSec:
+				clamped := modelcatalog.MinimumLiveModelsSyncIntervalSec
+				logger.Warn("live_models_sync_interval in config.json is below minimum (%d seconds), clamping to %d seconds", val, clamped)
+				fileLiveModelsSyncSeconds = &clamped
+			default:
+				fileLiveModelsSyncSeconds = &val
+			}
+		}
 	}
 
 	// --- Phase 2: apply file config over defaults ---
@@ -4215,6 +4252,7 @@ func ResolveFrameworkPricingConfig(
 	defaultMCPLibrarySyncSeconds := int64(modelcatalog.DefaultSyncInterval.Seconds())
 	resolvedMCPLibraryURL := &defaultMCPLibraryURL
 	resolvedMCPLibrarySyncInterval := &defaultMCPLibrarySyncSeconds
+	resolvedLiveModelsSyncInterval := &defaultLiveModelsSyncSeconds
 
 	if filePricingURL != nil {
 		resolvedPricingURL = filePricingURL
@@ -4238,6 +4276,10 @@ func ResolveFrameworkPricingConfig(
 	if fileMCPLibrarySyncSeconds != nil {
 		resolvedMCPLibrarySyncInterval = fileMCPLibrarySyncSeconds
 	}
+	if fileLiveModelsSyncSeconds != nil {
+		resolvedLiveModelsSyncInterval = fileLiveModelsSyncSeconds
+		logger.Debug("live_models_sync_interval resolved from file: %d seconds", *fileLiveModelsSyncSeconds)
+	}
 
 	// --- Phase 3: DB values applied; file wins on hash mismatch (file changed since last write) ---
 
@@ -4247,10 +4289,13 @@ func ResolveFrameworkPricingConfig(
 	// Hash the file-resolved values; skip if nothing valid survived Phase 1.
 	fileHash := ""
 	fileHasHashableMCPConfig := (fileMCPLibraryURL != nil && !skipMCPLibraryURLBackfill) || fileMCPLibrarySyncSeconds != nil
-	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || (fileModelParametersURL != nil && !skipModelParamsURLBackfill) || fileSyncSeconds != nil || fileHasHashableMCPConfig) {
+	// Folded into the same predicate so a config.json edit that touches only
+	// live_models_sync_interval still registers as a file change.
+	fileHasHashableOptionalConfig := fileHasHashableMCPConfig || fileLiveModelsSyncSeconds != nil
+	if fileConfig != nil && fileConfig.Pricing != nil && !skipURLBackfill && (filePricingURL != nil || (fileModelParametersURL != nil && !skipModelParamsURLBackfill) || fileSyncSeconds != nil || fileHasHashableOptionalConfig) {
 		var h string
 		var err error
-		if fileHasHashableMCPConfig {
+		if fileHasHashableOptionalConfig {
 			mcpHashURL := fileMCPLibraryURL
 			if skipMCPLibraryURLBackfill {
 				mcpHashURL = nil
@@ -4258,6 +4303,7 @@ func ResolveFrameworkPricingConfig(
 			h, err = configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds, configstore.FrameworkConfigHashOptions{
 				MCPLibraryURL:          mcpHashURL,
 				MCPLibrarySyncInterval: fileMCPLibrarySyncSeconds,
+				LiveModelsSyncInterval: fileLiveModelsSyncSeconds,
 			})
 		} else {
 			h, err = configstore.GenerateFrameworkConfigHash(filePricingURL, fileModelParametersURL, fileSyncSeconds)
@@ -4362,6 +4408,41 @@ func ResolveFrameworkPricingConfig(
 		} else {
 			needsDBUpdate = true
 		}
+
+		// Live models refresh interval. Same hash-gated precedence as above,
+		// with one carve-out: 0 is a deliberate opt-out rather than corruption,
+		// so it is honoured instead of being backfilled with the default.
+		if dbConfig.LiveModelsSyncInterval != nil {
+			val := *dbConfig.LiveModelsSyncInterval
+			switch {
+			case val == modelcatalog.LiveModelsSyncDisabled:
+				if fileChanged && fileLiveModelsSyncSeconds != nil {
+					logger.Info("live_models_sync_interval from config.json overrides DB (file hash changed): file=%d db=disabled — updating DB", *fileLiveModelsSyncSeconds)
+					needsDBUpdate = true
+				} else {
+					resolvedLiveModelsSyncInterval = dbConfig.LiveModelsSyncInterval
+				}
+			case val < 0:
+				logger.Warn("live_models_sync_interval in DB is corrupted (%d seconds), ignoring — backfilling with %d seconds", val, *resolvedLiveModelsSyncInterval)
+				needsDBUpdate = true
+			case val < modelcatalog.MinimumLiveModelsSyncIntervalSec:
+				logger.Warn("live_models_sync_interval in DB is below minimum (%d seconds) — backfilling", val)
+				if !fileChanged || fileLiveModelsSyncSeconds == nil {
+					clamped := modelcatalog.MinimumLiveModelsSyncIntervalSec
+					resolvedLiveModelsSyncInterval = &clamped
+				}
+				needsDBUpdate = true
+			default:
+				if fileChanged && fileLiveModelsSyncSeconds != nil {
+					logger.Info("live_models_sync_interval from config.json overrides DB (file hash changed): file=%d db=%d seconds — updating DB", *fileLiveModelsSyncSeconds, val)
+					needsDBUpdate = true
+				} else {
+					resolvedLiveModelsSyncInterval = dbConfig.LiveModelsSyncInterval
+				}
+			}
+		} else {
+			needsDBUpdate = true
+		}
 	}
 
 	// --- Phase 4: nil guard ---
@@ -4383,6 +4464,9 @@ func ResolveFrameworkPricingConfig(
 	if resolvedMCPLibrarySyncInterval == nil {
 		resolvedMCPLibrarySyncInterval = &defaultMCPLibrarySyncSeconds
 	}
+	if resolvedLiveModelsSyncInterval == nil {
+		resolvedLiveModelsSyncInterval = &defaultLiveModelsSyncSeconds
+	}
 
 	// Only update the stored hash when the file actually changed; preserve the
 	// existing hash for correction-only DB updates (null backfill, corruption fix).
@@ -4401,6 +4485,7 @@ func ResolveFrameworkPricingConfig(
 			ModelParametersURL:     resolvedModelParametersURL,
 			MCPLibraryURL:          resolvedMCPLibraryURL,
 			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
 			ConfigHash:             persistedHash,
 		}, &modelcatalog.Config{
 			PricingURL:             resolvedPricingURL,
@@ -4408,6 +4493,7 @@ func ResolveFrameworkPricingConfig(
 			ModelParametersURL:     resolvedModelParametersURL,
 			MCPLibraryURL:          resolvedMCPLibraryURL,
 			MCPLibrarySyncInterval: resolvedMCPLibrarySyncInterval,
+			LiveModelsSyncInterval: resolvedLiveModelsSyncInterval,
 		}, needsDBUpdate
 }
 
@@ -4519,6 +4605,23 @@ func initEncryption(configData *ConfigData) error {
 // initVault is a no-op stub at the OSS level.
 // Vault initialization is performed by the enterprise layer via config_store.vault_store.
 func initVault(_ *ConfigData) {}
+
+// resolveSetupToken resolves the bootstrap setup token required to create the very
+// first admin account from config data or the BIFROST_SETUP_TOKEN environment
+// variable. Returns "" when neither is set — callers must then fail closed rather
+// than fall back to generating and logging a token, since a per-process generated
+// value would differ across nodes in a multi-node deployment. Whitespace-only
+// values are treated as unset so an accidental " " doesn't become a guessable token.
+func resolveSetupToken(configData *ConfigData) string {
+	configured := ""
+	if configData.SetupToken != nil {
+		configured = strings.TrimSpace(configData.SetupToken.GetValue())
+	}
+	if configured == "" {
+		return strings.TrimSpace(os.Getenv("BIFROST_SETUP_TOKEN"))
+	}
+	return configured
+}
 
 // syncEncryption encrypts all plaintext rows in the config store if encryption is enabled.
 // Called during bootup after encryption key is initialized and all config data has been loaded.

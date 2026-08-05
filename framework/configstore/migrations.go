@@ -443,8 +443,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_force_single_region_column"}, run: migrationAddVertexForceSingleRegionColumn},
 	{IDs: []string{"add_sidekiq_table"}, run: migrationAddSidekiqTable},
 	{IDs: []string{"add_sidekiq_kind_status_created_index"}, run: migrationAddSidekiqKindStatusCreatedIndex},
-	{IDs: []string{"add_fast_mode_cache_pricing_columns"}, run: migrationAddFastModeCachePricingColumns},
-	{IDs: []string{"add_inference_geo_multiplier_column"}, run: migrationAddInferenceGeoMultiplierColumn},
+	{IDs: []string{"add_sidekiq_partitioning_key_column"}, run: migrationAddSidekiqPartitioningKeyColumn},
 	{IDs: []string{"repair_bare_wildcard_allowed_models"}, run: migrationRepairBareWildcardAllowedModels},
 	{IDs: []string{"add_bedrock_project_id_columns"}, run: migrationAddBedrockProjectIDColumns},
 	{IDs: []string{"add_dual_credential_conflict_behavior_column"}, run: migrationAddDualCredentialConflictBehaviorColumn},
@@ -456,6 +455,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_bedrock_batch_role_arn_column"}, run: migrationAddBedrockBatchRoleARNColumn},
 	{IDs: []string{"add_budget_override_columns"}, run: migrationAddBudgetOverrideColumns},
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
+	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
+	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -10427,6 +10428,37 @@ func migrationAddMCPLibraryConfigColumns(ctx context.Context, db *gorm.DB, logge
 	return nil
 }
 
+// migrationAddLiveModelsSyncIntervalColumn adds the live_models_sync_interval
+// column to framework_configs. It stores how often each provider's list-models
+// response is re-fetched in the background, in seconds, with 0 meaning the
+// refresher is disabled. Idempotent via HasColumn guards.
+func migrationAddLiveModelsSyncIntervalColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_live_models_sync_interval_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableFrameworkConfig{}, "LiveModelsSyncInterval"); err != nil {
+				return fmt.Errorf("add live_models_sync_interval column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableFrameworkConfig{}, "LiveModelsSyncInterval"); err != nil {
+				return fmt.Errorf("drop live_models_sync_interval column: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_live_models_sync_interval_column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddMCPLibrarySourceColumns adds the source and deleted_at columns to
 // mcp_library. `source` marks a row as remote-synced or org-internal ("custom")
 // so the sync can protect custom rows; `deleted_at` is a soft-delete tombstone
@@ -10686,6 +10718,32 @@ func migrationAddMCPClientToolExecutionTimeoutColumn(ctx context.Context, db *go
 	return nil
 }
 
+// migrationAddSidekiqPartitioningKeyColumn adds the nullable partitioning_key column and
+// its index, enabling cluster-wide FIFO-ordered job execution per key.
+func migrationAddSidekiqPartitioningKeyColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_sidekiq_partitioning_key_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableSidekiqJob{}, "partitioning_key"); err != nil {
+				return err
+			}
+			return tx.Exec(`CREATE INDEX IF NOT EXISTS idx_sidekiq_partitioning_key ON sidekiq (partitioning_key)`).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableSidekiqJob{}, "partitioning_key")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
 // migrationAddVirtualKeyExpiresAtColumn adds nullable expires_at to governance_virtual_keys.
 // No index: expiry is checked in-memory from the already-loaded VK, never queried by column.
 func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -10739,7 +10797,6 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 	migrationName := "add_sidekiq_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
@@ -10787,7 +10844,6 @@ func migrationAddSidekiqTable(ctx context.Context, db *gorm.DB, logger schemas.L
 				}
 				return nil
 			}
-
 			if err := tx.Exec(createTable).Error; err != nil {
 				return err
 			}
@@ -10994,6 +11050,60 @@ func migrationAddBedrockBatchRoleARNColumn(ctx context.Context, db *gorm.DB, log
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPricingOverrideUserIDColumn adds the user_id scope column to
+// governance_pricing_overrides and rebuilds the composite scope index so it
+// covers the new column.
+func migrationAddPricingOverrideUserIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_pricing_override_user_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TablePricingOverride{}, "user_id"); err != nil {
+				return fmt.Errorf("failed to add user_id column to governance_pricing_overrides: %w", err)
+			}
+			mgr := tx.Migrator()
+			if mgr.HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope") {
+				if err := mgr.DropIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+					return fmt.Errorf("failed to drop pricing override scope index for rebuild: %w", err)
+				}
+			}
+			if err := mgr.CreateIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+				return fmt.Errorf("failed to recreate pricing override scope index: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			// Drop the rebuilt index first: SQLite refuses to drop an indexed
+			// column, and Postgres would silently drop the index with it.
+			if mgr.HasIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope") {
+				if err := mgr.DropIndex(&tables.TablePricingOverride{}, "idx_pricing_override_scope"); err != nil {
+					return fmt.Errorf("failed to drop pricing override scope index for rollback: %w", err)
+				}
+			}
+			if mgr.HasColumn(&tables.TablePricingOverride{}, "user_id") {
+				if err := mgr.DropColumn(&tables.TablePricingOverride{}, "user_id"); err != nil {
+					return fmt.Errorf("failed to drop user_id column from governance_pricing_overrides: %w", err)
+				}
+			}
+			// Restore the legacy index shape via raw SQL; CreateIndex would use
+			// the current struct tags, which include user_id.
+			if err := tx.Exec("CREATE INDEX idx_pricing_override_scope ON governance_pricing_overrides (scope_kind, virtual_key_id, provider_id, provider_key_id)").Error; err != nil {
+				return fmt.Errorf("failed to restore legacy pricing override scope index: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running pricing override user_id column migration: %s", err.Error())
 	}
 	return nil
 }

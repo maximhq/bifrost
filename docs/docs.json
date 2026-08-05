@@ -110,6 +110,7 @@
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
+              "migration-guides/v2.0.0",
               "migration-guides/v1.5.0",
               "migration-guides/litellm"
             ]
@@ -300,6 +301,7 @@
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
             "pages": [
+              "enterprise/migration-guides/v2.0.0",
               "enterprise/migration-guides/v1.4.0"
             ]
           },
@@ -351,7 +353,6 @@
               "enterprise/audit-logs",
               "enterprise/secret-management",
               "enterprise/log-exports",
-              "enterprise/datadog-connector",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
               "enterprise/circuit-breaker",
@@ -426,6 +427,7 @@
               "cli-agents/claude-code",
               "cli-agents/claude-desktop",
               "cli-agents/claude-for-office",
+              "cli-agents/github-copilot",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
               "cli-agents/qwen-code",
@@ -544,6 +546,7 @@
                 "collapsed": true,
                 "pages": [
                   "enterprise/auth-proxy/cloudflare-ztna",
+                  "enterprise/auth-proxy/aws-alb",
                   "enterprise/auth-proxy/generic-proxy"
                 ]
               }
@@ -572,13 +575,14 @@
             "icon": "binoculars",
             "pages": [
               "features/observability/default",
-              "features/observability/content-logging",
               "features/observability/maxim",
+              "features/observability/datadog",
               "features/observability/otel",
               "features/observability/prometheus",
               "features/observability/kafka",
               "features/observability/bigquery",
-              "features/observability/pubsub"
+              "features/observability/pubsub",
+              "features/observability/content-logging"
             ]
           },
           {
@@ -749,12 +753,12 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.0.0-prerelease2",
-              "changelogs/v2.0.0-prerelease1",
+              "changelogs/v1.6.7",
               "changelogs/v1.6.6",
               "changelogs/v1.6.5",
-              "changelogs/v1.6.5-opus-5",
+              "changelogs/v2.0.0-prerelease2",
               "changelogs/v1.6.4",
+              "changelogs/v2.0.0-prerelease1",
               "changelogs/v1.6.3",
               "changelogs/v1.6.2",
               {
@@ -949,6 +953,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.7",
               "changelogs/ent-v1.5.6",
               "changelogs/ent-v1.5.5",
               "changelogs/ent-v2.0.0-prerelease2",
@@ -956,16 +961,21 @@
               "changelogs/ent-v2.0.0-prerelease1",
               "changelogs/ent-v1.5.3",
               "changelogs/ent-v1.5.2",
-              "changelogs/ent-v1.5.1",
-              "changelogs/ent-v1.5.0",
-              "changelogs/ent-v1.4.13",
-              "changelogs/ent-v1.4.12",
-              "changelogs/ent-v1.4.11",
-              "changelogs/ent-v1.4.10",
-              "changelogs/ent-v1.4.9",
-              "changelogs/ent-v1.4.8",
-              "changelogs/ent-v1.4.7",
-              "changelogs/ent-v1.4.7-rc1",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/ent-v1.5.1",
+                  "changelogs/ent-v1.5.0",
+                  "changelogs/ent-v1.4.13",
+                  "changelogs/ent-v1.4.12",
+                  "changelogs/ent-v1.4.11",
+                  "changelogs/ent-v1.4.10",
+                  "changelogs/ent-v1.4.9",
+                  "changelogs/ent-v1.4.8",
+                  "changelogs/ent-v1.4.7",
+                  "changelogs/ent-v1.4.7-rc1"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
@@ -1047,17 +1057,24 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.33",
+              "changelogs/helm-v2.1.32",
               "changelogs/helm-v2.1.31",
               "changelogs/helm-v2.1.30",
               "changelogs/helm-v2.1.29",
               "changelogs/helm-v2.1.28",
               "changelogs/helm-v2.1.27",
               "changelogs/helm-v2.1.26",
-              "changelogs/helm-v2.1.25",
-              "changelogs/helm-v2.1.24",
-              "changelogs/helm-v2.1.23",
-              "changelogs/helm-v2.1.22",
-              "changelogs/helm-v2.1.21",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.25",
+                  "changelogs/helm-v2.1.24",
+                  "changelogs/helm-v2.1.23",
+                  "changelogs/helm-v2.1.22",
+                  "changelogs/helm-v2.1.21"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
@@ -1273,7 +1290,11 @@
     },
     {
       "source": "/enterprise/data-connectors/datadog",
-      "destination": "/enterprise/datadog-connector"
+      "destination": "/features/observability/datadog"
+    },
+    {
+      "source": "/enterprise/datadog-connector",
+      "destination": "/features/observability/datadog"
     },
     {
       "source": "/enterprise/mcp-with-fa",

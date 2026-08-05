@@ -150,8 +150,6 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 					kvStr(schemas.AttrBifrostRequestID, requestID),
 				)
 			}
-			// Overhead is stamped on the snapshot's root span by the tracer, so it
-			// flows through convertAttributesToKeyValues above like any other attr.
 			if len(p.instanceAttrs) > 0 {
 				otelSpan.Attributes = append(otelSpan.Attributes, p.instanceAttrs...)
 			}
@@ -225,6 +223,11 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 	kvs := make([]*KeyValue, 0, len(attrs))
 	for k, v := range attrs {
 		if disableContentLogging && schemas.IsContentAttribute(k) {
+			continue
+		}
+		// Overhead is not exported to connectors; it is still computed and stored in
+		// the logs DB. Skip it here so it does not ride the exported span.
+		if k == schemas.AttrBifrostOverheadDurationMs {
 			continue
 		}
 		kv := anyToKeyValue(k, v)

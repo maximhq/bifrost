@@ -299,3 +299,157 @@ func TestUpsertOverwritesSameKey(t *testing.T) {
 		t.Errorf("after re-Upsert = %v, want [o1] (overwrite, not append)", got)
 	}
 }
+
+// TestUpsertIfCurrentAcceptsUnchangedGeneration is the baseline: with nothing
+// invalidating the provider in between, a guarded commit behaves exactly like
+// a plain Upsert.
+func TestUpsertIfCurrentAcceptsUnchangedGeneration(t *testing.T) {
+	s := New(nil)
+	gen := s.Generation(openai)
+
+	if !s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+		t.Fatal("UpsertIfCurrent reported a dropped write with no intervening invalidation")
+	}
+	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"gpt-4o"}) {
+		t.Errorf("after guarded upsert = %v, want [gpt-4o]", got)
+	}
+}
+
+// TestUpsertIfCurrentDropsWriteAfterInvalidate is the core of the deleted-key
+// fix. It reproduces the ordering a background refresh hits: read generation,
+// start the (here, elided) upstream call, have the key deleted mid-flight, and
+// only then try to commit. The commit must not resurrect the entry Invalidate
+// just dropped, because nothing ever re-prunes a key that is no longer
+// configured.
+func TestUpsertIfCurrentDropsWriteAfterInvalidate(t *testing.T) {
+	s := New(nil)
+	upsertFiltered(s, openai, "k1", []string{"gpt-4o"})
+
+	gen := s.Generation(openai) // refresh pass starts here
+
+	s.Invalidate(openai, "k1") // key deleted while the fetch is in flight
+
+	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+		t.Fatal("UpsertIfCurrent committed a result fetched before the key was invalidated")
+	}
+	if got := s.ModelsForProvider(openai); len(got) != 0 {
+		t.Errorf("after dropped commit = %v, want [] (deleted key must stay gone)", got)
+	}
+}
+
+// TestInvalidateBumpsGenerationWithNoCachedEntry pins why the bump is
+// unconditional. The dangerous case is precisely the one where Invalidate
+// deletes nothing: the fetch it has to cancel has not written yet. Bumping only
+// when an entry existed would leave that write unguarded.
+func TestInvalidateBumpsGenerationWithNoCachedEntry(t *testing.T) {
+	s := New(nil)
+	gen := s.Generation(openai)
+
+	s.Invalidate(openai, "k1") // nothing cached for k1 yet
+
+	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+		t.Fatal("UpsertIfCurrent committed after an Invalidate that happened to delete nothing")
+	}
+}
+
+// TestInvalidateProviderAndRetainKeysBumpGeneration covers the other two
+// invalidation entrypoints: provider delete and the pre-refetch prune both
+// cancel in-flight fetches the same way Invalidate does.
+func TestInvalidateProviderAndRetainKeysBumpGeneration(t *testing.T) {
+	tests := []struct {
+		name       string
+		invalidate func(*Store)
+	}{
+		{"InvalidateProvider", func(s *Store) { s.InvalidateProvider(openai) }},
+		{"RetainKeys", func(s *Store) { s.RetainKeys(openai, map[string]struct{}{"k2": {}}) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(nil)
+			gen := s.Generation(openai)
+
+			tt.invalidate(s)
+
+			if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+				t.Fatalf("UpsertIfCurrent committed a fetch that predates %s", tt.name)
+			}
+		})
+	}
+}
+
+// TestGenerationIsPerProvider makes sure the counter does not couple unrelated
+// providers: deleting a key on one must not throw away a healthy in-flight
+// refresh for another. Providers refresh concurrently, so a shared counter
+// would make every key edit anywhere cost a whole refresh cycle.
+func TestGenerationIsPerProvider(t *testing.T) {
+	s := New(nil)
+	gen := s.Generation(anthropic)
+
+	s.Invalidate(openai, "k1")
+
+	if !s.UpsertIfCurrent(anthropic, "k1", false, []string{"claude-sonnet"}, gen) {
+		t.Fatal("an OpenAI invalidation dropped an Anthropic commit")
+	}
+	if got := s.ModelsForProvider(anthropic); !slices.Equal(got, []string{"claude-sonnet"}) {
+		t.Errorf("Anthropic after unrelated invalidation = %v, want [claude-sonnet]", got)
+	}
+}
+
+// TestGenerationSurvivesProviderRemoval guards the decision not to prune the
+// gen map. Resetting a removed provider's counter to 0 would make a fetch that
+// captured 0 before the removal look current again once the provider was
+// re-added, which is the exact write the guard exists to stop.
+func TestGenerationSurvivesProviderRemoval(t *testing.T) {
+	s := New(nil)
+	gen := s.Generation(openai) // fetch starts against the original provider
+
+	s.InvalidateProvider(openai) // provider deleted...
+	upsertFiltered(s, openai, "k1", []string{"o1"})
+	s.InvalidateProvider(openai) // ...and re-added, then reloaded
+
+	if s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen) {
+		t.Fatal("a pre-removal fetch committed after the provider was recreated")
+	}
+}
+
+// TestUpsertIfCurrentCopiesInputSlice mirrors TestUpsertCopiesInputSlice: the
+// guarded path must not retain the caller's backing array either.
+func TestUpsertIfCurrentCopiesInputSlice(t *testing.T) {
+	s := New(nil)
+	input := []string{"gpt-4o"}
+	s.UpsertIfCurrent(openai, "k1", false, input, s.Generation(openai))
+
+	input[0] = "MUTATED"
+
+	if got := s.ModelsForProvider(openai); !slices.Equal(got, []string{"gpt-4o"}) {
+		t.Errorf("store mutated through input slice: %v", got)
+	}
+}
+
+// TestConcurrentInvalidateAndGuardedUpsertAreRaceFree runs the guard under -race
+// with invalidations and commits interleaving freely. The invariant is not which
+// writes land but that the store stays consistent and no commit outlives the
+// invalidation that followed its Generation read.
+func TestConcurrentInvalidateAndGuardedUpsertAreRaceFree(t *testing.T) {
+	s := New(nil)
+	const workers = 8
+	const iterations = 100
+
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for range iterations {
+				gen := s.Generation(openai)
+				if i%2 == 0 {
+					s.Invalidate(openai, "k1")
+					continue
+				}
+				s.UpsertIfCurrent(openai, "k1", false, []string{"gpt-4o"}, gen)
+				_ = s.ModelsForProvider(openai)
+			}
+		}(i)
+	}
+	wg.Wait()
+}

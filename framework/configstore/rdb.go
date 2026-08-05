@@ -2686,6 +2686,9 @@ func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context, filters Pricin
 	if filters.ScopeKind != nil {
 		q = q.Where("scope_kind = ?", *filters.ScopeKind)
 	}
+	if filters.UserID != nil {
+		q = q.Where("user_id = ?", *filters.UserID)
+	}
 	if filters.VirtualKeyID != nil {
 		q = q.Where("virtual_key_id = ?", *filters.VirtualKeyID)
 	}
@@ -2710,6 +2713,9 @@ func (s *RDBConfigStore) GetPricingOverridesPaginated(ctx context.Context, param
 	}
 	if params.ScopeKind != nil {
 		baseQuery = baseQuery.Where("scope_kind = ?", *params.ScopeKind)
+	}
+	if params.UserID != nil {
+		baseQuery = baseQuery.Where("user_id = ?", *params.UserID)
 	}
 	if params.VirtualKeyID != nil {
 		baseQuery = baseQuery.Where("virtual_key_id = ?", *params.VirtualKeyID)
@@ -3063,12 +3069,60 @@ func preloadCustomerRelations(db *gorm.DB, prefix string) *gorm.DB {
 		}
 		return prefix + name
 	}
+	return preloadCustomerRelationsWithoutVirtualKeys(db, prefix).
+		Preload(relation("VirtualKeys"))
+}
+
+// preloadCustomerRelationsWithoutVirtualKeys preloads every customer relation
+// except VirtualKeys. The paginated list path uses this and reports
+// VirtualKeyCount instead, so a customer with thousands of keys doesn't drag
+// them all into a page of 25 rows.
+func preloadCustomerRelationsWithoutVirtualKeys(db *gorm.DB, prefix string) *gorm.DB {
+	relation := func(name string) string {
+		if prefix == "" {
+			return name
+		}
+		return prefix + name
+	}
 	return db.
 		Preload(relation("Teams")).
 		Preload(relation("Teams.Budgets")).
 		Preload(relation("Budgets")).
-		Preload(relation("RateLimit")).
-		Preload(relation("VirtualKeys"))
+		Preload(relation("RateLimit"))
+}
+
+// attachCustomerVirtualKeyCounts populates VirtualKeyCount on each customer
+// using a single grouped count, avoiding an N+1 over the customers in a page.
+// The customers passed in have already been narrowed by any QueryScope on ctx,
+// so counting their keys unscoped exposes nothing the caller can't already see.
+func (s *RDBConfigStore) attachCustomerVirtualKeyCounts(ctx context.Context, customers []tables.TableCustomer) error {
+	if len(customers) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(customers))
+	for i := range customers {
+		ids = append(ids, customers[i].ID)
+	}
+	var rows []struct {
+		CustomerID string
+		Count      int
+	}
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableVirtualKey{}).
+		Select("customer_id, COUNT(*) AS count").
+		Where("customer_id IN ?", ids).
+		Group("customer_id").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	countByCustomer := make(map[string]int, len(rows))
+	for _, row := range rows {
+		countByCustomer[row.CustomerID] = row.Count
+	}
+	for i := range customers {
+		customers[i].VirtualKeyCount = countByCustomer[customers[i].ID]
+	}
+	return nil
 }
 
 // preloadVirtualKeyBaseRelations preloads the base relationships for a virtual key.
@@ -3218,14 +3272,26 @@ func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params Vir
 	// on what the caller is allowed to see.
 	baseQuery := s.ScopedDB(ctx).Model(&tables.TableVirtualKey{})
 
-	// Virtual keys are either customer-scoped or team-scoped, never both.
-	// When both filters are provided, use OR to match keys belonging to either.
-	if params.CustomerID != "" && params.TeamID != "" {
-		baseQuery = baseQuery.Where("(customer_id = ? OR team_id = ?)", params.CustomerID, params.TeamID)
-	} else if params.CustomerID != "" {
-		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
-	} else if params.TeamID != "" {
-		baseQuery = baseQuery.Where("team_id = ?", params.TeamID)
+	// A virtual key is assigned to at most one of customer / team / user, so
+	// combining assignment filters ORs them rather than narrowing to nothing.
+	// UserID has no meaning in the OSS build (the VK↔user link lives in an
+	// enterprise table), so it fails closed instead of silently widening the
+	// result set; the enterprise store overrides this method to honour it.
+	var assignmentClauses []string
+	var assignmentArgs []interface{}
+	if params.CustomerID != "" {
+		assignmentClauses = append(assignmentClauses, "customer_id = ?")
+		assignmentArgs = append(assignmentArgs, params.CustomerID)
+	}
+	if params.TeamID != "" {
+		assignmentClauses = append(assignmentClauses, "team_id = ?")
+		assignmentArgs = append(assignmentArgs, params.TeamID)
+	}
+	if params.UserID != "" {
+		assignmentClauses = append(assignmentClauses, "1 = 0")
+	}
+	if len(assignmentClauses) > 0 {
+		baseQuery = baseQuery.Where("("+strings.Join(assignmentClauses, " OR ")+")", assignmentArgs...)
 	}
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -3684,6 +3750,218 @@ func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, vir
 	return nil
 }
 
+// Bounds for the set-based provider-config replacement below. They exist to keep
+// a single statement's payload predictable no matter how many providers a caller
+// supplies: without them, a virtual key with thousands of providers would build
+// one enormous multi-row INSERT or one enormous IN (...) list.
+const (
+	// Max rows per INSERT statement.
+	virtualKeyProviderConfigInsertBatchSize = 100
+	// Max values per IN (...) predicate.
+	virtualKeyProviderConfigIDChunkSize = 1000
+)
+
+// providerKeyName identifies a key by the pair that is actually unique for it.
+// Key names are only unique within a provider, so a bare name is not a safe map
+// key when several providers are being resolved in one pass.
+type providerKeyName struct {
+	provider string
+	name     string
+}
+
+// unresolvedKeyIdentifier renders a key reference for an error message, using
+// whichever identifier the caller actually supplied. index is the key's position
+// within its provider config and is only used when the reference is entirely
+// blank, so the error can still point at something.
+func unresolvedKeyIdentifier(key tables.TableKey, index int) string {
+	switch {
+	case key.KeyID != "":
+		return fmt.Sprintf("key_id=%s", key.KeyID)
+	case key.Name != "":
+		return fmt.Sprintf("name=%s", key.Name)
+	default:
+		return fmt.Sprintf("key[%d]", index)
+	}
+}
+
+// ReplaceVirtualKeyProviderConfigs atomically swaps a virtual key's entire provider
+// config set — deleting the old rows and inserting the new ones — inside the caller's
+// transaction.
+//
+// Why this exists: the previous call site looped over old configs calling
+// DeleteVirtualKeyProviderConfig, then looped over new ones calling
+// CreateVirtualKeyProviderConfig. That is ~4 statements per provider per virtual key,
+// which dominated wall-clock time for callers that rewrite provider configs across
+// thousands of virtual keys in one operation.
+// This does the same work as a handful of set-based statements instead.
+//
+// Delete parity with DeleteVirtualKeyProviderConfig is deliberate and must be preserved:
+// it removes the config-key join rows, the budgets owned by the config, the config row
+// itself, and the config's rate limit. Anything added there must be added here too.
+//
+// Callers should note it mutates providerConfigs in place: IDs are zeroed before insert,
+// then populated by the database, and Keys is detached so GORM does not auto-upsert the
+// association (the join rows are written explicitly below).
+//
+// Requires an existing transaction so a partial replacement can never be committed.
+func (s *RDBConfigStore) ReplaceVirtualKeyProviderConfigs(ctx context.Context, virtualKeyID string, providerConfigs []tables.TableVirtualKeyProviderConfig, txDB *gorm.DB) error {
+	if txDB == nil {
+		return fmt.Errorf("ReplaceVirtualKeyProviderConfigs requires a transaction, got nil tx")
+	}
+	txDB = txDB.WithContext(ctx)
+
+	// Phase 1: read the outgoing rows. Locked FOR UPDATE so a concurrent writer
+	// cannot delete or repoint them between this read and the deletes below.
+	var oldConfigs []tables.TableVirtualKeyProviderConfig
+	if err := dbForUpdate(txDB).Where("virtual_key_id = ?", virtualKeyID).Order("id").Find(&oldConfigs).Error; err != nil {
+		return err
+	}
+	oldIDs := make([]uint, 0, len(oldConfigs))
+	oldRateLimitIDs := make([]string, 0, len(oldConfigs))
+	for i := range oldConfigs {
+		oldIDs = append(oldIDs, oldConfigs[i].ID)
+		if oldConfigs[i].RateLimitID != nil {
+			oldRateLimitIDs = append(oldRateLimitIDs, *oldConfigs[i].RateLimitID)
+		}
+	}
+	// Phase 2: delete children before parents. Join rows and budgets reference the
+	// config row, so they must go first or the FKs would block the delete.
+	for start := 0; start < len(oldIDs); start += virtualKeyProviderConfigIDChunkSize {
+		end := min(start+virtualKeyProviderConfigIDChunkSize, len(oldIDs))
+		ids := oldIDs[start:end]
+		if err := txDB.Where("table_virtual_key_provider_config_id IN ?", ids).Delete(&tables.TableVirtualKeyProviderConfigKey{}).Error; err != nil {
+			return err
+		}
+		if err := txDB.Where("provider_config_id IN ?", ids).Delete(&tables.TableBudget{}).Error; err != nil {
+			return err
+		}
+		if err := txDB.Where("id IN ?", ids).Delete(&tables.TableVirtualKeyProviderConfig{}).Error; err != nil {
+			return err
+		}
+	}
+	// Rate limits are deleted last: the config row holds the FK to them, so they
+	// only become unreferenced once every config chunk above is gone.
+	for start := 0; start < len(oldRateLimitIDs); start += virtualKeyProviderConfigIDChunkSize {
+		end := min(start+virtualKeyProviderConfigIDChunkSize, len(oldRateLimitIDs))
+		if err := txDB.Where("id IN ?", oldRateLimitIDs[start:end]).Delete(&tables.TableRateLimit{}).Error; err != nil {
+			return err
+		}
+	}
+	// An empty incoming set means "remove all providers", which the deletes above
+	// have already done.
+	if len(providerConfigs) == 0 {
+		return nil
+	}
+
+	// Phase 3: collect the key references that still need resolving. A key carried
+	// over with a populated ID is already resolved; the rest are identified either
+	// by KeyID (UI input) or by name alone (config-file input). Both forms are
+	// gathered here and resolved in batched passes so the whole set costs a
+	// handful of queries rather than one per key.
+	keyIDs := make([]string, 0)
+	namesByProvider := make(map[string][]string)
+	for i := range providerConfigs {
+		providerConfigs[i].ID = 0
+		providerConfigs[i].VirtualKeyID = virtualKeyID
+		for j := range providerConfigs[i].Keys {
+			key := providerConfigs[i].Keys[j]
+			if key.ID > 0 {
+				continue
+			}
+			if key.KeyID != "" {
+				keyIDs = append(keyIDs, key.KeyID)
+			}
+			// A key can carry both, because KeyID lookup is allowed to miss and
+			// fall back to the name. Queue the name in that case too.
+			if key.Name != "" {
+				provider := providerConfigs[i].Provider
+				namesByProvider[provider] = append(namesByProvider[provider], key.Name)
+			}
+		}
+	}
+	resolvedByKeyID := make(map[string]tables.TableKey, len(keyIDs))
+	for start := 0; start < len(keyIDs); start += virtualKeyProviderConfigIDChunkSize {
+		end := min(start+virtualKeyProviderConfigIDChunkSize, len(keyIDs))
+		var keys []tables.TableKey
+		if err := txDB.Where("key_id IN ?", keyIDs[start:end]).Find(&keys).Error; err != nil {
+			return err
+		}
+		for i := range keys {
+			resolvedByKeyID[keys[i].KeyID] = keys[i]
+		}
+	}
+	// Names are only unique within a provider, so they are batched per provider
+	// and keyed by the pair. The provider count is bounded by the incoming config
+	// set, and each provider's names are chunked like every other IN (...) here.
+	resolvedByName := make(map[providerKeyName]tables.TableKey)
+	for provider, names := range namesByProvider {
+		for start := 0; start < len(names); start += virtualKeyProviderConfigIDChunkSize {
+			end := min(start+virtualKeyProviderConfigIDChunkSize, len(names))
+			var keys []tables.TableKey
+			if err := txDB.Where("provider = ? AND name IN ?", provider, names[start:end]).Find(&keys).Error; err != nil {
+				return err
+			}
+			for i := range keys {
+				resolvedByName[providerKeyName{provider: provider, name: keys[i].Name}] = keys[i]
+			}
+		}
+	}
+	// Phase 4: pair each config with its resolved keys. Collect every unresolved
+	// reference before failing so the error names all of them at once, and so an
+	// unresolved key aborts the transaction rather than silently dropping a grant.
+	var unresolved []string
+	keysByConfig := make([][]tables.TableKey, len(providerConfigs))
+	for i := range providerConfigs {
+		for j := range providerConfigs[i].Keys {
+			key := providerConfigs[i].Keys[j]
+			if key.ID == 0 {
+				// Same precedence as the single-config path: KeyID wins, and a
+				// KeyID that fails to resolve falls back to the name rather than
+				// failing outright.
+				resolvedKey, ok := resolvedByKeyID[key.KeyID]
+				if !ok && key.Name != "" {
+					resolvedKey, ok = resolvedByName[providerKeyName{provider: providerConfigs[i].Provider, name: key.Name}]
+				}
+				if !ok {
+					unresolved = append(unresolved, unresolvedKeyIdentifier(key, j))
+					continue
+				}
+				key = resolvedKey
+			}
+			keysByConfig[i] = append(keysByConfig[i], key)
+		}
+		providerConfigs[i].Keys = nil
+	}
+	if len(unresolved) > 0 {
+		return &ErrUnresolvedKeys{Identifiers: unresolved}
+	}
+
+	// Phase 5: insert. Config rows first so the database assigns their IDs, which
+	// the join rows below need.
+	// CreateInBatches already splits the slice into batchSize-sized INSERTs, so the
+	// bound is enforced here without an extra chunking loop. Keys is omitted because
+	// the join rows are written explicitly below.
+	if err := txDB.Omit("Keys").CreateInBatches(providerConfigs, virtualKeyProviderConfigInsertBatchSize).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	joinRows := make([]tables.TableVirtualKeyProviderConfigKey, 0)
+	for i := range providerConfigs {
+		for j := range keysByConfig[i] {
+			joinRows = append(joinRows, tables.TableVirtualKeyProviderConfigKey{
+				TableVirtualKeyProviderConfigID: providerConfigs[i].ID,
+				TableKeyID:                      keysByConfig[i][j].ID,
+			})
+		}
+	}
+	if len(joinRows) == 0 {
+		return nil
+	}
+	if err := txDB.CreateInBatches(joinRows, virtualKeyProviderConfigInsertBatchSize).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
 // UpdateVirtualKeyProviderConfig updates a virtual key provider config in the database.
 func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, virtualKeyProviderConfig *tables.TableVirtualKeyProviderConfig, tx ...*gorm.DB) error {
 	if len(tx) == 0 {
@@ -4128,6 +4406,9 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 		Find(&customers).Error; err != nil {
 		return nil, err
 	}
+	for i := range customers {
+		customers[i].VirtualKeyCount = len(customers[i].VirtualKeys)
+	}
 	return customers, nil
 }
 
@@ -4157,10 +4438,13 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 		offset = 0
 	}
 	var customers []tables.TableCustomer
-	if err := preloadCustomerRelations(baseQuery, "").
+	if err := preloadCustomerRelationsWithoutVirtualKeys(baseQuery, "").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&customers).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachCustomerVirtualKeyCounts(ctx, customers); err != nil {
 		return nil, 0, err
 	}
 	return customers, totalCount, nil
@@ -4181,6 +4465,7 @@ func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.Ta
 		}
 		return nil, err
 	}
+	customer.VirtualKeyCount = len(customer.VirtualKeys)
 	return &customer, nil
 }
 
@@ -4831,6 +5116,117 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 			rule.Targets[i].RuleID = rule.ID
 			if err := tx.Create(&rule.Targets[i]).Error; err != nil {
 				return err
+			}
+		}
+		return nil
+	}))
+}
+
+// SyncRoutingRules applies a batch of routing rule creates and updates atomically, deferring the
+// unique-priority-per-scope check until every rule is written. This lets a valid permutation (e.g.
+// swapping two rules' priorities) succeed despite a transient intermediate collision, while a
+// genuine end-state duplicate still errors. Used by config-file reloads that apply many rules at once.
+func (s *RDBConfigStore) SyncRoutingRules(ctx context.Context, toAdd []tables.TableRoutingRule, toUpdate []tables.TableRoutingRule, tx ...*gorm.DB) error {
+	database := s.DB()
+	if len(tx) > 0 && tx[0] != nil {
+		database = tx[0]
+	}
+
+	// Validate scopeID is required for non-global scope (same guard as CreateRoutingRule/UpdateRoutingRule).
+	for _, list := range [][]tables.TableRoutingRule{toAdd, toUpdate} {
+		for i := range list {
+			if list[i].Scope != "" && list[i].Scope != "global" && list[i].ScopeID == nil {
+				return fmt.Errorf("scopeID is required for non-global scope '%s'", list[i].Scope)
+			}
+		}
+	}
+
+	type scopeRef struct {
+		scope   string
+		scopeID *string
+	}
+
+	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		seen := make(map[string]bool)
+		scopes := make([]scopeRef, 0, len(toAdd)+len(toUpdate))
+		record := func(rule *tables.TableRoutingRule) {
+			key := rule.Scope
+			if rule.ScopeID != nil {
+				key += "\x00" + *rule.ScopeID
+			}
+			if !seen[key] {
+				seen[key] = true
+				scopes = append(scopes, scopeRef{scope: rule.Scope, scopeID: rule.ScopeID})
+			}
+		}
+
+		putTargets := func(rule *tables.TableRoutingRule) error {
+			for i := range rule.Targets {
+				rule.Targets[i].RuleID = rule.ID
+				if err := tx.Create(&rule.Targets[i]).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		// Insert new rules.
+		for i := range toAdd {
+			rule := &toAdd[i]
+			targets := rule.Targets
+			rule.Targets = nil
+			if err := tx.Omit("Targets").Create(rule).Error; err != nil {
+				return err
+			}
+			rule.Targets = targets
+			if err := putTargets(rule); err != nil {
+				return err
+			}
+			record(rule)
+		}
+
+		// Update changed rules and replace their targets.
+		for i := range toUpdate {
+			rule := &toUpdate[i]
+			var existing tables.TableRoutingRule
+			if err := dbForUpdate(tx).First(&existing, "id = ?", rule.ID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrNotFound
+				}
+				return err
+			}
+			targets := rule.Targets
+			rule.Targets = nil
+			if err := tx.Omit("Targets").Save(rule).Error; err != nil {
+				return err
+			}
+			rule.Targets = targets
+			if err := tx.Where("rule_id = ?", rule.ID).Delete(&tables.TableRoutingTarget{}).Error; err != nil {
+				return err
+			}
+			if err := putTargets(rule); err != nil {
+				return err
+			}
+			record(rule)
+		}
+
+		// Deferred invariant: no two rules may share a priority within a scope's final state.
+		for _, sc := range scopes {
+			q := tx.Model(&tables.TableRoutingRule{}).Where("scope = ?", sc.scope)
+			if sc.scopeID != nil {
+				q = q.Where("scope_id = ?", *sc.scopeID)
+			} else {
+				q = q.Where("scope_id IS NULL")
+			}
+			var dup []int
+			if err := q.Group("priority").Having("COUNT(*) > 1").Pluck("priority", &dup).Error; err != nil {
+				return err
+			}
+			if len(dup) > 0 {
+				if sc.scopeID != nil {
+					return fmt.Errorf("routing rule with priority %d already exists for scope '%s' with scopeID '%s'", dup[0], sc.scope, *sc.scopeID)
+				}
+				return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", dup[0], sc.scope)
 			}
 		}
 		return nil

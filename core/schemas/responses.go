@@ -522,6 +522,15 @@ type ResponsesParameters struct {
 	Tools                []ResponsesTool               `json:"tools,omitempty"`       // Tools to use
 	Truncation           *string                       `json:"truncation,omitempty"`
 	User                 *string                       `json:"user,omitempty"`
+
+	// Opts into running built-in server-side tools (e.g. Google Search) in the same
+	// turn as function declarations. Required by Gemini 3+, which otherwise rejects
+	// the combination; providers without the concept ignore it.
+	IncludeServerSideToolInvocations *bool `json:"include_server_side_tool_invocations,omitempty"`
+
+	// ContextManagement configures automatic context window management.
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -1229,6 +1238,10 @@ type ResponsesMessage struct {
 	// not ResponsesMCPListTools.Tools, because the entries are ResponsesTool-shaped.
 	ToolSearchOutputTools json.RawMessage `json:"-"`
 
+	// Tools declared by a codex additional_tools item, surfaced so providers that
+	// reject the item type can hoist them into the top-level tools param.
+	AdditionalTools json.RawMessage `json:"-"`
+
 	*ResponsesToolMessage // For Tool calls and outputs
 
 	CacheControl *CacheControl `json:"cache_control,omitempty"` // Carries cache_control for function_call and function_call_output message types
@@ -1298,6 +1311,12 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		if t == string(ResponsesMessageTypeToolSearchOutput) {
 			if tools := gjson.GetBytes(data, "tools"); tools.IsArray() {
 				m.ToolSearchOutputTools = json.RawMessage(tools.Raw)
+			}
+		}
+		// additional_tools carries the codex tool declarations; same rationale.
+		if t == string(ResponsesMessageTypeAdditionalTools) {
+			if tools := gjson.GetBytes(data, "tools"); tools.IsArray() {
+				m.AdditionalTools = json.RawMessage(tools.Raw)
 			}
 		}
 		m.rawPreserved = append([]byte(nil), data...)
@@ -1974,6 +1993,9 @@ type ResponsesWebSearchToolCallAction struct {
 	Queries []string                                       `json:"queries,omitempty"`
 	Sources []ResponsesWebSearchToolCallActionSearchSource `json:"sources,omitempty"`
 	Pattern *string                                        `json:"pattern,omitempty"`
+
+	// Gemini only
+	ImageQueries []string `json:"image_queries,omitempty"` // Queries run against image search, kept apart from Queries
 }
 
 // ResponsesWebSearchToolCallActionSearchSource represents a web search action search source
@@ -1985,6 +2007,10 @@ type ResponsesWebSearchToolCallActionSearchSource struct {
 	Title            *string `json:"title,omitempty"`
 	EncryptedContent *string `json:"encrypted_content,omitempty"`
 	PageAge          *string `json:"page_age,omitempty"`
+
+	// Gemini only
+	ImageURL *string `json:"image_url,omitempty"` // Image asset; URL stays the page to attribute
+	Domain   *string `json:"domain,omitempty"`    // Root domain of the source page
 }
 
 // -----------------------------------------------------------------------------
@@ -2678,6 +2704,39 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		if err := Unmarshal(data, &funcTool); err != nil {
 			return err
 		}
+		// Chat Completions format nests the definition under "function":
+		//   {"type":"function","function":{"name":...,"parameters":...}}
+		// Clients like Cursor send this shape to Responses endpoints; without
+		// lifting the nested fields the tool parses with a nil name and
+		// providers that require one (e.g. Bedrock) reject the request.
+		// Top-level (Responses format) fields win when both are present.
+		if _, hasWrapper := raw["function"]; hasWrapper {
+			var wrapper struct {
+				Function *struct {
+					Name        *string                 `json:"name"`
+					Description *string                 `json:"description"`
+					Parameters  *ToolFunctionParameters `json:"parameters"`
+					Strict      *bool                   `json:"strict"`
+				} `json:"function"`
+			}
+			if err := Unmarshal(data, &wrapper); err != nil {
+				return fmt.Errorf("invalid 'function' object in ResponsesTool: %w", err)
+			}
+			if wrapper.Function != nil {
+				if t.Name == nil {
+					t.Name = wrapper.Function.Name
+				}
+				if t.Description == nil {
+					t.Description = wrapper.Function.Description
+				}
+				if funcTool.Parameters == nil {
+					funcTool.Parameters = wrapper.Function.Parameters
+				}
+				if funcTool.Strict == nil {
+					funcTool.Strict = wrapper.Function.Strict
+				}
+			}
+		}
 		t.ResponsesToolFunction = &funcTool
 
 	case ResponsesToolTypeFileSearch:
@@ -2948,10 +3007,10 @@ type ResponsesToolComputerUsePreview struct {
 // ResponsesToolWebSearch represents a tool web search
 type ResponsesToolWebSearch struct {
 	ExternalWebAccess  *bool                               `json:"external_web_access,omitempty"`
-	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"` // Filters for the search
-	SearchContentTypes []string                            `json:"search_content_types,omitempty"`
-	SearchContextSize  *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
-	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
+	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"`              // Filters for the search
+	SearchContentTypes []string                            `json:"search_content_types,omitempty"` // "text" | "image"
+	SearchContextSize  *string                             `json:"search_context_size,omitempty"`  // "low" | "medium" | "high"
+	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`        // The approximate location of the user
 
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
@@ -3033,6 +3092,10 @@ type ResponsesToolWebSearchUserLocation struct {
 	Region   *string `json:"region,omitempty"`   // Free text input for the region
 	Timezone *string `json:"timezone,omitempty"` // IANA timezone
 	Type     *string `json:"type,omitempty"`     // always "approximate"
+
+	// Gemini only
+	Latitude  *float64 `json:"latitude,omitempty"`  // Degrees, [-90.0, +90.0]
+	Longitude *float64 `json:"longitude,omitempty"` // Degrees, [-180.0, +180.0]
 }
 
 // ResponsesToolMCP - Give the model access to additional tools via remote MCP servers

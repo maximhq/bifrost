@@ -2245,6 +2245,66 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 	}
 }
 
+// TestToOpenAIResponsesRequest_DefaultsStrictOnFunctionTools verifies function tools
+// leave with an explicit strict rather than null. OpenAI resolves a null strict to
+// false, but strict-pydantic upstreams (sglang's ResponseTool.strict is a non-Optional
+// bool) reject the null with a bool_type validation error. Explicit caller values are
+// preserved and the caller's tools are never mutated.
+func TestToOpenAIResponsesRequest_DefaultsStrictOnFunctionTools(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Model: "glm-5.2",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("Bash"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+					},
+				},
+				{
+					Type: schemas.ResponsesToolTypeFunction,
+					Name: schemas.Ptr("Grep"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{
+						Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+						Strict:     schemas.Ptr(true),
+					},
+				},
+			},
+		},
+	}
+
+	req := ToOpenAIResponsesRequest(nil, bifrostReq)
+	if req == nil {
+		t.Fatal("converted request is nil")
+	}
+
+	if req.Tools[0].ResponsesToolFunction.Strict == nil || *req.Tools[0].ResponsesToolFunction.Strict {
+		t.Errorf("nil strict not defaulted to false: %v", req.Tools[0].ResponsesToolFunction.Strict)
+	}
+	if req.Tools[1].ResponsesToolFunction.Strict == nil || !*req.Tools[1].ResponsesToolFunction.Strict {
+		t.Errorf("explicit strict not preserved: %v", req.Tools[1].ResponsesToolFunction.Strict)
+	}
+
+	// Wire-level: no tool may carry a null strict.
+	data, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+	if strings.Contains(string(data), `"strict":null`) {
+		t.Errorf("wire JSON carries a null strict: %s", data)
+	}
+
+	// Caller's tools must remain untouched.
+	if bifrostReq.Params.Tools[0].ResponsesToolFunction.Strict != nil {
+		t.Error("caller's tools were mutated")
+	}
+}
+
 // TestToOpenAIResponsesRequest_FallbackBlockDropped verifies that Anthropic's
 // server-side fallback boundary marker never reaches OpenAI. Unlike a compaction
 // block (which is promoted to text), it carries no user content, so it is dropped.
@@ -2315,6 +2375,63 @@ func TestToOpenAIResponsesRequest_FallbackBlockDropped(t *testing.T) {
 			t.Fatalf("expected the fallback-only message to be skipped, got %#v", result.Input.OpenAIResponsesRequestInputArray)
 		}
 	})
+}
+
+// TestToOpenAIResponsesRequest_ContextManagement_ProviderGating covers a real
+// regression: bedrock/openai.gpt-5.4 through /v1/responses forwarded a
+// context_management array straight through to Bedrock Mantle's OpenAI-compatible
+// endpoint, which 400s with "Unknown parameter: 'context_management'" since it
+// doesn't accept the field at all. OpenAI and Azure OpenAI must keep receiving it
+// (default-open, like every other unlisted-provider field here); Bedrock and
+// Bedrock Mantle are the explicit exceptions.
+func TestToOpenAIResponsesRequest_ContextManagement_ProviderGating(t *testing.T) {
+	cm := []byte(`[{"type":"compaction","compact_threshold":2000}]`)
+
+	cases := []struct {
+		name          string
+		provider      schemas.ModelProvider
+		wantForwarded bool
+	}{
+		{"openai forwards it", schemas.OpenAI, true},
+		{"azure forwards it", schemas.Azure, true},
+		{"bedrock drops it", schemas.Bedrock, false},
+		{"bedrock mantle drops it", schemas.BedrockMantle, false},
+		{"unlisted provider forwards it", schemas.ModelProvider("test-unlisted-provider"), true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "gpt-5.4",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					ContextManagement: cm,
+					ExtraParams: map[string]interface{}{
+						"context_management": cm,
+					},
+				},
+			}
+
+			result := ToOpenAIResponsesRequest(nil, req)
+			if result == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+
+			gotNeutral := len(result.ContextManagement) > 0
+			_, gotExtra := result.ExtraParams["context_management"]
+
+			if gotNeutral != tc.wantForwarded {
+				t.Errorf("neutral ContextManagement field: got present=%v, want present=%v", gotNeutral, tc.wantForwarded)
+			}
+			if gotExtra != tc.wantForwarded {
+				t.Errorf("ExtraParams[\"context_management\"]: got present=%v, want present=%v", gotExtra, tc.wantForwarded)
+			}
+		})
+	}
 }
 
 func TestBuildResponsesRetrieveQuery_Stream(t *testing.T) {

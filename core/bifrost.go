@@ -88,6 +88,7 @@ type Bifrost struct {
 	bifrostRequestPool  sync.Pool                           // Pool for BifrostRequest objects
 	logger              schemas.Logger                      // logger instance, default logger is used if not provided
 	tracer              atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
+	modelCatalog        schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
 	MCPManager          mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
 	mcpCredStore        schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
 	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
@@ -245,6 +246,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
 		logger:        config.Logger,
 		kvStore:       config.KVStore,
+		modelCatalog:  config.ModelCatalog,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
@@ -388,6 +390,33 @@ func (bifrost *Bifrost) SetTracer(tracer schemas.Tracer) {
 // getTracer returns the tracer from atomic storage with type assertion.
 func (bifrost *Bifrost) getTracer() schemas.Tracer {
 	return bifrost.tracer.Load().(*tracerWrapper).tracer
+}
+
+// getModelCatalog returns the catalog supplied at Init, or nil if none was.
+func (bifrost *Bifrost) getModelCatalog() schemas.ModelInfoProvider {
+	return bifrost.modelCatalog
+}
+
+// setModelCatalogOnContext stamps the catalog handle onto a request context so
+// plugin hooks can reach it. Scoped plugin contexts delegate Value lookups to
+// the root (see BifrostContext.WithPluginScope), so stamping the root once is
+// enough for every plugin in the pipeline.
+//
+// The no-catalog case clears rather than skips: reused long-lived contexts
+// (realtime WS connections re-enter this per message) would otherwise keep
+// serving a catalog that a later SetModelCatalog(nil) already retired.
+// ClearValue is itself a no-op on a context with no values map, so SDK users
+// who never wire a catalog still pay nothing.
+func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	catalog := bifrost.getModelCatalog()
+	if catalog == nil {
+		ctx.ClearValue(schemas.BifrostContextKeyModelCatalog)
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
 }
 
 // ReloadConfig reloads the config from DB
@@ -2877,6 +2906,7 @@ func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall
 	} else {
 		ensureMCPRawStorageContext(ctx)
 		ensureMCPTracerContext(ctx, bifrost.getTracer())
+		bifrost.setModelCatalogOnContext(ctx)
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -2896,6 +2926,7 @@ func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, too
 	} else {
 		ensureMCPRawStorageContext(ctx)
 		ensureMCPTracerContext(ctx, bifrost.getTracer())
+		bifrost.setModelCatalogOnContext(ctx)
 	}
 	if bifrost.MCPManager == nil {
 		return nil, &schemas.BifrostError{
@@ -4551,6 +4582,7 @@ func (bifrost *Bifrost) RunPreRequestHooks(ctx *schemas.BifrostContext, req *sch
 	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
 	}
+	bifrost.setModelCatalogOnContext(ctx)
 
 	pipeline := bifrost.getPluginPipeline()
 	defer bifrost.releasePluginPipeline(pipeline)
@@ -4575,6 +4607,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 
 	tracer := bifrost.getTracer()
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	bifrost.setModelCatalogOnContext(ctx)
 
 	// Create a trace so the logging plugin can accumulate streaming chunks.
 	// The traceID is used as the accumulator key in ProcessStreamingChunk.
@@ -4710,6 +4743,7 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 
 	tracer := bifrost.getTracer()
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	bifrost.setModelCatalogOnContext(ctx)
 
 	if _, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); !ok {
 		traceID := tracer.CreateTrace("")
@@ -5021,6 +5055,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
+	// before any hook runs.
+	bifrost.setModelCatalogOnContext(ctx)
 
 	// PreRequestHook: once-per-request phase where plugins decide provider/model/fallbacks
 	// (and may mutate other request fields). Mutations commit to req and are observed by
@@ -5153,6 +5190,9 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+	// Expose the model catalog to plugins (ctx.GetModelInfo / ctx.CalculateCost)
+	// before any hook runs.
+	bifrost.setModelCatalogOnContext(ctx)
 
 	// PreRequestHook: once-per-request phase. See handleRequest for semantics.
 	preReqPipeline := bifrost.getPluginPipeline()
@@ -6145,26 +6185,25 @@ func executeRequestWithRetries[T any](
 
 		// Surface caller-supplied extra headers (from x-bf-eh-* and direct-allowlist
 		// header forwarding) as span attributes so observability backends see the
-		// same set Bifrost forwards to the upstream provider.
-		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
-			for name, values := range extraHeaders {
-				if name == "" || len(values) == 0 {
-					continue
-				}
-				// Never export credential-bearing headers verbatim. The transport
-				// layer denylists most sensitive headers, but plain authorization /
-				// set-cookie can still reach here, and core SDK callers bypass that
-				// guard entirely. Keep the key (presence is useful) but redact the value.
-				if schemas.IsSensitiveHeader(name) {
-					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, schemas.RedactedAttrValue)
-					continue
-				}
-				if len(values) == 1 {
-					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, values[0])
-				} else {
-					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, values)
+		// same set Bifrost forwards to the upstream provider. Credential-bearing values
+		// are redacted and the virtual key is dropped; see extraHeaderSpanAttribute.
+		exportHeaderAttributes := func(headers map[string][]string) {
+			for name, values := range headers {
+				if value, export := extraHeaderSpanAttribute(name, values); export {
+					tracer.SetAttribute(handle, schemas.AttrExtraHeaderPrefix+name, value)
 				}
 			}
+		}
+		if extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok {
+			exportHeaderAttributes(extraHeaders)
+		}
+		// The Anthropic OAuth passthrough set no longer reaches ExtraHeaders (only the
+		// Anthropic provider forwards it), but the caller metadata it carries — x-app,
+		// x-claude-code-session-id, x-stainless-* — is what attribution keys on, and it was
+		// traced before the split. Merge it back in so observability is unchanged. Tracing
+		// only: this does not put those headers back on any provider request.
+		if passthrough, ok := ctx.Value(schemas.BifrostContextKeyPassthroughHeaders).(map[string][]string); ok {
+			exportHeaderAttributes(passthrough)
 		}
 
 		// Populate LLM request attributes (messages, parameters, etc.)

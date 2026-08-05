@@ -1275,6 +1275,13 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		}
 	})
 
+	t.Run("BedrockMantle/drops_structured_outputs_header", func(t *testing.T) {
+		result := FilterBetaHeadersForProvider([]string{AnthropicStructuredOutputsBetaHeader}, schemas.BedrockMantle)
+		if len(result) != 0 {
+			t.Errorf("expected %q to be dropped for Bedrock Mantle, got %v", AnthropicStructuredOutputsBetaHeader, result)
+		}
+	})
+
 	t.Run("Azure/drops_unsupported_headers", func(t *testing.T) {
 		unsupported := []string{
 			AnthropicFastModeBetaHeader,
@@ -1322,6 +1329,30 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		result := FilterBetaHeadersForProvider(supported, schemas.Bedrock)
 		if len(result) != len(supported) {
 			t.Errorf("expected %d headers, got %d: %v", len(supported), len(result), result)
+		}
+	})
+
+	t.Run("Vertex/keeps_tool_search_beta_header", func(t *testing.T) {
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.Vertex)
+		if len(result) != 1 || result[0] != AnthropicToolSearchBetaHeader {
+			t.Errorf("expected %q to be kept for Vertex, got %v", AnthropicToolSearchBetaHeader, result)
+		}
+	})
+
+	t.Run("BedrockMantle/keeps_tool_search_beta_header", func(t *testing.T) {
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.BedrockMantle)
+		if len(result) != 1 || result[0] != AnthropicToolSearchBetaHeader {
+			t.Errorf("expected %q to be kept for Bedrock Mantle, got %v", AnthropicToolSearchBetaHeader, result)
+		}
+	})
+
+	t.Run("Bedrock/drops_tool_search_beta_header", func(t *testing.T) {
+		// tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
+		// only per AWS's docs; classic Bedrock always uses Converse here, so this
+		// must never reach AWS regardless of what the client sends.
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.Bedrock)
+		if len(result) != 0 {
+			t.Errorf("expected %q to be dropped for Bedrock, got %v", AnthropicToolSearchBetaHeader, result)
 		}
 	})
 
@@ -1631,6 +1662,26 @@ func TestStripUnsupportedFieldsFromRawBody(t *testing.T) {
 		}
 	})
 
+	t.Run("bedrock_mantle_strips_strict_keeps_input_examples", func(t *testing.T) {
+		// Mantle's native Anthropic surface rejects the structured-outputs beta:
+		// tools[].strict 400s with "tools.0.custom.strict: Extra inputs are not
+		// permitted". input_examples (tool-examples-2025-10-29) is unaffected.
+		input := []byte(`{
+			"model":"claude-opus-4-8",
+			"tools":[{"name":"t1","strict":false,"input_examples":[{"input":{"a":1}}]}]
+		}`)
+		result, err := StripUnsupportedFieldsFromRawBody(input, schemas.BedrockMantle, "claude-opus-4-8")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if providerUtils.JSONFieldExists(result, "tools.0.strict") {
+			t.Errorf("expected tools[0].strict to be stripped for Bedrock Mantle, got: %s", string(result))
+		}
+		if !providerUtils.JSONFieldExists(result, "tools.0.input_examples") {
+			t.Errorf("expected tools[0].input_examples to survive on Bedrock Mantle, got: %s", string(result))
+		}
+	})
+
 	t.Run("bedrock_keeps_input_examples_via_standalone_flag", func(t *testing.T) {
 		// Bedrock has InputExamples=true via tool-examples-2025-10-29 but
 		// AdvancedToolUse=false. input_examples should be KEPT; defer_loading
@@ -1865,6 +1916,72 @@ func TestStripUnsupportedAnthropicFields_ContainerSkillsGating(t *testing.T) {
 		}
 		if req.Container.ContainerObject.Skills == nil {
 			t.Errorf("expected empty skills preserved on Skills=true provider (not nilled)")
+		}
+	})
+}
+
+// TestStripUnsupportedAnthropicFields_ToolSearchGating covers #5xxx: defer_loading
+// used to be gated on AdvancedToolUse (the advanced-tool-use-2025-11-20 bundle), but
+// per current Anthropic docs defer_loading now has its own beta
+// (tool-search-tool-2025-10-19) and must be gated on ToolSearch instead. Vertex is a
+// real example where the two flags diverge: ToolSearch=true, AdvancedToolUse=false.
+func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
+	t.Run("vertex_tool_search_true_advanced_tool_use_false_keeps_defer_loading", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-sonnet-4-5",
+			Tools: []AnthropicTool{
+				{Name: "search", DeferLoading: schemas.Ptr(true)},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Vertex, "claude-sonnet-4-5")
+		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
+			t.Errorf("expected defer_loading to survive for Vertex (ToolSearch=true), got %v", req.Tools[0].DeferLoading)
+		}
+	})
+
+	t.Run("bedrock_tool_search_false_strips_defer_loading", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-sonnet-4-5",
+			Tools: []AnthropicTool{
+				{Name: "search", DeferLoading: schemas.Ptr(true)},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-sonnet-4-5")
+		if req.Tools[0].DeferLoading != nil {
+			t.Errorf("expected defer_loading to be stripped for Bedrock (ToolSearch=false), got %v", *req.Tools[0].DeferLoading)
+		}
+	})
+}
+
+// TestStripUnsupportedAnthropicFields_StrictGating covers the typed path for
+// tools[].strict. Mantle's native Anthropic surface rejects the field outright
+// ("tools.0.custom.strict: Extra inputs are not permitted"), including the
+// strict:false the AI SDK emits, so both values must be cleared there.
+func TestStripUnsupportedAnthropicFields_StrictGating(t *testing.T) {
+	for _, strict := range []bool{true, false} {
+		t.Run(fmt.Sprintf("bedrock_mantle_strips_strict_%t", strict), func(t *testing.T) {
+			req := &AnthropicMessageRequest{
+				Model: "claude-opus-4-8",
+				Tools: []AnthropicTool{{Name: "t1", Strict: schemas.Ptr(strict)}},
+			}
+			stripUnsupportedAnthropicFields(req, schemas.BedrockMantle, "claude-opus-4-8")
+			if req.Tools[0].Strict != nil {
+				t.Errorf("expected strict cleared for Bedrock Mantle, got %v", *req.Tools[0].Strict)
+			}
+			if req.Tools[0].Name != "t1" {
+				t.Errorf("expected tool otherwise untouched, got %+v", req.Tools[0])
+			}
+		})
+	}
+
+	t.Run("anthropic_keeps_strict", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-opus-4-8",
+			Tools: []AnthropicTool{{Name: "t1", Strict: schemas.Ptr(true)}},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-8")
+		if req.Tools[0].Strict == nil || !*req.Tools[0].Strict {
+			t.Errorf("expected strict preserved on StructuredOutputs=true provider, got %v", req.Tools[0].Strict)
 		}
 	})
 }

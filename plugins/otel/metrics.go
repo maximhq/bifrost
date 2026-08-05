@@ -55,7 +55,6 @@ type MetricsExporter struct {
 
 	// Bifrost metrics - histograms
 	upstreamLatencySeconds         *syncFloat64Histogram
-	overheadLatencySeconds         *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
 	requestRetries                 *syncFloat64Histogram
@@ -134,17 +133,6 @@ var (
 		10, 15, 30, 45, 60, 90, 120, 180, 300, 600, 900,
 	}
 
-	// overheadLatencyBuckets: Bifrost's own processing cost, i.e. total minus time
-	// blocked on upstream sockets. A different scale entirely from upstream latency —
-	// healthy values are sub-millisecond to low tens of ms, dominated by request and
-	// response marshalling. Reusing upstreamLatencyBuckets would pile almost every
-	// request into the first two buckets and make regressions invisible. The long
-	// tail up to 30s exists to catch queue saturation and pathological payloads.
-	overheadLatencyBuckets = []float64{
-		.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1,
-		.25, .5, 1, 2.5, 5, 10, 30,
-	}
-
 	// firstTokenLatencyBuckets: TTFT. Bimodal - sub-second for fast streaming
 	// providers, tens to hundreds of seconds for reasoning models. Purely additive
 	// over the prior SDK-default fallback so historical queries remain valid.
@@ -210,18 +198,12 @@ func (h *syncFloat64Histogram) Record(ctx context.Context, value float64, opts .
 
 // NewMetricsExporter creates a new OTEL metrics exporter
 func NewMetricsExporter(ctx context.Context, config *MetricsConfig) (*MetricsExporter, error) {
-	// Generate a unique instance ID for this node
-	instanceID, err := os.Hostname()
-	if err != nil {
-		instanceID = fmt.Sprintf("bifrost-%d", time.Now().UnixNano())
-	}
-
-	// Create resource with service info
+	// Resource attrs; serviceInstanceID is also emitted as a datapoint label.
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewSchemaless(
 			semconv.ServiceName(config.ServiceName),
-			semconv.ServiceInstanceID(instanceID),
+			semconv.ServiceInstanceID(serviceInstanceID),
 		),
 	)
 	if err != nil {
@@ -404,14 +386,6 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: upstreamLatencyBuckets,
 	}
 
-	m.overheadLatencySeconds = &syncFloat64Histogram{
-		name:       "bifrost_overhead_latency_seconds",
-		desc:       "Latency added by Bifrost itself: total request time minus time blocked on upstream providers",
-		unit:       "s",
-		meter:      m.meter,
-		boundaries: overheadLatencyBuckets,
-	}
-
 	m.streamFirstTokenLatencySeconds = &syncFloat64Histogram{
 		name:       "bifrost_stream_first_token_latency_seconds",
 		desc:       "Latency of the first token of a stream response",
@@ -546,13 +520,6 @@ func (m *MetricsExporter) RecordUpstreamLatency(ctx context.Context, latencySeco
 	m.upstreamLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
 }
 
-// RecordOverheadLatency records the latency Bifrost itself added to a request.
-// Recorded once per trace (off the root span), not once per attempt — the
-// underlying accumulator already spans every retry and fallback.
-func (m *MetricsExporter) RecordOverheadLatency(ctx context.Context, overheadSeconds float64, attrs ...attribute.KeyValue) {
-	m.overheadLatencySeconds.Record(ctx, overheadSeconds, metric.WithAttributes(attrs...))
-}
-
 // RecordStreamFirstTokenLatency records first token latency metric
 func (m *MetricsExporter) RecordStreamFirstTokenLatency(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
 	m.streamFirstTokenLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
@@ -598,7 +565,21 @@ func (m *MetricsExporter) RecordHTTPResponseSize(ctx context.Context, sizeBytes 
 // Retry depth is intentionally NOT included here; it is reported via the dedicated
 // bifrost_request_retries histogram (recorded once per request) rather than as a label
 // on every per-attempt counter.
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamID, teamName, customerID, customerName string) []attribute.KeyValue {
+// serviceInstanceID is this replica's id (hostname, timestamped fallback). Emitted
+// as both a resource attribute and a datapoint label so per-replica breakdown works
+// even when the collector drops resource attributes.
+var serviceInstanceID = resolveServiceInstanceID()
+
+func resolveServiceInstanceID() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return fmt.Sprintf("bifrost-%d", time.Now().UnixNano())
+}
+
+// team/customer/businessUnit args are canonical comma-joined sets; label names stay
+// singular (team_id, ...) for dashboard compatibility.
+func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("provider", provider),
 		attribute.String("model", model),
@@ -608,10 +589,13 @@ func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyNam
 		attribute.String("selected_key_id", selectedKeyID),
 		attribute.String("selected_key_name", selectedKeyName),
 		attribute.Int("fallback_index", fallbackIndex),
-		attribute.String("team_id", teamID),
-		attribute.String("team_name", teamName),
-		attribute.String("customer_id", customerID),
-		attribute.String("customer_name", customerName),
+		attribute.String("team_id", teamIDs),
+		attribute.String("team_name", teamNames),
+		attribute.String("customer_id", customerIDs),
+		attribute.String("customer_name", customerNames),
+		attribute.String("business_unit_id", businessUnitIDs),
+		attribute.String("business_unit_name", businessUnitNames),
+		attribute.String("service_instance_id", serviceInstanceID),
 	}
 }
 

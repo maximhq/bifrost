@@ -3,10 +3,10 @@ title: "Setup SCIM"
 description: "Enable real-time user and group provisioning from any SCIM 2.0-capable identity provider to Bifrost Enterprise."
 ---
 
-Bifrost exposes a SCIM 2.0 endpoint that any compatible identity provider can push user and group changes to in real time — new users are provisioned, deactivated users are suspended, and group memberships are updated without waiting for the next background sync cycle.
+Bifrost exposes a SCIM 2.0 endpoint that any compatible identity provider can push user and group changes to in real time - new users are provisioned, deactivated users are suspended, and group memberships are updated without waiting for the next background sync cycle.
 
 <Note>
-  Complete [SSO using OIDC](./oidc) before setting up SCIM. SCIM provisioning runs alongside your OIDC integration — it does not replace it.
+  Complete [SSO using OIDC](./oidc) before setting up SCIM. SCIM provisioning runs alongside your OIDC integration - it does not replace it.
 </Note>
 
 ---
@@ -31,7 +31,7 @@ Click the settings icon to open **Provider Configuration**.
 
 Toggle on **Enable SCIM Provisioning** and click **Verify & Next**.
 
-<Frame caption="Enable SCIM Provisioning — the SCIM endpoint URL and bearer token are generated after saving.">
+<Frame caption="Enable SCIM Provisioning - the SCIM endpoint URL and bearer token are generated after saving.">
   <img src="/media/user-provisioning/generic-oidc/bifrost-enable-scim.png" alt="Bifrost Provider Configuration with Enable SCIM Provisioning toggle turned on" />
 </Frame>
 
@@ -41,10 +41,10 @@ Toggle on **Enable SCIM Provisioning** and click **Verify & Next**.
 
 After saving, Bifrost shows a **Setup Complete** dialog with:
 
-- **SCIM Endpoint URL** — the base URL your IdP will send provisioning requests to (e.g. `https://<your-bifrost-domain>/scim/v2`)
-- **Provisioning Token** — the bearer token your IdP uses to authenticate requests
+- **SCIM Endpoint URL** - the base URL your IdP will send provisioning requests to (e.g. `https://<your-bifrost-domain>/scim/v2`)
+- **Provisioning Token** - the bearer token your IdP uses to authenticate requests
 
-<Frame caption="Setup Complete — copy the SCIM Endpoint URL and Provisioning Token before closing this dialog.">
+<Frame caption="Setup Complete - copy the SCIM Endpoint URL and Provisioning Token before closing this dialog.">
   <img src="/media/user-provisioning/generic-oidc/bifrost-scim-token-dialog.png" alt="Bifrost Setup Complete dialog displaying the SCIM Endpoint URL and one-time Provisioning Token" />
 </Frame>
 
@@ -101,7 +101,7 @@ The same keys (`provisioningToken`, `claimScimAttributes`) apply directly under 
 </Steps>
 
 <Warning>
-  Keep the token in a Kubernetes Secret and reference it with the `env.` prefix — never commit the literal value. Rotating the token in the dashboard invalidates any value seeded here.
+  Keep the token in a Kubernetes Secret and reference it with the `env.` prefix - never commit the literal value. Rotating the token in the dashboard invalidates any value seeded here.
 </Warning>
 
 Then use this token as the **Bearer Token** and your deployment's SCIM endpoint as the **SCIM Base URL** in [Step 2](#step-2-configure-your-idp-to-push-scim-to-bifrost) below.
@@ -128,7 +128,7 @@ In your IdP admin console, look for:
 
 | Setting | Value |
 | --- | --- |
-| **SCIM Base URL / Tenant URL** | The SCIM Endpoint URL from Step 1 — no trailing slash |
+| **SCIM Base URL / Tenant URL** | The SCIM Endpoint URL from Step 1 - no trailing slash |
 | **Bearer Token / Secret Token** | The Provisioning Token from Step 1 |
 
 </Step>
@@ -143,10 +143,10 @@ Most IdPs provide a **Test Connection** or **Verify Credentials** button. Click 
 
 Enable the following operations if available:
 
-- **Create Users** — provision new users when added in the IdP
-- **Update User Attributes** — sync profile changes to Bifrost
-- **Deactivate Users** — suspend users when deactivated or deleted in the IdP
-- **Push Groups** — sync group memberships so Bifrost team mappings stay current
+- **Create Users** - provision new users when added in the IdP
+- **Update User Attributes** - sync profile changes to Bifrost
+- **Deactivate Users** - suspend users when deactivated or deleted in the IdP
+- **Push Groups** - sync group memberships so Bifrost team mappings stay current
 
 </Step>
 
@@ -162,7 +162,7 @@ Enable the following operations if available:
 
 In your IdP, assign the users or groups you want to provision into Bifrost. Only users within the provisioning scope are pushed.
 
-Changes — new assignments, deactivations, group membership updates — will reflect in Bifrost within the next provisioning cycle. Most IdPs offer an on-demand sync option for immediate provisioning.
+Changes - new assignments, deactivations, group membership updates - will reflect in Bifrost within the next provisioning cycle. Most IdPs offer an on-demand sync option for immediate provisioning.
 
 </Step>
 
@@ -174,9 +174,9 @@ Changes — new assignments, deactivations, group membership updates — will re
 
 Once provisioning is active, confirm everything is syncing correctly:
 
-- **Governance → Users** — provisioned users and their assigned roles
-- **Governance → Teams** — teams populated from pushed groups
-- **Governance → Business Units** — business units resolved from group or attribute mappings
+- **Governance → Users** - provisioned users and their assigned roles
+- **Governance → Teams** - teams populated from pushed groups
+- **Governance → Business Units** - business units resolved from group or attribute mappings
 
 ---
 
@@ -203,20 +203,20 @@ All requests must include an `Authorization: Bearer <token>` header using the Pr
 
 ## How sync works
 
-**Real-time push** — your IdP pushes user and group changes to Bifrost immediately when they occur.
+**Real-time push** - your IdP pushes user and group changes to Bifrost immediately when they occur.
 
-**OIDC session refresh** — every 15 minutes, Bifrost refreshes active OIDC sessions. If a user has been deactivated, their Bifrost session is terminated.
+**OIDC session refresh** - every 15 minutes, Bifrost refreshes active OIDC sessions. If a user has been deactivated, their Bifrost session is terminated.
 
 ---
 
 ## Troubleshooting
 
-**Test Connection fails** — verify the SCIM Base URL has no trailing slash and the token matches exactly what Bifrost generated. Rotate the token in Bifrost and update your IdP.
+**Test Connection fails** - verify the SCIM Base URL has no trailing slash and the token matches exactly what Bifrost generated. Rotate the token in Bifrost and update your IdP.
 
-**Users are provisioned but have no role** — SCIM provisions the user record; role assignment comes from attribute mappings in the OIDC provider. Confirm your Attribute-to-Role mappings are set and the relevant claims appear in the JWT at login time.
+**Users are provisioned but have no role** - SCIM provisions the user record; role assignment comes from attribute mappings in the OIDC provider. Confirm your Attribute-to-Role mappings are set and the relevant claims appear in the JWT at login time.
 
-**Groups are not syncing** — confirm group push is enabled in your IdP's provisioning settings. Some IdPs require groups to be enabled separately from user sync.
+**Groups are not syncing** - confirm group push is enabled in your IdP's provisioning settings. Some IdPs require groups to be enabled separately from user sync.
 
-**`401 Unauthorized` from Bifrost SCIM endpoint** — the provisioning token is incorrect or has been rotated. Generate a new token in Bifrost (**Provider Configuration → Rotate Token**) and update your IdP.
+**`401 Unauthorized` from Bifrost SCIM endpoint** - the provisioning token is incorrect or has been rotated. Generate a new token in Bifrost (**Provider Configuration → Rotate Token**) and update your IdP.
 
-**`409 Conflict` when provisioning a user** — the user already exists in Bifrost (provisioned via OIDC login). Bifrost will merge the records on the next PATCH request from your IdP.
+**`409 Conflict` when provisioning a user** - the user already exists in Bifrost (provisioned via OIDC login). Bifrost will merge the records on the next PATCH request from your IdP.

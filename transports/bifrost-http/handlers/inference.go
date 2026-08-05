@@ -22,7 +22,6 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -153,6 +152,8 @@ var chatParamsKnownFields = map[string]bool{
 	"truncation":             true,
 	"user":                   true,
 	"verbosity":              true,
+
+	"include_server_side_tool_invocations": true,
 }
 
 var responsesParamsKnownFields = map[string]bool{
@@ -183,6 +184,8 @@ var responsesParamsKnownFields = map[string]bool{
 	"tool_choice":            true,
 	"tools":                  true,
 	"truncation":             true,
+
+	"include_server_side_tool_invocations": true,
 }
 
 var compactionParamsKnownFields = map[string]bool{
@@ -898,51 +901,8 @@ func enrichListModelsResponse(resp *schemas.BifrostListModelsResponse, catalog *
 		if pricingEntry == nil && modelEntry.Alias != nil {
 			pricingEntry = catalog.GetPricingEntryForModel(*modelEntry.Alias, provider)
 		}
-		if pricingEntry != nil {
-			modelEntry.IsDeprecated = modelEntry.IsDeprecated || pricingEntry.IsDeprecated
-			if pricingEntry.BaseModel != "" && modelEntry.NormalizedName == nil {
-				modelEntry.NormalizedName = bifrost.Ptr(providerUtils.NormalizeBaseModelSlug(pricingEntry.BaseModel))
-			}
-			if len(pricingEntry.AdditionalAttributes) > 0 && modelEntry.AdditionalAttributes == nil {
-				modelEntry.AdditionalAttributes = pricingEntry.AdditionalAttributes
-			}
-			if pricingEntry.ContextLength != nil && modelEntry.ContextLength == nil {
-				modelEntry.ContextLength = pricingEntry.ContextLength
-			} else if pricingEntry.MaxInputTokens != nil && modelEntry.ContextLength == nil {
-				modelEntry.ContextLength = pricingEntry.MaxInputTokens
-			}
-			if pricingEntry.MaxInputTokens != nil && modelEntry.MaxInputTokens == nil {
-				modelEntry.MaxInputTokens = pricingEntry.MaxInputTokens
-			}
-			if pricingEntry.MaxOutputTokens != nil && modelEntry.MaxOutputTokens == nil {
-				modelEntry.MaxOutputTokens = pricingEntry.MaxOutputTokens
-			}
-			if pricingEntry.Architecture != nil && modelEntry.Architecture == nil {
-				modelEntry.Architecture = pricingEntry.Architecture
-			}
-			if modelEntry.Pricing == nil {
-				pricing := &schemas.Pricing{}
-				if pricingEntry.InputCostPerToken != nil {
-					pricing.Prompt = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerToken))
-				}
-				if pricingEntry.OutputCostPerToken != nil {
-					pricing.Completion = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.OutputCostPerToken))
-				}
-				if pricingEntry.InputCostPerImage != nil {
-					pricing.Image = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.InputCostPerImage))
-				}
-				if pricingEntry.CacheReadInputTokenCost != nil {
-					pricing.InputCacheRead = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheReadInputTokenCost))
-				}
-				if pricingEntry.CacheCreationInputTokenCost != nil {
-					pricing.InputCacheWrite = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.CacheCreationInputTokenCost))
-				}
-				if pricingEntry.SearchContextCostPerQuery != nil {
-					pricing.WebSearch = bifrost.Ptr(fmt.Sprintf("%.10f", *pricingEntry.SearchContextCostPerQuery))
-				}
-				modelEntry.Pricing = pricing
-			}
-		}
+		// Same mapping ctx.GetModelInfo hands to plugins, so the two never drift.
+		modelcatalog.ApplyModelInfo(&modelEntry, pricingEntry)
 		resp.Data[i] = modelEntry
 	}
 }
@@ -2043,12 +2003,31 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			transportLogs = logs
 		}
 
+		// Client-disconnect detection is otherwise purely reactive: cancel() only fires when
+		// a downstream SendEvent write actually fails, which only happens when this loop
+		// attempts one. If the upstream provider delivers its whole response in a few
+		// large/fast chunks, this loop may never attempt another write during the window
+		// where the client has already disconnected, so the disconnect goes undetected and
+		// the request logs as a false success (observed live: Vertex's streamGenerateContent
+		// delivers fewer, larger deltas than direct Gemini for the same prompt, giving the
+		// write-failure detector too few chances to fire before the stream finished).
+		// A periodic no-op heartbeat forces an extra write attempt during otherwise-idle
+		// gaps, closing that window without touching fasthttp's connection internals.
+		heartbeatDone, heartbeatExited := lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
+
 		defer func() {
+			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
+			// could still be mid-send on it panics ("send on closed channel"). See
+			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
+			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
 			// logged server-side only — the stream is already closing.
 			runCompleter(false)
+			// Safe now: the heartbeat goroutine has fully exited (waited on above), so no
+			// other goroutine can be mid-send on eventCh when this closes it. Closing it
+			// while a send was still in flight would panic ("send on closed channel").
 			reader.Done()
 			// Complete the trace after streaming finishes, passing transport plugin logs.
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
@@ -2059,6 +2038,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 		var includeEventType bool
 		var skipDoneMarker bool
+		// Set once a hard error frame reaches the client. An error frame is a
+		// terminal signal in its own right, so appending [DONE] after it would tell
+		// a client keyed on the marker that the stream finished normally — the exact
+		// ambiguity that let truncated upstream streams look successful (#5546).
+		var sawErrorChunk bool
 
 		// Process streaming responses
 		for chunk := range stream {
@@ -2121,6 +2105,12 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				continue
 			}
 
+			// Checked after marshalling so a chunk that never reaches the wire does
+			// not suppress the marker.
+			if chunk.BifrostError != nil {
+				sawErrorChunk = true
+			}
+
 			// Format and send as SSE data
 			var eventType string
 			if includeEventType {
@@ -2152,7 +2142,12 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		// once they see [DONE], so they'd be silently dropped.
 		runCompleter(true)
 
-		if !includeEventType && !skipDoneMarker {
+		// A stream that ended on an error frame is already terminated for the client;
+		// only a clean run gets the marker. Note this deliberately ignores an error
+		// from runCompleter above: that reports a post-processing/plugin failure, not
+		// an incomplete stream, so [DONE] remains an accurate statement about the
+		// stream data itself.
+		if !includeEventType && !skipDoneMarker && !sawErrorChunk {
 			// Send the [DONE] marker to indicate the end of the stream (only for non-responses/image-gen APIs)
 			if !reader.SendDone() {
 				cancel()

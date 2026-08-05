@@ -735,6 +735,14 @@ func HandleOpenAITextCompletionStreaming(
 			}
 		}
 
+		// See HandleOpenAIChatCompletionStreaming: a plain io.EOF cannot distinguish a
+		// finished provider from a dead connection, so a terminal marker is required
+		// before synthesizing the final chunk.
+		if !providerUtils.SSEStreamEndedOnMarker(sseReader) && finishReason == nil {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			return
+		}
+
 		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, request.Model, created)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
@@ -1411,6 +1419,24 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 		}
 
+		// A dying upstream closes the connection on a chunk boundary, which fasthttp
+		// reports as a plain io.EOF — the same read result as a properly terminated
+		// body. Truncation is therefore only detectable semantically: require an
+		// explicit [DONE], a finish_reason, or (on the fallback path) a terminal
+		// Responses event before synthesizing a final chunk. Without one, emitting
+		// the synthetic chunk would hand the client a clean, content-free completion
+		// that is indistinguishable from a provider that generated zero tokens.
+		terminalSignalSeen := providerUtils.SSEStreamEndedOnMarker(sseReader)
+		if isResponsesToChatCompletionsFallback {
+			terminalSignalSeen = terminalSignalSeen || pendingFinalEvent != nil
+		} else {
+			terminalSignalSeen = terminalSignalSeen || finishReason != nil
+		}
+		if !terminalSignalSeen {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			return
+		}
+
 		if isResponsesToChatCompletionsFallback {
 			if pendingFinalEvent != nil {
 				if usageSeen && pendingFinalEvent.Response != nil {
@@ -1864,6 +1890,10 @@ func HandleOpenAIResponsesStreaming(
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// The read error is already reported; returning (rather than
+					// breaking) keeps the post-loop truncation check from reporting
+					// the same dead stream a second time.
+					return
 				}
 				break
 			}
@@ -1977,6 +2007,15 @@ func HandleOpenAIResponsesStreaming(
 			lastChunkTime = time.Now()
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+		}
+
+		// The loop returns as soon as a terminal event (completed / incomplete /
+		// failed / error) arrives, so falling out of it means the body ended without
+		// one. A plain io.EOF cannot distinguish that from a healthy close, so
+		// surface it rather than closing the channel silently — a silent close is
+		// indistinguishable to the client from a stream that just stopped emitting.
+		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 		}
 	}()
 
@@ -2554,6 +2593,15 @@ func HandleOpenAISpeechStreamRequest(
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan, postHookSpanFinalizer)
 		}
+
+		// The loop returns on speech.audio.done (the usage-bearing terminal event),
+		// so falling out means the body ended early — a plain io.EOF that cannot be
+		// told from a healthy close. Without this the caller receives a silently
+		// truncated audio clip. Stay quiet when a read error was already reported
+		// (it sets the indicator) or when the provider at least sent [DONE].
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+		}
 	}()
 
 	return responseChan, nil
@@ -3071,6 +3119,15 @@ func HandleOpenAITranscriptionStreamRequest(
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan, postHookSpanFinalizer)
 		}
+
+		// The loop returns on transcript.text.done (or the usage-bearing chunk), so
+		// falling out means the body ended early — a plain io.EOF that cannot be told
+		// from a healthy close, leaving the caller with a silently truncated
+		// transcript. No raw request is attached: this endpoint sends multipart form
+		// data, not JSON.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+		}
 	}()
 
 	return responseChan, nil
@@ -3442,7 +3499,13 @@ func HandleOpenAIImageGenerationStreaming(
 					return
 				}
 				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// The read error is already reported; returning (rather than
+					// breaking) keeps the post-loop truncation check from reporting
+					// the same dead stream a second time.
+					return
 				}
 				break
 			}
@@ -3626,6 +3689,14 @@ func HandleOpenAIImageGenerationStreaming(
 			if isCompleted {
 				return
 			}
+		}
+
+		// The loop returns on image_generation.completed, so falling out means the
+		// body ended early — a plain io.EOF that cannot be told from a healthy
+		// close. Without this the caller keeps only the partial images and never
+		// learns the final one is missing.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 		}
 	}()
 
@@ -4927,8 +4998,13 @@ func HandleOpenAIImageEditStreamRequest(
 					return
 				}
 				if readErr != io.EOF {
-					logger.Warn(fmt.Sprintf("Error reading stream: %v", readErr))
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					logger.Warn("Error reading stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// The read error is already reported; returning (rather than
+					// breaking) keeps the post-loop truncation check from reporting
+					// the same dead stream a second time.
+					return
 				}
 				break
 			}
@@ -5108,6 +5184,15 @@ func HandleOpenAIImageEditStreamRequest(
 			if isCompleted {
 				return
 			}
+		}
+
+		// The loop returns on image_edit.completed, so falling out means the body
+		// ended early — a plain io.EOF that cannot be told from a healthy close.
+		// Without this the caller keeps only the partial images and never learns the
+		// final one is missing. No raw request is attached: this endpoint sends
+		// multipart form data, not JSON.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
 		}
 	}()
 
@@ -7350,16 +7435,7 @@ func (provider *OpenAIProvider) Passthrough(
 		return nil, err
 	}
 
-	path := req.Path
-	// if path has v1 or v1/ remove it
-	if after, ok := strings.CutPrefix(path, "/v1"); ok {
-		path = after
-	}
-
-	url := provider.networkConfig.BaseURL + "/v1" + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
-	}
+	url := provider.buildPassthroughURL(req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -7415,6 +7491,34 @@ func (provider *OpenAIProvider) Passthrough(
 	return bifrostResponse, nil
 }
 
+// buildPassthroughURL returns the upstream URL for raw passthrough requests.
+func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) string {
+	path := req.Path
+	baseURL := provider.networkConfig.BaseURL
+	if req.UpstreamURL != "" {
+		baseURL = strings.TrimRight(req.UpstreamURL, "/")
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		url := baseURL + path
+		if req.RawQuery != "" {
+			url += "?" + req.RawQuery
+		}
+		return url
+	}
+
+	// if path has v1 or v1/ remove it
+	if after, ok := strings.CutPrefix(path, "/v1"); ok {
+		path = after
+	}
+
+	url := baseURL + "/v1" + path
+	if req.RawQuery != "" {
+		url += "?" + req.RawQuery
+	}
+	return url
+}
+
 func (provider *OpenAIProvider) PassthroughStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -7427,14 +7531,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	path := req.Path
-	if after, ok := strings.CutPrefix(path, "/v1"); ok {
-		path = after
-	}
-	url := provider.networkConfig.BaseURL + "/v1" + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
-	}
+	url := provider.buildPassthroughURL(req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

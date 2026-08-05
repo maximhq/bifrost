@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -18,11 +19,13 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
@@ -74,6 +77,7 @@ type ServerCallbacks interface {
 	ExpandPluginConfigForAPI(name string, config map[string]any) (map[string]any, error)
 	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
+	ValidateSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	// Pricing related callbacks
 	UpdateSyncConfig(ctx context.Context) error
@@ -109,6 +113,8 @@ type ServerCallbacks interface {
 	OnKeyAdded(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyUpdated(ctx context.Context, provider schemas.ModelProvider, key schemas.Key) error
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
+	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
 	// Webhook related callbacks
@@ -136,6 +142,12 @@ type ServerCallbacks interface {
 type LogRedactionMappingResolverProvider interface {
 	// GetLogRedactionMappingResolver returns the resolver used by the logging handler.
 	GetLogRedactionMappingResolver() handlers.LogRedactionMappingResolver
+}
+
+// MCPLogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to MCP log-detail responses.
+type MCPLogRedactionMappingResolverProvider interface {
+	// GetMCPLogRedactionMappingResolver returns the resolver used by the logging handler.
+	GetMCPLogRedactionMappingResolver() handlers.MCPLogRedactionMappingResolver
 }
 
 // BifrostHTTPServer represents a HTTP server instance.
@@ -186,6 +198,18 @@ type BifrostHTTPServer struct {
 
 	SidekiqRunner         *sidekiq.Runner
 	SidekiqDispatcherStop func()
+
+	// Background live model catalog refresher. Guarded because the framework
+	// config handler can restart it from a request goroutine while the boot
+	// path or shutdown is touching it.
+	liveModelRefresherMu   sync.Mutex
+	liveModelRefresherStop func()
+
+	// refreshInFlight coordinates on-demand model refreshes. Distinct keys for
+	// the same provider may refresh concurrently, while an all-keys refresh is
+	// exclusive with every key refresh for that provider.
+	refreshInFlightMu sync.Mutex
+	refreshInFlight   map[schemas.ModelProvider]*providerRefreshState
 
 	WebhookDispatcher *webhooks.Dispatcher
 
@@ -426,15 +450,10 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	if err != nil {
 		return virtualKey, fmt.Errorf("failed to reload VK-scoped model configs for VK %s: %w", id, err)
 	}
-	if governanceData := governancePlugin.GetGovernanceStore().GetGovernanceData(ctx); governanceData != nil {
-		for _, existingVK := range governanceData.VirtualKeys {
-			if existingVK != nil && existingVK.ID == virtualKey.ID && existingVK.Value.IsSet() && existingVK.Value.GetValue() != virtualKey.Value.GetValue() {
-				s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value.GetValue())
-				break
-			}
-		}
-	}
 	store := governancePlugin.GetGovernanceStore()
+	if existingVK, found := store.GetVirtualKeyByID(ctx, virtualKey.ID); found && existingVK != nil && existingVK.Value.IsSet() && existingVK.Value.GetValue() != virtualKey.Value.GetValue() {
+		s.MCPServerHandler.DeleteVKMCPServer(existingVK.Value.GetValue())
+	}
 	store.UpdateVirtualKeyInMemory(ctx, virtualKey, nil, nil, nil)
 	// Snapshot in-memory VK-scoped config IDs before the upserts so we can evict
 	// the ones that no longer exist in the DB (e.g. a standalone VK adopted into
@@ -995,8 +1014,21 @@ func (s *BifrostHTTPServer) UpdateAuthConfig(ctx context.Context, authConfig *co
 		} else {
 			s.AuthMiddleware.UpdateAuthConfig(updatedAuthConfig)
 		}
+		// The first admin account now exists (or already did) — permanently
+		// invalidate the bootstrap setup token. No-op if already cleared.
+		s.AuthMiddleware.ClearBootstrapToken()
 	}
 	return nil
+}
+
+// ValidateSetupToken reports whether token is a valid one-time bootstrap setup token,
+// as required to create the very first admin account (see AuthMiddleware.bootstrapToken).
+// Once an admin account exists, this always returns true — the gate closes permanently.
+func (s *BifrostHTTPServer) ValidateSetupToken(token string) bool {
+	if s.AuthMiddleware == nil {
+		return true
+	}
+	return s.AuthMiddleware.CheckBootstrapToken(token)
 }
 
 // UpdateDropExcessRequests updates excess requests config
@@ -1028,10 +1060,279 @@ func (s *BifrostHTTPServer) UpdateSyncConfig(ctx context.Context) error {
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
-	if s.Config.FrameworkConfig == nil || s.Config.FrameworkConfig.Pricing == nil {
+	// Snapshot the pricing pointer and release the read lock before restarting
+	// the refresher: that path takes Config.Mu.RLock again through
+	// LiveModelsSyncInterval, and sync.RWMutex read locks are not reentrant.
+	// Safe to use after unlocking because the config update path publishes a
+	// whole new FrameworkConfig rather than mutating this struct in place.
+	s.Config.Mu.RLock()
+	var pricing *modelcatalog.Config
+	if s.Config.FrameworkConfig != nil {
+		pricing = s.Config.FrameworkConfig.Pricing
+	}
+	s.Config.Mu.RUnlock()
+	if pricing == nil {
 		return fmt.Errorf("framework config not found")
 	}
-	return s.Config.ModelCatalog.UpdateSyncConfig(ctx, s.Config.FrameworkConfig.Pricing)
+	// The live model refresher reads its interval from the same framework
+	// config block, so pick up a changed (or newly disabled) value here rather
+	// than waiting for a restart.
+	s.RestartLiveModelRefresher(s.backgroundCtx())
+	return s.Config.ModelCatalog.UpdateSyncConfig(ctx, pricing)
+}
+
+// backgroundCtx returns the server-lifetime context background workers should
+// hang off. Falls back to context.Background() before Bootstrap has set s.Ctx.
+func (s *BifrostHTTPServer) backgroundCtx() context.Context {
+	if s.Ctx != nil {
+		return s.Ctx
+	}
+	return context.Background()
+}
+
+// liveRefreshProviderConcurrency bounds how many providers a single
+// RefreshAllLiveModels pass fetches at once. The bootstrap seed could fan out
+// across every provider unbounded because nothing else was in flight yet; the
+// background pass runs alongside live inference traffic, and each provider it
+// picks up itself fans out to (enabled keys x 2) upstream calls.
+const liveRefreshProviderConcurrency = 4
+
+// RefreshAllLiveModels runs a full per-provider live model refresh.
+//
+// Safe to call while providers are being edited, unlike the bootstrap seed it
+// replaced: the provider set and each provider's keys are read through the
+// Config accessors, which take Config.Mu.RLock and hand back copies, rather
+// than ranging Config.Providers directly.
+//
+// Deliberately does not invalidate anything first. Key and provider removals
+// already prune the cache through the CRUD handlers, and
+// FetchAndStoreLiveForKey writes nothing when a fetch fails, so leaving
+// entries in place keeps last-known-good models routable across a transient
+// upstream error instead of emptying a catalog that was healthy a moment ago.
+func (s *BifrostHTTPServer) RefreshAllLiveModels(ctx context.Context) {
+	if s.Config == nil || s.Config.ModelCatalog == nil || s.Client == nil {
+		return
+	}
+
+	providers, err := s.Config.GetAllProviders()
+	if err != nil {
+		logger.Warn("live model refresh skipped: failed to list providers: %v", err)
+		return
+	}
+
+	sem := make(chan struct{}, liveRefreshProviderConcurrency)
+	var wg sync.WaitGroup
+	for _, provider := range providers {
+		keys, err := s.Config.GetProviderKeysRaw(provider)
+		if err != nil {
+			// Removed between GetAllProviders and this read. OnProviderRemoved
+			// has already dropped its live entries, so there is nothing to do.
+			continue
+		}
+		wg.Add(1)
+		go func(p schemas.ModelProvider, k []schemas.Key) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			s.RefreshLiveModelsForProvider(ctx, p, k)
+		}(provider, keys)
+	}
+	wg.Wait()
+}
+
+// liveRefreshJitterFraction spreads each refresh cycle over
+// interval * [1-f, 1+f]. Pods in a deployment start within seconds of each
+// other, so an exact interval would have every replica fan out to every
+// upstream at the same instant, on every cycle, forever.
+const liveRefreshJitterFraction = 0.1
+
+// jitteredInterval scales d by a uniform random factor around 1.
+func jitteredInterval(d time.Duration) time.Duration {
+	factor := 1 - liveRefreshJitterFraction + 2*liveRefreshJitterFraction*rand.Float64()
+	return time.Duration(float64(d) * factor)
+}
+
+// LiveModelsSyncInterval returns the configured background refresh interval.
+// A non-positive result means the refresher is disabled.
+func (s *BifrostHTTPServer) LiveModelsSyncInterval() time.Duration {
+	if s.Config == nil {
+		return modelcatalog.DefaultLiveModelsSyncInterval
+	}
+	// FrameworkConfig is swapped wholesale by the config update handler, so the
+	// pointer read needs Config.Mu like every other accessor on this struct.
+	s.Config.Mu.RLock()
+	defer s.Config.Mu.RUnlock()
+	if s.Config.FrameworkConfig == nil || s.Config.FrameworkConfig.Pricing == nil {
+		return modelcatalog.DefaultLiveModelsSyncInterval
+	}
+	configured := s.Config.FrameworkConfig.Pricing.LiveModelsSyncInterval
+	if configured == nil {
+		return modelcatalog.DefaultLiveModelsSyncInterval
+	}
+	return time.Duration(*configured) * time.Second
+}
+
+// startLiveModelRefresher runs RefreshAllLiveModels on a jittered interval and
+// returns a func that stops it. A non-positive interval disables the refresher
+// and returns a no-op, which is the documented opt-out.
+//
+// Deliberately takes no distributed lock, unlike the pricing sync worker: the
+// live model cache is per-process in-memory, so every node has to refresh its
+// own copy. Electing a single refresher would leave every other node serving
+// its boot-time snapshot indefinitely.
+func (s *BifrostHTTPServer) startLiveModelRefresher(ctx context.Context, interval time.Duration) func() {
+	if interval <= 0 {
+		logger.Info("background live model refresh is disabled")
+		return func() {}
+	}
+	logger.Info("background live model refresh every %v (jittered +/-%d%%)", interval, int(liveRefreshJitterFraction*100))
+
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		// A timer rather than a ticker: the delay is resampled every cycle, so
+		// replicas that happen to align on one cycle drift apart on the next.
+		timer := time.NewTimer(jitteredInterval(interval))
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				s.RefreshAllLiveModels(ctx)
+				timer.Reset(jitteredInterval(interval))
+			}
+		}
+	}()
+	return cancel
+}
+
+// RestartLiveModelRefresher stops any running refresher and starts a new one
+// at the currently configured interval. Called at boot and again whenever the
+// framework config changes, so a disabled-to-enabled edit (or vice versa)
+// takes effect without a restart. Exported so servers that replace the boot
+// path can start the refresher with its stop handle registered for the shared
+// cleanup and config-change restarts.
+func (s *BifrostHTTPServer) RestartLiveModelRefresher(ctx context.Context) {
+	s.liveModelRefresherMu.Lock()
+	defer s.liveModelRefresherMu.Unlock()
+	if s.liveModelRefresherStop != nil {
+		s.liveModelRefresherStop()
+	}
+	s.liveModelRefresherStop = s.startLiveModelRefresher(ctx, s.LiveModelsSyncInterval())
+}
+
+// stopLiveModelRefresher halts the background refresher if one is running.
+func (s *BifrostHTTPServer) stopLiveModelRefresher() {
+	s.liveModelRefresherMu.Lock()
+	defer s.liveModelRefresherMu.Unlock()
+	if s.liveModelRefresherStop != nil {
+		s.liveModelRefresherStop()
+		s.liveModelRefresherStop = nil
+	}
+}
+
+type providerRefreshState struct {
+	allKeys bool
+	keys    map[string]struct{}
+}
+
+// beginKeyRefresh claims an on-demand refresh slot for one provider key.
+// Refreshes for distinct keys may run concurrently, but the same key is
+// deduplicated and no key refresh may overlap an all-keys refresh.
+func (s *BifrostHTTPServer) beginKeyRefresh(provider schemas.ModelProvider, keyID string) (release func(), ok bool) {
+	s.refreshInFlightMu.Lock()
+	defer s.refreshInFlightMu.Unlock()
+
+	if s.refreshInFlight == nil {
+		s.refreshInFlight = make(map[schemas.ModelProvider]*providerRefreshState)
+	}
+	state := s.refreshInFlight[provider]
+	if state == nil {
+		state = &providerRefreshState{keys: make(map[string]struct{})}
+		s.refreshInFlight[provider] = state
+	}
+	if state.allKeys {
+		return nil, false
+	}
+	if _, exists := state.keys[keyID]; exists {
+		return nil, false
+	}
+	state.keys[keyID] = struct{}{}
+
+	return func() {
+		s.refreshInFlightMu.Lock()
+		defer s.refreshInFlightMu.Unlock()
+		current := s.refreshInFlight[provider]
+		if current != state {
+			return
+		}
+		delete(state.keys, keyID)
+		if len(state.keys) == 0 {
+			delete(s.refreshInFlight, provider)
+		}
+	}, true
+}
+
+// beginAllKeysRefresh claims an exclusive on-demand refresh slot for a
+// provider. It conflicts with both another all-keys refresh and any active
+// per-key refresh for that provider.
+func (s *BifrostHTTPServer) beginAllKeysRefresh(provider schemas.ModelProvider) (release func(), ok bool) {
+	s.refreshInFlightMu.Lock()
+	defer s.refreshInFlightMu.Unlock()
+
+	if s.refreshInFlight == nil {
+		s.refreshInFlight = make(map[schemas.ModelProvider]*providerRefreshState)
+	}
+	if _, exists := s.refreshInFlight[provider]; exists {
+		return nil, false
+	}
+	state := &providerRefreshState{allKeys: true}
+	s.refreshInFlight[provider] = state
+
+	return func() {
+		s.refreshInFlightMu.Lock()
+		defer s.refreshInFlightMu.Unlock()
+		if s.refreshInFlight[provider] == state {
+			delete(s.refreshInFlight, provider)
+		}
+	}, true
+}
+
+// RefreshLiveModelsForKey re-fetches list-models for one key on demand. It is
+// the ModelsManager entrypoint behind the per-key refresh button.
+func (s *BifrostHTTPServer) RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil || s.Client == nil {
+		return fmt.Errorf("model catalog is not initialized")
+	}
+	release, ok := s.beginKeyRefresh(provider, keyID)
+	if !ok {
+		return handlers.ErrRefreshInProgress
+	}
+	defer release()
+
+	s.FetchAndStoreLiveForKey(ctx, provider, keyID)
+	return nil
+}
+
+// RefreshLiveModelsForAllKeys re-fetches list-models across every enabled key
+// of the provider on demand. It is the ModelsManager entrypoint behind the
+// provider-level refresh button.
+func (s *BifrostHTTPServer) RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error {
+	if s.Config == nil || s.Config.ModelCatalog == nil || s.Client == nil {
+		return fmt.Errorf("model catalog is not initialized")
+	}
+	keys, err := s.Config.GetProviderKeysRaw(provider)
+	if err != nil {
+		return err
+	}
+	release, ok := s.beginAllKeysRefresh(provider)
+	if !ok {
+		return handlers.ErrRefreshInProgress
+	}
+	defer release()
+
+	s.RefreshLiveModelsForProvider(ctx, provider, keys)
+	return nil
 }
 
 // RefreshLiveModelsForProvider runs filtered + unfiltered list-models for the
@@ -1086,16 +1387,24 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, pr
 // routing graph is the same at boot, after a key add, and after a reload —
 // stale-but-routable behavior would diverge otherwise.
 func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return
+	}
 	// Skip the fetch entirely when the provider has disabled list_models via
 	// allowed_requests — every per-(provider,keyID) call would just bounce with
 	// "operation not allowed", wasting two goroutines and one bfCtx per attempt.
-	if s.Config != nil {
-		if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil &&
-			pc.CustomProviderConfig != nil &&
-			!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
-			return
-		}
+	if pc, err := s.Config.GetProviderConfigRaw(provider); err == nil && pc != nil &&
+		pc.CustomProviderConfig != nil &&
+		!pc.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+		return
 	}
+	// Captured before the upstream calls go out, and checked again by the
+	// catalog when each response commits. list-models can take seconds; a key
+	// deleted or disabled in that window has already had its entries dropped by
+	// the CRUD handler, and no later refresh pass fetches or prunes a key that
+	// is no longer configured — so an unguarded commit here would re-add that
+	// key's models and advertise them until the process restarted.
+	gen := s.Config.ModelCatalog.LiveGeneration(provider)
 	// One BifrostContext per goroutine. BifrostContext.SetValue mutates state
 	// in place, so the request-scoped metadata core sets during a routing pass
 	// (RequestID, FallbackIndex, span IDs, ...) would otherwise bleed between
@@ -1132,7 +1441,15 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		if resp == nil {
 			return
 		}
-		s.Config.ModelCatalog.UpsertLiveFromResponse(provider, keyID, false, resp)
+		if !s.Config.ModelCatalog.UpsertLiveFromResponseIfCurrent(provider, keyID, false, resp, gen) {
+			// The key or provider changed while this call was in flight, so the
+			// result describes a configuration that no longer exists. Dropping
+			// the key statuses with it is deliberate: they are keyed by the same
+			// key ID and would write validity back onto a row that was just
+			// deleted or replaced.
+			logger.Debug("discarding stale filtered list-models result for provider %s key %s: the provider's keys changed while the fetch was in flight", provider, keyID)
+			return
+		}
 		if len(resp.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
 			s.updateKeyStatus(ctx, resp.KeyStatuses)
 		}
@@ -1153,7 +1470,9 @@ func (s *BifrostHTTPServer) FetchAndStoreLiveForKey(ctx context.Context, provide
 		if resp == nil {
 			return
 		}
-		s.Config.ModelCatalog.UpsertLiveFromResponse(provider, keyID, true, resp)
+		if !s.Config.ModelCatalog.UpsertLiveFromResponseIfCurrent(provider, keyID, true, resp, gen) {
+			logger.Debug("discarding stale unfiltered list-models result for provider %s key %s: the provider's keys changed while the fetch was in flight", provider, keyID)
+		}
 	}()
 	wg.Wait()
 }
@@ -1492,6 +1811,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		if resolverProvider, ok := callbacks.(LogRedactionMappingResolverProvider); ok {
 			loggingHandler.SetLogRedactionMappingResolver(resolverProvider.GetLogRedactionMappingResolver())
 		}
+		if resolverProvider, ok := callbacks.(MCPLogRedactionMappingResolverProvider); ok {
+			loggingHandler.SetMCPLogRedactionMappingResolver(resolverProvider.GetMCPLogRedactionMappingResolver())
+		}
 		// Wire the sidekiq runner so cost recalculation runs as a durable background
 		// job. Registering the handler here (before RecoverIncomplete) lets a job
 		// interrupted by a restart resume on boot.
@@ -1781,8 +2103,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.
 	s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
 	s.Config.EventBroadcaster = s.WebSocketHandler.BroadcastEvent
-	// Initializing plugin loader
-	s.Config.PluginLoader = &dynamicPlugins.SharedObjectPluginLoader{}
+	// Initializing plugin loader. Allowlist entries are validated now - a malformed entry
+	// fails server startup rather than silently no-oping, since this is security-relaxing
+	// config for SSRF protection on custom plugin downloads.
+	var pluginDownloadAllowlist *network.Allowlist
+	if s.Config.ServerConfig != nil && len(s.Config.ServerConfig.PluginDownloadPrivateAllowlist) > 0 {
+		pluginDownloadAllowlist, err = network.NewAllowlist(s.Config.ServerConfig.PluginDownloadPrivateAllowlist)
+		if err != nil {
+			return fmt.Errorf("invalid server.plugin_download_private_allowlist: %w", err)
+		}
+	}
+	s.Config.PluginLoader = dynamicPlugins.NewSharedObjectPluginLoader(pluginDownloadAllowlist)
 	// Initialize log retention cleaner if log store is configured
 	if s.Config.LogsStore != nil {
 		// If log retention days remains 0, then we wont be initializing the log retention cleaner
@@ -1873,6 +2204,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MCPHeadersProvider: s.Config.MCPHeadersProvider,
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
+		ModelCatalog:       s.Config.ModelCatalog,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
@@ -1891,15 +2223,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		s.Config.ModelCatalog.ReplaceKeyConfig(snapshot)
 
-		var wg sync.WaitGroup
-		for provider, providerConfig := range s.Config.Providers {
-			wg.Add(1)
-			go func(p schemas.ModelProvider, keys []schemas.Key) {
-				defer wg.Done()
-				s.RefreshLiveModelsForProvider(ctx, p, keys)
-			}(provider, providerConfig.Keys)
-		}
-		wg.Wait()
+		s.RefreshAllLiveModels(ctx)
 	}
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
@@ -1948,7 +2272,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		if s.Config.MCPHeadersProvider != nil {
 			s.Config.MCPHeadersProvider.SetTempTokenService(s.TempTokens)
 		}
-		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens)
+		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore, s.TempTokens, s.Config.SetupToken)
 		if err != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
@@ -2064,6 +2388,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config)
+	// Keep the live model catalog current after boot. Without this, a model an
+	// upstream starts serving mid-uptime stays invisible until a restart or a
+	// key edit, since nothing else re-fetches list-models.
+	s.RestartLiveModelRefresher(s.Ctx)
 	return nil
 }
 
@@ -2150,6 +2478,8 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("stopping sidekiq dispatcher...")
 				s.SidekiqDispatcherStop()
 			}
+			logger.Info("stopping live model refresher...")
+			s.stopLiveModelRefresher()
 			if s.SidekiqRunner != nil {
 				logger.Info("stopping sidekiq runner...")
 				s.SidekiqRunner.Shutdown()

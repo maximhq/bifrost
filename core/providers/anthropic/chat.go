@@ -11,6 +11,41 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// documentPlaceholderText is prepended to a message whose content holds
+// document blocks but no text block. Anthropic requires a text block alongside
+// documents ("A text block must be included when using documents") and
+// separately rejects text blocks that are empty or whitespace-only ("text
+// content blocks must contain non-whitespace text"), so the placeholder has to
+// be non-whitespace. Being non-whitespace also makes it survive the
+// trailing-whitespace trim applied to a final assistant prefill below.
+const documentPlaceholderText = "."
+
+// hasAnthropicDocumentBlock reports whether any of the content blocks is a
+// document block, i.e. whether the message needs an accompanying text block.
+func hasAnthropicDocumentBlock(blocks []AnthropicContentBlock) bool {
+	for _, b := range blocks {
+		if b.Type == AnthropicContentBlockTypeDocument {
+			return true
+		}
+	}
+	return false
+}
+
+// leadingAnthropicReasoningBlockCount returns the number of thinking and
+// redacted_thinking blocks at the head of the content slice. Anthropic requires
+// a thinking-enabled assistant turn to begin with its thinking blocks, so any
+// block injected into the message has to start at this index instead of 0.
+func leadingAnthropicReasoningBlockCount(blocks []AnthropicContentBlock) int {
+	count := 0
+	for _, b := range blocks {
+		if b.Type != AnthropicContentBlockTypeThinking && b.Type != AnthropicContentBlockTypeRedactedThinking {
+			break
+		}
+		count++
+	}
+	return count
+}
+
 // convertFunctionToolToAnthropic turns an OpenAI-style function tool
 // (schemas.ChatTool with non-nil Function) into an AnthropicTool.
 // Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
@@ -559,7 +594,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						budgetTokens = MinimumReasoningMaxTokens
 					}
 					if budgetTokens < MinimumReasoningMaxTokens {
-						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
+						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic: %w", MinimumReasoningMaxTokens, ErrReasoningMaxTokensTooLow)
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -577,7 +612,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					setEffortOnOutputConfig(anthropicReq, effort)
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -587,7 +622,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// Older models: budget_tokens only
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -742,14 +777,28 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						} else if toolMsg.Content.ContentBlocks != nil {
 							blocks := make([]AnthropicContentBlock, 0, len(toolMsg.Content.ContentBlocks))
 							for _, block := range toolMsg.Content.ContentBlocks {
+								// Anthropic rejects cache_control nested inside tool_result.content
+								// ("cache_control may not be specified within `tool_result.content`.
+								// Instead, place it directly on `tool_result`"), so hoist the first
+								// one found onto the tool_result block itself rather than copying it
+								// onto the nested block -- mirrors the same hoist-to-outer-level
+								// pattern already used for Bedrock's nested cachePoint
+								// (core/providers/bedrock/responses.go).
+								if block.CacheControl != nil && toolResult.CacheControl == nil {
+									toolResult.CacheControl = block.CacheControl
+								}
 								if block.Text != nil && *block.Text != "" {
 									blocks = append(blocks, AnthropicContentBlock{
-										Type:         AnthropicContentBlockTypeText,
-										Text:         block.Text,
-										CacheControl: block.CacheControl,
+										Type: AnthropicContentBlockTypeText,
+										Text: block.Text,
 									})
 								} else if block.ImageURLStruct != nil {
-									blocks = append(blocks, ConvertToAnthropicImageBlock(block))
+									imageBlock := ConvertToAnthropicImageBlock(block)
+									// ConvertToAnthropicImageBlock copies CacheControl onto the
+									// returned block unconditionally (correct for a top-level image
+									// block, but not here -- it's already hoisted above).
+									imageBlock.CacheControl = nil
+									blocks = append(blocks, imageBlock)
 								}
 							}
 							if len(blocks) > 0 {
@@ -848,6 +897,39 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 
 					content = append(content, toolUse)
+				}
+			}
+
+			// Anthropic rejects a message whose content contains a document
+			// block with no accompanying text block ("A text block must be
+			// included when using documents"). Insert a placeholder so
+			// document-only messages still validate.
+			if hasAnthropicDocumentBlock(content) {
+				filtered := content[:0]
+				hasUsableText := false
+				for _, b := range content {
+					if b.Type == AnthropicContentBlockTypeText {
+						if b.Text == nil || strings.TrimSpace(*b.Text) == "" {
+							continue
+						}
+						hasUsableText = true
+					}
+					filtered = append(filtered, b)
+				}
+				content = filtered
+				if !hasUsableText {
+					// A thinking-enabled assistant turn must begin with its
+					// thinking/redacted_thinking blocks, so the placeholder goes
+					// after them rather than at index 0.
+					at := leadingAnthropicReasoningBlockCount(content)
+					withPlaceholder := make([]AnthropicContentBlock, 0, len(content)+1)
+					withPlaceholder = append(withPlaceholder, content[:at]...)
+					withPlaceholder = append(withPlaceholder, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: schemas.Ptr(documentPlaceholderText),
+					})
+					withPlaceholder = append(withPlaceholder, content[at:]...)
+					content = withPlaceholder
 				}
 			}
 

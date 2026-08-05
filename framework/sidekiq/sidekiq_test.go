@@ -97,6 +97,13 @@ func (f *fakeStore) ClaimSidekiqJob(_ context.Context, id, runnerID string, stal
 	return true, nil
 }
 
+// ClaimPartitionedSidekiqJob: the fake ignores the partitioning guards (no runner
+// test here exercises them) and behaves like ClaimSidekiqJob. The FIFO/exclusion
+// logic is covered against the real store in configstore/sidekiq_test.go.
+func (f *fakeStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, _ string, _ time.Time) (bool, error) {
+	return f.ClaimSidekiqJob(ctx, id, runnerID, staleBefore)
+}
+
 func (f *fakeStore) HeartbeatSidekiqJob(_ context.Context, id, runnerID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -462,8 +469,8 @@ func TestConcurrencySemaphoreBound(t *testing.T) {
 	var inFlight sync.WaitGroup
 
 	r.Register("k", func(_ context.Context, _ tables.TableSidekiqJob, _ ProgressFunc) (string, error) {
-		inFlight.Done()   // signal that we entered the handler
-		<-gate            // block until the test releases us
+		inFlight.Done() // signal that we entered the handler
+		<-gate          // block until the test releases us
 		return "", nil
 	})
 
@@ -518,10 +525,10 @@ func TestInflightDedupPreventsDoubleSpawn(t *testing.T) {
 
 	// Release blocker and wait for its slot to free before dispatching again.
 	close(gate)
-	waitTerminal(t, store) // blocker done
+	waitTerminal(t, store)            // blocker done
 	time.Sleep(10 * time.Millisecond) // let deferred semaphore release run
 
-	r.dispatchOnce() // slot is now free — picks up waiter
+	r.dispatchOnce()       // slot is now free — picks up waiter
 	waitTerminal(t, store) // waiter done
 
 	store.mu.Lock()

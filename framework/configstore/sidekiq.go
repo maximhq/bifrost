@@ -87,6 +87,46 @@ func (s *RDBConfigStore) ClaimSidekiqJob(ctx context.Context, id, runnerID strin
 	return res.RowsAffected == 1, nil
 }
 
+// ClaimPartitionedSidekiqJob is ClaimSidekiqJob for jobs carrying a partitioning key.
+// On top of the base claimable condition it enforces, atomically, that the job is
+// next in line for its key:
+//   - G1: no OTHER job with the same key is running under a live owner
+//     (updated_at >= staleBefore, i.e. not itself stale), and
+//   - G2: no OLDER pending job with the same key exists (FIFO by created_at, id).
+//
+// Together these give at-most-one-running plus FIFO execution per key, cluster-wide,
+// while distinct keys stay parallel. A blocked job yields RowsAffected == 0 (not
+// claimed) and is retried on the next dispatch tick. A stale (dead-owner) running
+// job does not block its key, so a crashed node cannot deadlock the queue.
+func (s *RDBConfigStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error) {
+	now := time.Now()
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableSidekiqJob{}).
+		Where("id = ? AND (status = ? OR (status = ? AND updated_at < ?))",
+			id,
+			tables.SidekiqStatusPending,
+			tables.SidekiqStatusRunning, staleBefore).
+		// G1: mutual exclusion — no other same-key job running under a live owner.
+		Where("NOT EXISTS (SELECT 1 FROM sidekiq r WHERE r.partitioning_key = ? AND r.id <> ? AND r.status = ? AND r.updated_at >= ?)",
+			partitioningKey, id, tables.SidekiqStatusRunning, staleBefore).
+		// G2: FIFO — no OLDER pending job for the same key. Excludes the row itself
+		// (o.id <> id): the claim's createdAt (in-memory, nanosecond) can exceed the
+		// truncated persisted created_at, which would else block the job on itself.
+		Where("NOT EXISTS (SELECT 1 FROM sidekiq o WHERE o.partitioning_key = ? AND o.id <> ? AND o.status = ? AND (o.created_at < ? OR (o.created_at = ? AND o.id < ?)))",
+			partitioningKey, id, tables.SidekiqStatusPending, createdAt, createdAt, id).
+		Updates(map[string]any{
+			"status":     tables.SidekiqStatusRunning,
+			"runner_id":  runnerID,
+			"started_at": gorm.Expr("COALESCE(started_at, ?)", now),
+			"updated_at": now,
+			"attempts":   gorm.Expr("attempts + 1"),
+		})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // HeartbeatSidekiqJob bumps the heartbeat (updated_at) for a job the caller still
 // owns and is still running. Called on a fixed interval by the owning runner so a
 // slow-but-alive job (one whose handler has not checkpointed recently) is not

@@ -222,6 +222,9 @@ func completeRequest(
 
 	// Set network-config extra headers, excluding anthropic-beta (set explicitly below).
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	// Force JSON content type after extra headers so network config can't override it
 	// (matches the original per-provider completeRequest ordering).
@@ -773,6 +776,9 @@ func HandleAnthropicChatCompletionStreaming(
 	req.Header.SetContentType("application/json")
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
@@ -956,6 +962,9 @@ func HandleAnthropicChatCompletionStreaming(
 
 		// Per-response tool-call index state
 		streamState := NewAnthropicStreamState()
+
+		// True once message_stop arrives — Anthropic's only completion signal.
+		sawTerminalEvent := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1154,7 +1163,9 @@ func HandleAnthropicChatCompletionStreaming(
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
-				break
+				// Already reported; returning (rather than breaking) keeps the
+				// post-loop truncation check from reporting the same stream twice.
+				return
 			}
 			if response != nil {
 				response.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -1179,9 +1190,26 @@ func HandleAnthropicChatCompletionStreaming(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 			if isLastChunk {
+				sawTerminalEvent = true
 				break
 			}
 		}
+
+		// Anthropic signals completion with a message_stop event and never sends a
+		// [DONE] marker, so message_stop is the only terminal signal available. A
+		// dying upstream closes on a chunk boundary, which surfaces as a plain
+		// io.EOF — indistinguishable from a healthy close — so without the terminal
+		// event the synthesized final chunk below would present a truncated stream
+		// to the client as a clean stop.
+		if !sawTerminalEvent {
+			// Fold cached tokens in before billing: SendStreamTruncatedError snapshots
+			// the accumulated usage handle, so a fold after the send never reaches the
+			// billed copy. Guarded, so the healthy path below stays unaffected.
+			normalizeUsage()
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			return
+		}
+
 		normalizeUsage()
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, modelName, 0)
 		if postResponseConverter != nil {
@@ -1390,6 +1418,9 @@ func HandleAnthropicResponsesStream(
 	req.Header.SetContentType("application/json")
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
@@ -1581,6 +1612,9 @@ func HandleAnthropicResponsesStream(
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading %s stream: %v", providerName, readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// Already reported; returning (rather than breaking) keeps the
+					// post-loop truncation check from reporting the same stream twice.
+					return
 				}
 				break
 			}
@@ -1648,7 +1682,9 @@ func HandleAnthropicResponsesStream(
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger, postHookSpanFinalizer)
-				break
+				// Already reported; returning (rather than breaking) keeps the
+				// post-loop truncation check from reporting the same stream twice.
+				return
 			}
 
 			// Attach the upstream raw to exactly one bifrost response. Default to the last,
@@ -1716,6 +1752,17 @@ func HandleAnthropicResponsesStream(
 			}
 
 		}
+
+		// The loop returns as soon as the terminal chunk is emitted, so falling out
+		// of it means the body ended before message_stop. A plain io.EOF cannot
+		// distinguish that from a healthy close, so surface it rather than closing
+		// the channel silently.
+		//
+		// Fold cached tokens in first: SendStreamTruncatedError snapshots the
+		// accumulated usage handle, so a fold after the send never reaches the billed
+		// copy. Guarded, so the ctx.Err() defer above stays a no-op after this.
+		normalizeBilledUsage()
+		providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 	}()
 
 	return responseChan, nil

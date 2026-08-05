@@ -2,17 +2,154 @@ package server
 
 import (
 	"context"
+	"reflect"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
+
+// reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
+type reloadVirtualKeyConfigStore struct {
+	configstore.ConfigStore
+	vk *configstoreTables.TableVirtualKey
+}
+
+// RetryOnNotFound executes the supplied lookup once for deterministic tests.
+func (s *reloadVirtualKeyConfigStore) RetryOnNotFound(ctx context.Context, fn func(context.Context) (any, error), _ int, _ time.Duration) (any, error) {
+	return fn(ctx)
+}
+
+// GetVirtualKey returns the configured persisted virtual key.
+func (s *reloadVirtualKeyConfigStore) GetVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
+	return s.vk, nil
+}
+
+// GetModelConfigsByScopeAndScopeIDs returns no scoped model configs.
+func (s *reloadVirtualKeyConfigStore) GetModelConfigsByScopeAndScopeIDs(context.Context, string, []string) ([]configstoreTables.TableModelConfig, error) {
+	return nil, nil
+}
+
+// reloadVirtualKeyGovernanceStore counts snapshot calls while delegating all
+// mutation and direct lookup behavior to a real in-memory store.
+type reloadVirtualKeyGovernanceStore struct {
+	governance.GovernanceStore
+	governanceDataCalls int
+}
+
+// GetGovernanceData records any accidental full-snapshot lookup.
+func (s *reloadVirtualKeyGovernanceStore) GetGovernanceData(context.Context) *governance.GovernanceData {
+	s.governanceDataCalls++
+	return nil
+}
+
+// reloadVirtualKeyPlugin exposes the test governance store.
+type reloadVirtualKeyPlugin struct {
+	governance.BaseGovernancePlugin
+	store governance.GovernanceStore
+}
+
+// GetName returns the standard governance plugin name.
+func (p *reloadVirtualKeyPlugin) GetName() string { return governance.PluginName }
+
+// GetGovernanceStore returns the test governance store.
+func (p *reloadVirtualKeyPlugin) GetGovernanceStore() governance.GovernanceStore { return p.store }
+
+// reloadVirtualKeyToolManager provides an empty MCP tool set.
+type reloadVirtualKeyToolManager struct{}
+
+// GetAvailableMCPTools returns no tools.
+func (reloadVirtualKeyToolManager) GetAvailableMCPTools(context.Context) []schemas.ChatTool {
+	return nil
+}
+
+// ExecuteChatMCPTool is unused by these tests.
+func (reloadVirtualKeyToolManager) ExecuteChatMCPTool(context.Context, *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	return nil, nil
+}
+
+// ExecuteResponsesMCPTool is unused by these tests.
+func (reloadVirtualKeyToolManager) ExecuteResponsesMCPTool(context.Context, *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	return nil, nil
+}
+
+// hasVKMCPServer reports whether the handler still caches a server for a secret.
+func hasVKMCPServer(handler *handlers.MCPServerHandler, value string) bool {
+	servers := reflect.ValueOf(handler).Elem().FieldByName("vkMCPServers")
+	return servers.MapIndex(reflect.ValueOf(value)).IsValid()
+}
+
+// TestReloadVirtualKeyDeletesOnlyRotatedOldMCPServer pins the old-secret cleanup
+// semantics and verifies the direct ID lookup avoids GetGovernanceData.
+func TestReloadVirtualKeyDeletesOnlyRotatedOldMCPServer(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	tests := []struct {
+		name          string
+		oldValue      string
+		newValue      string
+		seedOldVK     bool
+		wantOldServer bool
+	}{
+		{name: "rotated set secret deletes old server", oldValue: "sk-bf-old", newValue: "sk-bf-new", seedOldVK: true, wantOldServer: false},
+		{name: "unchanged secret keeps old server", oldValue: "sk-bf-same", newValue: "sk-bf-same", seedOldVK: true, wantOldServer: true},
+		{name: "unset old secret keeps old server", oldValue: "", newValue: "sk-bf-new", seedOldVK: true, wantOldServer: true},
+		{name: "missing old virtual key keeps old server", oldValue: "sk-bf-old", newValue: "sk-bf-new", seedOldVK: false, wantOldServer: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			baseStore, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+			if err != nil {
+				t.Fatalf("create governance store: %v", err)
+			}
+			oldVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "old", Value: *schemas.NewSecretVar(tt.oldValue)}
+			if tt.seedOldVK {
+				baseStore.CreateVirtualKeyInMemory(ctx, oldVK)
+			}
+			store := &reloadVirtualKeyGovernanceStore{GovernanceStore: baseStore}
+			plugin := &reloadVirtualKeyPlugin{store: store}
+			persistedVK := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "new", Value: *schemas.NewSecretVar(tt.newValue)}
+			config := &lib.Config{
+				ConfigStore:  &reloadVirtualKeyConfigStore{vk: persistedVK},
+				ClientConfig: &configstore.ClientConfig{},
+			}
+			plugins := []schemas.BasePlugin{plugin}
+			config.BasePlugins.Store(&plugins)
+			mcpHandler, err := handlers.NewMCPServerHandler(ctx, config, reloadVirtualKeyToolManager{}, nil, store)
+			if err != nil {
+				t.Fatalf("create MCP handler: %v", err)
+			}
+			mcpHandler.SyncVKMCPServer(oldVK)
+			server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config, MCPServerHandler: mcpHandler}
+
+			if _, err := server.ReloadVirtualKey(ctx, persistedVK.ID); err != nil {
+				t.Fatalf("ReloadVirtualKey returned unexpected error: %v", err)
+			}
+			if store.governanceDataCalls != 0 {
+				t.Fatalf("GetGovernanceData called %d times, want 0", store.governanceDataCalls)
+			}
+
+			oldServerExists := hasVKMCPServer(mcpHandler, tt.oldValue)
+			if tt.wantOldServer && !oldServerExists {
+				t.Fatal("old MCP server was deleted")
+			}
+			if !tt.wantOldServer && oldServerExists {
+				t.Fatal("old MCP server still exists after secret rotation")
+			}
+		})
+	}
+}
 
 // TestConfig is a sample config struct for testing
 type TestConfig struct {
@@ -127,6 +264,291 @@ func TestUpdateKeyStatus_EmptyKeyIDDoesNotOverwriteKeyedProviderStatus(t *testin
 	if store.calls[0].Provider != "openai" || store.calls[0].KeyID != "" {
 		t.Fatalf("expected DB status update to retain empty key ID, got provider=%q keyID=%q", store.calls[0].Provider, store.calls[0].KeyID)
 	}
+}
+
+// TestUpdateKeyStatus_SkipsWriteWhenUnchanged pins the write-gating that makes
+// the background refresher affordable: ConfigStore.UpdateStatus is an
+// unconditional SQL UPDATE, so a status that has not moved must not reach it.
+// Without this gate a 30-key deployment refreshing on an interval writes 30
+// no-op UPDATEs per pass, per node, forever.
+func TestUpdateKeyStatus_SkipsWriteWhenUnchanged(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	store := &updateStatusOnlyConfigStore{}
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ConfigStore: store,
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"openai": {
+					Keys: []schemas.Key{{
+						ID:          "key-1",
+						Status:      schemas.KeyStatusListModelsFailed,
+						Description: "upstream 503",
+					}},
+				},
+			},
+		},
+	}
+
+	unchanged := []schemas.KeyStatus{{
+		Provider: "openai",
+		KeyID:    "key-1",
+		Status:   schemas.KeyStatusListModelsFailed,
+		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream 503"}},
+	}}
+
+	server.updateKeyStatus(context.Background(), unchanged)
+	server.updateKeyStatus(context.Background(), unchanged)
+
+	if len(store.calls) != 0 {
+		t.Fatalf("expected no status update calls for an unchanged status, got %d", len(store.calls))
+	}
+
+	// A genuine change must still get through, otherwise the gate would hide
+	// a key recovering or breaking.
+	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
+		Provider: "openai",
+		KeyID:    "key-1",
+		Status:   schemas.KeyStatusSuccess,
+	}})
+
+	if len(store.calls) != 1 {
+		t.Fatalf("expected one status update call after the status changed, got %d", len(store.calls))
+	}
+	if got := server.Config.Providers["openai"].Keys[0].Status; got != schemas.KeyStatusSuccess {
+		t.Fatalf("expected in-memory status to become success, got %q", got)
+	}
+	if got := server.Config.Providers["openai"].Keys[0].Description; got != "" {
+		t.Fatalf("expected in-memory description to be cleared, got %q", got)
+	}
+}
+
+// TestUpdateKeyStatus_WritesWhenKeyMissingFromMemory guards the fallback: with
+// nothing to compare against, the gate must let the write through rather than
+// silently swallowing it.
+func TestUpdateKeyStatus_WritesWhenKeyMissingFromMemory(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	store := &updateStatusOnlyConfigStore{}
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ConfigStore: store,
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"openai": {Keys: []schemas.Key{{ID: "key-1"}}},
+			},
+		},
+	}
+
+	server.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
+		Provider: "openai",
+		KeyID:    "key-unknown",
+		Status:   schemas.KeyStatusSuccess,
+	}})
+
+	if len(store.calls) != 1 {
+		t.Fatalf("expected the write to proceed for an unknown key, got %d calls", len(store.calls))
+	}
+}
+
+// TestRefreshAllLiveModels_NilClientIsNoop covers the boot-order guard: the
+// refresher can fire before or after the client exists, and dereferencing a
+// nil client would panic the background goroutine.
+func TestRefreshAllLiveModels_NilClientIsNoop(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"custom-provider": {Keys: []schemas.Key{{ID: "key-1"}}},
+			},
+		},
+	}
+
+	// Reaching the end without panicking is the assertion: s.Client is nil, so
+	// any scheduled fetch would dereference it.
+	server.RefreshAllLiveModels(context.Background())
+
+	if models := server.Config.ModelCatalog.GetModelsForProvider("custom-provider"); len(models) != 0 {
+		t.Fatalf("expected no live models to be written, got %v", models)
+	}
+}
+
+// TestRefreshAllLiveModels_SkipsProvidersWithNoEnabledKeys cross-checks that
+// the per-provider skip rules still apply when the fan-out is driven by the
+// background pass rather than the bootstrap loop.
+func TestRefreshAllLiveModels_SkipsProvidersWithNoEnabledKeys(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{
+		Config: &lib.Config{
+			ModelCatalog: modelcatalog.NewTestCatalog(nil),
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				"all-disabled": {Keys: []schemas.Key{
+					{ID: "key-1", Enabled: schemas.Ptr(false)},
+					{ID: "key-2", Enabled: schemas.Ptr(false)},
+				}},
+				"no-keys": {},
+			},
+		},
+	}
+	// Non-nil sentinel would be required for a fetch to be attempted; leaving
+	// Client nil means any scheduled fetch panics and fails this test.
+	server.RefreshAllLiveModels(context.Background())
+}
+
+// TestStartLiveModelRefresher_ZeroIntervalDisabled pins the opt-out: a
+// non-positive interval must spawn nothing and still return a usable stop func.
+func TestStartLiveModelRefresher_ZeroIntervalDisabled(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{}
+
+	for _, interval := range []time.Duration{0, -time.Second} {
+		before := runtime.NumGoroutine()
+		stop := server.startLiveModelRefresher(context.Background(), interval)
+		if stop == nil {
+			t.Fatalf("interval %v: expected a non-nil stop func", interval)
+		}
+		if after := runtime.NumGoroutine(); after > before {
+			t.Fatalf("interval %v: expected no goroutine to be spawned, went from %d to %d", interval, before, after)
+		}
+		stop() // must not panic
+	}
+}
+
+// TestStartLiveModelRefresher_StopsOnContextCancel makes sure the refresher
+// does not outlive the server: a leaked ticker would keep calling every
+// upstream forever after shutdown.
+func TestStartLiveModelRefresher_StopsOnContextCancel(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	server := &BifrostHTTPServer{}
+
+	baseline := runtime.NumGoroutine()
+	stop := server.startLiveModelRefresher(context.Background(), 10*time.Millisecond)
+
+	// Let it turn over a few cycles so we are stopping a running loop, not one
+	// that never started.
+	time.Sleep(50 * time.Millisecond)
+
+	stop()
+
+	// Poll rather than sleeping a fixed amount: goroutine teardown is not
+	// synchronous with cancel, and a generous window beats a flaky one.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= baseline {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("refresher goroutine still running 2s after stop: baseline %d, now %d", baseline, runtime.NumGoroutine())
+}
+
+// TestJitteredInterval_StaysWithinBounds pins the jitter window. Pods in a
+// deployment boot together, so this is what keeps their refresh cycles from
+// converging into a synchronized burst against every upstream.
+func TestJitteredInterval_StaysWithinBounds(t *testing.T) {
+	base := time.Hour
+	lower := time.Duration(float64(base) * (1 - liveRefreshJitterFraction))
+	upper := time.Duration(float64(base) * (1 + liveRefreshJitterFraction))
+
+	seen := make(map[time.Duration]struct{})
+	for range 1000 {
+		got := jitteredInterval(base)
+		if got < lower || got > upper {
+			t.Fatalf("jitteredInterval(%v) = %v, want within [%v, %v]", base, got, lower, upper)
+		}
+		seen[got] = struct{}{}
+	}
+	// A constant would satisfy the bounds check above but defeat the purpose.
+	if len(seen) < 2 {
+		t.Fatalf("expected jittered intervals to vary, got %d distinct value(s)", len(seen))
+	}
+}
+
+// TestBeginKeyRefresh_CoordinatesAtKeyGranularity covers the per-key in-flight
+// guard: duplicate key refreshes collapse, while distinct keys and providers
+// remain independent.
+func TestBeginKeyRefresh_CoordinatesAtKeyGranularity(t *testing.T) {
+	server := &BifrostHTTPServer{}
+
+	release, ok := server.beginKeyRefresh("openai", "key-1")
+	if !ok {
+		t.Fatal("expected the first claim to succeed")
+	}
+	if _, ok := server.beginKeyRefresh("openai", "key-1"); ok {
+		t.Fatal("expected a concurrent claim for the same key to be rejected")
+	}
+
+	otherKeyRelease, ok := server.beginKeyRefresh("openai", "key-2")
+	if !ok {
+		t.Fatal("expected a different key for the same provider to succeed")
+	}
+	otherKeyRelease()
+
+	otherProviderRelease, ok := server.beginKeyRefresh("anthropic", "key-1")
+	if !ok {
+		t.Fatal("expected a claim for a different provider to succeed")
+	}
+	otherProviderRelease()
+
+	release()
+	release, ok = server.beginKeyRefresh("openai", "key-1")
+	if !ok {
+		t.Fatal("expected the key to be claimable again after release")
+	}
+	release()
+}
+
+func TestBeginAllKeysRefresh_IsExclusiveWithinProvider(t *testing.T) {
+	server := &BifrostHTTPServer{}
+
+	keyRelease, ok := server.beginKeyRefresh("openai", "key-1")
+	if !ok {
+		t.Fatal("expected the key claim to succeed")
+	}
+	if _, ok := server.beginAllKeysRefresh("openai"); ok {
+		t.Fatal("expected all-keys refresh to conflict with an active key refresh")
+	}
+	keyRelease()
+
+	allRelease, ok := server.beginAllKeysRefresh("openai")
+	if !ok {
+		t.Fatal("expected all-keys refresh to succeed after the key refresh completed")
+	}
+	if _, ok := server.beginAllKeysRefresh("openai"); ok {
+		t.Fatal("expected a second all-keys refresh to be rejected")
+	}
+	if _, ok := server.beginKeyRefresh("openai", "key-2"); ok {
+		t.Fatal("expected key refresh to conflict with an active all-keys refresh")
+	}
+
+	otherProviderRelease, ok := server.beginKeyRefresh("anthropic", "key-1")
+	if !ok {
+		t.Fatal("expected another provider to remain independent")
+	}
+	otherProviderRelease()
+
+	allRelease()
+	allRelease, ok = server.beginAllKeysRefresh("openai")
+	if !ok {
+		t.Fatal("expected all-keys refresh to be claimable again after release")
+	}
+	allRelease()
 }
 
 func TestKeyEnabled(t *testing.T) {

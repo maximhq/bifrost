@@ -8,7 +8,7 @@ icon: "table"
 
 The **BigQuery plugin** stores a structured record of every request that flows through Bifrost in a Google BigQuery table. Each completed trace becomes a single row — provider, model, token usage, cost, latency breakdown, governance attribution, and (optionally) the full conversation — so you can run SQL analytics, build dashboards, and retain history for as long as your BigQuery dataset keeps it.
 
-Unlike the [OTel](/features/observability/otel) and [Datadog](/enterprise/datadog-connector) connectors, which stream spans to a tracing backend, the BigQuery plugin writes a flat, query-optimized table. It is ideal when you want to own the data, join it against your warehouse, or report on cost and usage with plain SQL.
+Unlike the [OTel](/features/observability/otel) and [Datadog](/features/observability/datadog) connectors, which stream spans to a tracing backend, the BigQuery plugin writes a flat, query-optimized table. It is ideal when you want to own the data, join it against your warehouse, or report on cost and usage with plain SQL.
 
 <Note>
 The BigQuery plugin is a **Bifrost Enterprise** feature.
@@ -490,6 +490,6 @@ bifrost-http --log-level debug
 ## Next Steps
 
 - **[OpenTelemetry (OTel)](/features/observability/otel)** — Stream traces to any OTLP-compatible backend.
-- **[Datadog](/enterprise/datadog-connector)** — Native Datadog APM and LLM Observability integration.
+- **[Datadog](/features/observability/datadog)** — Native Datadog APM and LLM Observability integration.
 - **[Built-in Observability](/features/observability/default)** — Local logging for development and simple deployments.
 - **[Telemetry](/features/telemetry)** — Prometheus metrics and dashboards.

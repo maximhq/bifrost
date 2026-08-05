@@ -239,6 +239,7 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	// do not expose every Responses API field, so newer fields are copied by name
 	// when a workspace build provides them.
 	copyRawMessageFieldByName(&copy, original, "ToolSearchOutputTools")
+	copyRawMessageFieldByName(&copy, original, "AdditionalTools")
 
 	// Deep copy ResponsesReasoning if present
 	if original.ResponsesReasoning != nil {
@@ -988,6 +989,15 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
+	// The response envelope carrying service_tier can precede a later usage-only
+	// event, so retain the newest non-nil tier across the stream.
+	tierChunkIndex := -1
+	for _, streamChunk := range accumulator.ResponsesStreamChunks {
+		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
+			data.ServiceTier = streamChunk.ServiceTier
+			tierChunkIndex = streamChunk.ChunkIndex
+		}
+	}
 
 	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.ResponsesStreamChunks) > 0 {
@@ -1052,6 +1062,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.Usage != nil {
 			chunk.TokenUsage = result.ResponsesStreamResponse.Response.Usage.ToBifrostLLMUsage()
+		}
+		if result.ResponsesStreamResponse.Response != nil &&
+			result.ResponsesStreamResponse.Response.ServiceTier != nil {
+			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ResponsesStreamResponse.Response.ServiceTier))
 		}
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {

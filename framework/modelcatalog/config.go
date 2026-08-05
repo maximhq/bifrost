@@ -12,6 +12,20 @@ const (
 	DefaultSyncInterval           = datasheet.DefaultSyncInterval
 	MinimumPricingSyncIntervalSec = int64(3600)
 
+	// DefaultLiveModelsSyncInterval is how often the gateway re-fetches each
+	// provider's list-models response in the background.
+	DefaultLiveModelsSyncInterval = 60 * time.Minute
+	// MinimumLiveModelsSyncIntervalSec is the floor for a non-zero live models
+	// sync interval. Deliberately far below MinimumPricingSyncIntervalSec:
+	// pricing is a single shared datasheet fetch on a 24h cadence, whereas an
+	// operator fronting a fast-moving aggregator may legitimately want model
+	// discovery to run every few minutes.
+	MinimumLiveModelsSyncIntervalSec = int64(60)
+	// LiveModelsSyncDisabled is the sentinel for "never refresh in the
+	// background". Distinct from a negative value, which is treated as
+	// corrupted config and falls back to the default.
+	LiveModelsSyncDisabled = int64(0)
+
 	ConfigLastPricingSyncKey    = "LastModelPricingSync"
 	ConfigLastParamsSyncKey     = "LastModelParametersSync"
 	ConfigLastMCPLibrarySyncKey = "LastMCPLibrarySync"
@@ -28,6 +42,18 @@ type Config struct {
 	// default ships out of the box and the user can point it at a custom source.
 	MCPLibraryURL          *string `json:"mcp_library_url,omitempty"`
 	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval,omitempty"` // seconds
+
+	// LiveModelsSyncInterval is how often each provider's list-models response
+	// is re-fetched in the background, in seconds. Nil uses
+	// DefaultLiveModelsSyncInterval; LiveModelsSyncDisabled (0) turns the
+	// background refresher off entirely.
+	//
+	// Unlike the sync intervals above, nothing in this package acts on it: the
+	// live model cache is per-process and the refresh has to go through the
+	// Bifrost routing pipeline, so the HTTP server owns that ticker. This field
+	// is the transport's configuration channel, carried here to keep every
+	// catalog cadence in one place.
+	LiveModelsSyncInterval *int64 `json:"live_models_sync_interval,omitempty"` // seconds
 }
 
 // Type re-exports so external callers can continue importing the legacy
@@ -53,6 +79,9 @@ const (
 	ScopeKindVirtualKey            = datasheet.ScopeKindVirtualKey
 	ScopeKindVirtualKeyProvider    = datasheet.ScopeKindVirtualKeyProvider
 	ScopeKindVirtualKeyProviderKey = datasheet.ScopeKindVirtualKeyProviderKey
+	ScopeKindUser                  = datasheet.ScopeKindUser
+	ScopeKindUserProvider          = datasheet.ScopeKindUserProvider
+	ScopeKindUserProviderKey       = datasheet.ScopeKindUserProviderKey
 
 	MatchTypeExact    = datasheet.MatchTypeExact
 	MatchTypeWildcard = datasheet.MatchTypeWildcard
