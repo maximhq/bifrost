@@ -1,0 +1,186 @@
+---
+title: "Salad AI Gateway"
+description: "Salad AI Gateway integration guide - OpenAI-compatible chat completions, streaming, tools, structured output, reasoning, and image input"
+icon: "leaf"
+---
+
+## Overview
+
+Salad AI Gateway is an **OpenAI-compatible provider** backed by Salad's distributed GPU network. Bifrost delegates request and response conversion to its OpenAI-compatible handlers. The initial integration intentionally exposes one model: `qwen3.6-35b-a3b`.
+
+Key characteristics:
+
+- **OpenAI compatibility** - standard Chat Completions request and response shapes
+- **Streaming** - Server-Sent Events through the Chat Completions endpoint
+- **Agentic features** - tool calling, structured output, and reasoning
+- **Multimodal input** - text and image inputs with text output
+- **Responses compatibility** - Bifrost maps Responses requests to Chat Completions
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint | Notes |
+|-----------|---------------|-----------|----------|-------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` | Native Salad endpoint |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` | Converted by Bifrost |
+| List Models | ✅ | - | `/v1/models` | Filtered to the initial 35B listing |
+| Text Completions | ❌ | ❌ | - | Not documented by Salad |
+| Embeddings | ❌ | ❌ | - | Not documented by Salad |
+| Image Generation | ❌ | ❌ | - | Image input is supported; generation is not |
+| Speech and Transcription | ❌ | ❌ | - | Not documented by Salad |
+| Files and Batch | ❌ | ❌ | - | Not documented by Salad |
+
+<Note>
+Unsupported operations return Bifrost's standard `UnsupportedOperationError`.
+</Note>
+
+## Setup and Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**.
+2. Add **Salad AI Gateway** and create a key.
+3. Paste your API key or use `env.SALAD_CLOUD_API_KEY`.
+4. Set **Allowed Models** to `qwen3.6-35b-a3b`.
+5. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "saladcloud": {
+      "keys": [
+        {
+          "name": "saladcloud-key-1",
+          "value": "env.SALAD_CLOUD_API_KEY",
+          "models": ["qwen3.6-35b-a3b"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.SaladCloud:
+    return []schemas.Key{{
+        Name:   "saladcloud-key-1",
+        Value:  *schemas.NewSecretVar("env.SALAD_CLOUD_API_KEY"),
+        Models: []string{"qwen3.6-35b-a3b"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+## Chat Completions
+
+Use the `saladcloud/` provider prefix when calling Bifrost:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $BIFROST_API_KEY" \
+  -d '{
+    "model": "saladcloud/qwen3.6-35b-a3b",
+    "messages": [{"role": "user", "content": "Explain distributed inference briefly."}],
+    "stream": false
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+messages := []schemas.BifrostMessage{
+    {
+        Role: "user",
+        Content: &schemas.BifrostMessageContent{
+            Text: bifrost.Ptr("Explain distributed inference briefly."),
+        },
+    },
+}
+
+response, err := client.ChatCompletionRequest(
+    schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+    &schemas.BifrostChatRequest{
+        Provider: schemas.SaladCloud,
+        Model:    "qwen3.6-35b-a3b",
+        Input:    messages,
+    },
+)
+```
+
+</Tab>
+</Tabs>
+
+Standard OpenAI chat parameters, messages, tools, `response_format`, and streaming are converted by Bifrost's OpenAI-compatible layer.
+
+## Responses API
+
+Salad's public API documents Chat Completions rather than a native Responses endpoint. Bifrost provides Responses compatibility by converting between its Responses and Chat Completions schemas:
+
+```text
+Bifrost Responses request -> Chat Completions -> Bifrost Responses response
+```
+
+## Model
+
+| Model | Context | Max input | Max output | Input | Output | Input price | Output price |
+|-------|---------|-----------|------------|-------|--------|-------------|--------------|
+| `qwen3.6-35b-a3b` | 262,144 | 262,144 | 262,144 | Text, image | Text | $0.09/M tokens | $0.60/M tokens |
+
+The model supports streaming, tool calling, structured output, and reasoning. Bifrost's Salad list-models implementation filters the upstream catalog to this model for the initial integration.
+
+## Authentication
+
+Salad authenticates with a bearer token:
+
+```text
+Authorization: Bearer <your-salad-api-key>
+```
+
+Store the key as a Bifrost `SecretVar`, such as `env.SALAD_CLOUD_API_KEY`, rather than committing it in configuration.
+
+## Configuration
+
+- **Default provider base URL**: `https://ai.salad.cloud`
+- **Chat endpoint**: `https://ai.salad.cloud/v1/chat/completions`
+- **Models endpoint**: `https://ai.salad.cloud/v1/models`
+- **Authentication**: bearer token
+
+You can override `network_config.base_url` for a compatible proxy. Supply the host-level URL; Bifrost appends the documented `/v1` paths.
+
+## Caveats
+
+<Accordion title="Initial single-model catalog">
+**Severity**: Low
+
+**Behavior**: Bifrost exposes only `qwen3.6-35b-a3b` from Salad's models endpoint.
+
+**Impact**: Other Salad models are intentionally omitted until they are approved for this integration.
+</Accordion>
+
+<Accordion title="Responses are translated">
+**Severity**: Low
+
+**Behavior**: Responses requests use the Chat Completions endpoint through Bifrost's conversion layer.
+
+**Impact**: Native Responses lifecycle operations are unavailable.
+</Accordion>
+
+## References
+
+- [Getting started](https://docs.salad.com/ai-gateway/tutorials/getting-started)
+- [Model reference](https://docs.salad.com/ai-gateway/reference/models)
+- [Pricing reference](https://docs.salad.com/ai-gateway/reference/pricing)

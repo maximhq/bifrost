@@ -29,6 +29,7 @@ export const KnownProvidersNames = [
 	"runware",
 	"fireworks",
 	"sarvam",
+	"saladcloud",
 	"wafer",
 ] as const;
 
@@ -141,6 +142,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	runware: "Runware",
 	fireworks: "Fireworks AI",
 	sarvam: "Sarvam AI",
+	saladcloud: "Salad AI Gateway",
 	wafer: "Wafer",
 } as const;
 
