@@ -681,6 +681,12 @@
                 "type": "boolean",
                 "description": "Snap the customer's budget and rate-limit reset windows to clean calendar boundaries (day, week, month, year)",
                 "default": false
+              },
+              "virtual_key_count": {
+                "type": "integer",
+                "description": "Computed count of virtual keys associated with this customer",
+                "minimum": 0,
+                "readOnly": true
               }
             },
             "required": ["id", "name"],
