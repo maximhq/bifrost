@@ -276,6 +276,8 @@ export const PRICING_FIELDS = [
 		group: "image",
 		requestTypeGroups: ["image"],
 	},
+	{ key: "output_cost_per_image_above_2048_and_2048_pixels", label: "Output / image (>2048px)", group: "image", requestTypeGroups: ["image"] },
+	{ key: "output_cost_per_image_above_4096_and_4096_pixels", label: "Output / image (>4096px)", group: "image", requestTypeGroups: ["image"] },
 	{ key: "output_cost_per_image_low_quality", label: "Output / image (low quality)", group: "image", requestTypeGroups: ["image"] },
 	{ key: "output_cost_per_image_medium_quality", label: "Output / image (medium quality)", group: "image", requestTypeGroups: ["image"] },
 	{ key: "output_cost_per_image_high_quality", label: "Output / image (high quality)", group: "image", requestTypeGroups: ["image"] },
