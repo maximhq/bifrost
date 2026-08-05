@@ -1541,6 +1541,24 @@ UpdateProviderGovernanceRequest:
 
 # Pricing Overrides
 
+PricingOverrideScopeKind:
+  type: string
+  description: >
+    Scope that determines which requests a pricing override applies to. The
+    virtual_key* family is checked before the user* family during cost
+    resolution, which is checked before the provider/global scopes; within a
+    family, more identifiers present means a more specific match.
+  enum:
+    - global
+    - provider
+    - provider_key
+    - virtual_key
+    - virtual_key_provider
+    - virtual_key_provider_key
+    - user
+    - user_provider
+    - user_provider_key
+
 PricingOverrideRequestType:
   type: string
   description: >
@@ -1567,6 +1585,7 @@ PricingPatch:
     Pricing fields to override. Only non-zero/non-null fields are applied.
     All values are cost per unit in USD.
   properties:
+    # Costs - Text
     input_cost_per_token:
       type: number
       minimum: 0
@@ -1585,21 +1604,72 @@ PricingPatch:
     output_cost_per_token_priority:
       type: number
       minimum: 0
+    input_cost_per_token_flex:
+      type: number
+      minimum: 0
+    output_cost_per_token_flex:
+      type: number
+      minimum: 0
+    input_cost_per_token_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic research preview). Flat rate across the full context window - no 128k/200k/272k tiering.
+    output_cost_per_token_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic research preview). Flat rate across the full context window - no 128k/200k/272k tiering.
     input_cost_per_character:
       type: number
       minimum: 0
+    # Costs - 128k Tier
     input_cost_per_token_above_128k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_image_above_128k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_video_per_second_above_128k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_audio_per_second_above_128k_tokens:
       type: number
       minimum: 0
     output_cost_per_token_above_128k_tokens:
       type: number
       minimum: 0
+    # Costs - 200k Tier
     input_cost_per_token_above_200k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_token_above_200k_tokens_priority:
       type: number
       minimum: 0
     output_cost_per_token_above_200k_tokens:
       type: number
       minimum: 0
+    output_cost_per_token_above_200k_tokens_priority:
+      type: number
+      minimum: 0
+    # Costs - 272k Tier
+    input_cost_per_token_above_272k_tokens:
+      type: number
+      minimum: 0
+    input_cost_per_token_above_272k_tokens_priority:
+      type: number
+      minimum: 0
+    input_cost_per_token_flex_above_272k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_272k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_272k_tokens_priority:
+      type: number
+      minimum: 0
+    output_cost_per_token_flex_above_272k_tokens:
+      type: number
+      minimum: 0
+    # Costs - Cache
     cache_creation_input_token_cost:
       type: number
       minimum: 0
@@ -1612,31 +1682,92 @@ PricingPatch:
     cache_read_input_token_cost_above_200k_tokens:
       type: number
       minimum: 0
-    cache_read_input_token_cost_priority:
+    cache_read_input_token_cost_above_200k_tokens_priority:
       type: number
       minimum: 0
-    cache_read_input_image_token_cost:
+    cache_creation_input_token_cost_above_1hr:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_1hr_above_200k_tokens:
       type: number
       minimum: 0
     cache_creation_input_audio_token_cost:
       type: number
       minimum: 0
-    input_cost_per_image:
+    cache_read_input_token_cost_priority:
       type: number
       minimum: 0
-    output_cost_per_image:
+    cache_read_input_token_cost_flex:
+      type: number
+      minimum: 0
+    cache_read_input_image_token_cost:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_above_272k_tokens:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_above_272k_tokens_priority:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_flex_above_272k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_272k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_flex:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_flex_above_272k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_priority:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic) cache rate - flat across the full context window, no tiering.
+    cache_creation_input_token_cost_above_1hr_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic) cache rate - flat across the full context window, no tiering.
+    cache_read_input_token_cost_fast:
+      type: number
+      minimum: 0
+      description: Fast mode (Anthropic) cache rate - flat across the full context window, no tiering.
+    # Costs - Image
+    input_cost_per_image:
       type: number
       minimum: 0
     input_cost_per_pixel:
       type: number
       minimum: 0
+    output_cost_per_image:
+      type: number
+      minimum: 0
     output_cost_per_pixel:
       type: number
       minimum: 0
-    input_cost_per_image_token:
+    output_cost_per_image_premium_image:
       type: number
       minimum: 0
-    output_cost_per_image_token:
+    output_cost_per_image_above_512_and_512_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_512_and_512_pixels_and_premium_image:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_1024_and_1024_pixels_and_premium_image:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_2048_and_2048_pixels:
+      type: number
+      minimum: 0
+    output_cost_per_image_above_4096_and_4096_pixels:
       type: number
       minimum: 0
     output_cost_per_image_low_quality:
@@ -1651,25 +1782,14 @@ PricingPatch:
     output_cost_per_image_auto_quality:
       type: number
       minimum: 0
-    output_cost_per_image_premium_image:
+    input_cost_per_image_token:
       type: number
       minimum: 0
-    output_cost_per_image_above_512_and_512_pixels:
+    output_cost_per_image_token:
       type: number
       minimum: 0
-    output_cost_per_image_above_1024_and_1024_pixels:
-      type: number
-      minimum: 0
-    output_cost_per_image_above_2048_and_2048_pixels:
-      type: number
-      minimum: 0
-    output_cost_per_image_above_4096_and_4096_pixels:
-      type: number
-      minimum: 0
+    # Costs - Audio/Video
     input_cost_per_audio_token:
-      type: number
-      minimum: 0
-    output_cost_per_audio_token:
       type: number
       minimum: 0
     input_cost_per_audio_per_second:
@@ -1681,16 +1801,31 @@ PricingPatch:
     input_cost_per_video_per_second:
       type: number
       minimum: 0
+    output_cost_per_audio_token:
+      type: number
+      minimum: 0
     output_cost_per_video_per_second:
       type: number
       minimum: 0
     output_cost_per_second:
       type: number
       minimum: 0
+    # Costs - Other
     search_context_cost_per_query:
       type: number
       minimum: 0
     code_interpreter_cost_per_session:
+      type: number
+      minimum: 0
+    inference_geo_us_multiplier:
+      type: number
+      minimum: 0
+      description: Anthropic data-residency multiplier applied when usage.inference_geo == "us".
+    # Costs - OCR
+    ocr_cost_per_page:
+      type: number
+      minimum: 0
+    annotation_cost_per_page:
       type: number
       minimum: 0
 
@@ -1705,24 +1840,19 @@ PricingOverride:
       type: string
       description: Human-readable label
     scope_kind:
-      type: string
-      enum:
-        - global
-        - provider
-        - provider_key
-        - virtual_key
-        - virtual_key_provider
-        - virtual_key_provider_key
-      description: Scope that determines which requests this override applies to
+      $ref: '#/PricingOverrideScopeKind'
+    user_id:
+      type: [string, 'null']
+      description: Required for user* scopes
     virtual_key_id:
       type: [string, 'null']
       description: Required for virtual_key* scopes
     provider_id:
       type: [string, 'null']
-      description: Required for provider and virtual_key_provider scopes
+      description: Required for provider, virtual_key_provider, and user_provider scopes
     provider_key_id:
       type: [string, 'null']
-      description: Required for provider_key and virtual_key_provider_key scopes
+      description: Required for provider_key, virtual_key_provider_key, and user_provider_key scopes
     match_type:
       type: string
       enum:
@@ -1768,23 +1898,19 @@ CreatePricingOverrideRequest:
       type: string
       description: Human-readable label
     scope_kind:
+      $ref: '#/PricingOverrideScopeKind'
+    user_id:
       type: string
-      enum:
-        - global
-        - provider
-        - provider_key
-        - virtual_key
-        - virtual_key_provider
-        - virtual_key_provider_key
+      description: Required for user* scopes
     virtual_key_id:
       type: string
       description: Required for virtual_key* scopes
     provider_id:
       type: string
-      description: Required for provider and virtual_key_provider scopes
+      description: Required for provider, virtual_key_provider, and user_provider scopes
     provider_key_id:
       type: string
-      description: Required for provider_key and virtual_key_provider_key scopes
+      description: Required for provider_key, virtual_key_provider_key, and user_provider_key scopes
     match_type:
       type: string
       enum:
@@ -1813,23 +1939,19 @@ UpdatePricingOverrideRequest:
       type: string
       description: Human-readable label
     scope_kind:
+      $ref: '#/PricingOverrideScopeKind'
+    user_id:
       type: string
-      enum:
-        - global
-        - provider
-        - provider_key
-        - virtual_key
-        - virtual_key_provider
-        - virtual_key_provider_key
+      description: Required for user* scopes
     virtual_key_id:
       type: string
       description: Required for virtual_key* scopes
     provider_id:
       type: string
-      description: Required for provider and virtual_key_provider scopes
+      description: Required for provider, virtual_key_provider, and user_provider scopes
     provider_key_id:
       type: string
-      description: Required for provider_key and virtual_key_provider_key scopes
+      description: Required for provider_key, virtual_key_provider_key, and user_provider_key scopes
     match_type:
       type: string
       enum:
@@ -1857,6 +1979,11 @@ PricingOverrideResponse:
 
 ListPricingOverridesResponse:
   type: object
+  description: >
+    When `limit`, `offset`, or `search` is supplied, `count` reflects the
+    returned page while `total_count` reflects the full matching set.
+    Otherwise (backward-compatible, non-paginated path) `total_count` equals
+    `count` and `limit`/`offset` describe the full unpaged result.
   properties:
     pricing_overrides:
       type: array
@@ -1864,7 +1991,16 @@ ListPricingOverridesResponse:
         $ref: '#/PricingOverride'
     count:
       type: integer
-      description: Total number of overrides returned
+      description: Number of overrides in this response
+    total_count:
+      type: integer
+      description: Total number of overrides matching the filters
+    limit:
+      type: integer
+      description: Page size used for this response
+    offset:
+      type: integer
+      description: Offset used for this response
 
 # Complexity Tier Boundaries
 
