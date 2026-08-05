@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +17,55 @@ import (
 	ws "github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// redactURLForLog strips query params (and any userinfo) before a dial URL is
+// placed into an error message. Most realtime providers authenticate via
+// request headers, but Gemini Live's protocol requires the API key on the
+// URL's `key` query parameter — without this, that key would leak in plain
+// text into any error surfaced to the client or written to server logs.
+func redactURLForLog(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "<invalid-url>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
+// sensitiveQueryParamSubstrings names the query-parameter name fragments
+// SanitizeEndpointForPoolKey strips. Deliberately name-based (not provider-
+// specific): today only Gemini Live puts a credential on the URL, but this
+// keeps the pool-identity path safe for any future provider that does the same,
+// without needing a per-provider special case in the caller.
+var sensitiveQueryParamSubstrings = []string{"key", "token", "secret", "auth"}
+
+// SanitizeEndpointForPoolKey strips credential-shaped query parameters from a
+// dial URL before it's used as PoolKey.Endpoint — the pool's Go map key, held
+// in memory for the life of every idle/in-flight connection and stored on
+// UpstreamConn for diagnostics. Non-credential query params (e.g. OpenAI's
+// `?model=`, needed to keep different models in separate pool buckets) are
+// preserved untouched. Callers whose URL contains a stripped param must pass
+// the original URL separately as PoolKey.DialURL.
+func SanitizeEndpointForPoolKey(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	for name := range q {
+		lower := strings.ToLower(name)
+		for _, substr := range sensitiveQueryParamSubstrings {
+			if strings.Contains(lower, substr) {
+				q.Del(name)
+				break
+			}
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
 
 // UpstreamConn wraps a WebSocket connection to an upstream provider.
 // Thread-safe for concurrent read/write via separate mutexes.
@@ -256,7 +307,7 @@ func isConnectionDead(err error) bool {
 func DialUpstream(url string, headers http.Header, provider schemas.ModelProvider, keyID string) (*UpstreamConn, error) {
 	wsConn, resp, err := Dial(url, headers)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", url, wrapHandshakeError(resp, err))
+		return nil, fmt.Errorf("failed to dial upstream websocket %s: %w", redactURLForLog(url), wrapHandshakeError(resp, err))
 	}
 	return newUpstreamConn(wsConn, provider, keyID, url), nil
 }
