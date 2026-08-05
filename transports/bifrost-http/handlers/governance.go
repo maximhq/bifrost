@@ -118,6 +118,10 @@ type ExternalQuotaBudgetResult struct {
 	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise:
 	// the access-profile rate limit that carries the real usage for an AP-managed VK).
 	RateLimit *configstoreTables.TableRateLimit
+	// Managed reports that the VK is access-profile-managed. Set independently of
+	// Budgets/RateLimit so the flag reaches the response even when the profile has
+	// neither — it drives the managed-key UI (lock + notice).
+	Managed bool
 	// UsageUserID, when non-empty, scopes the per_model_usage query to this user id
 	// instead of the VK id.
 	UsageUserID string
@@ -949,6 +953,7 @@ func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *config
 	// AP's governance verbatim. An empty budget slice or nil rate limit means the AP has
 	// none — we must NOT fall back to the misleading VK rows. This mirrors the UI's
 	// managing-profile branch and getVirtualKeyQuota, so all read paths agree.
+	vk.IsAccessProfileManaged = ext.Managed
 	vk.Budgets = ext.Budgets
 	vk.RateLimit = ext.RateLimit
 }
