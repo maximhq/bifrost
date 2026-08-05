@@ -243,3 +243,48 @@ func TestModelCatalogUnavailableCostIsOmitted(t *testing.T) {
 		t.Errorf("response cost = %v, want nil", resp.ExtraFields.Cost)
 	}
 }
+
+func TestPopulateFinalStreamCost(t *testing.T) {
+	tests := []struct {
+		name          string
+		final         bool
+		cost          float64
+		costAvailable bool
+		wantCost      *float64
+	}{
+		{name: "final chunk", final: true, cost: 0.25, costAvailable: true, wantCost: schemas.Ptr(0.25)},
+		{name: "known zero", final: true, costAvailable: true, wantCost: schemas.Ptr(0.0)},
+		{name: "unavailable", final: true, cost: 0.25},
+		{name: "non-final chunk", cost: 0.25, costAvailable: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := &probeCatalog{cost: tt.cost, costAvailable: tt.costAvailable}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, tt.final)
+
+			resp := &schemas.BifrostResponse{
+				ChatResponse: &schemas.BifrostChatResponse{
+					Model: "gpt-4o",
+					Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 10, TotalTokens: 15},
+				},
+			}
+			resp.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+
+			populateFinalStreamCost(ctx, resp)
+
+			got := resp.GetExtraFields().Cost
+			if tt.wantCost == nil {
+				if got != nil {
+					t.Fatalf("cost = %v, want nil", *got)
+				}
+				return
+			}
+			if got == nil || *got != *tt.wantCost {
+				t.Fatalf("cost = %v, want %v", got, *tt.wantCost)
+			}
+		})
+	}
+}

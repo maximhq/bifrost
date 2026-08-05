@@ -536,6 +536,14 @@ func IsFinalChunk(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
+// populateFinalStreamCost attaches the calculated cost after all post-hooks finish.
+func populateFinalStreamCost(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) {
+	if resp == nil || !IsFinalChunk(ctx) {
+		return
+	}
+	resp.GetExtraFields().Cost = ctx.CalculateCostIfAvailable(resp)
+}
+
 // GetResponseFields extracts the request type, provider, original model, and resolved model from the result or error.
 func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, originalModel string, resolvedModel string) {
 	if result != nil {

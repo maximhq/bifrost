@@ -4714,6 +4714,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		} else if resp != nil {
 			resp.PopulateExtraFields(req.RequestType, wsProvider, wsModel, wsModel)
 		}
+		populateFinalStreamCost(ctx, resp)
 		return resp, nil
 	}
 
@@ -5640,6 +5641,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 				} else if resp != nil {
 					resp.PopulateExtraFields(shortCircuitRequestType, provider, model, model)
 				}
+				populateFinalStreamCost(ctx, resp)
 				return resp, nil
 			}
 
@@ -6860,6 +6862,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}
+					populateFinalStreamCost(ctx, resp)
 					return resp, nil
 				}
 				// Store a finalizer callback to create aggregated post-hook spans at stream end.
