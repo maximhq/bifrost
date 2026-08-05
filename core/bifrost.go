@@ -6039,6 +6039,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			return nil, recoveredErr
 		}
 		if recoveredResp != nil {
+			populateFinalStreamCost(ctx, recoveredResp)
 			return newBifrostMessageChan(recoveredResp), nil
 		}
 		return nil, &bifrostErrVal
