@@ -3202,12 +3202,12 @@ var ErrStreamDrainTimeout = errors.New("stream drain timeout: upstream did not t
 //
 // The drain is bounded by GetStreamIdleTimeout(ctx). This runs after the SSE
 // loop's own idle-timeout reader has already been stopped (stopIdleTimeout
-// fires before this is called), so without a bound here nothing protects
-// against an upstream that holds the chunked body open past its terminal
-// event (observed against bedrock_mantle): io.Copy would block forever,
-// parking the calling goroutine in this defer and, because it runs before the
-// defer that closes the provider's response channel, wedging the SSE
-// producer loop so the client never sees `data: [DONE]`.
+// fires before this is called), so nothing else bounds an upstream that holds
+// its chunked body open past the terminal event — bedrock_mantle does exactly
+// this. Without the bound, io.Copy blocks forever: it parks the calling
+// goroutine in this defer, and because that defer runs before the one that
+// closes the provider's response channel, the channel never closes, the SSE
+// producer loop never exits, and the client never sees `data: [DONE]`.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
 	if resp == nil {
 		return
@@ -3256,8 +3256,8 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		// Upstream never terminated its body. Force-close the connection so it
 		// is dropped rather than reused, and unblock the drain goroutine above
 		// (it will exit on its own once the Read it's parked in errors out).
-		// Do not call resp.CloseBodyStream()/fasthttp.ReleaseResponse below:
-		// the drain goroutine still owns bodyStream and may be mid-Read: a
+		// Do not call resp.CloseBodyStream()/fasthttp.ReleaseResponse below —
+		// the drain goroutine above may still be mid-Read on bodyStream, so a
 		// second concurrent close/release here would double-Put the pooled
 		// reader/requestStream. Leaking resp to GC is the same trade-off used
 		// elsewhere in this function when ownership of the close is uncertain.
