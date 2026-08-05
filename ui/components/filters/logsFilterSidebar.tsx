@@ -333,7 +333,14 @@ function SearchableCheckboxList({
 					onCheckedChange={() => onToggle(item.key)}
 					testId={
 						testIdPrefix
-							? `${testIdPrefix}-checkbox-${normalizeTestIdKey ? item.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : item.key}`
+							? `${testIdPrefix}-checkbox-${
+									normalizeTestIdKey
+										? item.key
+												.toLowerCase()
+												.replace(/[^a-z0-9]+/g, "-")
+												.replace(/^-+|-+$/g, "")
+										: item.key
+								}`
 							: undefined
 					}
 				/>
@@ -449,7 +456,10 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 		isLoading,
 	} = useGetAvailableFilterDataQuery({ dimensions: ["apps"] }, { skip: !opened && !hasActive });
 	const availableApps = useMemo(() => (filterData?.apps as string[] | undefined) || [], [filterData]);
-	const items = useMemo(() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })), [availableApps, filters.apps]);
+	const items = useMemo(
+		() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })),
+		[availableApps, filters.apps],
+	);
 
 	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
 
