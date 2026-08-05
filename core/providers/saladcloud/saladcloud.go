@@ -33,7 +33,18 @@ func prepareSaladCloudChatRequest(request *schemas.BifrostChatRequest) *schemas.
 		params.ExtraParams = make(map[string]interface{})
 	}
 
-	if _, hasCustomThinkingConfig := params.ExtraParams[saladCloudChatTemplateKwargsKey]; !hasCustomThinkingConfig {
+	if existingKwargs, exists := params.ExtraParams[saladCloudChatTemplateKwargsKey]; exists {
+		if customKwargs, ok := existingKwargs.(map[string]interface{}); ok {
+			customKwargs = maps.Clone(customKwargs)
+			if customKwargs == nil {
+				customKwargs = make(map[string]interface{})
+			}
+			if _, hasCustomEnableThinking := customKwargs["enable_thinking"]; !hasCustomEnableThinking {
+				customKwargs["enable_thinking"] = isSaladCloudThinkingEnabled(params.Reasoning)
+			}
+			params.ExtraParams[saladCloudChatTemplateKwargsKey] = customKwargs
+		}
+	} else {
 		params.ExtraParams[saladCloudChatTemplateKwargsKey] = map[string]interface{}{
 			"enable_thinking": isSaladCloudThinkingEnabled(params.Reasoning),
 		}

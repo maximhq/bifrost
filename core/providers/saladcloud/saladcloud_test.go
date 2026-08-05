@@ -107,15 +107,7 @@ func TestSaladCloudListModelsOnlyReturns35B(t *testing.T) {
 func TestSaladCloudReasoningUsesChatTemplateKwargs(t *testing.T) {
 	t.Parallel()
 
-	var capturedBody map[string]interface{}
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if err := json.NewDecoder(request.Body).Decode(&capturedBody); err != nil {
-			http.Error(writer, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(writer, `{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"qwen3.6-35b-a3b","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}`)
-	}))
+	server, bodyCh := newCapturedSaladCloudChatServer(t)
 	defer server.Close()
 
 	provider := newTestSaladCloudProvider(t, server.URL)
@@ -127,9 +119,86 @@ func TestSaladCloudReasoningUsesChatTemplateKwargs(t *testing.T) {
 		t.Fatalf("ChatCompletion: %v", bifrostErr)
 	}
 
-	assertThinkingDisabledPayload(t, capturedBody)
+	select {
+	case body := <-bodyCh:
+		assertThinkingDisabledPayload(t, body)
+	case <-time.After(5 * time.Second):
+		t.Fatal("mock server did not receive the request")
+	}
 	if request.Params.Reasoning == nil {
 		t.Fatal("ChatCompletion mutated the caller's reasoning parameters")
+	}
+}
+
+func TestSaladCloudReasoningMergesExistingChatTemplateKwargs(t *testing.T) {
+	t.Parallel()
+
+	server, bodyCh := newCapturedSaladCloudChatServer(t)
+	defer server.Close()
+
+	provider := newTestSaladCloudProvider(t, server.URL)
+	request := newReasoningDisabledRequest()
+	existingKwargs := map[string]interface{}{"preserve_thinking": true}
+	request.Params.ExtraParams = map[string]interface{}{
+		saladCloudChatTemplateKwargsKeyForTest: existingKwargs,
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, bifrostErr := provider.ChatCompletion(ctx, testSaladCloudKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr)
+	}
+
+	select {
+	case body := <-bodyCh:
+		assertThinkingDisabledPayload(t, body)
+		kwargs := body[saladCloudChatTemplateKwargsKeyForTest].(map[string]interface{})
+		if preserveThinking, ok := kwargs["preserve_thinking"].(bool); !ok || !preserveThinking {
+			t.Fatalf("expected preserve_thinking=true, got %#v", kwargs["preserve_thinking"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mock server did not receive the request")
+	}
+	if _, exists := existingKwargs["enable_thinking"]; exists {
+		t.Fatal("ChatCompletion mutated the caller's chat_template_kwargs")
+	}
+}
+
+func TestSaladCloudReasoningPreservesExplicitEnableThinking(t *testing.T) {
+	t.Parallel()
+
+	server, bodyCh := newCapturedSaladCloudChatServer(t)
+	defer server.Close()
+
+	provider := newTestSaladCloudProvider(t, server.URL)
+	request := newReasoningDisabledRequest()
+	request.Params.ExtraParams = map[string]interface{}{
+		saladCloudChatTemplateKwargsKeyForTest: map[string]interface{}{
+			"enable_thinking":   true,
+			"preserve_thinking": true,
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, bifrostErr := provider.ChatCompletion(ctx, testSaladCloudKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr)
+	}
+
+	select {
+	case body := <-bodyCh:
+		kwargs, ok := body[saladCloudChatTemplateKwargsKeyForTest].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected chat_template_kwargs object in Salad request: %#v", body)
+		}
+		if enabled, ok := kwargs["enable_thinking"].(bool); !ok || !enabled {
+			t.Fatalf("expected caller's enable_thinking=true, got %#v", kwargs["enable_thinking"])
+		}
+		if preserveThinking, ok := kwargs["preserve_thinking"].(bool); !ok || !preserveThinking {
+			t.Fatalf("expected preserve_thinking=true, got %#v", kwargs["preserve_thinking"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mock server did not receive the request")
 	}
 }
 
@@ -189,6 +258,22 @@ func newTestSaladCloudProvider(t *testing.T, baseURL string) *saladcloud.SaladCl
 		t.Fatalf("NewSaladCloudProvider: %v", err)
 	}
 	return provider
+}
+
+func newCapturedSaladCloudChatServer(t *testing.T) (*httptest.Server, <-chan map[string]interface{}) {
+	t.Helper()
+	bodyCh := make(chan map[string]interface{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		bodyCh <- body
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(writer, `{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"qwen3.6-35b-a3b","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}`)
+	}))
+	return server, bodyCh
 }
 
 func newReasoningDisabledRequest() *schemas.BifrostChatRequest {
