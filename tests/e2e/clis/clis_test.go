@@ -23,6 +23,13 @@ import (
 // TestMain installs a signal handler that kills every running CLI subprocess
 // on Ctrl-C / SIGTERM, then exits. Without it, killing `go test` would orphan
 // any spawned `claude` / `codex` processes.
+//
+// os.Exit() in the signal handler bypasses Go's normal t.Cleanup mechanism,
+// so an interrupted run would otherwise lose its HTML report even though
+// every completed cell already wrote its own reports/*.json summary to disk.
+// writeHTMLReport rebuilds reports/index.html from those files (see
+// loadReportResults), so calling it here before exiting is enough to recover
+// the report for everything that finished before the interrupt.
 func TestMain(m *testing.M) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
@@ -37,6 +44,7 @@ func TestMain(m *testing.M) {
 			return true
 		})
 		time.Sleep(200 * time.Millisecond)
+		writeHTMLReport()
 		os.Exit(130)
 	}()
 	os.Exit(m.Run())
@@ -55,7 +63,6 @@ func TestCLIs(t *testing.T) {
 	if os.Getenv("BIFROST_E2E_CLIS") == "skip" {
 		t.Skip("BIFROST_E2E_CLIS=skip")
 	}
-	resetRunResults()
 	t.Cleanup(writeHTMLReport)
 
 	baseURL := envDefault("BIFROST_BASE_URL", "http://localhost:8080")
@@ -99,8 +106,24 @@ func TestCLIs(t *testing.T) {
 									if !sc.Supports(cli.ID, prov.ID, model) {
 										t.Skipf("scenario %q unsupported for %s/%s/%s", sc.ID, cli.ID, prov.ID, model.ID)
 									}
-									t.Parallel()
-									runCell(t, cli, prov, model, sc, baseURL, apiKey)
+									if len(sc.Efforts) == 0 {
+										t.Parallel()
+										runCell(t, cli, prov, model, sc, "", baseURL, apiKey)
+										return
+									}
+									for _, effort := range sc.Efforts {
+										effort := effort
+										t.Run(effort, func(t *testing.T) {
+											if !model.AdaptiveThinking {
+												t.Skipf("model %q has no adaptive-thinking effort surface", model.ID)
+											}
+											if cli.EffortArgs == nil {
+												t.Skipf("cli %q has no effort override mechanism", cli.ID)
+											}
+											t.Parallel()
+											runCell(t, cli, prov, model, sc, effort, baseURL, apiKey)
+										})
+									}
 								})
 							}
 						})
@@ -111,6 +134,18 @@ func TestCLIs(t *testing.T) {
 	}
 }
 
+// TestRenderReport regenerates reports/index.html from whatever
+// reports/*.json summaries already exist on disk, without driving any CLI
+// or hitting Bifrost/a real provider -- free and instant. Useful after an
+// interrupted TestCLIs run (which now also writes the report itself via
+// TestMain's signal handler, but this is a safety net / manual re-render),
+// or any time you just want to view the current state of local results:
+//
+//	go test -run TestRenderReport -v ./...
+func TestRenderReport(t *testing.T) {
+	writeHTMLReport()
+}
+
 // safeName converts a model ID into something usable as a t.Run subtest name.
 // Go's test runner splits on `/` for filtering, so any slashes in model IDs
 // (none today, but bedrock-style IDs sometimes have them) get replaced.
@@ -118,7 +153,15 @@ func safeName(id string) string {
 	return strings.NewReplacer("/", "_", " ", "_").Replace(id)
 }
 
-func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario, baseURL, apiKey string) {
+func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario, effort string, baseURL, apiKey string) {
+	if effort != "" && len(sc.Turns) > 1 {
+		t.Fatalf("scenario %q: effort-level testing is only wired for single-turn scenarios", sc.ID)
+	}
+	scenarioLabel := sc.ID
+	if effort != "" {
+		scenarioLabel = sc.ID + "@" + effort
+	}
+
 	modelRef := bifrostModelRef(prov.ID, model.ID)
 	cliBaseURL := baseURL + cli.BasePath
 
@@ -147,7 +190,7 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 	if mirror != nil {
 		fmt.Fprintf(os.Stdout,
 			"\n\033[1;36m>>> %s × %s × %s  (model=%s, turns=%d)\033[0m\n",
-			cli.ID, prov.ID, sc.ID, modelRef, len(sc.Turns),
+			cli.ID, prov.ID, scenarioLabel, modelRef, len(sc.Turns),
 		)
 	}
 
@@ -168,7 +211,7 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 		if len(sc.Turns) == 1 {
 			turn = sc.Turns[0]
 		}
-		out, err := runSingleTurnWithRetry(cellCtx, t, cli, modelRef, turn, env, mirror)
+		out, err := runSingleTurnWithRetry(cellCtx, t, cli, modelRef, turn, env, mirror, effort)
 		transcripts = append(transcripts, out)
 		runErr = err
 		if err == nil {
@@ -221,12 +264,12 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 	} else if runErr != nil {
 		status = "fail"
 	}
-	writeReport(t, cli.ID, prov.ID, safeName(model.ID), sc.ID, modelRef, status, runErr, softReason, dur, combined)
-	logCellResult(cli.ID, prov.ID, modelRef, sc.ID, status, dur, runErr, softReason)
+	writeReport(t, cli.ID, prov.ID, safeName(model.ID), scenarioLabel, modelRef, status, runErr, softReason, dur, combined)
+	logCellResult(cli.ID, prov.ID, modelRef, scenarioLabel, status, dur, runErr, softReason)
 
 	if mirror != nil {
 		fmt.Fprintf(os.Stdout, "\033[0m\n\033[1;36m<<< %s × %s × %s  (%s)\033[0m\n",
-			cli.ID, prov.ID, sc.ID, dur.Round(time.Millisecond))
+			cli.ID, prov.ID, scenarioLabel, dur.Round(time.Millisecond))
 	}
 
 	if runErr != nil {
@@ -239,11 +282,11 @@ const maxRateLimitRetries = 3
 var rateLimitWaitRE = regexp.MustCompile(`(?i)(?:please\s+wait|try\s+again\s+in|retry\s+after)\s+(\d+)\s*(?:seconds?|secs?|s)\b`)
 var rateLimitSignalRE = regexp.MustCompile(`(?i)\brate[_ -]?limit\b|\b429\b|too many requests`)
 
-func runSingleTurnWithRetry(ctx context.Context, t *testing.T, cli CLI, modelRef string, turn Turn, env []string, mirror io.Writer) (string, error) {
+func runSingleTurnWithRetry(ctx context.Context, t *testing.T, cli CLI, modelRef string, turn Turn, env []string, mirror io.Writer, effort string) (string, error) {
 	t.Helper()
 	var lastOut string
 	for attempt := 0; attempt <= maxRateLimitRetries; attempt++ {
-		out, err := runSingleTurn(ctx, t, cli, modelRef, turn, env, mirror)
+		out, err := runSingleTurn(ctx, t, cli, modelRef, turn, env, mirror, effort)
 		lastOut = out
 		if wait, ok := rateLimitDelay(out, err); ok {
 			if err := sleepForRateLimit(ctx, t, cli.ID, modelRef, wait, attempt+1); err != nil {
@@ -475,24 +518,18 @@ func tailStr(s string, n int) string {
 }
 
 var reportMu sync.Mutex
-var runResults []cellResult
 
 type cellResult struct {
 	CLI            string
 	Provider       string
 	Model          string
 	Scenario       string
+	Effort         string
 	Status         string
 	Reason         string
 	DurationMs     int64
 	TranscriptPath string
 	MetaPath       string
-}
-
-func resetRunResults() {
-	reportMu.Lock()
-	defer reportMu.Unlock()
-	runResults = nil
 }
 
 func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, status string, runErr error, softReason string, dur time.Duration, transcript string) {
@@ -516,17 +553,6 @@ func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, stat
 	} else if softReason != "" {
 		errStr = softReason
 	}
-	runResults = append(runResults, cellResult{
-		CLI:            cli,
-		Provider:       provider,
-		Model:          model,
-		Scenario:       scenarioID,
-		Status:         status,
-		Reason:         summarizeFailure(errStr),
-		DurationMs:     dur.Milliseconds(),
-		TranscriptPath: transcriptPath,
-		MetaPath:       metaPath,
-	})
 	meta := map[string]any{
 		"cli":        cli,
 		"provider":   provider,
@@ -541,11 +567,71 @@ func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, stat
 	_ = os.WriteFile(transcriptPath, []byte(transcript), 0o644)
 }
 
-func writeHTMLReport() {
-	reportMu.Lock()
-	results := append([]cellResult(nil), runResults...)
-	reportMu.Unlock()
+// loadReportResults rebuilds the report table from every reports/*.json
+// summary on disk, rather than from this process's in-memory state. Each
+// summary is written synchronously by writeReport before the owning test
+// even asserts pass/fail, so this reflects every cell that has EVER
+// completed locally -- including ones from an earlier, interrupted run, or
+// runs from a completely separate `go test` invocation -- not just cells
+// this process happened to run. That's what makes both the SIGINT-handler
+// report write and the standalone TestRenderReport (see below) correct.
+func loadReportResults(dir string) ([]cellResult, error) {
+	metaPaths, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(metaPaths)
 
+	results := make([]cellResult, 0, len(metaPaths))
+	for _, metaPath := range metaPaths {
+		b, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			CLI        string `json:"cli"`
+			Provider   string `json:"provider"`
+			Scenario   string `json:"scenario"`
+			Model      string `json:"model"`
+			Status     string `json:"status"`
+			Error      string `json:"error"`
+			DurationMs int64  `json:"durationMs"`
+		}
+		if err := json.Unmarshal(b, &meta); err != nil {
+			continue
+		}
+
+		scenario, effort := meta.Scenario, ""
+		if i := strings.LastIndex(meta.Scenario, "@"); i >= 0 {
+			scenario, effort = meta.Scenario[:i], meta.Scenario[i+1:]
+		}
+		reason := ""
+		if meta.Error != "" {
+			reason = summarizeFailure(meta.Error)
+		}
+
+		results = append(results, cellResult{
+			CLI:            meta.CLI,
+			Provider:       meta.Provider,
+			Model:          meta.Model,
+			Scenario:       scenario,
+			Effort:         effort,
+			Status:         meta.Status,
+			Reason:         reason,
+			DurationMs:     meta.DurationMs,
+			TranscriptPath: strings.TrimSuffix(metaPath, ".json") + ".transcript.log",
+			MetaPath:       metaPath,
+		})
+	}
+	return results, nil
+}
+
+func writeHTMLReport() {
+	results, err := loadReportResults("reports")
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "harness report error: %v\n", err)
+		return
+	}
 	if len(results) == 0 {
 		return
 	}
@@ -573,7 +659,7 @@ a{color:#175cd3;text-decoration:none}a:hover{text-decoration:underline}
 	for _, status := range []string{"pass", "soft_pass", "fail"} {
 		body.WriteString(fmt.Sprintf(`<span class="pill %s">%s: %d</span>`, status, html.EscapeString(status), counts[status]))
 	}
-	body.WriteString(`</div><table><thead><tr><th>Status</th><th>CLI</th><th>Provider</th><th>Model</th><th>Scenario</th><th>Duration</th><th>Reason</th><th>Logs</th></tr></thead><tbody>`)
+	body.WriteString(`</div><table><thead><tr><th>Status</th><th>CLI</th><th>Provider</th><th>Model</th><th>Scenario</th><th>Effort</th><th>Duration</th><th>Reason</th><th>Logs</th></tr></thead><tbody>`)
 	for _, result := range results {
 		body.WriteString("<tr>")
 		body.WriteString(fmt.Sprintf(`<td class="%s">%s</td>`, html.EscapeString(result.Status), html.EscapeString(result.Status)))
@@ -581,6 +667,7 @@ a{color:#175cd3;text-decoration:none}a:hover{text-decoration:underline}
 		body.WriteString("<td>" + html.EscapeString(result.Provider) + "</td>")
 		body.WriteString(`<td class="model">` + html.EscapeString(result.Model) + "</td>")
 		body.WriteString("<td>" + html.EscapeString(result.Scenario) + "</td>")
+		body.WriteString("<td>" + html.EscapeString(result.Effort) + "</td>")
 		body.WriteString("<td>" + html.EscapeString((time.Duration(result.DurationMs) * time.Millisecond).Round(time.Millisecond).String()) + "</td>")
 		body.WriteString("<td>" + html.EscapeString(result.Reason) + "</td>")
 		body.WriteString("<td>" + transcriptDetails(result) + "</td>")

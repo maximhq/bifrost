@@ -30,7 +30,16 @@ var activeCommands sync.Map // *exec.Cmd -> struct{}
 //	               "I don't have access to web search" that would otherwise
 //	               pass a positive-only assertion)
 type Turn struct {
-	Send              string
+	Send string
+
+	// AttachImage, if set, is an absolute path to a local image file to
+	// attach to this turn via the CLI's own attachment mechanism (see
+	// CLI.AttachImageArgs). Only meaningful for single-turn scenarios
+	// (Pattern A / runSingleTurn) -- CLIs with no attachment flag (Claude)
+	// ignore this at the args level; reference the path in Send instead so
+	// their own file-read tool can open it.
+	AttachImage string
+
 	AssertText        []string
 	AssertTextFold    []string
 	AssertTextAny     []string
@@ -58,7 +67,7 @@ func (e assertionError) Unwrap() error {
 // runSingleTurn executes a one-shot prompt: spawn binary, read combined
 // stdout+stderr, return what we got. Any assertion is performed by the
 // scenario after this returns.
-func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, turn Turn, env []string, mirror io.Writer) (string, error) {
+func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, turn Turn, env []string, mirror io.Writer, effort string) (string, error) {
 	t.Helper()
 	timeout := turn.Timeout
 	if timeout == 0 {
@@ -67,7 +76,15 @@ func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, tur
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	args := cli.SingleTurnArgs(model, turn.Send)
+	var extra []string
+	if turn.AttachImage != "" && cli.AttachImageArgs != nil {
+		extra = append(extra, cli.AttachImageArgs(turn.AttachImage)...)
+	}
+	if effort != "" && cli.EffortArgs != nil {
+		extra = append(extra, cli.EffortArgs(effort)...)
+	}
+
+	args := cli.SingleTurnArgs(model, turn.Send, extra)
 	cmd := exec.CommandContext(cctx, cli.Binary, args...)
 	cmd.Env = append(os.Environ(), env...)
 
@@ -186,6 +203,7 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 	ch := make(chan result, 1)
 	go func() {
 		var assistantText strings.Builder
+		var toolMarkers strings.Builder
 		for d.stdout.Scan() {
 			raw := d.stdout.Bytes()
 			if d.mirror != nil {
@@ -195,7 +213,7 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 			if err := json.Unmarshal(raw, &ev); err != nil {
 				continue
 			}
-			extractAssistantText(ev, &assistantText)
+			extractAssistantText(ev, &assistantText, &toolMarkers)
 			if evType, _ := ev["type"].(string); evType == "result" {
 				// Authoritative success/failure signal per the Agent SDK docs.
 				if isErr, _ := ev["is_error"].(bool); isErr {
@@ -211,11 +229,14 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 					return
 				}
 				// Prefer the canonical result.result field; fall back to the
-				// accumulated assistant content blocks if it's absent.
+				// accumulated assistant content blocks if it's absent. Tool-use
+				// markers are tracked separately and always appended, since
+				// result.result only ever contains genuine model text.
 				text := assistantText.String()
 				if r, _ := ev["result"].(string); r != "" {
 					text = r
 				}
+				text += toolMarkers.String()
 				ch <- result{text: text}
 				return
 			}
@@ -249,10 +270,29 @@ func (d *claudeStreamJSON) Close() {
 	}
 }
 
-// extractAssistantText walks a Claude stream-json event and appends any text
-// the assistant produced. We deliberately ignore tool_use / tool_result blocks
-// because tests assert on the natural-language portion of responses.
-func extractAssistantText(ev map[string]any, out *strings.Builder) {
+// agentToolUseMarker is appended to a turn's asserted text whenever the
+// CLI's JSONL/stream-JSON output shows the model actually invoking a
+// subagent-delegation tool — Claude's built-in `Agent` tool_use block, or
+// Codex's `collab_tool_call` item with tool == "spawn_agent" (see
+// codex-rs/exec/src/exec_events.rs,
+// https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/exec/src/exec_events.rs).
+// The subagent-delegation scenario asserts on this marker instead of
+// natural-language prose, since neither CLI's tool-call payload is prose.
+const agentToolUseMarker = "\n[BIFROST_E2E_AGENT_TOOL_USE]\n"
+
+// claudeToolUseMarkers maps a Claude tool_use block's name to the marker to
+// emit. The subagent tool was renamed Task -> Agent in Claude Code v2.1.63;
+// both names are mapped defensively in case a run is pinned to an older CLI.
+var claudeToolUseMarkers = map[string]string{"Agent": agentToolUseMarker, "Task": agentToolUseMarker}
+
+// extractAssistantText walks a Claude stream-json event, appending assistant
+// text to out and a synthetic marker to markers for any tool_use block whose
+// name we care about (see claudeToolUseMarkers). markers is tracked
+// separately from out because Send() prefers the stream's canonical
+// result.result field over the accumulated text once present, and that field
+// only ever contains real model text — a marker folded into out would be
+// silently dropped.
+func extractAssistantText(ev map[string]any, out, markers *strings.Builder) {
 	t, _ := ev["type"].(string)
 	if t != "assistant" {
 		return
@@ -267,9 +307,16 @@ func extractAssistantText(ev map[string]any, out *strings.Builder) {
 		if block == nil {
 			continue
 		}
-		if bt, _ := block["type"].(string); bt == "text" {
+		switch block["type"] {
+		case "text":
 			if s, _ := block["text"].(string); s != "" {
 				out.WriteString(s)
+			}
+		case "tool_use":
+			if name, _ := block["name"].(string); name != "" {
+				if marker, ok := claudeToolUseMarkers[name]; ok {
+					markers.WriteString(marker)
+				}
 			}
 		}
 	}
@@ -293,8 +340,35 @@ func extractJSONAssistantText(raw string) (string, bool) {
 		if isAssistantEvent(ev) {
 			appendJSONText(ev, &out)
 		}
+		appendAgentToolUseMarker(ev, &out)
 	}
 	return out.String(), sawJSON
+}
+
+// appendAgentToolUseMarker walks a decoded event looking for a Codex
+// collab_tool_call item whose "tool" is "spawn_agent" and appends the shared
+// agentToolUseMarker. Runs independently of isAssistantEvent: a
+// collab_tool_call item is correctly not assistant text (see
+// codex-rs/exec/src/exec_events.rs,
+// https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/exec/src/exec_events.rs),
+// so it would never reach appendJSONText otherwise. Mirrors
+// isAssistantEvent's item/message/delta wrapper-key descent so it needs no
+// new event shapes to be taught.
+func appendAgentToolUseMarker(v any, out *strings.Builder) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	if typ, _ := m["type"].(string); typ == "collab_tool_call" {
+		if tool, _ := m["tool"].(string); tool == "spawn_agent" {
+			out.WriteString(agentToolUseMarker)
+		}
+	}
+	for _, key := range []string{"item", "message", "delta"} {
+		if child, ok := m[key]; ok {
+			appendAgentToolUseMarker(child, out)
+		}
+	}
 }
 
 func isAssistantEvent(v any) bool {
