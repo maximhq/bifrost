@@ -224,6 +224,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"responses_stream",
 		"embedding",
 	],
+	elevenlabs: ["list_models", "speech", "speech_stream", "transcription"],
 };
 
 export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";
