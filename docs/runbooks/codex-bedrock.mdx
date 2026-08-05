@@ -30,10 +30,6 @@ In this guide, a **deployment name** is the stable alias that you configure on a
 
 Sources: [GPT-5.6 Sol](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-sol.html), [GPT-5.6 Terra](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-terra.html), [GPT-5.6 Luna](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-luna.html), [GPT-5.5](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-55.html), and [GPT-5.4](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-54.html).
 
-<Warning>
-These GPT models use Bedrock model IDs. The AWS model cards mark global inference as unsupported, so do not prepend `global.` or `us.` and do not add a `-v1:0` suffix. Configure them under Bifrost's **AWS Bedrock** provider.
-</Warning>
-
 The recommended deployment names are Bifrost deployment mappings, not AWS-defined identifiers. You may choose another name, but the value selected in Codex must match the Bifrost deployment name exactly and should retain the `bedrock/` provider prefix.
 
 ## 1. Configure the Bedrock provider in Bifrost
