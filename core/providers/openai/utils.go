@@ -125,7 +125,7 @@ func isOpenAIReasoningModel(model string) bool {
 		}
 	}
 	// Check for GPT-5 series models which support reasoning.effort
-	if strings.HasPrefix(modelLower, "gpt-5") {
+	if strings.Contains(modelLower, "gpt-5") {
 		return true
 	}
 	return false
