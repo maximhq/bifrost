@@ -9,7 +9,7 @@ icon: "circle-dollar-to-slot"
 Bifrost computes request costs using a built-in pricing catalog that is automatically synced from a remote datasheet. **Custom Pricing** lets you override those catalog prices at runtime without redeploying, applying your own rates for any model across any combination of provider, key, and virtual key scopes.
 
 **Key capabilities:**
-- **Scoped overrides** - apply prices globally or narrow them to a specific provider, provider key, or virtual key
+- **Scoped overrides** - apply prices globally or narrow them to a specific provider, provider key, virtual key, or user
 - **Pattern matching** - target an exact model name or a wildcard prefix (e.g. `gpt-4*`)
 - **Request type filtering** - restrict an override to one or more specific operations (chat, embeddings, image generation, etc.); at least one request type is required
 - **Hierarchical resolution** - the most-specific matching override always wins; broader scopes act as fallbacks
@@ -63,12 +63,15 @@ Before configuring overrides, Bifrost needs a pricing catalog to work from. By d
 
 ## Scope hierarchy
 
-Every override is assigned a **scope kind** that determines which requests it applies to. When Bifrost resolves pricing for a request, it evaluates all matching overrides and selects the one with the most specific scope. More specific scopes always win over broader ones.
+Every override is assigned a **scope kind** that determines which requests it applies to. When Bifrost resolves pricing for a request, it evaluates all matching overrides and selects the one with the most specific scope. More specific scopes always win over broader ones. The virtual-key family is checked before the user family, which is checked before the provider/global scopes; within a family, more identifiers present means a more specific match.
 
 ```
 virtual_key_provider_key  (most specific)
 virtual_key_provider
 virtual_key
+user_provider_key
+user_provider
+user
 provider_key
 provider
 global                    (least specific / catch-all)
@@ -78,9 +81,12 @@ global                    (least specific / catch-all)
 
 | Scope kind | Required | Description |
 |------------|----------|-------------|
-| `global` | - | Applies to every request regardless of provider, key, or virtual key |
+| `global` | - | Applies to every request regardless of provider, key, virtual key, or user |
 | `provider` | `provider_id` | Applies to all keys under a specific provider |
 | `provider_key` | `provider_key_id` | Applies to a specific provider API key only |
+| `user` | `user_id` | Applies to all requests made by a specific user |
+| `user_provider` | `user_id` + `provider_id` | Applies when a user's request routes to a specific provider |
+| `user_provider_key` | `user_id` + `provider_key_id` | Applies when a user's request resolves to a specific provider API key |
 | `virtual_key` | `virtual_key_id` | Applies to all requests made under a virtual key |
 | `virtual_key_provider` | `virtual_key_id` + `provider_id` | Applies when a virtual key routes to a specific provider |
 | `virtual_key_provider_key` | `virtual_key_id` + `provider_key_id` | Most specific: virtual key + exact provider API key |
@@ -202,8 +208,11 @@ curl -X POST http://localhost:8080/api/governance/pricing-overrides \
 ```
 
 **Update (sparse patch):**
+
+Omitted fields are merged from the existing record. When `scope_kind` is supplied, all scope identifiers are reset first and only explicitly supplied identifiers are retained. The `patch` field is always replaced in full when provided.
+
 ```bash
-curl -X PATCH http://localhost:8080/api/governance/pricing-overrides/{id} \
+curl -X PUT http://localhost:8080/api/governance/pricing-overrides/{id} \
   -H "Content-Type: application/json" \
   -d '{
     "patch": {
@@ -224,7 +233,13 @@ curl http://localhost:8080/api/governance/pricing-overrides
 
 # Filter by scope
 curl "http://localhost:8080/api/governance/pricing-overrides?scope_kind=virtual_key&virtual_key_id=vk-abc123"
+
+# Paginated, with search - supplying limit, offset, or search switches the
+# response to the paginated shape (adds total_count, limit, offset)
+curl "http://localhost:8080/api/governance/pricing-overrides?search=gpt-4o&limit=20&offset=0"
 ```
+
+Supported query filters: `scope_kind`, `user_id`, `virtual_key_id`, `provider_id`, `provider_key_id`, `search`, `limit`, `offset`.
 
 </Tab>
 <Tab title="config.json">
@@ -263,10 +278,11 @@ Pricing overrides are defined under `governance.pricing_overrides`. Each entry r
 |-------|------|----------|-------------|
 | `id` | string | Yes | Unique override ID (UUID recommended) |
 | `name` | string | Yes | Human-readable label |
-| `scope_kind` | string | Yes | One of: `global`, `provider`, `provider_key`, `virtual_key`, `virtual_key_provider`, `virtual_key_provider_key` |
+| `scope_kind` | string | Yes | One of: `global`, `provider`, `provider_key`, `user`, `user_provider`, `user_provider_key`, `virtual_key`, `virtual_key_provider`, `virtual_key_provider_key` |
+| `user_id` | string | Conditional | Required for `user*` scopes |
 | `virtual_key_id` | string | Conditional | Required for `virtual_key*` scopes |
-| `provider_id` | string | Conditional | Required for `provider` and `virtual_key_provider` scopes |
-| `provider_key_id` | string | Conditional | Required for `provider_key` and `virtual_key_provider_key` scopes |
+| `provider_id` | string | Conditional | Required for `provider`, `virtual_key_provider`, and `user_provider` scopes |
+| `provider_key_id` | string | Conditional | Required for `provider_key`, `virtual_key_provider_key`, and `user_provider_key` scopes |
 | `match_type` | string | Yes | `exact` or `wildcard` |
 | `pattern` | string | Yes | Model name or wildcard prefix ending with `*` |
 | `request_types` | array | Yes | Request types this override applies to. At least one value required. |
@@ -280,7 +296,7 @@ Pricing overrides are defined under `governance.pricing_overrides`. Each entry r
 
 ## Pricing fields reference
 
-Only fields with non-zero values are applied. All values are cost **per unit** in USD.
+Only fields with non-zero values are applied. Cost fields are per unit in USD; multiplier fields are dimensionless.
 
 ### Token costs
 
@@ -294,6 +310,8 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 | `output_cost_per_token_priority` | Output token cost for priority requests |
 | `input_cost_per_token_flex` | Input token cost for flex requests |
 | `output_cost_per_token_flex` | Output token cost for flex requests |
+| `input_cost_per_token_fast` | Input token cost for fast-mode requests (flat across the full context window - no tiering) |
+| `output_cost_per_token_fast` | Output token cost for fast-mode requests (flat across the full context window - no tiering) |
 | `input_cost_per_character` | Input cost per character (character-billed models) |
 
 ### Token tier costs
@@ -308,8 +326,11 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 | `output_cost_per_token_above_200k_tokens_priority` | Output cost above 200k context for priority requests |
 | `input_cost_per_token_above_272k_tokens` | Input cost above 272k context |
 | `input_cost_per_token_above_272k_tokens_priority` | Input cost above 272k context for priority requests |
+| `input_cost_per_token_flex_above_272k_tokens` | Input cost above 272k context for flex requests |
 | `output_cost_per_token_above_272k_tokens` | Output cost above 272k context |
 | `output_cost_per_token_above_272k_tokens_priority` | Output cost above 272k context for priority requests |
+| `output_cost_per_token_flex_above_272k_tokens` | Output cost above 272k context for flex requests |
+| `input_cost_per_image_above_128k_tokens` | Input cost per image above 128k context |
 
 ### Cache costs
 
@@ -324,8 +345,18 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 | `cache_read_input_token_cost_flex` | Flex cache read cost |
 | `cache_read_input_token_cost_above_272k_tokens` | Cache read above 272k context |
 | `cache_read_input_token_cost_above_272k_tokens_priority` | Cache read above 272k context for priority requests |
+| `cache_read_input_token_cost_flex_above_272k_tokens` | Cache read above 272k context for flex requests |
 | `cache_read_input_image_token_cost` | Cache read cost for image tokens |
 | `cache_creation_input_audio_token_cost` | Cache creation cost for audio tokens |
+| `cache_creation_input_token_cost_above_1hr` | Cache creation cost for 1hr+ TTL entries |
+| `cache_creation_input_token_cost_above_1hr_above_200k_tokens` | Cache creation cost for 1hr+ TTL entries above 200k context |
+| `cache_creation_input_token_cost_above_272k_tokens` | Cache creation above 272k context |
+| `cache_creation_input_token_cost_flex` | Flex cache creation cost |
+| `cache_creation_input_token_cost_flex_above_272k_tokens` | Cache creation above 272k context for flex requests |
+| `cache_creation_input_token_cost_priority` | Priority cache creation cost |
+| `cache_creation_input_token_cost_fast` | Cache creation cost for fast-mode requests (flat across the full context window - no tiering) |
+| `cache_creation_input_token_cost_above_1hr_fast` | Cache creation cost for fast-mode requests with 1hr+ TTL entries |
+| `cache_read_input_token_cost_fast` | Cache read cost for fast-mode requests (flat across the full context window - no tiering) |
 
 ### Image costs
 
@@ -341,10 +372,13 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 | `output_cost_per_image_medium_quality` | Generated image - medium quality |
 | `output_cost_per_image_high_quality` | Generated image - high quality |
 | `output_cost_per_image_auto_quality` | Generated image - auto quality |
-| `output_cost_per_image_above_512_and_512_pixels` | Generated image > 512×512 |
-| `output_cost_per_image_above_1024_and_1024_pixels` | Generated image > 1024×1024 |
-| `output_cost_per_image_above_2048_and_2048_pixels` | Generated image > 2048×2048 |
-| `output_cost_per_image_above_4096_and_4096_pixels` | Generated image > 4096×4096 |
+| `output_cost_per_image_above_512_and_512_pixels` | Generated image at or above 512×512 |
+| `output_cost_per_image_above_1024_and_1024_pixels` | Generated image at or above 1024×1024 |
+| `output_cost_per_image_above_2048_and_2048_pixels` | Generated image at or above 2048×2048 |
+| `output_cost_per_image_above_4096_and_4096_pixels` | Generated image at or above 4096×4096 |
+| `output_cost_per_image_premium_image` | Generated image - premium image |
+| `output_cost_per_image_above_512_and_512_pixels_and_premium_image` | Generated image at or above 512×512, premium image |
+| `output_cost_per_image_above_1024_and_1024_pixels_and_premium_image` | Generated image at or above 1024×1024, premium image |
 
 ### Audio and video costs
 
@@ -366,6 +400,14 @@ Only fields with non-zero values are applied. All values are cost **per unit** i
 |-------|-------------|
 | `search_context_cost_per_query` | Cost per web search context query |
 | `code_interpreter_cost_per_session` | Cost per code interpreter session |
+| `inference_geo_us_multiplier` | Data-residency cost multiplier applied when a request is served from a US inference region |
+
+### OCR costs
+
+| Field | Description |
+|-------|-------------|
+| `ocr_cost_per_page` | Cost per page processed by OCR |
+| `annotation_cost_per_page` | Cost per annotated page |
 
 ---
 
