@@ -3625,7 +3625,7 @@
     },
     "complexity_analyzer_keywords": {
       "type": "object",
-      "description": "User-editable keyword scoring signals. The legacy four-list shape remains accepted for config.json compatibility.",
+      "description": "Reference phrases for semantic complexity classification. The legacy four-list shape remains accepted for config.json compatibility.",
       "properties": {
         "simple_keywords": {
           "type": "array",
@@ -3708,7 +3708,7 @@
     },
     "complexity_semantic_config": {
       "type": "object",
-      "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the semantic classifier. The classifier embeds the analyzer's shared per-tier keyword lists as its exemplars.",
+      "description": "Embedding-based complexity classification settings. Presence of this block enables the classifier, which embeds the per-tier reference phrases.",
       "properties": {
         "provider": {
           "type": "string",

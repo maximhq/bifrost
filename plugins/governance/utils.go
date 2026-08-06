@@ -201,9 +201,6 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 	return filteredModels
 }
 
-// validateRequiredHeaders checks that all configured required headers are present in the request.
-// Headers are compared case-insensitively (both sides lowercased).
-// Returns a BifrostError with status 400 if any required headers are missing, or nil if all present.
 // truncateExemplarForLog bounds one operator-supplied tier phrase echoed into a
 // routing log. It cuts on runes so a multi-byte phrase cannot be split
 // mid-character, and returns "" for a phrase that carries nothing to show.
@@ -228,6 +225,9 @@ func withMatchedExemplar(message, exemplar string) string {
 	return fmt.Sprintf("%s matched=%q", message, matched)
 }
 
+// validateRequiredHeaders checks that all configured required headers are present in the request.
+// Headers are compared case-insensitively (both sides lowercased).
+// Returns a BifrostError with status 400 if any required headers are missing, or nil if all present.
 func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) *schemas.BifrostError {
 	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
 		return nil
