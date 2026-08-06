@@ -51,6 +51,11 @@ type MCPManager interface {
 	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
 	// SetClientTools updates the tool map for an existing client.
 	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	// RequiresPerCallConnection reports whether config resolves to a
+	// per-call connection (true) or a persistent shared one (false), taking
+	// auth type, connection type, and needs_session_stickiness into account
+	// together.
+	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
 }
 
 // MCPHandler manages HTTP requests for MCP tool operations
@@ -485,6 +490,7 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
+		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
@@ -654,6 +660,7 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
+		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
@@ -1125,27 +1132,28 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			isPingAvailable = *dbClient.IsPingAvailable
 		}
 		clientConfig := &schemas.MCPClientConfig{
-			ID:                    dbClient.ClientID,
-			Name:                  dbClient.Name,
-			IsCodeModeClient:      dbClient.IsCodeModeClient,
-			ConnectionType:        schemas.MCPConnectionType(dbClient.ConnectionType),
-			ConnectionString:      dbClient.ConnectionString,
-			StdioConfig:           dbClient.StdioConfig,
-			TLSConfig:             dbClient.TLSConfig,
-			AuthType:              schemas.MCPAuthType(dbClient.AuthType),
-			OauthConfigID:         dbClient.OauthConfigID,
-			ToolsToExecute:        dbClient.ToolsToExecute,
-			ToolsToAutoExecute:    dbClient.ToolsToAutoExecute,
-			Headers:               dbClient.Headers,
-			AllowedExtraHeaders:   dbClient.AllowedExtraHeaders,
-			IsPingAvailable:       &isPingAvailable,
-			ToolSyncInterval:      time.Duration(dbClient.ToolSyncInterval) * time.Second,
-			ToolExecutionTimeout:  time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
-			ToolPricing:           dbClient.ToolPricing,
-			AllowOnAllVirtualKeys: dbClient.AllowOnAllVirtualKeys,
-			Disabled:              dbClient.Disabled,
-			PerUserHeaderKeys:     dbClient.PerUserHeaderKeys,
-			TokenExchange:         dbClient.TokenExchange,
+			ID:                     dbClient.ClientID,
+			Name:                   dbClient.Name,
+			IsCodeModeClient:       dbClient.IsCodeModeClient,
+			ConnectionType:         schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString:       dbClient.ConnectionString,
+			StdioConfig:            dbClient.StdioConfig,
+			TLSConfig:              dbClient.TLSConfig,
+			AuthType:               schemas.MCPAuthType(dbClient.AuthType),
+			OauthConfigID:          dbClient.OauthConfigID,
+			ToolsToExecute:         dbClient.ToolsToExecute,
+			ToolsToAutoExecute:     dbClient.ToolsToAutoExecute,
+			Headers:                dbClient.Headers,
+			AllowedExtraHeaders:    dbClient.AllowedExtraHeaders,
+			IsPingAvailable:        &isPingAvailable,
+			NeedsSessionStickiness: dbClient.NeedsSessionStickiness,
+			ToolSyncInterval:       time.Duration(dbClient.ToolSyncInterval) * time.Second,
+			ToolExecutionTimeout:   time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
+			ToolPricing:            dbClient.ToolPricing,
+			AllowOnAllVirtualKeys:  dbClient.AllowOnAllVirtualKeys,
+			Disabled:               dbClient.Disabled,
+			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
+			TokenExchange:          dbClient.TokenExchange,
 		}
 		// Populate oauth client credentials from pre-fetched batch
 		if dbClient.OauthConfigID != nil {
@@ -1294,23 +1302,24 @@ const (
 // Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
 // accepted here; they cannot be changed after creation.
 type MCPClientUpdateRequest struct {
-	Name                  *string                         `json:"name,omitempty"`
-	Disabled              *bool                           `json:"disabled,omitempty"`
-	AllowOnAllVirtualKeys *bool                           `json:"allow_on_all_virtual_keys,omitempty"`
-	IsCodeModeClient      *bool                           `json:"is_code_mode_client,omitempty"`
-	IsPingAvailable       *bool                           `json:"is_ping_available,omitempty"`
-	ToolSyncInterval      *int                            `json:"tool_sync_interval,omitempty"`
-	ToolExecutionTimeout  *int                            `json:"tool_execution_timeout,omitempty"`
-	Headers               map[string]schemas.SecretVar    `json:"headers,omitempty"`
-	AllowedExtraHeaders   *schemas.WhiteList              `json:"allowed_extra_headers,omitempty"`
-	ToolPricing           map[string]float64              `json:"tool_pricing,omitempty"`
-	ToolsToExecute        *schemas.WhiteList              `json:"tools_to_execute,omitempty"`
-	ToolsToAutoExecute    *schemas.WhiteList              `json:"tools_to_auto_execute,omitempty"`
-	PerUserHeaderKeys     *[]string                       `json:"per_user_header_keys,omitempty"`
-	TokenExchange         *schemas.MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
-	TLSConfig             *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
-	VKConfigs             *[]MCPVKConfigRequest           `json:"vk_configs,omitempty"`
-	OauthConfig           *OAuthConfigRequest             `json:"oauth_config,omitempty"`
+	Name                   *string                         `json:"name,omitempty"`
+	Disabled               *bool                           `json:"disabled,omitempty"`
+	AllowOnAllVirtualKeys  *bool                           `json:"allow_on_all_virtual_keys,omitempty"`
+	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
+	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
+	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
+	ToolSyncInterval       *int                            `json:"tool_sync_interval,omitempty"`
+	ToolExecutionTimeout   *int                            `json:"tool_execution_timeout,omitempty"`
+	Headers                map[string]schemas.SecretVar    `json:"headers,omitempty"`
+	AllowedExtraHeaders    *schemas.WhiteList              `json:"allowed_extra_headers,omitempty"`
+	ToolPricing            map[string]float64              `json:"tool_pricing,omitempty"`
+	ToolsToExecute         *schemas.WhiteList              `json:"tools_to_execute,omitempty"`
+	ToolsToAutoExecute     *schemas.WhiteList              `json:"tools_to_auto_execute,omitempty"`
+	PerUserHeaderKeys      *[]string                       `json:"per_user_header_keys,omitempty"`
+	TokenExchange          *schemas.MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
+	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
+	VKConfigs              *[]MCPVKConfigRequest           `json:"vk_configs,omitempty"`
+	OauthConfig            *OAuthConfigRequest             `json:"oauth_config,omitempty"`
 }
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
@@ -1352,6 +1361,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	if err := validateAllowedExtraHeaders(req.AllowedExtraHeaders); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid allowed_extra_headers: %v", err))
+		return
+	}
+	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, schemas.MCPConnectionType(req.ConnectionType)); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1426,23 +1439,24 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 
 		schemasConfig := &schemas.MCPClientConfig{
-			ID:                    req.ClientID,
-			Name:                  req.Name,
-			IsCodeModeClient:      req.IsCodeModeClient,
-			IsPingAvailable:       &isPingAvailable,
-			ToolSyncInterval:      toolSyncInterval,
-			ToolExecutionTimeout:  resolvedToolExecutionTimeout,
-			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
-			ConnectionString:      req.ConnectionString,
-			StdioConfig:           req.StdioConfig,
-			AuthType:              schemas.MCPAuthTypePerUserHeaders,
-			PerUserHeaderKeys:     canonHeaderKeys,
-			ToolsToExecute:        req.ToolsToExecute,
-			ToolsToAutoExecute:    req.ToolsToAutoExecute,
-			ToolPricing:           req.ToolPricing,
-			Headers:               req.Headers,
-			AllowedExtraHeaders:   req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
+			ID:                     req.ClientID,
+			Name:                   req.Name,
+			IsCodeModeClient:       req.IsCodeModeClient,
+			IsPingAvailable:        &isPingAvailable,
+			NeedsSessionStickiness: req.NeedsSessionStickiness,
+			ToolSyncInterval:       toolSyncInterval,
+			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
+			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
+			ConnectionString:       req.ConnectionString,
+			StdioConfig:            req.StdioConfig,
+			AuthType:               schemas.MCPAuthTypePerUserHeaders,
+			PerUserHeaderKeys:      canonHeaderKeys,
+			ToolsToExecute:         req.ToolsToExecute,
+			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			ToolPricing:            req.ToolPricing,
+			Headers:                req.Headers,
+			AllowedExtraHeaders:    req.AllowedExtraHeaders,
+			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
 		}
 
 		// Verify connection and discover tools using the admin's sample
@@ -1539,24 +1553,25 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 
 		schemasConfig := &schemas.MCPClientConfig{
-			ID:                    req.ClientID,
-			Name:                  req.Name,
-			IsCodeModeClient:      req.IsCodeModeClient,
-			IsPingAvailable:       &isPingAvailable,
-			ToolSyncInterval:      toolSyncInterval,
-			ToolExecutionTimeout:  resolvedToolExecutionTimeout,
-			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
-			ConnectionString:      req.ConnectionString,
-			StdioConfig:           req.StdioConfig,
-			TLSConfig:             req.TLSConfig,
-			AuthType:              schemas.MCPAuthTypeTokenExchange,
-			TokenExchange:         req.TokenExchange,
-			ToolsToExecute:        req.ToolsToExecute,
-			ToolsToAutoExecute:    req.ToolsToAutoExecute,
-			ToolPricing:           req.ToolPricing,
-			Headers:               req.Headers,
-			AllowedExtraHeaders:   req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
+			ID:                     req.ClientID,
+			Name:                   req.Name,
+			IsCodeModeClient:       req.IsCodeModeClient,
+			IsPingAvailable:        &isPingAvailable,
+			NeedsSessionStickiness: req.NeedsSessionStickiness,
+			ToolSyncInterval:       toolSyncInterval,
+			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
+			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
+			ConnectionString:       req.ConnectionString,
+			StdioConfig:            req.StdioConfig,
+			TLSConfig:              req.TLSConfig,
+			AuthType:               schemas.MCPAuthTypeTokenExchange,
+			TokenExchange:          req.TokenExchange,
+			ToolsToExecute:         req.ToolsToExecute,
+			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			ToolPricing:            req.ToolPricing,
+			Headers:                req.Headers,
+			AllowedExtraHeaders:    req.AllowedExtraHeaders,
+			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
 		}
 
 		// Resolve an admin credential for synchronous verification + tool
@@ -1674,24 +1689,25 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 
 		pendingConfig := schemas.MCPClientConfig{
-			ID:                    req.ClientID,
-			Name:                  req.Name,
-			IsCodeModeClient:      req.IsCodeModeClient,
-			IsPingAvailable:       &isPingAvailable,
-			ToolSyncInterval:      toolSyncInterval,
-			ToolExecutionTimeout:  resolvedToolExecutionTimeout,
-			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
-			ConnectionString:      req.ConnectionString,
-			StdioConfig:           req.StdioConfig,
-			TLSConfig:             req.TLSConfig,
-			AuthType:              schemas.MCPAuthTypePerUserOauth,
-			OauthConfigID:         &flowInitiation.OauthConfigID,
-			ToolsToExecute:        req.ToolsToExecute,
-			ToolsToAutoExecute:    req.ToolsToAutoExecute,
-			ToolPricing:           req.ToolPricing,
-			Headers:               req.Headers,
-			AllowedExtraHeaders:   req.AllowedExtraHeaders,
-			AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
+			ID:                     req.ClientID,
+			Name:                   req.Name,
+			IsCodeModeClient:       req.IsCodeModeClient,
+			IsPingAvailable:        &isPingAvailable,
+			NeedsSessionStickiness: req.NeedsSessionStickiness,
+			ToolSyncInterval:       toolSyncInterval,
+			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
+			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
+			ConnectionString:       req.ConnectionString,
+			StdioConfig:            req.StdioConfig,
+			TLSConfig:              req.TLSConfig,
+			AuthType:               schemas.MCPAuthTypePerUserOauth,
+			OauthConfigID:          &flowInitiation.OauthConfigID,
+			ToolsToExecute:         req.ToolsToExecute,
+			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			ToolPricing:            req.ToolPricing,
+			Headers:                req.Headers,
+			AllowedExtraHeaders:    req.AllowedExtraHeaders,
+			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
 		}
 
 		if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
@@ -1768,24 +1784,25 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// Store MCP client config in OAuth provider memory (not in database)
 		// It will be stored in database only after OAuth completion
 		pendingConfig := schemas.MCPClientConfig{
-			ID:                    req.ClientID,
-			Name:                  req.Name,
-			IsCodeModeClient:      req.IsCodeModeClient,
-			IsPingAvailable:       req.IsPingAvailable,
-			ToolSyncInterval:      toolSyncInterval,
-			ToolExecutionTimeout:  resolvedToolExecutionTimeout,
-			ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
-			ConnectionString:      req.ConnectionString,
-			StdioConfig:           req.StdioConfig,
-			TLSConfig:             req.TLSConfig,
-			AuthType:              schemas.MCPAuthType(req.AuthType),
-			OauthConfigID:         &flowInitiation.OauthConfigID,
-			ToolsToExecute:        req.ToolsToExecute,
-			ToolsToAutoExecute:    req.ToolsToAutoExecute,
-			Headers:               req.Headers,
-			AllowedExtraHeaders:   req.AllowedExtraHeaders,
-			ToolPricing:           req.ToolPricing,
-			AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
+			ID:                     req.ClientID,
+			Name:                   req.Name,
+			IsCodeModeClient:       req.IsCodeModeClient,
+			IsPingAvailable:        req.IsPingAvailable,
+			NeedsSessionStickiness: req.NeedsSessionStickiness,
+			ToolSyncInterval:       toolSyncInterval,
+			ToolExecutionTimeout:   resolvedToolExecutionTimeout,
+			ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
+			ConnectionString:       req.ConnectionString,
+			StdioConfig:            req.StdioConfig,
+			TLSConfig:              req.TLSConfig,
+			AuthType:               schemas.MCPAuthType(req.AuthType),
+			OauthConfigID:          &flowInitiation.OauthConfigID,
+			ToolsToExecute:         req.ToolsToExecute,
+			ToolsToAutoExecute:     req.ToolsToAutoExecute,
+			Headers:                req.Headers,
+			AllowedExtraHeaders:    req.AllowedExtraHeaders,
+			ToolPricing:            req.ToolPricing,
+			AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
 		}
 
 		// Store pending config in database (associated with oauth_config_id for multi-instance support)
@@ -1833,24 +1850,25 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
 	schemasConfig := &schemas.MCPClientConfig{
-		ID:                    req.ClientID,
-		Name:                  req.Name,
-		IsCodeModeClient:      req.IsCodeModeClient,
-		ConnectionType:        schemas.MCPConnectionType(req.ConnectionType),
-		ConnectionString:      req.ConnectionString,
-		StdioConfig:           req.StdioConfig,
-		TLSConfig:             req.TLSConfig,
-		ToolsToExecute:        req.ToolsToExecute,
-		ToolsToAutoExecute:    req.ToolsToAutoExecute,
-		Headers:               req.Headers,
-		AllowedExtraHeaders:   req.AllowedExtraHeaders,
-		AuthType:              schemas.MCPAuthType(req.AuthType),
-		OauthConfigID:         req.OauthConfigID,
-		IsPingAvailable:       req.IsPingAvailable,
-		ToolSyncInterval:      toolSyncInterval,
-		ToolExecutionTimeout:  resolvedToolExecutionTimeout,
-		ToolPricing:           req.ToolPricing,
-		AllowOnAllVirtualKeys: req.AllowOnAllVirtualKeys,
+		ID:                     req.ClientID,
+		Name:                   req.Name,
+		IsCodeModeClient:       req.IsCodeModeClient,
+		ConnectionType:         schemas.MCPConnectionType(req.ConnectionType),
+		ConnectionString:       req.ConnectionString,
+		StdioConfig:            req.StdioConfig,
+		TLSConfig:              req.TLSConfig,
+		ToolsToExecute:         req.ToolsToExecute,
+		ToolsToAutoExecute:     req.ToolsToAutoExecute,
+		Headers:                req.Headers,
+		AllowedExtraHeaders:    req.AllowedExtraHeaders,
+		AuthType:               schemas.MCPAuthType(req.AuthType),
+		OauthConfigID:          req.OauthConfigID,
+		IsPingAvailable:        req.IsPingAvailable,
+		NeedsSessionStickiness: req.NeedsSessionStickiness,
+		ToolSyncInterval:       toolSyncInterval,
+		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
+		ToolPricing:            req.ToolPricing,
+		AllowOnAllVirtualKeys:  req.AllowOnAllVirtualKeys,
 	}
 
 	// Creating MCP client config in config store
@@ -1914,6 +1932,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
+	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, existingConfig.ConnectionType); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	// Snapshot fields we need to diff against the resolved values AFTER UpdateMCPClient
 	// runs further below — UpdateMCPClient mutates the *MCPClientConfig in place (it's
 	// the same pointer the manager holds in MCPConfig.ClientConfigs), so post-update
@@ -1946,6 +1968,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	isPingAvailable := existingConfig.IsPingAvailable
 	if req.IsPingAvailable != nil {
 		isPingAvailable = req.IsPingAvailable
+	}
+	needsSessionStickiness := existingConfig.NeedsSessionStickiness
+	if req.NeedsSessionStickiness != nil {
+		needsSessionStickiness = req.NeedsSessionStickiness
 	}
 	toolPricing := existingConfig.ToolPricing
 	if req.ToolPricing != nil {
@@ -2246,27 +2272,28 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 
 	// Build the DB update record from all resolved values.
 	dbUpdateRecord := configstoreTables.TableMCPClient{
-		ClientID:              id,
-		Name:                  name,
-		IsCodeModeClient:      isCodeMode,
-		ConnectionType:        string(existingConfig.ConnectionType),
-		ConnectionString:      existingConfig.ConnectionString,
-		StdioConfig:           existingConfig.StdioConfig,
-		ToolsToExecute:        resolvedToolsToExecute,
-		ToolsToAutoExecute:    resolvedToolsToAutoExecute,
-		Headers:               headers,
-		AllowedExtraHeaders:   allowedExtraHeaders,
-		IsPingAvailable:       isPingAvailable,
-		ToolPricing:           toolPricing,
-		ToolSyncInterval:      int(resolvedToolSyncInterval / time.Second),
-		ToolExecutionTimeout:  int(resolvedToolExecutionTimeout / time.Second),
-		AuthType:              string(existingConfig.AuthType),
-		OauthConfigID:         existingConfig.OauthConfigID,
-		AllowOnAllVirtualKeys: allowOnAllVKs,
-		Disabled:              disabled,
-		PerUserHeaderKeys:     perUserHeaderKeys,
-		TokenExchange:         tokenExchange,
-		TLSConfig:             tlsConfig,
+		ClientID:               id,
+		Name:                   name,
+		IsCodeModeClient:       isCodeMode,
+		ConnectionType:         string(existingConfig.ConnectionType),
+		ConnectionString:       existingConfig.ConnectionString,
+		StdioConfig:            existingConfig.StdioConfig,
+		ToolsToExecute:         resolvedToolsToExecute,
+		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
+		Headers:                headers,
+		AllowedExtraHeaders:    allowedExtraHeaders,
+		IsPingAvailable:        isPingAvailable,
+		NeedsSessionStickiness: needsSessionStickiness,
+		ToolPricing:            toolPricing,
+		ToolSyncInterval:       int(resolvedToolSyncInterval / time.Second),
+		ToolExecutionTimeout:   int(resolvedToolExecutionTimeout / time.Second),
+		AuthType:               string(existingConfig.AuthType),
+		OauthConfigID:          existingConfig.OauthConfigID,
+		AllowOnAllVirtualKeys:  allowOnAllVKs,
+		Disabled:               disabled,
+		PerUserHeaderKeys:      perUserHeaderKeys,
+		TokenExchange:          tokenExchange,
+		TLSConfig:              tlsConfig,
 	}
 	// Rebind persisted discovered tool keys (and inner Function.Name) to the current
 	// client name so a restart restores them under the right prefix.
@@ -2309,40 +2336,69 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	// Build in-memory config from resolved values.
 	schemasConfig := &schemas.MCPClientConfig{
-		ID:                    id,
-		Name:                  name,
-		IsCodeModeClient:      isCodeMode,
-		ConnectionType:        existingConfig.ConnectionType,
-		ConnectionString:      existingConfig.ConnectionString,
-		StdioConfig:           existingConfig.StdioConfig,
-		TLSConfig:             tlsConfig,
-		ToolsToExecute:        resolvedToolsToExecute,
-		ToolsToAutoExecute:    resolvedToolsToAutoExecute,
-		Headers:               headers,
-		AllowedExtraHeaders:   allowedExtraHeaders,
-		AuthType:              existingConfig.AuthType,
-		OauthConfigID:         existingConfig.OauthConfigID,
-		IsPingAvailable:       isPingAvailable,
-		ToolSyncInterval:      toolSyncInterval,
-		ToolExecutionTimeout:  resolvedToolExecutionTimeout,
-		ToolPricing:           toolPricing,
-		AllowOnAllVirtualKeys: allowOnAllVKs,
-		Disabled:              disabled,
-		PerUserHeaderKeys:     perUserHeaderKeys,
-		TokenExchange:         tokenExchange,
+		ID:                     id,
+		Name:                   name,
+		IsCodeModeClient:       isCodeMode,
+		ConnectionType:         existingConfig.ConnectionType,
+		ConnectionString:       existingConfig.ConnectionString,
+		StdioConfig:            existingConfig.StdioConfig,
+		TLSConfig:              tlsConfig,
+		ToolsToExecute:         resolvedToolsToExecute,
+		ToolsToAutoExecute:     resolvedToolsToAutoExecute,
+		Headers:                headers,
+		AllowedExtraHeaders:    allowedExtraHeaders,
+		AuthType:               existingConfig.AuthType,
+		OauthConfigID:          existingConfig.OauthConfigID,
+		IsPingAvailable:        isPingAvailable,
+		NeedsSessionStickiness: needsSessionStickiness,
+		ToolSyncInterval:       toolSyncInterval,
+		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
+		ToolPricing:            toolPricing,
+		AllowOnAllVirtualKeys:  allowOnAllVKs,
+		Disabled:               disabled,
+		PerUserHeaderKeys:      perUserHeaderKeys,
+		TokenExchange:          tokenExchange,
 	}
 
+	// Compare per-call-ness before/after so the response can tell the admin
+	// whether this update actually changed how the client connects (only
+	// needs_session_stickiness on a shared http client can do that — every
+	// other combination of auth/connection type comes out the same on both
+	// sides). UpdateMCPClient below applies the change live: it closes the
+	// persistent connection if this just became per-call, or dials one if it
+	// just became sticky.
+	wasPerCallConnection := h.mcpManager.RequiresPerCallConnection(existingConfig)
+	isPerCallConnection := h.mcpManager.RequiresPerCallConnection(schemasConfig)
+
 	// Update MCP client config in memory (always — applies name/tools/header changes,
+	// sharedConnectErr records a needs_session_stickiness=true dial failure without
+	// aborting the request: the field update itself already committed in memory with
+	// no rollback path (see the sentinel's own doc comment), so every block below
+	// (OAuth rotation, admin exchange reauth marking, per-user-headers needs_update,
+	// VK assignment changes, per-user credential reconciliation) is independent of
+	// whether the dial succeeded and must still run. Returning early here used to
+	// silently drop all of them for any request that combined
+	// needs_session_stickiness with one of those other changes. The dial failure is
+	// folded into the final response instead of an early one.
+	var sharedConnectErr error
 	if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
-		// Rollback DB update to keep DB and memory in sync
-		if h.store.ConfigStore != nil && oldDBConfig != nil {
-			if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, oldDBConfig); rollbackErr != nil {
-				logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+		if errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) {
+			// Rolling the DB back to oldDBConfig here would diverge it from
+			// the runtime, which already has the new config and a connection
+			// checker retrying the dial. Keep the persisted row.
+			logger.Error(fmt.Sprintf("MCP client %s updated, but its shared connection could not be established: %v", id, err))
+			sharedConnectErr = err
+		} else {
+			// Rollback DB update to keep DB and memory in sync
+			if h.store.ConfigStore != nil && oldDBConfig != nil {
+				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, oldDBConfig); rollbackErr != nil {
+					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+				}
 			}
+			logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v", err))
+			return
 		}
-		logger.Error(fmt.Sprintf("Failed to update MCP client: %v", err))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v", err))
-		return
 	}
 
 	// Rotate OAuth credentials only now that both the DB row and the runtime
@@ -2565,9 +2621,27 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	message := "MCP client edited successfully"
+	if sharedConnectErr == nil {
+		// Only claimed when the dial actually succeeded — see sharedConnectErr
+		// handling below for the case where it didn't.
+		switch {
+		case wasPerCallConnection && !isPerCallConnection:
+			message += ". This client now maintains a persistent shared connection: it has been (re)connected."
+		case !wasPerCallConnection && isPerCallConnection:
+			message += ". This client now connects per call instead of maintaining a persistent connection: the existing shared connection was closed."
+		}
+	}
+	if sharedConnectErr != nil {
+		SendJSON(ctx, map[string]any{
+			"status":  "partial_success",
+			"message": fmt.Sprintf("%s However, establishing the shared connection failed: %v. The connection checker will keep retrying automatically.", message, sharedConnectErr),
+		})
+		return
+	}
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
-		"message": "MCP client edited successfully",
+		"message": message,
 	})
 }
 
@@ -2626,6 +2700,20 @@ func validateToolsToExecute(toolsToExecute schemas.WhiteList) error {
 func validateAllowedExtraHeaders(allowedExtraHeaders schemas.WhiteList) error {
 	if err := allowedExtraHeaders.Validate(); err != nil {
 		return fmt.Errorf("invalid allowed_extra_headers: %w", err)
+	}
+	return nil
+}
+
+// validateNeedsSessionStickiness rejects an explicit false for connection
+// types that can't run per-call: SSE has no stateless mode (its session is
+// bound to the open stream) and STDIO needs a persistent subprocess. nil and
+// true are always fine regardless of connection type.
+func validateNeedsSessionStickiness(needsSessionStickiness *bool, connectionType schemas.MCPConnectionType) error {
+	if needsSessionStickiness == nil || *needsSessionStickiness {
+		return nil
+	}
+	if connectionType != schemas.MCPConnectionTypeHTTP {
+		return fmt.Errorf("needs_session_stickiness cannot be false for connection_type %q: only 'http' supports a per-call connection", connectionType)
 	}
 	return nil
 }
@@ -2802,6 +2890,7 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
+		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolPricing:               clientConfig.ToolPricing,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(clientConfig.ToolExecutionTimeout / time.Second),
@@ -3035,6 +3124,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				Headers:                   mcpClientConfig.Headers,
 				AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
 				IsPingAvailable:           mcpClientConfig.IsPingAvailable,
+				NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
 				ToolPricing:               mcpClientConfig.ToolPricing,
 				ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
 				ToolExecutionTimeout:      int(mcpClientConfig.ToolExecutionTimeout / time.Second),
@@ -3153,6 +3243,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			Headers:                   mcpClientConfig.Headers,
 			AllowedExtraHeaders:       mcpClientConfig.AllowedExtraHeaders,
 			IsPingAvailable:           mcpClientConfig.IsPingAvailable,
+			NeedsSessionStickiness:    mcpClientConfig.NeedsSessionStickiness,
 			ToolPricing:               mcpClientConfig.ToolPricing,
 			ToolSyncInterval:          int(mcpClientConfig.ToolSyncInterval / time.Second),
 			AllowOnAllVirtualKeys:     mcpClientConfig.AllowOnAllVirtualKeys,
@@ -3251,7 +3342,6 @@ func resolvePerUserHeaderKeys(existing *schemas.MCPClientConfig, req MCPClientUp
 	}
 	return nil
 }
-
 
 // perUserHeaderKeysAdded reports whether the new schema introduces any key
 // absent from the old schema (order-insensitive). Used by updateMCPClient to

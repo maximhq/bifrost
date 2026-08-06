@@ -463,13 +463,27 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable       *bool              `json:"is_ping_available,omitempty"`      // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
-	ToolSyncInterval      time.Duration      `json:"tool_sync_interval,omitempty"`     // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ToolExecutionTimeout  time.Duration      `json:"tool_execution_timeout,omitempty"` // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
-	ToolPricing           map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
-	Disabled              bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
-	ConfigHash            string             `json:"-"`                                // Config hash for reconciliation (not serialized)
-	AllowOnAllVirtualKeys bool               `json:"allow_on_all_virtual_keys"`        // Whether to allow the MCP client to run on all virtual keys
+	IsPingAvailable *bool `json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks (nil/true = ping; false = listTools). Defaults to true.
+	// NeedsSessionStickiness controls whether this shared client (auth_type
+	// oauth/headers) maintains one persistent connection reused across every
+	// caller (true) or connects fresh per call, same model as the per-user
+	// auth types, with no persistent connection or background connection
+	// checker at all (nil/false, the default for newly created clients).
+	// Every client that existed before this field was introduced is
+	// explicitly backfilled to true, preserving its exact prior behavior;
+	// nil/false only applies to clients created afterward. Only meaningful
+	// for ConnectionType == http: SSE has no stateless mode and STDIO needs
+	// a persistent subprocess, so both always behave as sticky regardless
+	// of this field, and an explicit false is rejected for either at write
+	// time. Ignored for per-user auth types (already always per-call
+	// regardless).
+	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
+	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`     // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"` // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
+	Disabled               bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
+	ConfigHash             string             `json:"-"`                                // Config hash for reconciliation (not serialized)
+	AllowOnAllVirtualKeys  bool               `json:"allow_on_all_virtual_keys"`        // Whether to allow the MCP client to run on all virtual keys
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
