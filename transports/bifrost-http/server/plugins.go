@@ -170,6 +170,17 @@ func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
 	return nil
 }
 
+// isBuiltinPluginDisabled reports whether a stored plugin row explicitly disables a
+// built-in plugin. Default-on: a missing row is treated as enabled so upgraders keep
+// their current behavior, and only an explicit Enabled=false turns a plugin off.
+// Without this check, plugins whose load decision comes from ClientConfig rather than
+// the plugin row (logging, governance, compat, prompts) came back on every restart
+// after being disabled through the API, while the API kept reporting them disabled.
+func (s *BifrostHTTPServer) isBuiltinPluginDisabled(name string) bool {
+	cfg := s.getPluginConfig(name)
+	return cfg != nil && !cfg.Enabled
+}
+
 // loadBuiltinPlugins loads required built-in plugins in specific order
 func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	builtinPlacement := schemas.Ptr(schemas.PluginPlacementBuiltin)
@@ -190,7 +201,8 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	s.Config.SetPluginOrderInfo(telemetry.PluginName, builtinPlacement, schemas.Ptr(1))
 
 	// 2. Prompts (requires config store for prompt repository; disabled in enterprise)
-	if s.Config.ConfigStore != nil && ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
+	if s.Config.ConfigStore != nil && ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil &&
+		!s.isBuiltinPluginDisabled(prompts.PluginName) {
 		s.registerPluginWithStatus(ctx, prompts.PluginName, nil, nil, false)
 	} else {
 		s.markPluginDisabled(prompts.PluginName)
@@ -198,7 +210,8 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	s.Config.SetPluginOrderInfo(prompts.PluginName, builtinPlacement, schemas.Ptr(2))
 
 	// 3. Logging (if enabled)
-	if (s.Config.ClientConfig.EnableLogging == nil || *s.Config.ClientConfig.EnableLogging) && s.Config.LogsStore != nil {
+	if (s.Config.ClientConfig.EnableLogging == nil || *s.Config.ClientConfig.EnableLogging) && s.Config.LogsStore != nil &&
+		!s.isBuiltinPluginDisabled(logging.PluginName) {
 		config := &logging.Config{
 			DisableContentLogging:        &s.Config.ClientConfig.DisableContentLogging,
 			RetainContentInObjectStorage: &s.Config.ClientConfig.RetainContentInObjectStorage,
@@ -214,7 +227,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	s.Config.SetPluginOrderInfo(logging.PluginName, builtinPlacement, schemas.Ptr(3))
 
 	// 4. Governance (if enabled and not enterprise)
-	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
+	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil && !s.isBuiltinPluginDisabled(governance.PluginName) {
 		config := &governance.Config{
 			IsVkMandatory:         &s.Config.ClientConfig.EnforceAuthOnInference,
 			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
@@ -253,7 +266,11 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		ShouldDropParams:       cc.ShouldDropParams,
 		ShouldConvertParams:    cc.ShouldConvertParams,
 	}
-	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
+	if !s.isBuiltinPluginDisabled(compat.PluginName) {
+		s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
+	} else {
+		s.markPluginDisabled(compat.PluginName)
+	}
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(7))
 
 	// 8. Maxim (if configured in PluginConfigs)
