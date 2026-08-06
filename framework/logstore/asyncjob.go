@@ -292,12 +292,6 @@ func (e *AsyncJobExecutor) getWebhookEndpointIfPresent(ctx *schemas.BifrostConte
 	if e.webhookManager == nil {
 		return nil, fmt.Errorf("webhook manager is not available")
 	}
-	// Fail fast when delivery is not wired: without a dispatcher the job would
-	// persist an endpoint reference that notifyWebhook can never act on,
-	// silently dropping the notification the caller asked for.
-	if e.webhookDispatcher == nil {
-		return nil, fmt.Errorf("webhook dispatcher is not available")
-	}
 	endpoint, ok := e.webhookManager.WebhookEndpointByName(webhookEndpointName)
 	if !ok {
 		return nil, fmt.Errorf("%w: unknown webhook endpoint with name %q", ErrInvalidWebhookReference, webhookEndpointName)
