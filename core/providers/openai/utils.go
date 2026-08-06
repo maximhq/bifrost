@@ -32,6 +32,12 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 	return bifrostMessages
 }
 
+// ConvertBifrostMessagesToOpenAIMessages converts Bifrost chat messages to the
+// OpenAI wire format, dropping neutral-format fields the OpenAI wire has no
+// carrier for. Over-long tool call IDs are stripped of embedded provider
+// reasoning signatures, and tool messages lose is_error so providers that reject
+// unknown message parameters never see it.
+// The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
