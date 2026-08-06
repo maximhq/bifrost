@@ -119,7 +119,7 @@ func TestConnectToMCPClient_GenericFailure_StaysDisconnected(t *testing.T) {
 	state, exists := m.clientMap[config.ID]
 	m.mu.RUnlock()
 	require.True(t, exists)
-	assert.Equal(t, schemas.MCPConnectionStateDisconnected, state.State)
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State)
 }
 
 // TestUpdateClientState_PreservesNeedsReauth covers healthmonitor.go's
@@ -128,7 +128,7 @@ func TestConnectToMCPClient_GenericFailure_StaysDisconnected(t *testing.T) {
 // only a human reauthorizing the client (surfaced elsewhere as a fresh
 // connectToMCPClient success, which sets Connected unconditionally) should
 // move it out of this state.
-func TestUpdateClientState_PreservesNeedsReauth(t *testing.T) {
+func TestSetState_PreservesNeedsReauth(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-health-cycle")
 
@@ -140,35 +140,33 @@ func TestUpdateClientState_PreservesNeedsReauth(t *testing.T) {
 	}
 	m.mu.Unlock()
 
-	chm := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, true, nil)
+	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
 
-	// A failed health-check tick (performHealthCheck's failure branch) tries
-	// to write Disconnected first.
-	chm.updateClientState(schemas.MCPConnectionStateDisconnected)
+	// A failed check tick (recordFailure's path) tries to write Unstable first.
+	checker.setState(schemas.MCPConnectionStateUnstable)
 	m.mu.RLock()
 	stateAfterFailureTick := m.clientMap[config.ID].State
 	m.mu.RUnlock()
-	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, stateAfterFailureTick, "a failed health-check tick must not clobber NeedsReauth back to Disconnected")
+	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, stateAfterFailureTick, "a failed check tick must not clobber NeedsReauth back to Unstable")
 
-	// A successful ping (performHealthCheck's success branch) tries to write
-	// Connected — this must also be rejected: the ping succeeding against a
-	// stale/absent transport does not mean the credential is fixed.
-	chm.updateClientState(schemas.MCPConnectionStateConnected)
+	// A successful check (recordSuccess's path) tries to write Healthy — this
+	// must also be rejected: the check succeeding against a stale/absent
+	// transport does not mean the credential is fixed.
+	checker.setState(schemas.MCPConnectionStateHealthy)
 	m.mu.RLock()
 	stateAfterSuccessTick := m.clientMap[config.ID].State
 	m.mu.RUnlock()
-	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, stateAfterSuccessTick, "a successful health-check tick must not clobber NeedsReauth back to Connected")
+	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, stateAfterSuccessTick, "a successful check tick must not clobber NeedsReauth back to Healthy")
 }
 
-// TestPerformHealthCheck_SkipsNeedsReauthClients covers the health monitor's
-// entry-point guard, one level up from TestUpdateClientState_PreservesNeedsReauth:
-// a NeedsReauth client (e.g. CloseAndMarkNeedsReauth after OAuth credential
-// rotation) has Conn == nil by design. Without a skip, performHealthCheck
-// would treat that nil Conn as a fresh failure, increment the counter, and
-// eventually spawn attemptReconnect — which dials with the already-known-dead
-// credential for nothing. The tick must be a complete no-op: no failure
-// counted, no reconnect scheduled, state untouched.
-func TestPerformHealthCheck_SkipsNeedsReauthClients(t *testing.T) {
+// TestPerformCheck_SkipsNeedsReauthClients covers the connection checker's
+// entry-point guard, one level up from TestSetState_PreservesNeedsReauth: a
+// NeedsReauth client (e.g. CloseAndMarkNeedsReauth after OAuth credential
+// rotation) has Conn == nil by design. Without a skip, performCheck would
+// treat that nil Conn as a fresh failure and spawn a reconnect attempt —
+// which dials with the already-known-dead credential for nothing. The tick
+// must be a complete no-op: state untouched.
+func TestPerformCheck_SkipsNeedsReauthClients(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-needs-reauth-healthcheck")
 
@@ -181,14 +179,8 @@ func TestPerformHealthCheck_SkipsNeedsReauthClients(t *testing.T) {
 	}
 	m.mu.Unlock()
 
-	chm := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, true, nil)
-	chm.performHealthCheck()
-
-	assert.Equal(t, 0, chm.getConsecutiveFailures(), "a NeedsReauth tick must not count as a failure")
-	chm.mu.Lock()
-	reconnecting := chm.isReconnecting
-	chm.mu.Unlock()
-	assert.False(t, reconnecting, "a NeedsReauth tick must not spawn a reconnect attempt")
+	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
+	checker.performCheck()
 
 	m.mu.RLock()
 	state := m.clientMap[config.ID].State
@@ -196,11 +188,10 @@ func TestPerformHealthCheck_SkipsNeedsReauthClients(t *testing.T) {
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state)
 }
 
-// TestUpdateClientState_StillPreservesDisabled is a regression guard for the
-// pre-existing Disabled-preservation behavior updateClientState had before
-// this change — the new NeedsReauth branch must be additive, not a
-// replacement.
-func TestUpdateClientState_StillPreservesDisabled(t *testing.T) {
+// TestSetState_StillPreservesDisabled is a regression guard for the
+// pre-existing Disabled-preservation behavior setState had before this
+// change — the NeedsReauth branch must be additive, not a replacement.
+func TestSetState_StillPreservesDisabled(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-disabled")
 
@@ -212,8 +203,8 @@ func TestUpdateClientState_StillPreservesDisabled(t *testing.T) {
 	}
 	m.mu.Unlock()
 
-	chm := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, true, nil)
-	chm.updateClientState(schemas.MCPConnectionStateConnected)
+	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
+	checker.setState(schemas.MCPConnectionStateHealthy)
 
 	m.mu.RLock()
 	state := m.clientMap[config.ID].State

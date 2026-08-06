@@ -34,6 +34,7 @@ import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpda
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
+import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
@@ -580,7 +581,7 @@ export default function MCPClientSheet({
 							<div className="space-y-2">
 								<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 									{mcpClient.config.name}
-									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{mcpClient.state.replace(/_/g, " ")}</Badge>
+									<Badge className={MCP_STATUS_COLORS[mcpClient.state]}>{titleCaseFromSnakeCase(mcpClient.state)}</Badge>
 								</SheetTitle>
 								<SheetDescription>
 									{mcpClient.state === "pending_verification"

@@ -751,12 +751,12 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	} else if ok {
 		params.OnlyAllVirtualKeys = b
 	}
-	// Runtime state selection (connected/disconnected) — resolved against the
+	// Runtime state selection (healthy/unstable) — resolved against the
 	// live engine inside getMCPClientsPaginated since it isn't a DB column.
 	states := parseCommaSeparated(string(ctx.QueryArgs().Peek("state")))
 	for _, s := range states {
-		if s != "connected" && s != "disconnected" {
-			SendError(ctx, 400, "Invalid state parameter: must be 'connected' or 'disconnected'")
+		if s != "healthy" && s != "unstable" {
+			SendError(ctx, 400, "Invalid state parameter: must be 'healthy' or 'unstable'")
 			return
 		}
 	}
@@ -965,7 +965,7 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 // no row exists). A missing row leaves the state alone: clients verified
 // before credential retention existed have no admin row and are healthy.
 func projectPerUserAdminCredentialState(authType schemas.MCPAuthType, runtimeState schemas.MCPConnectionState, adminTokenStatus, adminCredStatus string) schemas.MCPConnectionState {
-	if runtimeState != schemas.MCPConnectionStateConnected {
+	if runtimeState != schemas.MCPConnectionStateHealthy {
 		return runtimeState
 	}
 	switch authType {
@@ -995,19 +995,19 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 	}
 
 	// Resolve the runtime state filter into a connected-id allow/block list the
-	// store can apply within the same paginated query. "connected" means the
-	// engine reports MCPConnectionStateConnected; everything else (disconnected,
-	// error, disabled, not-in-engine) counts as disconnected. Selecting both —
-	// or neither — is a no-op.
-	if wantConnected, wantDisconnected := slices.Contains(states, "connected"), slices.Contains(states, "disconnected"); wantConnected != wantDisconnected {
-		connectedIDs := make([]string, 0, len(clientsInBifrost))
+	// store can apply within the same paginated query. "healthy" means the
+	// engine reports MCPConnectionStateHealthy; everything else (unstable,
+	// error, disabled, not-in-engine) counts as unstable. Selecting both — or
+	// neither — is a no-op.
+	if wantHealthy, wantUnstable := slices.Contains(states, "healthy"), slices.Contains(states, "unstable"); wantHealthy != wantUnstable {
+		healthyIDs := make([]string, 0, len(clientsInBifrost))
 		for _, c := range clientsInBifrost {
-			if c.State == schemas.MCPConnectionStateConnected {
-				connectedIDs = append(connectedIDs, c.Config.ID)
+			if c.State == schemas.MCPConnectionStateHealthy {
+				healthyIDs = append(healthyIDs, c.Config.ID)
 			}
 		}
-		params.StateClientIDs = connectedIDs
-		params.StateInclude = &wantConnected
+		params.StateClientIDs = healthyIDs
+		params.StateInclude = &wantHealthy
 	}
 
 	// Normalise pagination (0 → 25 default, cap 100) before the query so the
@@ -1410,7 +1410,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		toolSyncInterval := mcp.DefaultToolSyncInterval
+		toolSyncInterval := mcp.DefaultConnectionCheckInterval
 		if req.ToolSyncInterval != 0 {
 			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
 		} else {
@@ -1523,7 +1523,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		toolSyncInterval := mcp.DefaultToolSyncInterval
+		toolSyncInterval := mcp.DefaultConnectionCheckInterval
 		if req.ToolSyncInterval != 0 {
 			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
 		} else {
@@ -1658,7 +1658,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		toolSyncInterval := mcp.DefaultToolSyncInterval
+		toolSyncInterval := mcp.DefaultConnectionCheckInterval
 		if req.ToolSyncInterval != 0 {
 			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
 		} else {
@@ -1751,7 +1751,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		toolSyncInterval := mcp.DefaultToolSyncInterval
+		toolSyncInterval := mcp.DefaultConnectionCheckInterval
 		if req.ToolSyncInterval != 0 {
 			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
 		} else {
@@ -1817,7 +1817,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	toolSyncInterval := mcp.DefaultToolSyncInterval
+	toolSyncInterval := mcp.DefaultConnectionCheckInterval
 	if req.ToolSyncInterval != 0 {
 		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
 	} else {
@@ -2297,7 +2297,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 
 	toolSyncInterval := resolvedToolSyncInterval
 	if toolSyncInterval == 0 {
-		toolSyncInterval = mcp.DefaultToolSyncInterval
+		toolSyncInterval = mcp.DefaultConnectionCheckInterval
 		config, err := h.store.ConfigStore.GetClientConfig(ctx)
 		if err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get client config: %v", err))
