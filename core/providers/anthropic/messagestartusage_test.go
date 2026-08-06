@@ -1,122 +1,122 @@
 package anthropic
 
 import (
-	"context"
+	"strings"
 	"testing"
+	"time"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
-	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/bytedance/sonic"
+	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
 
-// TestToAnthropicResponsesStreamResponse_EmitsZeroUsageWhenUnknown is the regression test
-// for #5885. Bedrock Converse (and every other non-Anthropic provider, which reaches this
-// converter through providerUtils.SendCreatedEventResponsesChunk's empty
-// BifrostResponsesResponse) has no usage figures at message_start time. #5821 responded by
-// omitting the field entirely; because AnthropicMessageResponse.Usage is a pointer tagged
-// omitempty, that drops the key off the wire rather than emitting null, and
-// @ai-sdk/anthropic — whose message_start schema marks usage and usage.input_tokens as
-// required while id/model/role are nullish (dist/index.js in every published 4.0.6→4.0.32)
-// — aborts the stream on the very first frame.
-//
-// Zeros rather than Anthropic's own output_tokens:1 placeholder: message_start usage is
-// provisional by contract (the docs call message_delta's counts cumulative and
-// authoritative), but Bifrost's Bedrock message_delta reports absolute totals, so a client
-// that sums the two would over-count by one. Zero is neutral under both readings, and
-// Bifrost's own passthrough accumulator is a max-merge, so a zero can never displace a real
-// figure later in the stream.
-func TestToAnthropicResponsesStreamResponse_EmitsZeroUsageWhenUnknown(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resp := &schemas.BifrostResponsesStreamResponse{
-		Type: schemas.ResponsesStreamResponseTypeCreated,
-		Response: &schemas.BifrostResponsesResponse{
-			ID:    schemas.Ptr("resp_1"),
-			Model: "claude-sonnet-4-6",
-			// Usage intentionally nil — the Bedrock-backed "unknown yet" case.
-		},
-	}
+// message_start is the first frame every Anthropic-dialect client validates, and
+// @ai-sdk/anthropic's zod schema marks message.usage (and message.content) as
+// required — a frame missing either aborts the stream before the first token with
+// "Type validation failed ... path: [message, usage]". These tests pin the wire
+// shape of every message_start Bifrost emits, on both the Responses and the Chat
+// Completions converter, so no upstream shape (Bedrock Converse, which has no
+// counts this early, included) can produce a frame the client rejects.
 
-	events := ToAnthropicResponsesStreamResponse(ctx, resp)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+// requireValidMessageStart asserts the marshalled frame carries the fields the
+// strict clients require: a message object with usage (object) and content (array).
+func requireValidMessageStart(t *testing.T, raw string) {
+	t.Helper()
+
+	if got := gjson.Get(raw, "type").String(); got != "message_start" {
+		t.Fatalf("expected type message_start, got %q (%s)", got, raw)
 	}
-	if events[0].Message == nil {
-		t.Fatalf("expected a message_start event with a Message, got nil")
+	msg := gjson.Get(raw, "message")
+	if !msg.IsObject() {
+		t.Fatalf("message_start must carry a message object, got %s", raw)
 	}
-	if events[0].Message.Usage == nil {
-		t.Fatalf("expected Usage to be present (all-zero) when unknown, got nil")
+	if usage := msg.Get("usage"); !usage.IsObject() {
+		t.Errorf("message_start.message.usage must be an object, got %s", raw)
+	} else {
+		if !usage.Get("input_tokens").Exists() {
+			t.Errorf("message_start.message.usage.input_tokens must be present, got %s", raw)
+		}
+		if !usage.Get("output_tokens").Exists() {
+			t.Errorf("message_start.message.usage.output_tokens must be present, got %s", raw)
+		}
 	}
-	if got := events[0].Message.Usage.InputTokens; got != 0 {
-		t.Errorf("expected InputTokens=0, got %d", got)
-	}
-	if got := events[0].Message.Usage.OutputTokens; got != 0 {
-		t.Errorf("expected OutputTokens=0, got %d", got)
+	if content := msg.Get("content"); !content.IsArray() {
+		t.Errorf("message_start.message.content must be an array, got %s", raw)
 	}
 }
 
-// TestToAnthropicResponsesStreamResponse_MessageStartUsageSerializes asserts on the marshaled
-// frame, not just the struct: the #5885 break lived entirely in the `omitempty` interaction,
-// so a nil-check alone would not have caught it. These are exactly the keys
-// @ai-sdk/anthropic's zod schema requires to be present numbers.
-func TestToAnthropicResponsesStreamResponse_MessageStartUsageSerializes(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resp := &schemas.BifrostResponsesStreamResponse{
-		Type: schemas.ResponsesStreamResponseTypeCreated,
-		Response: &schemas.BifrostResponsesResponse{
-			ID:    schemas.Ptr("resp_1"),
-			Model: "claude-sonnet-4-6",
-		},
-	}
-
-	events := ToAnthropicResponsesStreamResponse(ctx, resp)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	raw, err := providerUtils.MarshalSorted(events[0])
+func marshalEvent(t *testing.T, event *AnthropicStreamEvent) string {
+	t.Helper()
+	data, err := sonic.Marshal(event)
 	if err != nil {
-		t.Fatalf("marshal message_start: %v", err)
+		t.Fatalf("marshal event: %v", err)
 	}
-
-	usage := gjson.GetBytes(raw, "message.usage")
-	if !usage.Exists() {
-		t.Fatalf("message.usage key must be present on the wire, got frame: %s", raw)
-	}
-	inputTokens := gjson.GetBytes(raw, "message.usage.input_tokens")
-	if inputTokens.Type != gjson.Number {
-		t.Errorf("message.usage.input_tokens must be a number, got %q in frame: %s", inputTokens.Raw, raw)
-	}
-	if inputTokens.Int() != 0 {
-		t.Errorf("expected input_tokens=0, got %d", inputTokens.Int())
-	}
+	return string(data)
 }
 
-// TestToAnthropicResponsesStreamResponse_PreservesRealUsage guards against
-// regressing the native-Anthropic case while fixing the above: when usage IS known
-// at message_start time (e.g. real Anthropic, which tokenizes input before it starts
-// streaming), the real values must still pass through unchanged.
-func TestToAnthropicResponsesStreamResponse_PreservesRealUsage(t *testing.T) {
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resp := &schemas.BifrostResponsesStreamResponse{
-		Type: schemas.ResponsesStreamResponseTypeCreated,
-		Response: &schemas.BifrostResponsesResponse{
-			ID:    schemas.Ptr("resp_1"),
-			Model: "claude-sonnet-4-6",
-			Usage: &schemas.ResponsesResponseUsage{
-				InputTokens:  42,
-				OutputTokens: 1,
+// TestResponsesMessageStartAlwaysCarriesUsage covers the Responses converter, the
+// path a /v1/messages request against a Bedrock Converse model takes.
+func TestResponsesMessageStartAlwaysCarriesUsage(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+
+	t.Run("response payload without usage", func(t *testing.T) {
+		events := ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeCreated,
+			Response: &schemas.BifrostResponsesResponse{
+				ID:    schemas.Ptr("msg_1785995503"),
+				Model: "au.anthropic.claude-opus-4-8",
+			},
+		})
+		if len(events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(events))
+		}
+		requireValidMessageStart(t, marshalEvent(t, events[0]))
+	})
+
+	// Providers routed through providerUtils.SendCreatedEventResponsesChunk emit a
+	// created event with no Response payload at all; the frame must still be valid.
+	t.Run("no response payload", func(t *testing.T) {
+		events := ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeCreated,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				ResolvedModelUsed: "au.anthropic.claude-opus-4-8",
+			},
+		})
+		if len(events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(events))
+		}
+		requireValidMessageStart(t, marshalEvent(t, events[0]))
+	})
+}
+
+// TestChatMessageStartAlwaysCarriesUsage covers ToAnthropicChatStreamResponse, the
+// path taken when a /v1/messages request is served over the Chat Completions dialect.
+func TestChatMessageStartAlwaysCarriesUsage(t *testing.T) {
+	sse := ToAnthropicChatStreamResponse(&schemas.BifrostChatResponse{
+		ID:    "msg_1785995503",
+		Model: "au.anthropic.claude-opus-4-8",
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+					},
+				},
 			},
 		},
-	}
+	})
 
-	events := ToAnthropicResponsesStreamResponse(ctx, resp)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
+	data := gjson.Parse(sseData(t, sse))
+	requireValidMessageStart(t, data.Raw)
+}
+
+// sseData extracts the JSON payload from an "event: X\ndata: {...}\n\n" frame.
+func sseData(t *testing.T, sse string) string {
+	t.Helper()
+	idx := strings.Index(sse, "data: ")
+	if idx < 0 {
+		t.Fatalf("no data line in SSE frame: %q", sse)
 	}
-	if events[0].Message == nil || events[0].Message.Usage == nil {
-		t.Fatalf("expected a message_start event with real Usage, got %+v", events[0].Message)
-	}
-	if events[0].Message.Usage.InputTokens != 42 {
-		t.Errorf("expected InputTokens=42, got %d", events[0].Message.Usage.InputTokens)
-	}
+	return strings.TrimSpace(sse[idx+len("data: "):])
 }
