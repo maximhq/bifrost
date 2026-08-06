@@ -9,7 +9,12 @@ export type MCPConnectionState =
 	| "error"
 	| "pending_verification"
 	| "disabled"
-	| "needs_reauth";
+	| "needs_reauth"
+	// Read-time aggregate value, never a single instance's own reported
+	// state: multiple instances of a distributed deployment currently
+	// report different states for this client. Never produced by a
+	// single-instance deployment.
+	| "degraded";
 
 export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers" | "token_exchange";
 
@@ -141,6 +146,10 @@ export interface MCPClient {
 	tools: ToolFunction[];
 	state: MCPConnectionState;
 	vk_configs: MCPVKConfigResponse[];
+	// Per-instance breakdown behind `state` when it's "degraded" (instance ID
+	// -> that instance's own self-reported state). Only ever present in a
+	// distributed deployment; absent otherwise.
+	node_states?: Record<string, string>;
 }
 
 export interface CreateMCPClientRequest {
