@@ -1165,11 +1165,16 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 		knnLimit = math.MaxInt32
 	}
 
+	// KNN results are returned in vector-distance order by default on both
+	// RediSearch and valkey-search ("vector results are sorted in distance order
+	// ... before the LIMIT clause is applied"), so no SORTBY is needed. Adding
+	// `SORTBY score` is redundant and valkey-search rejects it because the KNN
+	// `AS score` alias is not a real index field. Results are re-sorted by score
+	// below to stay deterministic across backends.
 	args := []interface{}{
 		"FT.SEARCH", namespace,
 		fmt.Sprintf("%s=>[KNN %d @embedding $vec AS score]", hybridQuery, knnLimit),
 		"PARAMS", "2", "vec", queryBytes,
-		"SORTBY", "score",
 	}
 
 	// Add RETURN clause - always include score for vector search
@@ -1193,22 +1198,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 
 	result := s.client.Do(ctx, args...)
 	if result.Err() != nil {
-		errMsg := strings.ToLower(result.Err().Error())
-		// Some Valkey implementations reject SORTBY in KNN search (already distance-ordered).
-		if strings.Contains(errMsg, "unexpected argument `sortby`") || strings.Contains(errMsg, "unexpected argument sortby") {
-			compatArgs := make([]interface{}, 0, len(args)-2)
-			for i := 0; i < len(args); i++ {
-				if i+1 < len(args) && args[i] == "SORTBY" {
-					i++ // skip sort field value too
-					continue
-				}
-				compatArgs = append(compatArgs, args[i])
-			}
-			result = s.client.Do(ctx, compatArgs...)
-		}
-		if result.Err() != nil {
-			return nil, fmt.Errorf("native vector search failed: %w", result.Err())
-		}
+		return nil, fmt.Errorf("native vector search failed: %w", result.Err())
 	}
 
 	// Parse search results
@@ -1240,6 +1230,20 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 			filteredResults = append(filteredResults, result)
 		}
 	}
+
+	// Backends return KNN hits in distance order, but re-sort by similarity
+	// (highest first) to stay deterministic across RediSearch/valkey versions.
+	// Results missing a score sort last.
+	sort.SliceStable(filteredResults, func(i, j int) bool {
+		si, sj := filteredResults[i].Score, filteredResults[j].Score
+		if si == nil {
+			return false
+		}
+		if sj == nil {
+			return true
+		}
+		return *si > *sj
+	})
 
 	results = filteredResults
 

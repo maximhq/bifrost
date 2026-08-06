@@ -354,9 +354,11 @@ func TestNewRedisStore_RejectsInvalidCACertPEM(t *testing.T) {
 type fakeRedisSearchServer struct {
 	listener      net.Listener
 	searchErrors  int
+	searchReply   string
 	mu            sync.Mutex
 	ftSearchCalls int
 	sawScan       bool
+	sawSortBy     bool
 }
 
 func newFakeRedisSearchServer(t *testing.T, searchErrors int) *fakeRedisSearchServer {
@@ -419,14 +421,28 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 		case "PING":
 			_, _ = writer.WriteString("+PONG\r\n")
 		case "FT.SEARCH":
+			hasSortBy := false
+			for _, arg := range command {
+				if strings.EqualFold(arg, "SORTBY") {
+					hasSortBy = true
+					break
+				}
+			}
 			s.mu.Lock()
 			s.ftSearchCalls++
+			if hasSortBy {
+				s.sawSortBy = true
+			}
 			shouldError := s.ftSearchCalls <= s.searchErrors
+			reply := s.searchReply
 			s.mu.Unlock()
 
-			if shouldError {
+			switch {
+			case shouldError:
 				_, _ = writer.WriteString("-Invalid query\r\n")
-			} else {
+			case reply != "":
+				_, _ = writer.WriteString(reply)
+			default:
 				_, _ = writer.WriteString("*1\r\n:0\r\n")
 			}
 		case "SCAN":
@@ -458,6 +474,12 @@ func (s *fakeRedisSearchServer) stats() (ftSearchCalls int, sawScan bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.ftSearchCalls, s.sawScan
+}
+
+func (s *fakeRedisSearchServer) sawSortByQuery() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sawSortBy
 }
 
 func readRESPCommand(reader *bufio.Reader) ([]string, error) {
@@ -539,6 +561,130 @@ func TestRedisStore_ExecuteSearch_DisableScanFallbackOnQuerySyntaxError(t *testi
 	ftSearchCalls, sawScan := server.stats()
 	assert.Equal(t, 2, ftSearchCalls)
 	assert.False(t, sawScan, "expected executeSearch to return before scan fallback")
+}
+
+// TestRedisStore_GetNearest_DoesNotSendSortBy is a regression test for
+// semantic-cache misses on valkey-search-backed deployments. valkey-search
+// rejected `SORTBY score` because the KNN `AS score` alias is not a real index
+// field ("Index field `score` does not exist"). KNN results are returned in
+// vector-distance order by default on both RediSearch and valkey-search, so
+// GetNearest must not send a SORTBY clause at all (a single query, no retry).
+func TestRedisStore_GetNearest_DoesNotSendSortBy(t *testing.T) {
+	server := newFakeRedisSearchServer(t, 0)
+	defer func() {
+		require.NoError(t, server.close())
+	}()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            server.addr(),
+		Protocol:        2,
+		DisableIdentity: true,
+		MaxRetries:      0,
+	})
+	defer func() {
+		require.NoError(t, client.Close())
+	}()
+
+	store := &RedisStore{
+		client: client,
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		config: RedisConfig{
+			ContextTimeout: schemas.Duration(time.Second),
+		},
+		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	results, err := store.GetNearest(ctx, TestNamespace, generateTestEmbedding(RedisTestDimension), nil, nil, 0.1, 1)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+
+	assert.False(t, server.sawSortByQuery(), "KNN query must not include a SORTBY clause")
+	ftSearchCalls, sawScan := server.stats()
+	assert.Equal(t, 1, ftSearchCalls, "expected a single KNN query with no retry")
+	assert.False(t, sawScan, "vector search must not fall through to scan")
+}
+
+// fakeSearchDoc is one document in a synthetic RESP2 FT.SEARCH reply.
+type fakeSearchDoc struct {
+	id     string
+	fields []string // flat ["field", "value", ...] attribute pairs
+}
+
+// resp2SearchReply encodes docs as a RESP2 FT.SEARCH reply:
+// [total, id, [field, value, ...], id, [field, value, ...], ...].
+func resp2SearchReply(docs []fakeSearchDoc) string {
+	resp2Bulk := func(s string) string {
+		return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "*%d\r\n", 1+2*len(docs))
+	fmt.Fprintf(&b, ":%d\r\n", len(docs))
+	for _, d := range docs {
+		b.WriteString(resp2Bulk(d.id))
+		fmt.Fprintf(&b, "*%d\r\n", len(d.fields))
+		for _, f := range d.fields {
+			b.WriteString(resp2Bulk(f))
+		}
+	}
+	return b.String()
+}
+
+// TestRedisStore_GetNearest_SortsResultsBySimilarity verifies the client-side
+// ordering contract that replaced the server-side SORTBY clause: GetNearest must
+// return filtered hits ordered by descending similarity (1 - distance), with
+// score-less results placed last, regardless of the backend's return order.
+func TestRedisStore_GetNearest_SortsResultsBySimilarity(t *testing.T) {
+	server := newFakeRedisSearchServer(t, 0)
+	// Returned deliberately out of order: far (distance 0.6 -> sim 0.4), then a
+	// score-less doc, then near (distance 0.05 -> sim 0.95).
+	server.searchReply = resp2SearchReply([]fakeSearchDoc{
+		{id: TestNamespace + ":far", fields: []string{"score", "0.6"}},
+		{id: TestNamespace + ":noscore", fields: []string{"content", "x"}},
+		{id: TestNamespace + ":near", fields: []string{"score", "0.05"}},
+	})
+	defer func() {
+		require.NoError(t, server.close())
+	}()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            server.addr(),
+		Protocol:        2,
+		DisableIdentity: true,
+		MaxRetries:      0,
+	})
+	defer func() {
+		require.NoError(t, client.Close())
+	}()
+
+	store := &RedisStore{
+		client: client,
+		logger: bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		config: RedisConfig{
+			ContextTimeout: schemas.Duration(time.Second),
+		},
+		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	results, err := store.GetNearest(ctx, TestNamespace, generateTestEmbedding(RedisTestDimension), nil, nil, 0.1, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+
+	assert.Equal(t, []string{"near", "far", "noscore"}, []string{results[0].ID, results[1].ID, results[2].ID},
+		"results must be ordered by descending similarity with score-less hits last")
+
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.95, *results[0].Score, 1e-9)
+	require.NotNil(t, results[1].Score)
+	assert.InDelta(t, 0.4, *results[1].Score, 1e-9)
+	assert.Nil(t, results[2].Score, "score-less hit must keep a nil score and sort last")
+
+	assert.False(t, server.sawSortByQuery(), "KNN query must not include a SORTBY clause")
 }
 
 func TestRedisStore_ParseSearchResults_RESP3Map(t *testing.T) {
