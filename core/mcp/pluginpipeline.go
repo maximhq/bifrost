@@ -347,7 +347,10 @@ func (m *MCPManager) runConnectWithPluginPipeline(
 		if opErr != nil {
 			return resp, &schemas.BifrostError{
 				IsBifrostError: false,
-				Error:          &schemas.ErrorField{Message: opErr.Error()},
+				// Error kept alongside Message (json:"-", same as
+				// runWithPluginPipeline) so callers can classify via
+				// errors.Is/errors.As instead of string-matching.
+				Error: &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 			}
 		}
 		return resp, nil
@@ -402,7 +405,10 @@ func (m *MCPManager) runConnectWithPluginPipeline(
 	if opErr != nil {
 		bErr = &schemas.BifrostError{
 			IsBifrostError: false,
-			Error:          &schemas.ErrorField{Message: opErr.Error()},
+			// Error kept alongside Message (json:"-", same as
+			// runWithPluginPipeline) so callers can classify via
+			// errors.Is/errors.As instead of string-matching.
+			Error: &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 		}
 	}
 
