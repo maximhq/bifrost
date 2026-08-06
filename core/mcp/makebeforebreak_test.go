@@ -357,8 +357,14 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_ResetsStateAndClosesOldC
 			assert.Equal(t, tc.wantState, after.State)
 			assert.Nil(t, after.Conn, "a failed re-dial must leave no connection on the entry")
 			assert.Nil(t, after.CancelFunc)
-			assert.Empty(t, after.ToolMap, "a failed re-dial must leave the tool map empty")
-			assert.Empty(t, after.ToolNameMapping)
+			// The tool map is deliberately left as last-known-good, not cleared:
+			// a dead connection stays distinguishable from a tool that never
+			// existed (GetClientForTool still resolves it, and
+			// prepareToolExecution's State-specific checks give the real
+			// "needs re-authorization" / "disconnected" reason instead of a
+			// generic "not available").
+			assert.NotEmpty(t, after.ToolMap, "a failed re-dial must keep the last-known tool map")
+			assert.NotEmpty(t, after.ToolNameMapping)
 
 			// The captured old connection must have been torn down too.
 			callCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -368,6 +374,21 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_ResetsStateAndClosesOldC
 				Params:  mcpgo.CallToolParams{Name: "echo", Arguments: map[string]interface{}{"message": "ping"}},
 			})
 			require.Error(t, oldErr, "the old connection must be closed on a failed re-dial")
+
+			// A second consecutive failure takes the close-first path (Conn is
+			// already nil after the first failure above, so this attempt no
+			// longer qualifies for make-before-break) — exactly where a pre-dial
+			// clear of the tool maps would go unnoticed by the make-before-break
+			// assertions above, since those only exercise the make-before-break
+			// branch on its first failure.
+			require.Error(t, m.connectToMCPClient(context.Background(), config))
+
+			afterSecondFailure, ok := snapshotClientState(m, config.ID)
+			require.True(t, ok, "the entry must survive a second failed re-dial")
+			assert.Equal(t, tc.wantState, afterSecondFailure.State)
+			assert.Nil(t, afterSecondFailure.Conn)
+			assert.Equal(t, before.ToolMap, afterSecondFailure.ToolMap, "a second failed re-dial (close-first path) must keep the original last-known tool map")
+			assert.Equal(t, before.ToolNameMapping, afterSecondFailure.ToolNameMapping)
 		})
 	}
 }
