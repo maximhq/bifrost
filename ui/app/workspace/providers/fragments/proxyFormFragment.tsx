@@ -1,3 +1,4 @@
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -10,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { toSecretVarFormValue, toOptionalSecretVarPayload } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Info } from "lucide-react";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -84,6 +86,13 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
 				{/* Proxy Configuration */}
+				<Alert>
+					<Info className="h-4 w-4" />
+					<AlertDescription>
+						Applies to HTTP requests and WebSocket-based Realtime/Responses connections. WebRTC-based Realtime
+						sessions use a separate media path not covered by this proxy.
+					</AlertDescription>
+				</Alert>
 				<div className="space-y-4">
 					<div className="space-y-4">
 						<FormField

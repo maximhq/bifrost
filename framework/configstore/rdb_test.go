@@ -1556,6 +1556,153 @@ func TestCreateVirtualKeyProviderConfig_WithKeys(t *testing.T) {
 	assert.Len(t, configWithKeys.Keys, 1)
 }
 
+// TestReplaceVirtualKeyProviderConfigsPreservesParity verifies bulk replacement keeps nested ownership and key associations.
+func TestReplaceVirtualKeyProviderConfigsPreservesParity(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai": {Keys: []schemas.Key{{ID: "replacement-key", Name: "replacement-key", Value: *schemas.NewSecretVar("secret"), Weight: 1}}},
+	}))
+	vk := &tables.TableVirtualKey{ID: "vk-replace-pcs", Name: "replace", Value: *schemas.NewSecretVar("vk-replace"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	oldRateLimit := &tables.TableRateLimit{ID: "old-pc-rate-limit"}
+	require.NoError(t, store.CreateRateLimit(ctx, oldRateLimit))
+	old := &tables.TableVirtualKeyProviderConfig{VirtualKeyID: vk.ID, Provider: "anthropic", RateLimitID: &oldRateLimit.ID, RateLimit: oldRateLimit, Budgets: []tables.TableBudget{{ID: "old-pc-budget", MaxLimit: 1, ResetDuration: "1h"}}}
+	require.NoError(t, store.CreateVirtualKeyProviderConfig(ctx, old))
+
+	newRateLimit := &tables.TableRateLimit{ID: "new-pc-rate-limit"}
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	err := store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, []tables.TableVirtualKeyProviderConfig{{
+		Provider: "openai", Keys: []tables.TableKey{{KeyID: "replacement-key"}},
+		Budgets: []tables.TableBudget{{ID: "new-pc-budget", MaxLimit: 10, ResetDuration: "1d"}}, RateLimitID: &newRateLimit.ID, RateLimit: newRateLimit,
+	}}, tx)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit().Error)
+
+	var configs []tables.TableVirtualKeyProviderConfig
+	require.NoError(t, store.DB().Preload("Keys").Preload("Budgets").Preload("RateLimit").Where("virtual_key_id = ?", vk.ID).Find(&configs).Error)
+	require.Len(t, configs, 1)
+	require.Equal(t, "openai", configs[0].Provider)
+	require.Len(t, configs[0].Keys, 1)
+	require.Equal(t, "replacement-key", configs[0].Keys[0].KeyID)
+	require.Len(t, configs[0].Budgets, 1)
+	require.Equal(t, "new-pc-budget", configs[0].Budgets[0].ID)
+	require.NotNil(t, configs[0].RateLimit)
+	require.Equal(t, newRateLimit.ID, configs[0].RateLimit.ID)
+	for _, id := range []string{"old-pc-budget", "old-pc-rate-limit"} {
+		var count int64
+		table := (&tables.TableBudget{}).TableName()
+		if id == "old-pc-rate-limit" {
+			table = (&tables.TableRateLimit{}).TableName()
+		}
+		require.NoError(t, store.DB().Table(table).Where("id = ?", id).Count(&count).Error)
+		require.Zero(t, count)
+	}
+}
+
+// TestReplaceVirtualKeyProviderConfigsRollsBackOnUnresolvedKey verifies replacement remains atomic on resolution failure.
+func TestReplaceVirtualKeyProviderConfigsRollsBackOnUnresolvedKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	vk := &tables.TableVirtualKey{ID: "vk-replace-rollback", Name: "rollback", Value: *schemas.NewSecretVar("vk-rollback"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	require.NoError(t, store.CreateVirtualKeyProviderConfig(ctx, &tables.TableVirtualKeyProviderConfig{VirtualKeyID: vk.ID, Provider: "anthropic"}))
+
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	err := store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, []tables.TableVirtualKeyProviderConfig{{Provider: "openai", Keys: []tables.TableKey{{KeyID: "missing"}}}}, tx)
+	require.Error(t, err)
+	require.NoError(t, tx.Rollback().Error)
+	configs, listErr := store.GetVirtualKeyProviderConfigs(ctx, vk.ID)
+	require.NoError(t, listErr)
+	require.Len(t, configs, 1)
+	require.Equal(t, "anthropic", configs[0].Provider)
+}
+
+// TestReplaceVirtualKeyProviderConfigsResolvesKeysByName verifies bulk replacement
+// accepts the config-file reference forms that CreateVirtualKeyProviderConfig
+// accepts: a name with no KeyID, and a KeyID that misses but carries a usable name.
+func TestReplaceVirtualKeyProviderConfigsResolvesKeysByName(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai":    {Keys: []schemas.Key{{ID: "openai-key-id", Name: "openai-name", Value: *schemas.NewSecretVar("s1"), Weight: 1}}},
+		"anthropic": {Keys: []schemas.Key{{ID: "anthropic-key-id", Name: "anthropic-name", Value: *schemas.NewSecretVar("s2"), Weight: 1}}},
+	}))
+	vk := &tables.TableVirtualKey{ID: "vk-replace-by-name", Name: "by-name", Value: *schemas.NewSecretVar("vk-by-name"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	require.NoError(t, store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, []tables.TableVirtualKeyProviderConfig{
+		// Name only, no KeyID — the config-file form.
+		{Provider: "openai", Keys: []tables.TableKey{{Name: "openai-name"}}},
+		// KeyID that does not resolve, but the name does — the fallback path.
+		{Provider: "anthropic", Keys: []tables.TableKey{{KeyID: "stale-id", Name: "anthropic-name"}}},
+	}, tx))
+	require.NoError(t, tx.Commit().Error)
+
+	var configs []tables.TableVirtualKeyProviderConfig
+	require.NoError(t, store.DB().Preload("Keys").Where("virtual_key_id = ?", vk.ID).Order("provider").Find(&configs).Error)
+	require.Len(t, configs, 2)
+	// Resolution is scoped per provider, so each config must land on its own
+	// provider's key rather than whichever row happened to match the name first.
+	require.Equal(t, "anthropic", configs[0].Provider)
+	require.Len(t, configs[0].Keys, 1)
+	require.Equal(t, "anthropic-key-id", configs[0].Keys[0].KeyID)
+	require.Equal(t, "openai", configs[1].Provider)
+	require.Len(t, configs[1].Keys, 1)
+	require.Equal(t, "openai-key-id", configs[1].Keys[0].KeyID)
+}
+
+// TestReplaceVirtualKeyProviderConfigsReportsEveryUnresolvedKey verifies a blank
+// reference is aggregated with the others rather than short-circuiting the scan.
+func TestReplaceVirtualKeyProviderConfigsReportsEveryUnresolvedKey(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	vk := &tables.TableVirtualKey{ID: "vk-replace-unresolved", Name: "unresolved", Value: *schemas.NewSecretVar("vk-unresolved"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	err := store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, []tables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", Keys: []tables.TableKey{{}, {KeyID: "missing-id"}, {Name: "missing-name"}}},
+	}, tx)
+	require.NoError(t, tx.Rollback().Error)
+	var unresolvedErr *ErrUnresolvedKeys
+	require.ErrorAs(t, err, &unresolvedErr)
+	require.ElementsMatch(t, []string{"key[0]", "key_id=missing-id", "name=missing-name"}, unresolvedErr.Identifiers)
+}
+
+// TestReplaceVirtualKeyProviderConfigsChunksInserts verifies replacement crosses both bounded insert sizes.
+func TestReplaceVirtualKeyProviderConfigsChunksInserts(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	vk := &tables.TableVirtualKey{ID: "vk-replace-chunks", Name: "chunks", Value: *schemas.NewSecretVar("vk-chunks"), IsActive: schemas.Ptr(true)}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	configs := make([]tables.TableVirtualKeyProviderConfig, 101)
+	for i := range configs {
+		configs[i] = tables.TableVirtualKeyProviderConfig{Provider: fmt.Sprintf("provider-%03d", i)}
+	}
+	createStatements := 0
+	callbackName := "test:count-provider-config-inserts"
+	require.NoError(t, store.DB().Callback().Create().After("gorm:create").Register(callbackName, func(db *gorm.DB) {
+		if db.Statement.Table == (&tables.TableVirtualKeyProviderConfig{}).TableName() {
+			createStatements++
+		}
+	}))
+	t.Cleanup(func() { _ = store.DB().Callback().Create().Remove(callbackName) })
+	tx := store.DB().WithContext(ctx).Begin()
+	require.NoError(t, tx.Error)
+	require.NoError(t, store.ReplaceVirtualKeyProviderConfigs(ctx, vk.ID, configs, tx))
+	require.NoError(t, tx.Commit().Error)
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableVirtualKeyProviderConfig{}).Where("virtual_key_id = ?", vk.ID).Count(&count).Error)
+	require.Equal(t, int64(101), count)
+	require.Equal(t, 2, createStatements, "101 configs should use two bounded insert statements instead of 101 row inserts")
+}
+
 func TestCreateVirtualKeyProviderConfig_UnresolvedKeys(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

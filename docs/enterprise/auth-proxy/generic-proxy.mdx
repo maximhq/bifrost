@@ -3,7 +3,7 @@ title: "Generic OIDC Proxy"
 description: "Front Bifrost Enterprise with any OIDC-based identity-aware proxy that injects a signed JWT header on every request."
 ---
 
-Bifrost's identity-aware proxy support isn't limited to Cloudflare Access. Any upstream authenticating reverse proxy that presents an **OIDC-style JWT in a request header** — validated against a JWKS endpoint (or OIDC discovery) — can authenticate users for Bifrost. This covers proxies such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/), [Pomerium](https://www.pomerium.com/), Google IAP-style gateways, service-mesh sidecars, and API gateways with JWT injection.
+Bifrost's identity-aware proxy support isn't limited to Cloudflare Access. Any upstream authenticating reverse proxy that presents an **OIDC-style JWT in a request header** - validated against a JWKS endpoint (or OIDC discovery) - can authenticate users for Bifrost. This covers proxies such as [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/), [Pomerium](https://www.pomerium.com/), Google IAP-style gateways, service-mesh sidecars, and API gateways with JWT injection.
 
 <Info>
   The auth proxy **fronts an existing identity provider** already configured in Bifrost. Set up your IdP first ([Okta](../setting-up-okta/oidc), [Generic OIDC](../setting-up-generic-oidc/oidc), etc.), then enable the Identity-Aware Proxy on that same provider. If you're using Cloudflare, follow the dedicated [Cloudflare ZTNA](./cloudflare-ztna) guide instead.
@@ -18,10 +18,10 @@ Bifrost's identity-aware proxy support isn't limited to Cloudflare Access. Any u
 3. Bifrost validates the token's signature against the configured **JWKS URL**, or discovers it from the **issuer** via `<issuer>/.well-known/openid-configuration`.
 4. Bifrost enforces the expected **audience**, then resolves the user from the identity claim (`email` by default).
 
-The token is validated against the **proxy's** keys — not the IdP's — so both the dashboard and the inference APIs are protected by the same upstream layer.
+The token is validated against the **proxy's** keys - not the IdP's - so both the dashboard and the inference APIs are protected by the same upstream layer.
 
 <Warning>
-  When the configured header is absent, Bifrost falls back to the IDP login — so if Bifrost is reachable directly (bypassing the proxy), a client can skip the proxy's access policy. Restrict network access so Bifrost is only reachable through the proxy (private network, service mesh, or firewall allowlist), and configure the proxy to strip any client-supplied assertion header before injecting its own signed token.
+  When the configured header is absent, Bifrost falls back to the IDP login - so if Bifrost is reachable directly (bypassing the proxy), a client can skip the proxy's access policy. Restrict network access so Bifrost is only reachable through the proxy (private network, service mesh, or firewall allowlist), and configure the proxy to strip any client-supplied assertion header before injecting its own signed token.
 </Warning>
 
 ---
@@ -63,7 +63,7 @@ Place the proxy in front of your Bifrost deployment so it authenticates every re
 
 <Step title="Inject a signed JWT header">
 
-Configure the proxy to add a signed OIDC JWT to a request header — for example `X-Forwarded-Assertion`. Note the exact header name; you'll enter it in Bifrost.
+Configure the proxy to add a signed OIDC JWT to a request header - for example `X-Forwarded-Assertion`. Note the exact header name; you'll enter it in Bifrost.
 
 </Step>
 
@@ -109,7 +109,7 @@ Under **Advanced**, you can supply an explicit **JWKS URL** (skips OIDC discover
 
 Pick **Login only** or **Full** (see [Modes](#modes)), then save.
 
-IAP changes on an already-enabled provider — turning IAP on or off, or editing the header, issuer, JWKS, audience, or mode — are hot-reloaded and take effect immediately (and propagate to peer nodes in a cluster).
+IAP changes on an already-enabled provider - turning IAP on or off, or editing the header, issuer, JWKS, audience, or mode - are hot-reloaded and take effect immediately (and propagate to peer nodes in a cluster).
 
 </Step>
 
@@ -156,7 +156,7 @@ The `authProxy` block lives inside your SSO provider's `config` under the top-le
 | `userIdClaim` | string (secret) | No | Token claim used as the user identity. Defaults to `email`. |
 
 <Note>
-  \*Either `audience` or a non-empty `allowedAudiences` is required — an unbound token would be accepted across applications. All URLs must use `https`.
+  \*Either `audience` or a non-empty `allowedAudiences` is required - an unbound token would be accepted across applications. All URLs must use `https`.
 </Note>
 
 ---
@@ -180,5 +180,6 @@ The `authProxy` block lives inside your SSO provider's `config` under the top-le
 ## Next steps
 
 - **[Cloudflare ZTNA (Access)](./cloudflare-ztna)** - front Bifrost with Cloudflare Zero Trust
+- **[AWS ALB](./aws-alb)** - front Bifrost with an AWS Application Load Balancer
 - **[RBAC](../rbac)** - define the roles the proxy authenticates against
 - **[User provisioning](../user-provisioning)** - SCIM and OIDC provider setup

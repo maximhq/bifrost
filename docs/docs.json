@@ -427,6 +427,7 @@
               "cli-agents/claude-code",
               "cli-agents/claude-desktop",
               "cli-agents/claude-for-office",
+              "cli-agents/github-copilot",
               "cli-agents/codex-cli",
               "cli-agents/gemini-cli",
               "cli-agents/qwen-code",
@@ -545,6 +546,7 @@
                 "collapsed": true,
                 "pages": [
                   "enterprise/auth-proxy/cloudflare-ztna",
+                  "enterprise/auth-proxy/aws-alb",
                   "enterprise/auth-proxy/generic-proxy"
                 ]
               }
@@ -1055,6 +1057,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.33",
               "changelogs/helm-v2.1.32",
               "changelogs/helm-v2.1.31",
               "changelogs/helm-v2.1.30",

@@ -430,7 +430,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				reasoningType := ResponsesMessageTypeReasoning
 				reasoningRole := ResponsesInputMessageRoleAssistant
 				rm := ResponsesMessage{
-					ID:   Ptr("rs_" + GetRandomString(50)),
+					ID:   new("rs_" + GetRandomString(50)),
 					Type: &reasoningType,
 					Role: &reasoningRole,
 				}
@@ -451,7 +451,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			reasoningRole := ResponsesInputMessageRoleAssistant
 			reasoningText := *am.Reasoning
 			messages = append(messages, ResponsesMessage{
-				ID:   Ptr("rs_" + GetRandomString(50)),
+				ID:   new("rs_" + GetRandomString(50)),
 				Type: &reasoningType,
 				Role: &reasoningRole,
 				Content: &ResponsesMessageContent{
@@ -1662,11 +1662,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	// Convert first streaming choice to BifrostResponsesStreamResponse
 	// Note: Chat API typically has one choice per chunk in streaming
 	choice := cr.Choices[0]
-	if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
-		return nil
+	var delta *ChatStreamResponseChoiceDelta
+	if choice.ChatStreamResponseChoice != nil {
+		delta = choice.ChatStreamResponseChoice.Delta
+	}
+	if delta == nil {
+		if choice.FinishReason == nil {
+			return nil
+		}
+		// Some OpenAI-compatible upstreams send their terminal chunk as
+		// {"delta":null,"finish_reason":"stop"} (or omit "delta" entirely).
+		// Fall through with an empty delta so the finish_reason handling below
+		// still runs and emits the Completed/Incomplete event with usage/stop_reason.
+		delta = &ChatStreamResponseChoiceDelta{}
 	}
 
-	delta := choice.ChatStreamResponseChoice.Delta
 	var responses []*BifrostResponsesStreamResponse
 
 	// Store message ID and model from first chunk

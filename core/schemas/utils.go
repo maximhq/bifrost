@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1853,6 +1854,76 @@ func SplitModelAndVersion(id string) (base, version string) {
 func BaseModelName(id string) string {
 	base, _ := SplitModelAndVersion(id)
 	return base
+}
+
+// CanonicalEntitySet returns id/name arrays as deduped, id-sorted, comma-joined
+// strings so the same set always yields the same pair. Empty set → "","". For
+// low-count dimensions (a user's teams), not unbounded sets.
+func CanonicalEntitySet(ids, names []string) (idsCSV, namesCSV string) {
+	if len(ids) == 0 {
+		return "", ""
+	}
+	type pair struct{ id, name string }
+	seen := make(map[string]struct{}, len(ids))
+	pairs := make([]pair, 0, len(ids))
+	for i, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		name := ""
+		if i < len(names) {
+			name = names[i]
+		}
+		pairs = append(pairs, pair{id, name})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].id < pairs[j].id })
+	idList := make([]string, len(pairs))
+	nameList := make([]string, len(pairs))
+	for i, p := range pairs {
+		idList[i] = p.id
+		nameList[i] = p.name
+	}
+	return strings.Join(idList, ","), strings.Join(nameList, ",")
+}
+
+// modelVendorPrefixRe matches a leading "<letters>." segment (us., anthropic.),
+// never a digit-dotted one, so "gpt-3.5-turbo" is left intact.
+var modelVendorPrefixRe = regexp.MustCompile(`^[a-z][a-z-]*\.`)
+
+// bedrockVersionSuffixRe matches a trailing Bedrock version suffix (":0", "-v1:0").
+var bedrockVersionSuffixRe = regexp.MustCompile(`(-v\d+)?:\d+$`)
+
+// NormalizeModelName strips Bedrock vendor/region prefixes, version suffixes, and
+// trailing date suffixes so the same model doesn't split across series. Preserves
+// digit-dotted names ("gpt-3.5-turbo") and fine-tune ids ("ft:...").
+//
+//	"us.anthropic.claude-opus-4-20250101-v1:0" → "claude-opus-4"
+//	"gpt-4o-mini-2024-07-18"                    → "gpt-4o-mini"
+func NormalizeModelName(model string) string {
+	// Trim so blank/whitespace-only collapses to "" and stray spaces are dropped.
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return model
+	}
+	// Strip vendor/region prefixes; loop to remove both (e.g. "us.anthropic.").
+	for {
+		stripped := modelVendorPrefixRe.ReplaceAllString(model, "")
+		if stripped == model || stripped == "" {
+			break
+		}
+		model = stripped
+	}
+	// Fine-tune ids: trailing segment is an id, not a version. Return as-is so
+	// BaseModelName doesn't strip a date-like custom suffix.
+	if strings.HasPrefix(model, "ft:") {
+		return model
+	}
+	model = bedrockVersionSuffixRe.ReplaceAllString(model, "")
+	return BaseModelName(model)
 }
 
 // SameBaseModel reports whether two model ids refer to the same base model,
