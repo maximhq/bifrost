@@ -2443,7 +2443,12 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	case schemas.ResponsesStreamResponseTypeCreated:
 		// Only convert response.created back to message_start (not response.in_progress to avoid duplicates)
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
-		if bifrostResp.Response != nil {
+		{
+			// The message object is built unconditionally, even when the created event
+			// carries no BifrostResponsesResponse at all: a bare {"type":"message_start"}
+			// fails the same strict-client validation as one missing usage, and there is
+			// always enough in ExtraFields to render a usable frame.
+			//
 			// Use actual usage if available (forwarded from upstream message_start).
 			// When unknown — Bedrock Converse reports usage only on its terminal event,
 			// and every provider routed through providerUtils.SendCreatedEventResponsesChunk
@@ -2459,9 +2464,10 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 			// two would over-count. Zero is neutral under both readings, and the terminal
 			// message_delta remains the authoritative source of the real figures.
 			var messageUsage *AnthropicUsage
-			if bifrostResp.Response.Usage != nil {
+			if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
 				messageUsage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
-			} else {
+			}
+			if messageUsage == nil {
 				messageUsage = &AnthropicUsage{
 					InputTokens:              0,
 					OutputTokens:             0,
@@ -2479,7 +2485,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				Content: []AnthropicContentBlock{}, // Always empty array in message_start
 				Usage:   messageUsage,
 			}
-			if bifrostResp.Response.ID != nil {
+			if bifrostResp.Response != nil && bifrostResp.Response.ID != nil {
 				streamMessage.ID = *bifrostResp.Response.ID
 			}
 			// Prefer Response.Model, then ResolvedModelUsed, then OriginalModelRequested
@@ -2491,7 +2497,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				streamMessage.Model = bifrostResp.ExtraFields.OriginalModelRequested
 			}
 			// Cache diagnostics arrives on message_start (cache-diagnosis-2026-04-07).
-			if bifrostResp.Response.Diagnostics != nil {
+			if bifrostResp.Response != nil && bifrostResp.Response.Diagnostics != nil {
 				streamMessage.Diagnostics = bifrostResp.Response.Diagnostics
 			}
 			streamResp.Message = streamMessage
