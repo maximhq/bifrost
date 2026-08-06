@@ -308,15 +308,18 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 		}
 
 		// Periodic SSE comment heartbeats keep idle connections alive through
-		// proxies and let us detect client disconnect via reader.Send() returning
-		// false — fasthttp.RequestCtx never cancels bifrostCtx on its own.
+		// proxies and let us detect client disconnect via reader.SendHeartbeat()
+		// returning false — fasthttp.RequestCtx never cancels bifrostCtx on its own.
+		//
+		// Use the shared frame, never a local one: a hand-rolled ": ping\n\n" carries the
+		// trailing blank line #5883 removed (some decoders dispatch it as an empty event,
+		// #5874) and bypasses the line-boundary gate #5905 added.
 		ticker := time.NewTicker(sseHeartbeatInterval)
 		defer ticker.Stop()
-		ping := []byte(": ping\n\n")
 		for {
 			select {
 			case <-ticker.C:
-				if !reader.Send(ping) {
+				if !reader.SendHeartbeat() {
 					return
 				}
 			case <-(*bifrostCtx).Done():
