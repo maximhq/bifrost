@@ -350,3 +350,55 @@ func TestPushGatewayPushesBifrostButNotRuntimeCollectors(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func histogramCount(t *testing.T, reg *prometheus.Registry, name string) uint64 {
+	t.Helper()
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, mf := range fams {
+		if mf.GetName() != name {
+			continue
+		}
+		var count uint64
+		for _, metric := range mf.GetMetric() {
+			count += metric.GetHistogram().GetSampleCount()
+		}
+		return count
+	}
+	return 0
+}
+
+func TestPostLLMHookRecordsStreamUpstreamTiming(t *testing.T) {
+	plugin := newTestPlugin(t)
+	ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	timing := schemas.NewStreamTiming(time.Now().Add(-10*time.Second), 300*time.Second)
+	timing.RecordUpstreamBytes(time.Now().Add(-8 * time.Second))
+	timing.RecordUpstreamBytes(time.Now().Add(-3 * time.Second))
+	timing.MarkIdleTimeout()
+	ctx.SetValue(schemas.BifrostContextKeyStreamTiming, timing)
+
+	response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Model: "us-gov.anthropic.claude-opus-4-8",
+	}}
+	response.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.Bedrock, "us-gov.anthropic.claude-opus-4-8", "us-gov.anthropic.claude-opus-4-8")
+	if _, _, err := plugin.PostLLMHook(ctx, response, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		firstByteCount := histogramCount(t, plugin.registry, "bifrost_stream_upstream_first_byte_seconds")
+		maxGapCount := histogramCount(t, plugin.registry, "bifrost_stream_upstream_max_gap_seconds")
+		timeoutCount := counterTotal(t, plugin.registry, "bifrost_stream_idle_timeouts_total")
+		if firstByteCount == 1 && maxGapCount == 1 && timeoutCount == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metrics = first_byte:%d max_gap:%d timeouts:%v, want 1/1/1", firstByteCount, maxGapCount, timeoutCount)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

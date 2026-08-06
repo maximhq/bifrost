@@ -57,6 +57,9 @@ type MetricsExporter struct {
 	upstreamLatencySeconds         *syncFloat64Histogram
 	streamFirstTokenLatencySeconds *syncFloat64Histogram
 	streamInterTokenLatencySeconds *syncFloat64Histogram
+	streamUpstreamFirstByteSeconds *syncFloat64Histogram
+	streamUpstreamMaxGapSeconds    *syncFloat64Histogram
+	streamIdleTimeoutsTotal        *syncInt64Counter
 	requestRetries                 *syncFloat64Histogram
 
 	// OTel MCP semconv duration histogram. _count gives call volume and error.type gives
@@ -402,6 +405,29 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: interTokenLatencyBuckets,
 	}
 
+	m.streamUpstreamFirstByteSeconds = &syncFloat64Histogram{
+		name:       "bifrost_stream_upstream_first_byte_seconds",
+		desc:       "Time from starting the upstream stream reader until the first raw upstream byte is received",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: firstTokenLatencyBuckets,
+	}
+
+	m.streamUpstreamMaxGapSeconds = &syncFloat64Histogram{
+		name:       "bifrost_stream_upstream_max_gap_seconds",
+		desc:       "Maximum gap between raw upstream byte reads for a completed stream",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: firstTokenLatencyBuckets,
+	}
+
+	m.streamIdleTimeoutsTotal = &syncInt64Counter{
+		name:  "bifrost_stream_idle_timeouts_total",
+		desc:  "Total streams closed because no raw upstream bytes arrived within the configured idle timeout",
+		unit:  "{timeout}",
+		meter: m.meter,
+	}
+
 	m.requestRetries = &syncFloat64Histogram{
 		name:       "bifrost_request_retries",
 		desc:       "Number of retries used per request (observed once per request)",
@@ -528,6 +554,21 @@ func (m *MetricsExporter) RecordStreamFirstTokenLatency(ctx context.Context, lat
 // RecordStreamInterTokenLatency records inter-token latency metric
 func (m *MetricsExporter) RecordStreamInterTokenLatency(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
 	m.streamInterTokenLatencySeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordStreamUpstreamFirstByte records raw upstream first-byte latency.
+func (m *MetricsExporter) RecordStreamUpstreamFirstByte(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
+	m.streamUpstreamFirstByteSeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordStreamUpstreamMaxGap records the maximum raw upstream read gap per stream.
+func (m *MetricsExporter) RecordStreamUpstreamMaxGap(ctx context.Context, latencySeconds float64, attrs ...attribute.KeyValue) {
+	m.streamUpstreamMaxGapSeconds.Record(ctx, latencySeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordStreamIdleTimeout records one stream idle timeout.
+func (m *MetricsExporter) RecordStreamIdleTimeout(ctx context.Context, attrs ...attribute.KeyValue) {
+	m.streamIdleTimeoutsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordRequestRetries records the number of retries used for a single request.

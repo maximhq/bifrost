@@ -172,6 +172,9 @@ type PrometheusPlugin struct {
 	CostTotal                      *prometheus.CounterVec
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
+	StreamUpstreamFirstByteSeconds *prometheus.HistogramVec
+	StreamUpstreamMaxGapSeconds    *prometheus.HistogramVec
+	StreamIdleTimeoutsTotal        *prometheus.CounterVec
 	RequestRetries                 *prometheus.HistogramVec
 	KeyRotationEventsTotal         *prometheus.CounterVec
 	ActiveRequests                 *prometheus.GaugeVec
@@ -487,6 +490,32 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
+	bifrostStreamUpstreamFirstByteSeconds := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_stream_upstream_first_byte_seconds",
+			Help:    "Time from starting the upstream stream reader until the first raw upstream byte is received.",
+			Buckets: firstTokenLatencyBuckets,
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
+	bifrostStreamUpstreamMaxGapSeconds := factory.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "bifrost_stream_upstream_max_gap_seconds",
+			Help:    "Maximum gap between raw upstream byte reads for a completed stream.",
+			Buckets: firstTokenLatencyBuckets,
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
+	bifrostStreamIdleTimeoutsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_stream_idle_timeouts_total",
+			Help: "Total streams closed because no raw upstream bytes arrived within the configured idle timeout.",
+		},
+		append(defaultBifrostLabels, filteredCustomLabels...),
+	)
+
 	bifrostRequestRetries := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "bifrost_request_retries",
@@ -562,6 +591,9 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CostTotal:                      bifrostCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
+		StreamUpstreamFirstByteSeconds: bifrostStreamUpstreamFirstByteSeconds,
+		StreamUpstreamMaxGapSeconds:    bifrostStreamUpstreamMaxGapSeconds,
+		StreamIdleTimeoutsTotal:        bifrostStreamIdleTimeoutsTotal,
 		RequestRetries:                 bifrostRequestRetries,
 		KeyRotationEventsTotal:         bifrostKeyRotationEventsTotal,
 		ActiveRequests:                 bifrostActiveRequests,
@@ -832,6 +864,7 @@ func extractProviderCacheTokens(result *schemas.BifrostResponse) (read, write, w
 // It records:
 //   - Request latency
 //   - Total request count
+//
 // canonicalEntitySet resolves one entity dimension from context: plural arrays,
 // else scalar as a set of one, canonicalized.
 func canonicalEntitySet(ctx context.Context, idsKey, namesKey, scalarIDKey, scalarNameKey schemas.BifrostContextKey) (idsCSV, namesCSV string) {
@@ -941,6 +974,8 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	}
 
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
+	streamTiming, _ := ctx.Value(schemas.BifrostContextKeyStreamTiming).(*schemas.StreamTiming)
+	streamTimingSnapshot := streamTiming.Snapshot()
 
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
 	go func() {
@@ -986,6 +1021,15 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
+		if streamTimingSnapshot.FirstByteLatency > 0 {
+			p.StreamUpstreamFirstByteSeconds.WithLabelValues(promLabelValues...).Observe(streamTimingSnapshot.FirstByteLatency.Seconds())
+		}
+		if streamTimingSnapshot.MaxUpstreamGap > 0 {
+			p.StreamUpstreamMaxGapSeconds.WithLabelValues(promLabelValues...).Observe(streamTimingSnapshot.MaxUpstreamGap.Seconds())
+		}
+		if streamTimingSnapshot.IdleTimeoutFired {
+			p.StreamIdleTimeoutsTotal.WithLabelValues(promLabelValues...).Inc()
+		}
 
 		// Record retries used for this request. Observed once per request (per the goroutine
 		// guarding around isStreamFinal), so .Sum/.Count map cleanly to "total retry attempts"

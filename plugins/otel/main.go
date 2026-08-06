@@ -1214,6 +1214,15 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 		// Convert from nanoseconds to seconds if needed (check the unit)
 		exporter.RecordStreamFirstTokenLatency(ctx, ttft/1e9, otelAttrs...)
 	}
+	if firstByte := getFloat64Attr(attrs, schemas.AttrStreamUpstreamFirstByte); firstByte > 0 {
+		exporter.RecordStreamUpstreamFirstByte(ctx, firstByte, otelAttrs...)
+	}
+	if maxGap := getFloat64Attr(attrs, schemas.AttrStreamUpstreamMaxGap); maxGap > 0 {
+		exporter.RecordStreamUpstreamMaxGap(ctx, maxGap, otelAttrs...)
+	}
+	if idleTimeoutFired, ok := attrs[schemas.AttrStreamIdleTimeoutFired].(bool); ok && idleTimeoutFired {
+		exporter.RecordStreamIdleTimeout(ctx, otelAttrs...)
+	}
 
 	// Record provider-side prompt cache tokens (cache_read / cache_creation). Unlike the
 	// cache-hit counter, these ride real upstream calls, so the values are on the final
