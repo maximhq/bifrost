@@ -955,8 +955,9 @@ export default function MCPClientsTable({
 												    per-user auth types, so this is just the badge uniformly,
 												    same as shared clients. Column-header tooltip above explains
 												    that "unstable" reflects Bifrost's own connection checks, not
-												    caller traffic. */}
-												<Badge className={MCP_STATUS_COLORS[c.state]}>{titleCaseFromSnakeCase(c.state)}</Badge>
+												    caller traffic. "degraded" additionally gets a drill-down —
+												    see StateBadge below. */}
+												<StateBadge state={c.state} nodeStates={c.node_states} />
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<Switch
@@ -1134,6 +1135,46 @@ export default function MCPClientsTable({
 				/>
 			)}
 		</div>
+	);
+}
+
+// StateBadge renders the plain state badge, except for "degraded" — a
+// distributed deployment's instances currently disagreeing about a client's
+// state — which additionally gets a hover drill-down showing the
+// per-instance breakdown behind the aggregate. summarizeNodeStates groups
+// instance IDs by their reported state so the drill-down reads as counts
+// ("2 instances: Healthy, 1 instance: Unstable") rather than a raw ID list.
+function summarizeNodeStates(nodeStates: Record<string, string>): string[] {
+	const countByState = new Map<string, number>();
+	for (const state of Object.values(nodeStates)) {
+		countByState.set(state, (countByState.get(state) ?? 0) + 1);
+	}
+	return Array.from(countByState.entries()).map(
+		([state, count]) => `${count} ${count === 1 ? "instance" : "instances"}: ${titleCaseFromSnakeCase(state)}`,
+	);
+}
+
+function StateBadge({ state, nodeStates }: { state: string; nodeStates?: Record<string, string> }) {
+	const badge = <Badge className={MCP_STATUS_COLORS[state]}>{titleCaseFromSnakeCase(state)}</Badge>;
+	if (state !== "degraded" || !nodeStates || Object.keys(nodeStates).length === 0) {
+		return badge;
+	}
+	return (
+		<Popover>
+			<PopoverTrigger asChild>
+				<button type="button" data-testid="mcp-client-state-degraded-trigger" className="cursor-help">
+					{badge}
+				</button>
+			</PopoverTrigger>
+			<PopoverContent className="w-xs text-xs" align="start">
+				<p className="text-muted-foreground mb-1.5">Instances disagree about this client&apos;s state:</p>
+				<ul className="space-y-0.5">
+					{summarizeNodeStates(nodeStates).map((line) => (
+						<li key={line}>{line}</li>
+					))}
+				</ul>
+			</PopoverContent>
+		</Popover>
 	);
 }
 

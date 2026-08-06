@@ -4004,6 +4004,18 @@ func (bifrost *Bifrost) MCPClientRequiresPerCallConnection(config *schemas.MCPCl
 	return bifrost.MCPManager.RequiresPerCallConnection(config)
 }
 
+// SetMCPStateChangeCallback registers cb to be invoked on every reactive
+// (non-admin-driven) MCP client connection-state transition — periodic
+// checker transitions and reactive connect-failure classification into
+// NeedsReauth. Pass nil to clear a previously registered callback. A no-op
+// if MCP is not configured.
+func (bifrost *Bifrost) SetMCPStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState)) {
+	if bifrost.MCPManager == nil {
+		return
+	}
+	bifrost.MCPManager.SetStateChangeCallback(cb)
+}
+
 // GetMCPClients returns all MCP clients managed by the Bifrost instance.
 //
 // Returns:

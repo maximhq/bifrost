@@ -107,6 +107,74 @@ func TestCloseAndMarkNeedsReauth_ClosesLiveConnectionAndFlipsState(t *testing.T)
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state.State)
 }
 
+// TestFailConnectAttempt_NeedsReauthTransition_FiresStateChangeCallback
+// verifies that failConnectAttempt's reactive classification of a connect
+// failure as permanent (needsReauth=true) fires the registered state-change
+// callback with the correct old/new states — this transition (unlike
+// CloseAndMarkNeedsReauth) has no admin-API call site of its own for a
+// caller to observe the change through otherwise.
+func TestFailConnectAttempt_NeedsReauthTransition_FiresStateChangeCallback(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	config := newSharedOAuthClientConfig("client-fail-reauth")
+
+	type call struct {
+		clientID, name     string
+		oldState, newState schemas.MCPConnectionState
+	}
+	var calls []call
+	m.SetStateChangeCallback(func(clientID, name string, oldState, newState schemas.MCPConnectionState) {
+		calls = append(calls, call{clientID, name, oldState, newState})
+	})
+
+	entry := &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateUnstable,
+	}
+	m.mu.Lock()
+	m.clientMap[config.ID] = entry
+	m.mu.Unlock()
+
+	m.failConnectAttempt(entry, config, nil, nil, nil, nil, true)
+
+	require.Len(t, calls, 1, "the callback must fire exactly once for a genuine state transition")
+	assert.Equal(t, config.ID, calls[0].clientID)
+	assert.Equal(t, config.Name, calls[0].name)
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, calls[0].oldState)
+	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, calls[0].newState)
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID].State
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state)
+}
+
+// TestFailConnectAttempt_NoStateChange_DoesNotFireCallback verifies the
+// callback is a pure transition signal — reclassifying a client that's
+// already Unstable as Unstable again must not fire it.
+func TestFailConnectAttempt_NoStateChange_DoesNotFireCallback(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	config := newSharedOAuthClientConfig("client-no-change")
+
+	fired := false
+	m.SetStateChangeCallback(func(clientID, name string, oldState, newState schemas.MCPConnectionState) {
+		fired = true
+	})
+
+	entry := &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateUnstable,
+	}
+	m.mu.Lock()
+	m.clientMap[config.ID] = entry
+	m.mu.Unlock()
+
+	m.failConnectAttempt(entry, config, nil, nil, nil, nil, false)
+
+	assert.False(t, fired, "the callback must not fire when the transition is a no-op")
+}
+
 // TestCloseAndMarkNeedsReauth_MissingClient_Errors covers the not-found path.
 func TestCloseAndMarkNeedsReauth_MissingClient_Errors(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
