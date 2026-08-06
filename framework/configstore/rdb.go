@@ -7944,6 +7944,12 @@ func applyMCPSessionFilters(query *gorm.DB, params MCPSessionsFilterParams, t mc
 	if len(params.MCPClientIDs) > 0 {
 		query = query.Where(t.table+".mcp_client_id IN ?", params.MCPClientIDs)
 	}
+	if len(params.VirtualKeyIDs) > 0 {
+		query = query.Where(t.table+".virtual_key_id IN ?", params.VirtualKeyIDs)
+	}
+	if len(params.UserIDs) > 0 {
+		query = query.Where(t.table+".user_id IN ?", params.UserIDs)
+	}
 	if params.Identity != "" {
 		// Exact match against whichever identity column carries the value for this
 		// row's mode. Parenthesized explicitly so the OR group ANDs cleanly with the
