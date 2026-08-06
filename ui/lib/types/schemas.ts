@@ -870,6 +870,8 @@ export const otelConfigSchema = z
 	.object({
 		// Per-profile enable toggle. A disabled profile exports nothing and is not validated.
 		enabled: z.boolean().default(true),
+		// Trace export toggle. When false the profile is metrics-only; collector_url isn't required.
+		traces_enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
 		collector_url: secretVarSchema.default({ value: "" }),
 		trace_type: z
@@ -952,21 +954,23 @@ export const otelConfigSchema = z
 			return true;
 		};
 
-		// Collector address is required for an enabled profile.
-		if (!isSecretVarSet(data.collector_url)) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["collector_url"],
-				message: "Collector address is required",
-			});
-		}
+		// collector_url is required and validated only when traces are enabled.
+		if (data.traces_enabled) {
+			if (!isSecretVarSet(data.collector_url)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["collector_url"],
+					message: "Collector address is required",
+				});
+			}
 
-		// Validate collector_url format — skip format check for env var references
-		const collectorUrl = (data.collector_url?.value || "").trim();
-		if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
-			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
-			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+			// Validate collector_url format — skip format check for env var references
+			const collectorUrl = (data.collector_url?.value || "").trim();
+			if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
+				validateHttpUrl(collectorUrl, ["collector_url"]);
+			} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
+				validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+			}
 		}
 
 		// Validate metrics_endpoint when metrics_enabled is true
