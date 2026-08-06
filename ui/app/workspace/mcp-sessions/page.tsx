@@ -33,8 +33,9 @@ export default function MCPSessionsPage() {
 			kind: urlState.kind,
 			status: urlState.status,
 			auth_mode: urlState.auth_mode,
+			mcp_client_id: urlState.mcp_client_id,
 		}),
-		[urlState.kind, urlState.status, urlState.auth_mode],
+		[urlState.kind, urlState.status, urlState.auth_mode, urlState.mcp_client_id],
 	);
 
 	const setFilters = useCallback(
@@ -43,6 +44,7 @@ export default function MCPSessionsPage() {
 				kind: newFilters.kind,
 				status: newFilters.status,
 				auth_mode: newFilters.auth_mode,
+				mcp_client_id: newFilters.mcp_client_id,
 				offset: 0,
 			});
 		},
@@ -54,7 +56,7 @@ export default function MCPSessionsPage() {
 		kind: filters.kind.length ? (filters.kind as MCPSessionKind[]) : undefined,
 		status: filters.status.length ? (filters.status as MCPSessionStatus[]) : undefined,
 		auth_mode: filters.auth_mode.length ? (filters.auth_mode as AuthMode[]) : undefined,
-		mcp_client_id: urlState.mcp_client_id.length ? urlState.mcp_client_id : undefined,
+		mcp_client_id: filters.mcp_client_id.length ? filters.mcp_client_id : undefined,
 		identity: normalizedIdentity || undefined,
 		limit: PAGE_SIZE,
 		offset: urlState.offset,
@@ -83,8 +85,9 @@ export default function MCPSessionsPage() {
 		);
 	}
 
-	const filtersActive = filters.kind.length > 0 || filters.status.length > 0 || filters.auth_mode.length > 0;
-	const hasActiveFilters = !!urlState.q || filtersActive || urlState.mcp_client_id.length > 0 || !!normalizedIdentity;
+	const filtersActive =
+		filters.kind.length > 0 || filters.status.length > 0 || filters.auth_mode.length > 0 || filters.mcp_client_id.length > 0;
+	const hasActiveFilters = !!urlState.q || filtersActive || !!normalizedIdentity;
 
 	const handleSearchChange = (value: string) => setUrlState({ q: value || null, offset: 0 });
 	const handleOffsetChange = (offset: number) => setUrlState({ offset });
