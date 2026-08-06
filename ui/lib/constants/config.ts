@@ -136,6 +136,12 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	// used until a human reauthorizes it, mirroring the "destructive" treatment
 	// this status already gets on the MCP sessions table.
 	needs_reauth: "bg-red-100 text-red-800",
+	// Distinct blue/purple, not amber/red: unlike unstable, this isn't "one
+	// instance's check currently failing" — it's "instances disagree with
+	// each other about the state," which needs its own visual signal to
+	// prompt a look at the per-instance breakdown rather than being read as
+	// just another flavor of unhealthy.
+	degraded: "bg-blue-100 text-blue-800",
 };
 
 // Mapping of what IS supported by each base provider
