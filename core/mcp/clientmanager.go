@@ -622,10 +622,14 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 					client.ToolMap[toolName] = tool
 				}
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
-				client.State = schemas.MCPConnectionStateConnected
+				client.State = schemas.MCPConnectionStateHealthy
 				m.logger.Debug("%s Per-user (%s) MCP client '%s' restored with %d tools", MCPLogPrefix, config.AuthType, config.Name, len(config.DiscoveredTools))
 			} else {
-				client.State = schemas.MCPConnectionStatePendingTools
+				// No dedicated "pending tools" state: Healthy + an empty
+				// ToolMap already says "no tools discovered yet" on its own —
+				// nothing downstream (execution gating, GetToolPerClient)
+				// ever treated the two differently.
+				client.State = schemas.MCPConnectionStateHealthy
 				m.logger.Debug("%s Per-user (%s) MCP client '%s' registered (connection deferred to runtime)", MCPLogPrefix, config.AuthType, config.Name)
 			}
 		}
@@ -938,14 +942,15 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 }
 
 // performAdminToolDiscovery resolves the retained admin bootstrap credential
-// for a per_user_oauth/per_user_headers client (via credStore.AdminConnectionHeaders)
-// and runs a one-shot ephemeral connect-discover-close cycle, reusing the
-// exact same verification functions the one-time bootstrap flow itself uses
+// for a per_user_oauth/per_user_headers/token_exchange client (via
+// credStore.AdminConnectionHeaders) and runs a one-shot ephemeral
+// connect-discover-close cycle, reusing the exact same verification
+// functions the one-time bootstrap flow itself uses
 // (VerifyPerUserOAuthConnection / VerifyHeadersConnection) — this is the
-// periodic tool-syncer's per-user counterpart to reusing a live Conn for
-// shared clients (see ClientToolSyncer.performSync).
+// periodic connection checker's per-call counterpart to reusing a live Conn
+// for sticky clients.
 func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *schemas.MCPClientConfig) (map[string]schemas.ChatTool, map[string]string, error) {
-	if config.AuthType != schemas.MCPAuthTypePerUserOauth && config.AuthType != schemas.MCPAuthTypePerUserHeaders {
+	if config.AuthType != schemas.MCPAuthTypePerUserOauth && config.AuthType != schemas.MCPAuthTypePerUserHeaders && config.AuthType != schemas.MCPAuthTypeTokenExchange {
 		return nil, nil, fmt.Errorf("admin tool discovery not supported for auth_type %q", config.AuthType)
 	}
 
@@ -991,7 +996,7 @@ func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.Ch
 			client.ToolMap[toolName] = tool
 		}
 		client.ToolNameMapping = toolNameMapping
-		client.State = schemas.MCPConnectionStateConnected
+		client.State = schemas.MCPConnectionStateHealthy
 		m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
 	}
 }
@@ -1024,12 +1029,9 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 		return fmt.Errorf("client %s not found", id)
 	}
 	m.logger.Info("%s Disconnecting MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name)
-	// Stop health monitoring for this client
-	m.healthMonitorManager.StopMonitoring(id)
-	m.logger.Debug("%s Stopped health monitoring for MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name)
-	// Stop tool syncing for this client
-	m.toolSyncManager.StopSyncing(id)
-	m.logger.Debug("%s Stopped tool syncing for MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name)
+	// Stop the connection checker for this client
+	m.checkerManager.StopChecking(id)
+	m.logger.Debug("%s Stopped connection checker for MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name)
 	// Cancel SSE context if present (required for proper SSE cleanup)
 	if client.CancelFunc != nil {
 		client.CancelFunc()
@@ -1087,8 +1089,7 @@ func (m *MCPManager) DisableClient(id string) (retErr error) {
 
 	m.logger.Debug("%s Disabling MCP client '%s'", MCPLogPrefix, clientState.ExecutionConfig.Name)
 
-	m.healthMonitorManager.StopMonitoring(id)
-	m.toolSyncManager.StopSyncing(id)
+	m.checkerManager.StopChecking(id)
 
 	if clientState.CancelFunc != nil {
 		clientState.CancelFunc()
@@ -1174,12 +1175,10 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 	// based on whether tools were previously discovered.
 	if m.credStore.RequiresPerCallConnection(configCopy) {
 		m.mu.Lock()
+		// Healthy either way — an empty ToolMap already says "no tools
+		// discovered yet" on its own, no dedicated state needed.
 		if cs, exists := m.clientMap[id]; exists {
-			if len(cs.ToolMap) > 0 {
-				cs.State = schemas.MCPConnectionStateConnected
-			} else {
-				cs.State = schemas.MCPConnectionStatePendingTools
-			}
+			cs.State = schemas.MCPConnectionStateHealthy
 		}
 		m.mu.Unlock()
 		m.logger.Debug("%s Per-user auth MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
@@ -1201,7 +1200,7 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 			case schemas.MCPConnectionStateNeedsReauth:
 				// preserve as-is
 			default:
-				cs.State = schemas.MCPConnectionStateDisconnected
+				cs.State = schemas.MCPConnectionStateUnstable
 			}
 		}
 		m.mu.Unlock()
@@ -1211,8 +1210,9 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 			if configCopy.IsPingAvailable != nil {
 				isPingAvailable = *configCopy.IsPingAvailable
 			}
-			monitor := NewClientHealthMonitor(m, id, DefaultHealthCheckInterval, isPingAvailable, m.logger)
-			m.healthMonitorManager.StartMonitoring(monitor)
+			syncInterval := ResolveToolSyncInterval(configCopy, m.checkerManager.GetGlobalInterval())
+			checker := NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger)
+			m.checkerManager.StartChecking(checker)
 		}
 
 		return fmt.Errorf("failed to connect MCP client '%s': %w", configCopy.Name, err)
@@ -1614,7 +1614,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 			// clearing them here would make a second consecutive failed
 			// close-first reconnect (STDIO, in-process, or no live connection)
 			// lose its last-known tools instead of just the first one.
-			existingClient.State = schemas.MCPConnectionStateDisconnected
+			existingClient.State = schemas.MCPConnectionStateUnstable
 			existingClient.Conn = nil
 			existingClient.ConnectionInfo = &schemas.MCPClientConnectionInfo{
 				Type: config.ConnectionType,
@@ -1628,7 +1628,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		entry = &schemas.MCPClientState{
 			Name:            config.Name,
 			ExecutionConfig: config,
-			State:           schemas.MCPConnectionStateDisconnected,
+			State:           schemas.MCPConnectionStateUnstable,
 			ToolMap:         make(map[string]schemas.ChatTool),
 			ToolNameMapping: make(map[string]string),
 			ConnectionInfo: &schemas.MCPClientConnectionInfo{
@@ -1936,7 +1936,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 	// Store the external client connection and details
 	client.Conn = externalClient
 	client.ConnectionInfo = connectionInfo
-	client.State = schemas.MCPConnectionStateConnected
+	client.State = schemas.MCPConnectionStateHealthy
 
 	// Store cancel function for SSE and STDIO connections to enable proper cleanup
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
@@ -1970,21 +1970,23 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		})
 	}
 
-	// Start health monitoring for the client
-	isPingAvailable := true
-	if config.IsPingAvailable != nil {
-		isPingAvailable = *config.IsPingAvailable
-	}
-	monitor := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, isPingAvailable, m.logger)
-	m.healthMonitorManager.StartMonitoring(monitor)
-
-	// Start tool syncing for the client (skip for internal bifrost client)
+	// Start the connection checker for the client (skip for the internal
+	// bifrost client — an in-process construct with nothing external to
+	// check). This now covers both liveness and discovery refresh in one
+	// mechanism, so unlike the old separate tool-syncer, a per-client
+	// ToolSyncInterval < 0 ("disable discovery refresh") no longer fully
+	// disables checking here — liveness/recovery must never be silently
+	// disabled by that setting, and the two are no longer separable calls.
+	// ResolveToolSyncInterval's 0 (disabled) return still falls back to
+	// DefaultConnectionCheckInterval inside NewClientConnectionChecker.
 	if config.ID != BifrostMCPClientKey {
-		syncInterval := ResolveToolSyncInterval(config, m.toolSyncManager.GetGlobalInterval())
-		if syncInterval > 0 {
-			syncer := NewClientToolSyncer(m, config.ID, config.Name, syncInterval, m.logger)
-			m.toolSyncManager.StartSyncing(syncer)
+		isPingAvailable := true
+		if config.IsPingAvailable != nil {
+			isPingAvailable = *config.IsPingAvailable
 		}
+		syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
+		checker := NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger)
+		m.checkerManager.StartChecking(checker)
 	}
 
 	// Make-before-break: the swap is committed and the workers re-registered,
@@ -2021,7 +2023,7 @@ func (m *MCPManager) handleSSEConnectionLost(clientID, clientName string, genera
 		m.logger.Debug("%s Ignoring stale SSE connection-lost callback for MCP server '%s': %v", MCPLogPrefix, clientName, err)
 		return
 	}
-	client.State = schemas.MCPConnectionStateDisconnected
+	client.State = schemas.MCPConnectionStateUnstable
 	m.mu.Unlock()
 	m.logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, clientName, err)
 }
@@ -2087,7 +2089,7 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 		if needsReauth {
 			clientState.State = schemas.MCPConnectionStateNeedsReauth
 		} else {
-			clientState.State = schemas.MCPConnectionStateDisconnected
+			clientState.State = schemas.MCPConnectionStateUnstable
 		}
 	}
 	m.mu.Unlock()
