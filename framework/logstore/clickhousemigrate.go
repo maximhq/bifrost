@@ -224,7 +224,7 @@ func clickhouseReconcileColumns(ctx context.Context, db *gorm.DB, model any, tab
 
 // chLogsTTL derives the logs/mcp_tool_logs TTL clause from the configured
 // retention. Values < 1 leave TTL unset (the LogsCleaner still prunes via
-// DeleteLogsBatch).
+// DeleteLogsBatch and DeleteMCPToolLogsBatch).
 func chLogsTTL(retentionDays int) string {
 	if retentionDays < 1 {
 		return ""
