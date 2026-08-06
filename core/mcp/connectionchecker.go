@@ -382,7 +382,8 @@ func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, con
 		c.manager.mu.Unlock()
 		return
 	}
-	stateChanged := clientState.State != state
+	oldState := clientState.State
+	stateChanged := oldState != state
 	name := ""
 	if clientState.ExecutionConfig != nil {
 		name = clientState.ExecutionConfig.Name
@@ -390,10 +391,17 @@ func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, con
 	if stateChanged {
 		clientState.State = state
 	}
+	cb := c.manager.stateChangeCallback
 	c.manager.mu.Unlock()
 
 	if stateChanged {
 		c.logger.Info("%s Client %s connection state changed to: %s", MCPLogPrefix, name, state)
+		// Fired outside the lock — a registered callback is caller-supplied
+		// and may do arbitrary work (including I/O), which must never run
+		// while holding m.mu.
+		if cb != nil {
+			cb(c.clientID, name, oldState, state)
+		}
 	}
 }
 

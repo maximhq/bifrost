@@ -729,6 +729,25 @@ type MCPClientResponse struct {
 	Tools     []schemas.ChatToolFunction `json:"tools"`
 	State     schemas.MCPConnectionState `json:"state"`
 	VKConfigs []MCPVKConfigResponse      `json:"vk_configs"`
+	// NodeStates is the per-instance breakdown behind State when it is
+	// schemas.MCPConnectionStateDegraded (instance ID -> that instance's own
+	// self-reported state). Only ever populated by a configured
+	// MCPClusterStateAggregator; nil in a single-instance deployment.
+	NodeStates map[string]string `json:"node_states,omitempty"`
+}
+
+// MCPClusterStateAggregator is an optional capability the configured
+// MCPManager may additionally implement: given a client and the state its
+// own runtime already reports locally, it returns the cluster-aggregated
+// view — the same value when every instance agrees, or
+// schemas.MCPConnectionStateDegraded plus a per-instance breakdown when they
+// don't. A nil aggregated map means "agreement" or "not applicable"; a
+// non-nil one is only ever attached to the response when the returned state
+// is actually Degraded. Single-instance deployments never implement this,
+// so the type assertion in getMCPClientsPaginated simply misses and the
+// response is unchanged from today.
+type MCPClusterStateAggregator interface {
+	AggregateMCPClientState(clientID string, localState schemas.MCPConnectionState) (state schemas.MCPConnectionState, nodeStates map[string]string)
 }
 
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients
@@ -1187,17 +1206,25 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			sort.Slice(sortedTools, func(i, j int) bool {
 				return sortedTools[i].Name < sortedTools[j].Name
 			})
-			clients = append(clients, MCPClientResponse{
-				Config: redactedConfig,
-				Tools:  sortedTools,
-				State: projectPerUserAdminCredentialState(
-					clientConfig.AuthType,
-					connectedClient.State,
-					adminTokenStatusByClientID[dbClient.ClientID],
-					adminCredStatusByClientID[dbClient.ClientID],
-				),
+			resolvedState := projectPerUserAdminCredentialState(
+				clientConfig.AuthType,
+				connectedClient.State,
+				adminTokenStatusByClientID[dbClient.ClientID],
+				adminCredStatusByClientID[dbClient.ClientID],
+			)
+			resp := MCPClientResponse{
+				Config:    redactedConfig,
+				Tools:     sortedTools,
+				State:     resolvedState,
 				VKConfigs: vkConfigs,
-			})
+			}
+			if aggregator, ok := h.mcpManager.(MCPClusterStateAggregator); ok {
+				if aggState, nodeStates := aggregator.AggregateMCPClientState(clientConfig.ID, resolvedState); aggState == schemas.MCPConnectionStateDegraded {
+					resp.State = aggState
+					resp.NodeStates = nodeStates
+				}
+			}
+			clients = append(clients, resp)
 		} else {
 			clients = append(clients, MCPClientResponse{
 				Config:    redactedConfig,
