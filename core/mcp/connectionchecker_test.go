@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -145,7 +146,7 @@ func TestPerformCheck_NilConn_SharedAuthType_TriggersReconnect(t *testing.T) {
 		AuthType:               schemas.MCPAuthTypeHeaders,
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,
 		ConnectionString:       schemas.NewSecretVar("http://127.0.0.1:0/mcp"), // unreachable — attempt must still be made
-		NeedsSessionStickiness: schemas.Ptr(true),                             // sticky: routes through the reconnect-on-nil-conn branch under test, not checkPerCall
+		NeedsSessionStickiness: schemas.Ptr(true),                              // sticky: routes through the reconnect-on-nil-conn branch under test, not checkPerCall
 	}
 	manager.mu.Lock()
 	manager.clientMap[config.ID] = &schemas.MCPClientState{
@@ -226,4 +227,53 @@ func TestSetState_StaleGeneration_DoesNotOverwriteState(t *testing.T) {
 	// one must apply normally — the guard isn't a blanket no-op.
 	checker.setState(schemas.MCPConnectionStateUnstable, 6)
 	require.Equal(t, schemas.MCPConnectionStateUnstable, manager.clientMap[config.ID].State, "a current-generation state write must still apply")
+}
+
+// TestSetState_FiresStateChangeCallbackOnGenuineTransition verifies
+// ClientConnectionChecker.setState — the single writer every periodic-check
+// transition in this file funnels through — fires the manager's registered
+// state-change callback exactly once per genuine transition, with the
+// correct old/new states, and not at all when the target state matches the
+// current one.
+func TestSetState_FiresStateChangeCallbackOnGenuineTransition(t *testing.T) {
+	manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{ID: "client-checker-callback", Name: "checker-callback-client"}
+
+	type call struct {
+		clientID, name     string
+		oldState, newState schemas.MCPConnectionState
+	}
+	var calls []call
+	manager.SetStateChangeCallback(func(clientID, name string, oldState, newState schemas.MCPConnectionState) {
+		calls = append(calls, call{clientID, name, oldState, newState})
+	})
+
+	manager.mu.Lock()
+	manager.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+	}
+	manager.mu.Unlock()
+
+	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
+
+	// Healthy -> Unstable: a genuine transition, must fire once. Generation 0
+	// matches this client's zero-value ConnGeneration (never bumped here).
+	checker.recordFailure(config.Name, "ping", errors.New("boom"), 0)
+	require.Len(t, calls, 1)
+	assert.Equal(t, config.ID, calls[0].clientID)
+	assert.Equal(t, config.Name, calls[0].name)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, calls[0].oldState)
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, calls[0].newState)
+
+	// Unstable -> Unstable: a no-op, must not fire again.
+	checker.recordFailure(config.Name, "ping", errors.New("boom again"), 0)
+	require.Len(t, calls, 1, "a repeat failure that doesn't change state must not re-fire the callback")
+
+	// Unstable -> Healthy: a genuine transition, must fire again.
+	checker.recordSuccess(config.Name, 0)
+	require.Len(t, calls, 2)
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, calls[1].oldState)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, calls[1].newState)
 }

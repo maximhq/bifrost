@@ -2202,6 +2202,8 @@ func (m *MCPManager) closeConnHandles(cancel context.CancelFunc, conn *client.Cl
 // attempt must not mutate that replacement.
 func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *schemas.MCPClientConfig, newCancel context.CancelFunc, newConn *client.Client, oldCancel context.CancelFunc, oldConn *client.Client, needsReauth bool) {
 	m.mu.Lock()
+	var oldState, newState schemas.MCPConnectionState
+	stateChanged := false
 	if clientState, exists := m.clientMap[config.ID]; exists && clientState == entry && clientState.State != schemas.MCPConnectionStateDisabled {
 		clientState.Conn = nil
 		clientState.CancelFunc = nil
@@ -2218,16 +2220,33 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 			Type: config.ConnectionType,
 		}
 		clientState.ConnGeneration++
+		oldState = clientState.State
 		if needsReauth {
-			clientState.State = schemas.MCPConnectionStateNeedsReauth
+			newState = schemas.MCPConnectionStateNeedsReauth
 		} else {
-			clientState.State = schemas.MCPConnectionStateUnstable
+			newState = schemas.MCPConnectionStateUnstable
 		}
+		stateChanged = oldState != newState
+		clientState.State = newState
 	}
+	cb := m.stateChangeCallback
 	m.mu.Unlock()
 
 	m.closeConnHandles(newCancel, newConn, config.Name)
 	m.closeConnHandles(oldCancel, oldConn, config.Name)
+
+	// Fired outside the lock — same rationale as ClientConnectionChecker's
+	// setState: a registered callback is caller-supplied and may do
+	// arbitrary work (including I/O), which must never run while holding
+	// m.mu. This is specifically the "reactive" NeedsReauth path (a connect
+	// attempt — triggered by a live request, a manual reconnect, or the
+	// periodic checker's own reconnect-on-nil-conn branch — classifying its
+	// failure as permanent), which unlike CloseAndMarkNeedsReauth has no
+	// admin-API call site of its own for a caller to observe the change
+	// through.
+	if stateChanged && cb != nil {
+		cb(config.ID, config.Name, oldState, newState)
+	}
 }
 
 // buildTLSHTTPClient constructs an *http.Client with a custom TLS configuration derived
