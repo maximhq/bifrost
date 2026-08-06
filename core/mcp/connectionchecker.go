@@ -255,7 +255,7 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 			return c.manager.runPingWithHooks(c.markAsCheck(attemptCtx), conn, clientName)
 		}, ProbeRetryConfig, c.logger)
 		if pingErr != nil {
-			c.recordFailure(clientName, "ping", pingErr)
+			c.recordFailure(clientName, "ping", pingErr, connGeneration)
 			return UnstableConnectionCheckInterval
 		}
 	}
@@ -270,12 +270,12 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 		return err
 	}, ProbeRetryConfig, c.logger)
 	if listErr != nil {
-		c.recordFailure(clientName, "list_tools", listErr)
+		c.recordFailure(clientName, "list_tools", listErr, connGeneration)
 		return UnstableConnectionCheckInterval
 	}
 
 	c.writeBackTools(connGeneration, newTools, newMapping)
-	c.recordSuccess(clientName)
+	c.recordSuccess(clientName, connGeneration)
 	return c.healthyInterval
 }
 
@@ -293,12 +293,12 @@ func (c *ClientConnectionChecker) checkPerCall(config *schemas.MCPClientConfig, 
 		return innerErr
 	}, ProbeRetryConfig, c.logger)
 	if err != nil {
-		c.recordFailure(config.Name, "admin tool discovery", err)
+		c.recordFailure(config.Name, "admin tool discovery", err, connGeneration)
 		return UnstableConnectionCheckInterval
 	}
 
 	c.writeBackTools(connGeneration, newTools, newMapping)
-	c.recordSuccess(config.Name)
+	c.recordSuccess(config.Name, connGeneration)
 	return c.healthyInterval
 }
 
@@ -336,29 +336,46 @@ func (c *ClientConnectionChecker) writeBackTools(connGeneration uint64, newTools
 // recordFailure marks the client Unstable — a single transient-classified
 // failure is enough, no consecutive-failure counter: the retry-with-backoff
 // each check already went through (ProbeRetryConfig) is what absorbs an
-// ordinary blip before it ever reaches here.
-func (c *ClientConnectionChecker) recordFailure(clientName, stage string, err error) {
+// ordinary blip before it ever reaches here. connGeneration is the value
+// captured at the start of this check (see performCheck) — see setState for
+// why it must be threaded through even though this write, unlike
+// writeBackTools, isn't about the connection itself.
+func (c *ClientConnectionChecker) recordFailure(clientName, stage string, err error, connGeneration uint64) {
 	c.logger.Warn("%s Connection check (%s) failed for %s: %v", MCPLogPrefix, stage, clientName, err)
-	c.setState(schemas.MCPConnectionStateUnstable)
+	c.setState(schemas.MCPConnectionStateUnstable, connGeneration)
 }
 
 // recordSuccess marks the client Healthy. A single success is enough to
 // recover — asymmetric on purpose: slow and deliberate into Unstable
 // (respecting the retry budget), instant back out of it once a check
 // actually proves the connection is fine again.
-func (c *ClientConnectionChecker) recordSuccess(clientName string) {
-	c.setState(schemas.MCPConnectionStateHealthy)
+func (c *ClientConnectionChecker) recordSuccess(clientName string, connGeneration uint64) {
+	c.setState(schemas.MCPConnectionStateHealthy, connGeneration)
 }
 
 // setState is the guarded writer every transition in this file funnels
 // through — Disabled and NeedsReauth are authoritative and never silently
 // overwritten by a check result racing against a DisableClient call or a
 // credential already confirmed dead.
-func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState) {
+//
+// connGeneration is dropped if it no longer matches the client's current
+// ConnGeneration, mirroring writeBackTools' own guard: StopChecking does not
+// cancel an in-flight check, so a check started just before a
+// stickiness-transition (which bumps ConnGeneration when it closes the
+// persistent connection) can still complete afterward. Without this guard
+// its state write would land on an entry that has since moved on — e.g.
+// marking Unstable a client that just became per-call and has no connection
+// left to be unstable about.
+func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, connGeneration uint64) {
 	c.manager.mu.Lock()
 	clientState, exists := c.manager.clientMap[c.clientID]
 	if !exists {
 		c.manager.mu.Unlock()
+		return
+	}
+	if clientState.ConnGeneration != connGeneration {
+		c.manager.mu.Unlock()
+		c.logger.Debug("%s Skipping state write for %s: connection was replaced during check", MCPLogPrefix, c.clientID)
 		return
 	}
 	if clientState.State == schemas.MCPConnectionStateDisabled || clientState.State == schemas.MCPConnectionStateNeedsReauth {

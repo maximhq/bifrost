@@ -177,6 +177,8 @@ export const mcpApi = baseApi.injectEndpoints({
 									if (data.tools_to_auto_execute !== undefined)
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
+									if (data.needs_session_stickiness !== undefined)
+										draft.clients[index].config.needs_session_stickiness = data.needs_session_stickiness;
 									if (data.tool_pricing !== undefined) draft.clients[index].config.tool_pricing = data.tool_pricing;
 									// The request carries minutes, but the cached config mirrors the GET
 									// response, which carries nanoseconds. Convert so the cache stays in

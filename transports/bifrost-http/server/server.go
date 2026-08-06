@@ -133,6 +133,11 @@ type ServerCallbacks interface {
 	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
 	// SetClientTools updates the tool map for an existing client.
 	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	// RequiresPerCallConnection reports whether config resolves to a
+	// per-call connection (true) or a persistent shared one (false), taking
+	// auth type, connection type, and needs_session_stickiness into account
+	// together.
+	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
 	ReconnectMCPClient(ctx context.Context, id string) error
 	// CloseAndMarkNeedsReauth closes a shared client's live upstream
 	// connection and flips it to needs_reauth, without attempting a new
@@ -394,6 +399,14 @@ func (s *BifrostHTTPServer) SetClientTools(clientID string, tools map[string]sch
 	if err := s.MCPServerHandler.SyncAllMCPServers(context.Background()); err != nil {
 		logger.Warn("failed to sync MCP servers after setting client tools: %v", err)
 	}
+}
+
+// RequiresPerCallConnection delegates to the Bifrost client to report
+// whether config resolves to a per-call connection or a persistent shared
+// one, taking auth type, connection type, and needs_session_stickiness into
+// account together.
+func (s *BifrostHTTPServer) RequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
+	return s.Client.MCPClientRequiresPerCallConnection(config)
 }
 
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
