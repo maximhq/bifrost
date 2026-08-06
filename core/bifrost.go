@@ -3602,13 +3602,29 @@ func reorderAtomicSlice[T pluginWithName](ptr *atomic.Pointer[[]T], pos map[stri
 //	}
 //	fmt.Println(providers)
 func (bifrost *Bifrost) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	providers := bifrost.providers.Load()
-	if providers == nil {
-		return nil, fmt.Errorf("no providers configured")
+	providerKeys, err := bifrost.account.GetConfiguredProviders()
+	if err != nil {
+		return nil, err
 	}
-	modelProviders := make([]schemas.ModelProvider, len(*providers))
-	for i, provider := range *providers {
-		modelProviders[i] = provider.GetProviderKey()
+
+	modelProviders := make([]schemas.ModelProvider, 0, len(providerKeys))
+	for _, providerKey := range providerKeys {
+		if strings.TrimSpace(string(providerKey)) == "" {
+			continue
+		}
+
+		config, err := bifrost.account.GetConfigForProvider(providerKey)
+		if err != nil {
+			bifrost.logger.Warn("failed to get config for provider %s while listing configured providers: %v", providerKey, err)
+			continue
+		}
+		if config == nil {
+			continue
+		}
+		if config.CustomProviderConfig != nil && config.CustomProviderConfig.AllowedRequests != nil && !config.CustomProviderConfig.IsOperationAllowed(schemas.ListModelsRequest) {
+			continue
+		}
+		modelProviders = append(modelProviders, providerKey)
 	}
 	return modelProviders, nil
 }
