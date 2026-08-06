@@ -273,6 +273,32 @@ module "ecs" {
   autoscaling_memory_threshold = var.autoscaling_memory_threshold
 }
 
+# =============================================================================
+# PostgreSQL (optional — created only when create_postgresql is true)
+# =============================================================================
+
+module "postgresql" {
+  source = "./postgresql"
+  count  = var.create_postgresql ? 1 : 0
+
+  name_prefix             = var.name_prefix
+  tags                    = var.tags
+  engine_version          = var.postgresql_engine_version
+  instance_class          = var.postgresql_instance_class
+  allocated_storage       = var.postgresql_storage_gb
+  database_name           = var.postgresql_database_name
+  username                = var.postgresql_username
+  password                = var.postgresql_password
+  backup_retention_period = var.postgresql_backup_retention_days
+  multi_az                = var.postgresql_multi_az
+  publicly_accessible     = var.postgresql_publicly_accessible
+
+  # Networking — reuse Bifrost VPC and subnets
+  vpc_id                    = local.vpc_id
+  subnet_ids                = local.subnet_ids
+  source_security_group_ids = local.security_group_ids
+}
+
 module "eks" {
   source = "./services/eks"
   count  = var.service == "eks" ? 1 : 0
