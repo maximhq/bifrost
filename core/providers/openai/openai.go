@@ -1192,6 +1192,11 @@ func HandleOpenAIChatCompletionStreaming(
 		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
 		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
 		usageSeen := false
+		// Fallback path only: tracks whether the upstream ever sent a finish_reason,
+		// so a finish_reason that fails to produce a terminal event (e.g. a future
+		// regression in ToBifrostResponsesStreamResponse) is treated as truncation
+		// instead of a silent stream close.
+		fallbackFinishReasonSeen := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1254,6 +1259,10 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 
 			if isResponsesToChatCompletionsFallback {
+				if len(response.Choices) > 0 && response.Choices[0].FinishReason != nil && *response.Choices[0].FinishReason != "" {
+					fallbackFinishReasonSeen = true
+				}
+
 				// Accumulate usage across chunks; attached to final event below.
 				if response.Usage != nil {
 					usageSeen = true
@@ -1428,7 +1437,10 @@ func HandleOpenAIChatCompletionStreaming(
 		// that is indistinguishable from a provider that generated zero tokens.
 		terminalSignalSeen := providerUtils.SSEStreamEndedOnMarker(sseReader)
 		if isResponsesToChatCompletionsFallback {
-			terminalSignalSeen = terminalSignalSeen || pendingFinalEvent != nil
+			// A finish_reason without a resulting terminal event means the conversion
+			// path failed to synthesize Completed/Incomplete — treat that as truncation
+			// rather than a silent stream close, even though [DONE] may have arrived.
+			terminalSignalSeen = pendingFinalEvent != nil || (terminalSignalSeen && !fallbackFinishReasonSeen)
 		} else {
 			terminalSignalSeen = terminalSignalSeen || finishReason != nil
 		}
