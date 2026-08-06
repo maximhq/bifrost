@@ -214,10 +214,24 @@ func (p *GovernancePlugin) embedComplexityTexts(ctx context.Context, semantic *c
 	embeddingCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	defer embeddingCtx.Cancel()
 	embeddings, inputTokens, err := p.generateEmbeddings(embeddingCtx, semantic, texts, warmupEmbeddingTimeout)
+	// A rejected response shape still cost input tokens: the provider completed
+	// the call and billed for it, we just refused to trust its vector count or
+	// indices. ErrBatchEmbeddingsUnsupported is the case that matters, because
+	// warmup recovers from it by re-embedding one text at a time and then
+	// succeeds — dropping the batch's usage here would leave those tokens
+	// unobserved and unbilled with nothing downstream to notice. The retries
+	// settle their own separate calls, so this cannot double-count.
+	//
+	// generateEmbeddings reports zero tokens for every failure before the
+	// response arrives (no executor, bad config, timeout), so gating on a
+	// positive count keeps those out of the observer's call counter while
+	// leaving the success path settling exactly as before.
+	if err == nil || inputTokens > 0 {
+		p.settleWarmupEmbedUsage(semantic, inputTokens)
+	}
 	if err != nil {
 		return nil, err
 	}
-	p.settleWarmupEmbedUsage(semantic, inputTokens)
 	return embeddings, nil
 }
 

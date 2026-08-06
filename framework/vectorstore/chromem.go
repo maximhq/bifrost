@@ -238,7 +238,12 @@ func (s *ChromemStore) GetNearest(ctx context.Context, namespace string, vector 
 	if limit <= 0 {
 		limit = 10
 	}
-	out := make([]SearchResult, 0, limit)
+	// Size the preallocation by what the search can actually return, not by the
+	// caller's limit: nothing bounds limit, and an oversized one would reserve —
+	// or on an extreme value panic trying to reserve — memory no result set could
+	// ever fill. The loop below still honors limit itself. Every other backend
+	// sizes its result slice on its own result count for the same reason.
+	out := make([]SearchResult, 0, min(int64(len(results)), limit))
 	for _, res := range results {
 		if float64(res.Similarity) < threshold {
 			// Results are ranked by similarity; everything after is below threshold too.

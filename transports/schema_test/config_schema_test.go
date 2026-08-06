@@ -456,53 +456,58 @@ func TestSchemaComplexitySemanticConfig(t *testing.T) {
 		},
 		{
 			name:     "minimal semantic block",
-			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536}`,
+			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"}`,
 		},
 		{
 			name:     "full semantic block",
-			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"timeout":"100ms","fallback":"lexical","count_toward_budgets":true,"vector_store":"embedded"}`,
+			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","timeout":"100ms","count_toward_budgets":true,"vector_store":"embedded"}`,
 		},
 		{
 			name:     "timeout as milliseconds number",
-			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"timeout":250}`,
+			semantic: `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","timeout":250}`,
 		},
 		{
 			name:      "missing embedding_model",
-			semantic:  `,"semantic":{"provider":"openai","dimension":1536}`,
-			wantError: true,
-		},
-		{
-			name:      "dimension below minimum",
-			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1}`,
+			semantic:  `,"semantic":{"provider":"openai"}`,
 			wantError: true,
 		},
 		{
 			name:     "custom provider name",
-			semantic: `,"semantic":{"provider":"my-custom-provider","embedding_model":"text-embedding-3-small","dimension":1536}`,
+			semantic: `,"semantic":{"provider":"my-custom-provider","embedding_model":"text-embedding-3-small"}`,
 		},
 		{
 			name:      "empty provider",
-			semantic:  `,"semantic":{"provider":"","embedding_model":"text-embedding-3-small","dimension":1536}`,
+			semantic:  `,"semantic":{"provider":"","embedding_model":"text-embedding-3-small"}`,
+			wantError: true,
+		},
+		// dimension and fallback were removed: the width is measured at warmup, and
+		// the classifier no longer falls back to the lexical scorer. A config.json
+		// carried over from a build that had them must fail loudly here rather than
+		// reach the decoder, which rejects them too
+		// (TestComplexitySemanticConfigRejectsRemovedFields).
+		{
+			name:      "removed dimension field",
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536}`,
 			wantError: true,
 		},
 		{
-			name:      "unknown fallback value",
-			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"fallback":"llm"}`,
+			name:      "removed fallback field",
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","fallback":"lexical"}`,
 			wantError: true,
 		},
 		{
 			name:      "unknown vector_store value",
-			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"vector_store":"pgvector"}`,
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","vector_store":"pgvector"}`,
 			wantError: true,
 		},
 		{
 			name:      "unknown semantic field",
-			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"threshold":0.8}`,
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","threshold":0.8}`,
 			wantError: true,
 		},
 		{
 			name:      "exemplars block no longer accepted",
-			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","dimension":1536,"exemplars":{"simple_exemplars":["hi"]}}`,
+			semantic:  `,"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small","exemplars":{"simple_exemplars":["hi"]}}`,
 			wantError: true,
 		},
 	}

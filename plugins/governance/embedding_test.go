@@ -435,6 +435,43 @@ func TestEmbedComplexityTextsObservesWarmupNeverRecordsRoutingUsage(t *testing.T
 	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 7}, observed[0])
 }
 
+// TestEmbedComplexityTextsSettlesUsageOnUnsupportedBatch covers the shape a
+// single-input-only model returns for a multi-text batch. Warmup recovers by
+// re-embedding each phrase on its own, so this call's tokens are the ones that
+// would silently vanish: the provider billed for them and the run still
+// succeeds.
+func TestEmbedComplexityTextsSettlesUsageOnUnsupportedBatch(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 5), nil
+	})
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	_, err := plugin.embedComplexityTexts(t.Context(), testEmbeddingSemanticConfig(), []string{"a", "b"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, complexity.ErrBatchEmbeddingsUnsupported))
+	require.Len(t, observed, 1)
+	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 5}, observed[0])
+}
+
+// A call that never reached the provider consumed nothing, so it must not reach
+// the observer at all — that would inflate the warmup embedding call counter
+// with attempts the provider never saw.
+func TestEmbedComplexityTextsSkipsUsageWhenTheCallNeverReachedTheProvider(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	_, err := plugin.embedComplexityTexts(t.Context(), testEmbeddingSemanticConfig(), []string{"a", "b"})
+	require.ErrorIs(t, err, ErrEmbeddingRequestExecutorNotConfigured)
+	assert.Empty(t, observed)
+}
+
 func TestRequestClassificationEmbedDoesNotObserveWarmup(t *testing.T) {
 	plugin := &GovernancePlugin{}
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
