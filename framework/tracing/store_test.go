@@ -1,6 +1,7 @@
 package tracing
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -16,8 +17,15 @@ func TestCreateTrace_WithInheritedTraceID(t *testing.T) {
 
 	traceID := store.CreateTrace(inheritedTraceID)
 
-	if traceID != inheritedTraceID {
-		t.Errorf("CreateTrace() returned %q, want inherited trace ID %q", traceID, inheritedTraceID)
+	// The returned handle is an opaque in-process storage key, NOT the
+	// inherited W3C trace ID. Reusing the W3C ID as the storage key would
+	// cause concurrent requests sharing the same upstream trace to overwrite
+	// each other in the store; see TestCreateTrace_ConcurrentSameW3CTraceID.
+	if traceID == inheritedTraceID {
+		t.Errorf("CreateTrace() returned the W3C inherited trace ID %q as the storage handle; storage handle must be opaque", traceID)
+	}
+	if traceID == "" {
+		t.Fatal("CreateTrace() returned empty storage handle")
 	}
 
 	trace := store.GetTrace(traceID)
@@ -25,8 +33,15 @@ func TestCreateTrace_WithInheritedTraceID(t *testing.T) {
 		t.Fatal("GetTrace() returned nil")
 	}
 
+	// The W3C trace ID is preserved on the trace for OTEL export.
 	if trace.TraceID != inheritedTraceID {
 		t.Errorf("trace.TraceID = %q, want %q", trace.TraceID, inheritedTraceID)
+	}
+
+	// The internal storage handle round-trips on the trace itself so that
+	// plugins receiving the trace can correlate it back to per-request state.
+	if trace.InternalID != traceID {
+		t.Errorf("trace.InternalID = %q, want %q", trace.InternalID, traceID)
 	}
 
 	// ParentID should be empty - we no longer set it incorrectly to the trace ID
@@ -45,19 +60,31 @@ func TestCreateTrace_GeneratesNewTraceID(t *testing.T) {
 		t.Error("CreateTrace() returned empty trace ID")
 	}
 
-	// Generated trace ID should be 32 hex characters
+	// The opaque storage handle is generated using the same scheme as the
+	// W3C trace ID generator: 32 hex characters.
 	if len(traceID) != 32 {
-		t.Errorf("Generated trace ID length = %d, want 32", len(traceID))
+		t.Errorf("Storage handle length = %d, want 32", len(traceID))
 	}
 
-	// Verify it's valid hex
 	if !isHex(traceID) {
-		t.Errorf("Generated trace ID %q is not valid hex", traceID)
+		t.Errorf("Storage handle %q is not valid hex", traceID)
 	}
 
 	trace := store.GetTrace(traceID)
 	if trace == nil {
 		t.Fatal("GetTrace() returned nil")
+	}
+
+	// When there's no inherited W3C trace ID, one is generated for export.
+	// The storage handle and the W3C trace ID are independent values.
+	if trace.TraceID == "" {
+		t.Error("trace.TraceID should be generated when no inherited ID is provided")
+	}
+	if trace.TraceID == traceID {
+		t.Error("trace.TraceID should be independent of the storage handle")
+	}
+	if trace.InternalID != traceID {
+		t.Errorf("trace.InternalID = %q, want %q", trace.InternalID, traceID)
 	}
 
 	if trace.ParentID != "" {
@@ -81,12 +108,18 @@ func TestStartSpan_RootSpanHasNoParent(t *testing.T) {
 		t.Errorf("root span.ParentID = %q, want empty string", span.ParentID)
 	}
 
-	if span.TraceID != traceID {
-		t.Errorf("span.TraceID = %q, want %q", span.TraceID, traceID)
+	trace := store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("GetTrace() returned nil")
+	}
+
+	// span.TraceID should reflect the W3C trace ID (what gets exported),
+	// not the in-process storage handle.
+	if span.TraceID != trace.TraceID {
+		t.Errorf("span.TraceID = %q, want %q (W3C trace ID, not storage handle %q)", span.TraceID, trace.TraceID, traceID)
 	}
 
 	// Verify it's set as root span
-	trace := store.GetTrace(traceID)
 	if trace.RootSpan != span {
 		t.Error("StartSpan() did not set trace.RootSpan")
 	}
@@ -135,8 +168,10 @@ func TestStartChildSpan_HasCorrectParent(t *testing.T) {
 		t.Errorf("child span.ParentID = %q, want %q", childSpan.ParentID, rootSpan.SpanID)
 	}
 
-	if childSpan.TraceID != traceID {
-		t.Errorf("child span.TraceID = %q, want %q", childSpan.TraceID, traceID)
+	// span.TraceID is the W3C trace ID, not the in-process storage handle.
+	trace := store.GetTrace(traceID)
+	if childSpan.TraceID != trace.TraceID {
+		t.Errorf("child span.TraceID = %q, want %q (W3C trace ID)", childSpan.TraceID, trace.TraceID)
 	}
 }
 
@@ -189,8 +224,10 @@ func TestCompleteTrace_ReturnsAndRemoves(t *testing.T) {
 		t.Fatal("CompleteTrace() returned nil")
 	}
 
-	if trace.TraceID != traceID {
-		t.Errorf("trace.TraceID = %q, want %q", trace.TraceID, traceID)
+	// CompleteTrace returns the trace stored under the opaque storage handle;
+	// the W3C trace.TraceID is independent of that handle.
+	if trace.InternalID != traceID {
+		t.Errorf("trace.InternalID = %q, want %q", trace.InternalID, traceID)
 	}
 
 	if trace.EndTime.IsZero() {
@@ -224,6 +261,194 @@ func TestEndSpan_SetsStatusAndTime(t *testing.T) {
 
 	if span.Attributes["custom.attr"] != "value" {
 		t.Error("EndSpan() should set custom attributes")
+	}
+}
+
+// TestCreateTrace_ConcurrentSameW3CTraceID is the regression test for the
+// orphan-span / lost-parent-link bug observed when many concurrent Bifrost
+// requests arrive under the same upstream W3C trace ID (e.g. a client doing
+// parallel POSTs under one distributed trace).
+//
+// Before the fix, CreateTrace keyed s.traces by the W3C trace ID, so each
+// concurrent CreateTrace(sameID) overwrote the previous *Trace. Every
+// subsequent StartSpan/StartChildSpan with the same handle then wrote into
+// whichever *Trace happened to be currently registered, producing spans whose
+// ParentID referenced evicted (and now unreachable) root spans. CompleteTrace
+// further LoadAndDeleted the only surviving entry, silently dropping all
+// later plugin spans.
+//
+// After the fix, CreateTrace returns an opaque per-request storage handle so
+// every concurrent request gets its own independent *Trace.
+func TestCreateTrace_ConcurrentSameW3CTraceID(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	// All N requests arrive under the same W3C trace ID.
+	sharedW3CTraceID := "69538b980000000079943934f90c1d40"
+	externalParentSpanID := "aad09d1659b4c7e3"
+
+	const N = 32
+	type result struct {
+		handle        string
+		rootSpanID    string
+		childSpanID   string
+		completedRoot *schemas.Span
+	}
+	results := make([]result, N)
+
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Each request gets its own opaque storage handle even though
+			// they all share sharedW3CTraceID.
+			handle := store.CreateTrace(sharedW3CTraceID)
+			// Mimic the HTTP middleware: root span is a child of the external
+			// W3C parent span.
+			root := store.StartChildSpan(handle, externalParentSpanID, "/v1/embeddings", schemas.SpanKindHTTPRequest)
+			if root == nil {
+				t.Errorf("goroutine %d: StartChildSpan(root) returned nil", i)
+				return
+			}
+			// One nested plugin span beneath the root.
+			child := store.StartChildSpan(handle, root.SpanID, "plugin.telemetry.prehook", schemas.SpanKindPlugin)
+			if child == nil {
+				t.Errorf("goroutine %d: StartChildSpan(child) returned nil", i)
+				return
+			}
+			results[i] = result{handle: handle, rootSpanID: root.SpanID, childSpanID: child.SpanID}
+		}(i)
+	}
+	wg.Wait()
+
+	// All handles must be unique.
+	seen := make(map[string]int, N)
+	for i, r := range results {
+		if r.handle == "" {
+			t.Fatalf("goroutine %d: empty handle", i)
+		}
+		if prev, ok := seen[r.handle]; ok {
+			t.Fatalf("handle collision: goroutines %d and %d both got handle %q", prev, i, r.handle)
+		}
+		seen[r.handle] = i
+		// Reusing the W3C trace ID as the storage handle is the bug we're guarding against.
+		if r.handle == sharedW3CTraceID {
+			t.Fatalf("goroutine %d: handle equals shared W3C trace ID; storage handle must be opaque", i)
+		}
+	}
+
+	// Each handle must resolve to its own independent *Trace with the
+	// expected spans, and CompleteTrace must hand back that exact trace.
+	for i, r := range results {
+		live := store.GetTrace(r.handle)
+		if live == nil {
+			t.Fatalf("goroutine %d: GetTrace(%q) returned nil before completion", i, r.handle)
+		}
+		if live.TraceID != sharedW3CTraceID {
+			t.Errorf("goroutine %d: live.TraceID = %q, want shared W3C %q", i, live.TraceID, sharedW3CTraceID)
+		}
+		if live.RootSpan == nil || live.RootSpan.SpanID != r.rootSpanID {
+			t.Errorf("goroutine %d: live.RootSpan = %v, want span %q", i, live.RootSpan, r.rootSpanID)
+		}
+		if got := len(live.Spans); got != 2 {
+			t.Errorf("goroutine %d: len(live.Spans) = %d, want 2", i, got)
+		}
+		// Child span's parent must be this trace's own root, not some other
+		// goroutine's root — exactly the orphan-link scenario this test guards.
+		if child := live.GetSpan(r.childSpanID); child == nil || child.ParentID != r.rootSpanID {
+			t.Errorf("goroutine %d: child span parent = %v, want %q", i, child, r.rootSpanID)
+		}
+	}
+
+	// CompleteTrace must return each trace independently.
+	for i, r := range results {
+		completed := store.CompleteTrace(r.handle)
+		if completed == nil {
+			t.Fatalf("goroutine %d: CompleteTrace(%q) returned nil", i, r.handle)
+		}
+		if completed.InternalID != r.handle {
+			t.Errorf("goroutine %d: completed.InternalID = %q, want %q", i, completed.InternalID, r.handle)
+		}
+		if completed.TraceID != sharedW3CTraceID {
+			t.Errorf("goroutine %d: completed.TraceID = %q, want shared W3C %q", i, completed.TraceID, sharedW3CTraceID)
+		}
+		if completed.RootSpan == nil || completed.RootSpan.SpanID != r.rootSpanID {
+			t.Errorf("goroutine %d: completed.RootSpan = %v, want span %q", i, completed.RootSpan, r.rootSpanID)
+		}
+		if store.GetTrace(r.handle) != nil {
+			t.Errorf("goroutine %d: trace not removed from store after CompleteTrace", i)
+		}
+		// Capture the root span ID *before* releasing — ReleaseTrace returns
+		// pooled spans to the pool which zeroes their fields.
+		if completed.RootSpan != nil {
+			results[i].completedRoot = &schemas.Span{SpanID: completed.RootSpan.SpanID}
+		}
+		store.ReleaseTrace(completed)
+	}
+
+	// Every goroutine must have produced a distinct root span — there is no
+	// scenario in which two requests "share" a root span across the wire.
+	rootSeen := make(map[string]int, N)
+	for i, r := range results {
+		if r.completedRoot == nil {
+			continue
+		}
+		if prev, ok := rootSeen[r.completedRoot.SpanID]; ok {
+			t.Fatalf("root span collision: goroutines %d and %d both surfaced span %q as root", prev, i, r.completedRoot.SpanID)
+		}
+		rootSeen[r.completedRoot.SpanID] = i
+	}
+}
+
+// TestStartSpan_ConcurrentRootElectionIsAtomic guards against a regression of
+// the unsynchronized RootSpan election race. Two goroutines calling StartSpan
+// on the same fresh trace must agree on a single root; the loser must become
+// a child of the winner, not concurrently claim "I am also root".
+func TestStartSpan_ConcurrentRootElectionIsAtomic(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	const iterations = 64
+	for iter := 0; iter < iterations; iter++ {
+		traceID := store.CreateTrace("")
+
+		const N = 8
+		spans := make([]*schemas.Span, N)
+		var wg sync.WaitGroup
+		for i := 0; i < N; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				spans[i] = store.StartSpan(traceID, "race", schemas.SpanKindLLMCall)
+			}(i)
+		}
+		wg.Wait()
+
+		trace := store.GetTrace(traceID)
+		if trace == nil {
+			t.Fatal("trace missing")
+		}
+		// Exactly one span must be RootSpan; every other span must be a child of it.
+		if trace.RootSpan == nil {
+			t.Fatalf("iter %d: no root elected", iter)
+		}
+		rootID := trace.RootSpan.SpanID
+		for i, s := range spans {
+			if s == nil {
+				t.Fatalf("iter %d goroutine %d: nil span", iter, i)
+			}
+			if s.SpanID == rootID {
+				if s.ParentID != "" {
+					t.Errorf("iter %d: elected root span has ParentID %q, want empty", iter, s.ParentID)
+				}
+				continue
+			}
+			if s.ParentID != rootID {
+				t.Errorf("iter %d goroutine %d: span ParentID = %q, want elected root %q", iter, i, s.ParentID, rootID)
+			}
+		}
+		store.ReleaseTrace(store.CompleteTrace(traceID))
 	}
 }
 

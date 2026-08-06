@@ -67,10 +67,20 @@ func NewTraceStore(ttl time.Duration, logger schemas.Logger) *TraceStore {
 	return store
 }
 
-// CreateTrace creates a new trace and stores it, returns trace ID only.
-// The inheritedTraceID parameter is the trace ID from an incoming W3C traceparent header.
-// If provided, this trace will use that ID to continue the distributed trace.
-// If empty, a new trace ID will be generated.
+// CreateTrace creates a new trace and stores it, returning the opaque storage handle
+// that must be used for all subsequent in-process lookups (StartSpan, GetTrace,
+// CompleteTrace, etc.).
+//
+// The returned handle is *not* the W3C trace ID. The inheritedTraceID parameter
+// (taken from an incoming W3C traceparent header, when present) is stored on
+// trace.TraceID for OTEL export; if empty, a fresh W3C trace ID is generated.
+// The storage handle is always a freshly generated, per-request identifier so
+// that concurrent requests sharing the same upstream W3C trace ID get their
+// own *Trace objects in the store — without this decoupling, a second request
+// arriving under the same W3C trace ID would overwrite the first request's
+// trace via sync.Map.Store, dropping its root span and leaving its plugin
+// spans with parent IDs that no longer exist in the surviving trace.
+//
 // Note: The parent span ID (for linking to upstream spans) is handled separately
 // via context in StartSpan, not stored on the trace itself.
 func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) string {
@@ -81,6 +91,10 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) s
 	} else {
 		trace.TraceID = generateTraceID()
 	}
+	// Always mint a fresh in-process handle. Reusing inheritedTraceID as the
+	// storage key (the previous behaviour) caused concurrent same-trace
+	// requests to overwrite each other in s.traces.
+	trace.InternalID = generateTraceID()
 	// Note: trace.ParentID is intentionally not set here.
 	// Parent-child relationships are between spans, not traces.
 	// The root span's ParentID is set in StartSpan from context.
@@ -109,8 +123,8 @@ func (s *TraceStore) CreateTrace(inheritedTraceID string, requestID ...string) s
 	// Reset request headers
 	trace.RequestHeaders = nil
 
-	s.traces.Store(trace.TraceID, trace)
-	return trace.TraceID
+	s.traces.Store(trace.InternalID, trace)
+	return trace.InternalID
 }
 
 // GetTrace retrieves a trace by ID
@@ -269,7 +283,8 @@ func (s *TraceStore) ReleaseTrace(trace *schemas.Trace) {
 	s.tracePool.Put(trace)
 }
 
-// StartSpan creates a new span and adds it to the trace
+// StartSpan creates a new span and adds it to the trace.
+// traceID is the opaque storage handle returned by CreateTrace (NOT the W3C trace ID).
 func (s *TraceStore) StartSpan(traceID, name string, kind schemas.SpanKind) *schemas.Span {
 	trace := s.GetTrace(traceID)
 	if trace == nil {
@@ -280,7 +295,10 @@ func (s *TraceStore) StartSpan(traceID, name string, kind schemas.SpanKind) *sch
 
 	// Reset and initialize the span
 	span.SpanID = generateSpanID()
-	span.TraceID = traceID
+	// span.TraceID is the W3C trace ID (what gets exported to OTEL), not the
+	// in-process storage handle. The store-handle is intentionally opaque and
+	// stays inside the TraceStore.
+	span.TraceID = trace.TraceID
 	span.Name = name
 	span.Kind = kind
 	span.StartTime = time.Now()
@@ -302,21 +320,17 @@ func (s *TraceStore) StartSpan(traceID, name string, kind schemas.SpanKind) *sch
 		clear(span.Attributes)
 	}
 
-	// Set parent ID to root span if it exists, otherwise this is root
-	if trace.RootSpan != nil {
-		span.ParentID = trace.RootSpan.SpanID
-	} else {
-		span.ParentID = ""
-		trace.RootSpan = span
-	}
-
-	// Add span to trace
-	trace.AddSpan(span)
+	// Elect root span and append atomically. Holding trace.mu across both
+	// operations prevents two concurrent StartSpan calls from both deciding
+	// they are the root (which would leave one of them silently demoted with
+	// its ParentID overwritten by the other's SpanID, or vice versa).
+	trace.ElectRootOrChildAndAdd(span)
 
 	return span
 }
 
-// StartChildSpan creates a new span as a child of the specified parent span
+// StartChildSpan creates a new span as a child of the specified parent span.
+// traceID is the opaque storage handle returned by CreateTrace (NOT the W3C trace ID).
 func (s *TraceStore) StartChildSpan(traceID, parentSpanID, name string, kind schemas.SpanKind) *schemas.Span {
 	trace := s.GetTrace(traceID)
 	if trace == nil {
@@ -328,7 +342,9 @@ func (s *TraceStore) StartChildSpan(traceID, parentSpanID, name string, kind sch
 	// Reset and initialize the span
 	span.SpanID = generateSpanID()
 	span.ParentID = parentSpanID
-	span.TraceID = traceID
+	// span.TraceID is the W3C trace ID (what gets exported to OTEL), not the
+	// in-process storage handle.
+	span.TraceID = trace.TraceID
 	span.Name = name
 	span.Kind = kind
 	span.StartTime = time.Now()
@@ -350,15 +366,10 @@ func (s *TraceStore) StartChildSpan(traceID, parentSpanID, name string, kind sch
 		clear(span.Attributes)
 	}
 
-	// Set as root span if this is the first span in the trace.
-	// This can happen when the span has an external parent (from W3C traceparent)
-	// but is the first span within this service's trace.
-	if trace.RootSpan == nil {
-		trace.RootSpan = span
-	}
-
-	// Add span to trace
-	trace.AddSpan(span)
+	// Atomically set as root if this is the first span in the trace (it has
+	// an external parent from W3C traceparent but is the first within this
+	// service) and append.
+	trace.AddChildSpanElectingRoot(span)
 
 	return span
 }

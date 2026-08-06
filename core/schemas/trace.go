@@ -9,7 +9,17 @@ import (
 )
 
 // Trace represents a distributed trace that captures the full lifecycle of a request
+//
+// InternalID vs TraceID:
+//   - InternalID is the in-process storage key. It is always unique per request,
+//     even when many concurrent requests share the same upstream W3C trace ID.
+//     Plugins that key per-request state off a trace (e.g. pendingLogsToInject)
+//     should use InternalID, not TraceID, to avoid cross-request collisions.
+//   - TraceID is the W3C trace ID used for export to OTEL/Datadog/etc. Multiple
+//     concurrent traces can carry the same TraceID; that is the whole point of
+//     distributed tracing — sibling spans across services share one trace ID.
 type Trace struct {
+	InternalID            string            // Opaque in-process storage key (unique per request)
 	RequestID             string            // Request ID for the trace
 	TraceID               string            // Unique identifier for this trace
 	ParentID              string            // Parent trace ID from incoming W3C traceparent header
@@ -44,6 +54,44 @@ func (t *Trace) AddSpan(span *Span) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.Spans = append(t.Spans, span)
+}
+
+// ElectRootOrChildAndAdd appends span and elects the trace's RootSpan atomically.
+// If the trace has no root yet, span becomes the root with ParentID="" and
+// becameRoot is true. Otherwise span.ParentID is rewritten to the current
+// root span's SpanID and becameRoot is false. Both the read of RootSpan and
+// the write of RootSpan/Spans happen under t.mu, which prevents the
+// "two goroutines both decide they are the root" race that would otherwise
+// be visible when StartSpan is called concurrently on a freshly created trace.
+func (t *Trace) ElectRootOrChildAndAdd(span *Span) (becameRoot bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.RootSpan == nil {
+		span.ParentID = ""
+		t.RootSpan = span
+		becameRoot = true
+	} else {
+		span.ParentID = t.RootSpan.SpanID
+	}
+	t.Spans = append(t.Spans, span)
+	return becameRoot
+}
+
+// AddChildSpanElectingRoot appends a span whose ParentID was already set by
+// the caller (typically to an external W3C parent span ID extracted from a
+// traceparent header). If the trace has no root yet, span also becomes the
+// root *without* clearing its caller-set ParentID — the upstream link is
+// preserved so OTEL backends can stitch the trace across services. Both the
+// read and write of RootSpan happen under t.mu.
+func (t *Trace) AddChildSpanElectingRoot(span *Span) (becameRoot bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.RootSpan == nil {
+		t.RootSpan = span
+		becameRoot = true
+	}
+	t.Spans = append(t.Spans, span)
+	return becameRoot
 }
 
 // GetSpan retrieves a span by ID
@@ -252,6 +300,7 @@ func (t *Trace) StampOverheadDuration() {
 func (t *Trace) Reset() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.InternalID = ""
 	t.RequestID = ""
 	t.TraceID = ""
 	t.ParentID = ""
