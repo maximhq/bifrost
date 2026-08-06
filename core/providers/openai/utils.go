@@ -21,11 +21,27 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			ChatToolMessage: message.ChatToolMessage,
 		}
 		if message.OpenAIChatAssistantMessage != nil {
+			// Callers replay assistant reasoning under any of three keys. Normalize them
+			// onto Reasoning so downstream provider logic sees replayed reasoning
+			// regardless of spelling — DeepSeek in particular gates thinking on it.
+			reasoning := message.OpenAIChatAssistantMessage.Reasoning
+			if reasoning == nil {
+				reasoning = message.OpenAIChatAssistantMessage.ReasoningAlias
+			}
+			if reasoning == nil {
+				for _, detail := range message.OpenAIChatAssistantMessage.ReasoningDetails {
+					if detail.Text != nil {
+						reasoning = detail.Text
+						break
+					}
+				}
+			}
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				Refusal:     message.OpenAIChatAssistantMessage.Refusal,
-				Reasoning:   message.OpenAIChatAssistantMessage.Reasoning,
-				Annotations: message.OpenAIChatAssistantMessage.Annotations,
-				ToolCalls:   message.OpenAIChatAssistantMessage.ToolCalls,
+				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
+				Reasoning:        reasoning,
+				ReasoningDetails: message.OpenAIChatAssistantMessage.ReasoningDetails,
+				Annotations:      message.OpenAIChatAssistantMessage.Annotations,
+				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
 	}

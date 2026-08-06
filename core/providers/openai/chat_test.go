@@ -1471,3 +1471,134 @@ func TestOpenAIChatRequest_StripsWebSearchOptionsFilters(t *testing.T) {
 	// Original request must not be mutated
 	require.NotNil(t, req.ChatParameters.WebSearchOptions.Filters)
 }
+
+// TestToOpenAIChatRequest_PreservesDeepSeekToolCallReasoningContent covers the outbound
+// half of issue #5887. DeepSeek requires reasoning_content to be replayed on assistant
+// tool_call turns (400 without it) while rejecting it on ordinary assistant turns, so the
+// strip must be selective rather than unconditional.
+func TestToOpenAIChatRequest_PreservesDeepSeekToolCallReasoningContent(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	toolCallReasoning := "the user wants the time, call the tool"
+	plainReasoning := "no tool needed here"
+	plainAnswer := "It is 12:00 UTC."
+	toolCallID := "call_1"
+	toolName := "get_current_time"
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &toolCallReasoning,
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID:       &toolCallID,
+						Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: `{}`},
+					}},
+				},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &plainAnswer},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &plainReasoning,
+				},
+			},
+		},
+	}
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+	require.Len(t, result.Messages, 2)
+
+	require.NotNil(t, result.Messages[0].OpenAIChatAssistantMessage)
+	require.NotNil(t, result.Messages[0].OpenAIChatAssistantMessage.Reasoning,
+		"reasoning_content must be preserved on a DeepSeek assistant tool_call turn")
+	require.Equal(t, toolCallReasoning, *result.Messages[0].OpenAIChatAssistantMessage.Reasoning)
+
+	require.NotNil(t, result.Messages[1].OpenAIChatAssistantMessage)
+	require.Nil(t, result.Messages[1].OpenAIChatAssistantMessage.Reasoning,
+		"reasoning_content must still be stripped from a DeepSeek assistant turn without tool calls")
+}
+
+// TestConvertOpenAIMessagesToBifrostMessages_NormalizesReasoningSpellings covers the inbound
+// half of issue #5887: callers replay assistant reasoning as reasoning_content, reasoning,
+// or reasoning_details, and all three must reach the Bifrost schema so provider logic that
+// gates on replayed reasoning behaves the same either way.
+func TestConvertOpenAIMessagesToBifrostMessages_NormalizesReasoningSpellings(t *testing.T) {
+	reasoning := "step by step"
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{name: "reasoning_content", payload: `{"role":"assistant","reasoning_content":"step by step"}`},
+		{name: "reasoning", payload: `{"role":"assistant","reasoning":"step by step"}`},
+		{name: "reasoning_details", payload: `{"role":"assistant","reasoning_details":[{"index":0,"type":"reasoning.text","text":"step by step"}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg OpenAIMessage
+			require.NoError(t, sonic.Unmarshal([]byte(tt.payload), &msg))
+
+			converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+			require.Len(t, converted, 1)
+			require.NotNil(t, converted[0].ChatAssistantMessage)
+			require.NotNil(t, converted[0].ChatAssistantMessage.Reasoning,
+				"replayed reasoning must reach the Bifrost schema regardless of spelling")
+			require.Equal(t, reasoning, *converted[0].ChatAssistantMessage.Reasoning)
+		})
+	}
+}
+
+// TestToOpenAIChatRequest_DoesNotEmitInboundReasoningAliases pins the inbound-only contract
+// on OpenAIChatAssistantMessage: the "reasoning" and "reasoning_details" aliases exist to
+// parse requests and must never appear on the outbound wire for any provider.
+func TestToOpenAIChatRequest_DoesNotEmitInboundReasoningAliases(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	reasoning := "step by step"
+	answer := "It is 12:00 UTC."
+
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.DeepSeek, schemas.XAI} {
+		t.Run(string(provider), func(t *testing.T) {
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: provider,
+				Model:    "some-model",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: &answer},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						Reasoning: &reasoning,
+						ReasoningDetails: []schemas.ChatReasoningDetails{{
+							Index: 0,
+							Type:  schemas.BifrostReasoningDetailsTypeText,
+							Text:  &reasoning,
+						}},
+					},
+				}},
+			}
+
+			wireBody, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+			require.NoError(t, err)
+
+			var jsonMap map[string]any
+			require.NoError(t, sonic.Unmarshal(wireBody, &jsonMap))
+			messages, ok := jsonMap["messages"].([]any)
+			require.True(t, ok)
+			require.Len(t, messages, 1)
+			assistantMessage, ok := messages[0].(map[string]any)
+			require.True(t, ok)
+
+			require.NotContains(t, assistantMessage, "reasoning",
+				"the inbound-only reasoning alias must never be marshalled outbound")
+			require.NotContains(t, assistantMessage, "reasoning_details",
+				"the inbound-only reasoning_details alias must never be marshalled outbound")
+		})
+	}
+}
