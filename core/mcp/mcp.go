@@ -51,6 +51,20 @@ type MCPManager struct {
 	// existing execute-tool hooks.
 	pluginPipelineProvider func() PluginPipeline
 	releasePluginPipeline  func(pipeline PluginPipeline)
+
+	// onToolsUpdatedMu guards onToolsUpdated so SetOnToolsUpdated (called once during
+	// transport wiring) can never race with notifyToolsUpdated (called from connect/
+	// reconnect/tool-sync goroutines throughout the process lifetime).
+	onToolsUpdatedMu sync.RWMutex
+	onToolsUpdated   func() // Optional hook invoked whenever a client's live ToolMap changes
+
+	// toolsUpdatedCh coalesces bursts of notifyToolsUpdated calls (e.g. N clients
+	// connecting concurrently at boot) into a single pending signal, so the hook fires
+	// at most once more after any in-flight run finishes rather than once per caller.
+	// Buffered at 1: a full channel means a sync is already pending or running and will
+	// observe this change too (the hook re-reads live state each time it runs), so the
+	// send is safely dropped instead of queued.
+	toolsUpdatedCh chan struct{}
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -103,7 +117,9 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 		healthMonitorManager: NewHealthMonitorManager(),
 		toolSyncManager:      NewToolSyncManager(config.ToolSyncInterval),
 		credStore:            credStore,
+		toolsUpdatedCh:       make(chan struct{}, 1),
 	}
+	go manager.runToolsUpdatedDispatcher()
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
 	var releasePluginPipeline func(pipeline PluginPipeline)
@@ -203,6 +219,68 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
 		}(clientConfig)
 	}
 	wg.Wait()
+}
+
+// SetOnToolsUpdated registers a callback invoked after a client's live ToolMap changes —
+// on connect, reconnect (manual or health-monitor-driven), and periodic tool sync. Wire
+// this to the transport's gateway-registry resync (e.g. SyncAllMCPServers) so /mcp's
+// tools/list reflects live client state instead of a snapshot that only refreshes on
+// admin config mutations. Safe to call at most once during transport startup, before
+// ConnectConfiguredClients runs.
+func (m *MCPManager) SetOnToolsUpdated(fn func()) {
+	m.onToolsUpdatedMu.Lock()
+	defer m.onToolsUpdatedMu.Unlock()
+	m.onToolsUpdated = fn
+}
+
+// runToolsUpdatedDispatcher is the single consumer of toolsUpdatedCh, started once from
+// NewMCPManager. Running the hook from one dedicated goroutine (rather than inline in
+// every connect/reconnect/tool-sync caller) is what makes the channel's coalescing
+// effective: while a run is in flight, any number of new signals collapse into the one
+// already buffered, so a burst of concurrent connects triggers at most one extra run
+// after the current one finishes, not one run per caller.
+func (m *MCPManager) runToolsUpdatedDispatcher() {
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-m.toolsUpdatedCh:
+			m.onToolsUpdatedMu.RLock()
+			fn := m.onToolsUpdated
+			m.onToolsUpdatedMu.RUnlock()
+			if fn != nil {
+				m.runToolsUpdatedHookSafely(fn)
+			}
+		}
+	}
+}
+
+// runToolsUpdatedHookSafely invokes the tools-updated hook with panic recovery. The hook
+// is caller-supplied (the transport's SyncAllMCPServers wiring) and runs on this package's
+// single, long-lived dispatcher goroutine — an unrecovered panic there would crash the
+// whole process and, since the goroutine never restarts, silently stop all future gateway
+// resyncs for the rest of the process lifetime. Recovering keeps the dispatcher alive so a
+// single bad run doesn't take down MCP tool-sync entirely.
+func (m *MCPManager) runToolsUpdatedHookSafely(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			m.logger.Warn("%s onToolsUpdated hook panicked, recovered: %v", MCPLogPrefix, r)
+		}
+	}()
+	fn()
+}
+
+// notifyToolsUpdated signals that a client's live ToolMap changed. It never blocks and
+// never calls the hook directly — it just pings the dispatcher, dropping the signal if
+// one is already pending/in-flight (a no-op early-return for the "already synced, or
+// about to be" case) since that pending run will read current state and cover this
+// change too. Callers must not hold m.mu (read or write) when calling this.
+func (m *MCPManager) notifyToolsUpdated() {
+	select {
+	case m.toolsUpdatedCh <- struct{}{}:
+	default:
+		// A sync is already queued or running; it will pick up this change as well.
+	}
 }
 
 // SetPluginPipeline updates the plugin pipeline provider and release function on the manager's

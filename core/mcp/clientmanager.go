@@ -1606,6 +1606,11 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		}
 	}
 
+	// Notify the transport (if wired) so gateway-facing tool registries (e.g. the /mcp
+	// tools/list snapshot) refresh from this client's freshly discovered ToolMap instead
+	// of waiting for an unrelated admin config mutation to trigger a resync.
+	m.notifyToolsUpdated()
+
 	return nil
 }
 
