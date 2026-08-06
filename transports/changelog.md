@@ -5,6 +5,7 @@
 
 ## 🐞 Fixed
 
+- **SSE Heartbeat Frame Compatibility** — Dropped the trailing blank line from the heartbeat comment frame so non-conforming SSE decoders (e.g. openai-go ssestream before v3.43.0) no longer dispatch an empty event and abort mid-stream with "unexpected end of JSON input"
 - **Proactive SSE Disconnect Detection** — Moved SSE heartbeat handling into a shared structure so client disconnects during streaming are detected proactively instead of only when a producer loop attempts a write, fixing false-success logging on fast/bursty upstreams like Vertex
 - **Closed Channel Panic on Stream Shutdown** — Fixed a race where a heartbeat goroutine mid-send on `eventCh` at shutdown could panic with "send on closed channel"
 - **Budget Pruning Crash with `config.json` Source of Truth** — Tolerate `ErrNotFound` when pruning cascade-deleted budgets and configs, fixing a startup crash for API-created model configs absent from `config.json`
@@ -24,6 +25,7 @@
 ## 🐙 Closed GitHub Issues
 
 - [#5010](https://github.com/maximhq/bifrost/issues/5010) — Server-side SSE keepalive (comment heartbeat) to keep long-idle streams alive through intermediaries
+- [#5874](https://github.com/maximhq/bifrost/issues/5874) — SSE heartbeat frame aborts streams for openai-go ssestream consumers (< v3.43.0) with "unexpected end of JSON input"
 - [#5186](https://github.com/maximhq/bifrost/issues/5186) — Anthropic-surface replay of OpenAI encrypted reasoning mints a fresh item id, OpenAI 400s with "Encrypted content item_id did not match the target item id"
 
 ## 🔧 Maintenance
