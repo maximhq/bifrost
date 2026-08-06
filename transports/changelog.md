@@ -5,6 +5,7 @@
 
 ## 🐞 Fixed
 
+- **VK MCP-Assignment Picker Truncation** — The virtual key create/edit sheet now requests up to 100 MCP clients (`limit: 100`) instead of relying on the backend default of 25, so instances with more than 25 registered MCP clients no longer silently hide clients from the assignment picker
 - **Proactive SSE Disconnect Detection** — Moved SSE heartbeat handling into a shared structure so client disconnects during streaming are detected proactively instead of only when a producer loop attempts a write, fixing false-success logging on fast/bursty upstreams like Vertex
 - **Closed Channel Panic on Stream Shutdown** — Fixed a race where a heartbeat goroutine mid-send on `eventCh` at shutdown could panic with "send on closed channel"
 - **Budget Pruning Crash with `config.json` Source of Truth** — Tolerate `ErrNotFound` when pruning cascade-deleted budgets and configs, fixing a startup crash for API-created model configs absent from `config.json`

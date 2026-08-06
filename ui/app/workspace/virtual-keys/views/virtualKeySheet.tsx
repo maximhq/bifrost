@@ -272,7 +272,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
 	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
 	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
-	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery();
+	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery({ limit: 100 });
 	const mcpClientsData = mcpClientsResponse?.clients || [];
 	const isLoading = isCreating || isUpdating || isRotating;
 	const persistedOverrideBudgets = [
