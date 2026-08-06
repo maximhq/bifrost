@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -335,4 +336,211 @@ func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.
 	model, ok := converted.(gemini.GeminiModel)
 	require.True(t, ok, "expected gemini.GeminiModel")
 	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
+}
+
+// Issue #5314: isImageEditRequest must be order-insensitive across parts.
+// The native Gemini API accepts inlineData in any position within a content's
+// parts, so a text part preceding the image must still classify as an edit.
+func TestIsImageEditRequest_ImageFirst(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}},
+					{Text: "Add one small yellow circle at the exact center."},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.True(t, isImageEditRequest(req), "image-first ordering must classify as image edit")
+}
+
+func TestIsImageEditRequest_TextFirst(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "Add one small yellow circle at the exact center."},
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.True(t, isImageEditRequest(req), "text-first ordering must also classify as image edit (order-insensitive)")
+}
+
+func TestIsImageEditRequest_TextOnly_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "A photo of a cat."},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "text-only request must not classify as image edit")
+}
+
+// Scope is intentionally limited to the first content — matching the original
+// (pre-fix) target — since deciding whether an image in a later/earlier
+// content "belongs" to the current turn is ambiguous in multi-turn
+// conversations (a stale unrelated image and an intentional continued-edit
+// reference look identical) and is out of scope for the part-ordering bug
+// this fix addresses.
+func TestIsImageEditRequest_ImageOnlyInLaterContent_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{Parts: []*gemini.Part{{Text: "first turn"}}},
+			{
+				Parts: []*gemini.Part{
+					{Text: "second turn prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "image/jpeg", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "an image in a non-first content must not be treated as an edit source; only the first content is inspected")
+}
+
+// A historical image left over from an earlier turn (e.g. a previous model
+// response) in a multi-turn conversation must not be picked up as the edit
+// source for a new, unrelated, text-only request in a later turn.
+func TestIsImageEditRequest_HistoricalImageInEarlierContent_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{Role: "user", Parts: []*gemini.Part{{Text: "generate a cat"}}},
+			{Role: "model", Parts: []*gemini.Part{{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}}}},
+			{Role: "user", Parts: []*gemini.Part{{Text: "now generate a completely different dog picture"}}},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "an image from earlier conversation history must not be treated as an edit source for a new text-only turn")
+}
+
+func TestIsImageEditRequest_CaseInsensitiveImageMimeType(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "IMAGE/PNG", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.True(t, isImageEditRequest(req), "MIME type match must be case-insensitive")
+}
+
+func TestIsImageEditRequest_NilPartInList(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					nil,
+					{Text: "prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.NotPanics(t, func() {
+		assert.True(t, isImageEditRequest(req))
+	})
+}
+
+func TestIsImageEditRequest_NonImageInlineData_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "application/pdf", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "non-image inline data must not classify as image edit")
+}
+
+func TestIsImageEditRequest_ImageWithoutImageModality_NotEdit(t *testing.T) {
+	req := &gemini.GeminiGenerationRequest{
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "prompt"},
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: "AAAA"}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityText},
+		},
+	}
+
+	assert.False(t, isImageEditRequest(req), "image without IMAGE response modality must not classify as image edit")
+}
+
+// End-to-end: text-first ordering must route through ToBifrostImageEditRequest
+// and preserve the inline image bytes, not silently drop them via the
+// image-generation path (the actual symptom reported in issue #5314).
+func TestIsImageEditRequest_TextFirst_EndToEndPreservesImage(t *testing.T) {
+	imageB64 := "AQIDBA=="
+	req := &gemini.GeminiGenerationRequest{
+		Model: "gemini-2.5-flash-image",
+		Contents: []gemini.Content{
+			{
+				Parts: []*gemini.Part{
+					{Text: "Add a yellow circle."},
+					{InlineData: &gemini.Blob{MIMEType: "image/png", Data: imageB64}},
+				},
+			},
+		},
+		GenerationConfig: gemini.GenerationConfig{
+			ResponseModalities: []gemini.Modality{gemini.ModalityImage},
+		},
+	}
+
+	require.True(t, isImageEditRequest(req), "text-first request must classify as image edit")
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	editReq := req.ToBifrostImageEditRequest(bifrostCtx)
+	require.NotNil(t, editReq)
+	require.NotNil(t, editReq.Input)
+	require.NotEmpty(t, editReq.Input.Images, "input image must be preserved, not dropped")
+
+	decoded, err := base64.StdEncoding.DecodeString(imageB64)
+	require.NoError(t, err)
+	assert.Equal(t, decoded, editReq.Input.Images[0].Image)
 }
