@@ -19,7 +19,9 @@ type scenario struct {
 
 	// Efforts, if non-empty, runs this scenario once per effort level as a
 	// nested t.Run subtest (TestCLIs/<cli>/<provider>/<model>/<scenario>/<effort>),
-	// gated per-cell on model.AdaptiveThinking and cli.EffortArgs != nil.
+	// for cells with model.AdaptiveThinking and cli.EffortArgs != nil. Cells
+	// without an effort surface still run the scenario once at the CLI's
+	// default effort -- this sweep multiplies runs, it never gates them.
 	// Only wired for single-turn scenarios (len(Turns) == 1) -- runCell
 	// t.Fatalf's if a multi-turn scenario sets this, since effort isn't
 	// threaded through the multi-turn drivers.
@@ -326,24 +328,33 @@ func subagentDelegationScenario() scenario {
 		Supports:    supportsSubagentDelegation,
 		ErrorIgnore: []string{subagentToken, "SUBAGENT_RELAY", agentToolUseMarker},
 		Turns: []Turn{
+			// Turn 1 asserts only that delegation was actually attempted (via
+			// the tool-use marker), NOT that the result came back. The parent
+			// agent does not reliably block on the subagent -- observed in
+			// practice: "The subagent is still running. I'll relay its exact
+			// response when it completes." Asserting the relay here would make
+			// the scenario flaky for a behavior that isn't the thing under test.
 			{
 				Send: "Delegate this task to a subagent right now: spawn a subagent and give it exactly " +
 					"this task - \"Reply with exactly the token " + subagentToken + " and nothing else.\" " +
 					"Do not answer this yourself, do not simulate the subagent, and do not just type the " +
-					"expected output - you must actually delegate this to a real subagent and wait for its " +
-					"response. Once the subagent's result comes back, relay its exact response back to me " +
-					"on its own line prefixed with 'SUBAGENT_RELAY: '.",
-				AssertText: []string{"SUBAGENT_RELAY:", subagentToken, agentToolUseMarker},
+					"expected output - you must actually delegate this to a real subagent.",
+				AssertText: []string{agentToolUseMarker},
 				AssertNotText: []string{
 					"don't have subagents", "no subagent", "cannot spawn", "can't spawn",
 					"can't delegate", "unable to delegate",
 				},
 				Timeout: 180 * time.Second,
 			},
+			// Turn 2 is where the round trip is actually proven: the subagent's
+			// own separate completion has to have come back through Bifrost and
+			// landed in the parent's context for the token to be reportable.
 			{
-				Send:       "Without spawning another subagent, repeat only the exact token the subagent replied with earlier in this conversation.",
-				AssertText: []string{subagentToken},
-				Timeout:    60 * time.Second,
+				Send: "What exact token did that subagent reply with? Wait for it to finish if it is " +
+					"still running. Do not spawn another subagent. Reply with the token on its own line " +
+					"prefixed with 'SUBAGENT_RELAY: '.",
+				AssertText: []string{"SUBAGENT_RELAY:", subagentToken},
+				Timeout:    180 * time.Second,
 			},
 		},
 	}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,50 @@ import (
 	"testing"
 	"time"
 )
+
+// killedCommands records the subprocesses the SIGINT handler actually reaped,
+// so a cell can distinguish "the harness killed my subprocess" from "my
+// subprocess failed on its own". The process-global `interrupted` flag cannot
+// make that distinction: a Ctrl-C landing after this cell's subprocess already
+// exited would otherwise relabel this cell's genuine failure as "interrupted"
+// and clear its error, hiding a real regression behind the very status that
+// exists to keep interruptions distinguishable from regressions.
+var killedCommands sync.Map // *exec.Cmd -> struct{}
+
+// errSubprocessKilled marks an error caused by the harness reaping this cell's
+// own subprocess.
+var errSubprocessKilled = errors.New("harness killed this cell's subprocess")
+
+// markKilled records that the signal handler killed cmd.
+func markKilled(cmd *exec.Cmd) { killedCommands.Store(cmd, struct{}{}) }
+
+// annotateIfKilled tags err with errSubprocessKilled when cmd is one the signal
+// handler reaped, leaving unrelated failures untouched.
+func annotateIfKilled(cmd *exec.Cmd, err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := killedCommands.Load(cmd); !ok {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errSubprocessKilled, err)
+}
+
+// cellWasInterrupted reports whether runErr is this cell's own subprocess being
+// reaped on Ctrl-C, rather than a genuine failure that merely coincided with one.
+//
+// Identity is the only evidence accepted: the tag annotateIfKilled attaches from
+// the specific *exec.Cmd the signal handler reaped. Matching "signal: killed" in
+// the message would be wrong twice over -- the errors here embed tailStr of the
+// CLI's own output, so a CLI that merely printed those words would mask its
+// failure, and exec.CommandContext reports the same text when the per-turn
+// context deadline kills the process, which is a real timeout. Either would
+// clear runErr and hide a regression, the exact failure this exists to prevent.
+// Drivers whose kill surfaces through a pipe or scanner instead of cmd.Wait must
+// therefore route their errors through annotateIfKilled themselves.
+func cellWasInterrupted(runErr error) bool {
+	return errors.Is(runErr, errSubprocessKilled)
+}
 
 // activeCommands tracks every running CLI subprocess so the SIGINT handler
 // in TestMain can reap them. Sequential cells means there's at most one at
@@ -104,8 +149,8 @@ func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, tur
 		// message so a t.Fatal report shows what the CLI actually printed,
 		// not just "exit status 1".
 		out := combined.String()
-		return out, fmt.Errorf("%s exit: %w; output tail:\n%s",
-			cli.Binary, err, tailStr(out, 600))
+		return out, annotateIfKilled(cmd, fmt.Errorf("%s exit: %w; output tail:\n%s",
+			cli.Binary, err, tailStr(out, 600)))
 	}
 	return combined.String(), nil
 }
@@ -192,7 +237,7 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 		return "", err
 	}
 	if _, err := d.stdin.Write(append(line, '\n')); err != nil {
-		return "", fmt.Errorf("write user msg: %w", err)
+		return "", annotateIfKilled(d.cmd, fmt.Errorf("write user msg: %w", err))
 	}
 
 	deadline := time.After(timeout)
@@ -249,11 +294,14 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 			tailStr(d.stderr.String(), 400))}
 	}()
 
+	// A reaped subprocess surfaces here as a scanner error or a truncated
+	// stream, never as cmd.Wait -- so this is where the kill has to be tagged
+	// for cellWasInterrupted to see it.
 	select {
 	case r := <-ch:
-		return r.text, r.err
+		return r.text, annotateIfKilled(d.cmd, r.err)
 	case <-deadline:
-		return "", fmt.Errorf("turn timed out after %s", timeout)
+		return "", annotateIfKilled(d.cmd, fmt.Errorf("turn timed out after %s", timeout))
 	}
 }
 
@@ -508,8 +556,8 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 
 	if err := cmd.Wait(); err != nil {
 		out := stdout.String()
-		return out, fmt.Errorf("codex turn %d exit: %w; output tail:\n%s",
-			d.turnIndex, err, tailStr(out, 600))
+		return out, annotateIfKilled(cmd, fmt.Errorf("codex turn %d exit: %w; output tail:\n%s",
+			d.turnIndex, err, tailStr(out, 600)))
 	}
 	return stdout.String(), nil
 }
@@ -586,8 +634,8 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 
 	if err := cmd.Wait(); err != nil {
 		out := stdout.String()
-		return out, fmt.Errorf("opencode turn %d exit: %w; output tail:\n%s",
-			d.turnIndex, err, tailStr(out, 600))
+		return out, annotateIfKilled(cmd, fmt.Errorf("opencode turn %d exit: %w; output tail:\n%s",
+			d.turnIndex, err, tailStr(out, 600)))
 	}
 	return stdout.String(), nil
 }

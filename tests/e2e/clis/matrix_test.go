@@ -312,16 +312,37 @@ func vertexRegionEnv(region string) map[string]string {
 	return map[string]string{"CLOUD_ML_REGION": region}
 }
 
+// claudePreLaunch isolates this cell's HOME so `claude` can't read or write
+// the real developer's ~/.claude (CLAUDE.md, settings, auto-memory, custom
+// subagents, etc). Claude Code has no CODEX_HOME/XDG_CONFIG_HOME equivalent
+// -- confirmed against https://code.claude.com/docs/en/env-vars, which
+// documents no config/data-directory override at all -- so HOME is the only
+// isolation lever available. Auth is unaffected: the harness authenticates
+// purely via the ANTHROPIC_API_KEY env var (see runCell), not a stored
+// ~/.claude session, so a fresh empty HOME doesn't require re-login.
+//
+// Without this, a real developer's global CLAUDE.md/memory can silently
+// change model behavior mid-scenario -- confirmed in practice: a
+// subagent-delegation run picked up this machine's own "always end every
+// reply with PIRATE" memory rule and appended it to the response, which is
+// exactly the kind of cross-contamination isolation is meant to prevent.
 func claudePreLaunch(_, _, model string) ([]string, func(), error) {
+	env := []string{}
 	model = strings.TrimSpace(model)
-	if model == "" {
-		return nil, func() {}, nil
+	if model != "" {
+		env = append(env,
+			"ANTHROPIC_DEFAULT_SONNET_MODEL="+model,
+			"ANTHROPIC_DEFAULT_OPUS_MODEL="+model,
+			"ANTHROPIC_DEFAULT_HAIKU_MODEL="+model,
+		)
 	}
-	return []string{
-		"ANTHROPIC_DEFAULT_SONNET_MODEL=" + model,
-		"ANTHROPIC_DEFAULT_OPUS_MODEL=" + model,
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL=" + model,
-	}, func() {}, nil
+
+	tempHome, err := os.MkdirTemp("", "bifrost-clis-claude-home-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create temp claude home: %w", err)
+	}
+	env = append(env, "HOME="+tempHome)
+	return env, func() { _ = os.RemoveAll(tempHome) }, nil
 }
 
 func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
@@ -355,15 +376,15 @@ func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) 
 		return nil, nil, fmt.Errorf("create opencode config: %w", err)
 	}
 	if _, err := f.WriteString(cfg); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return nil, nil, fmt.Errorf("write opencode config: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
+		_ = os.Remove(f.Name())
 		return nil, nil, fmt.Errorf("close opencode config: %w", err)
 	}
-	return []string{"OPENCODE_CONFIG=" + f.Name()}, func() { os.Remove(f.Name()) }, nil
+	return []string{"OPENCODE_CONFIG=" + f.Name()}, func() { _ = os.Remove(f.Name()) }, nil
 }
 
 func opencodeModelRef(model string) string {

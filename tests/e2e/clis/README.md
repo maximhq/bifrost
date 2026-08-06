@@ -51,7 +51,7 @@ make run-cli-harness-test CLI=opencode PROVIDER=azure                           
 make run-cli-harness-test CLI=claude PROVIDER=anthropic                         # one cli×provider pair
 make run-cli-harness-test CLI=claude PROVIDER=anthropic MODEL=opus-5            # one model (substring match)
 make run-cli-harness-test CLI=claude PROVIDER=anthropic MODEL=opus-5 SCENARIO=simple-chat
-make run-cli-harness-test CLI=codex PROVIDER=openai SCENARIO=image-qa           # image/PDF Q&A, run at low+high effort
+make run-cli-harness-test CLI=codex PROVIDER=openai SCENARIO=image-qa           # image Q&A, run at low+high effort
 make run-cli-harness-test CLI=claude PROVIDER=anthropic SCENARIO=pdf-qa
 make run-cli-harness-test TESTCASE='TestCLIs/opencode/bedrock/[^/]*nova[^/]*/simple-chat'
 make run-cli-harness-test PROVIDER=bedrock MODEL=nova PARALLEL=10 QUIET=1
@@ -133,6 +133,14 @@ A cell is `pass` only if **all** of these hold:
 3. The CLI subprocess exited cleanly (or, for multi-turn, the stream-JSON `result` event arrived).
 4. The combined transcript contains none of the patterns in `errordetect_test.go` after subtracting `ErrorIgnore` substrings.
 
+Cells that don't pass are recorded as one of:
+
+| Status | Meaning |
+|--------|---------|
+| `fail` | A real failure — assertion, transport error, or error marker. |
+| `soft_pass` | Assertions failed but the transcript shows no error marker and non-empty model text — a coarse "the plumbing worked, the model just answered differently" signal. |
+| `interrupted` | The cell's subprocess was killed by our own SIGINT handler (Ctrl-C), so its result is meaningless. These are **not** failures — before this status existed, an interrupted sweep left cells reading `claude exit: signal: killed`, indistinguishable from real regressions. |
+
 ## Reports
 
 After each run, `reports/` contains one pair per cell:
@@ -146,7 +154,7 @@ Filename stem is `<cli>__<provider>__<model>__<scenario>`. Slashes in model IDs 
 
 ## Multi-turn implementation notes
 
-- **Claude (Pattern C)**: One long-running `claude -p --input-format stream-json --output-format stream-json --verbose` process per cell. The driver writes one JSON-Lines user message per turn to stdin; for each turn it accumulates `assistant` event text content until a `result` event closes the turn. `--verbose` is required by the SDK when output-format is stream-json.
+- **Claude (Pattern C)**: One long-running `claude -p --input-format stream-json --output-format stream-json --verbose` process per cell. The driver writes one JSON-Lines user message per turn to stdin; for each turn it accumulates `assistant` event text content until a `result` event closes the turn. `--verbose` is required by the SDK when output-format is stream-json. Every claude invocation (single- and multi-turn) gets `HOME` redirected to a fresh per-cell temp dir via `claudePreLaunch` — Claude Code has no `CODEX_HOME`/`XDG_CONFIG_HOME` equivalent, so this is the only way to keep it from reading the real developer's `~/.claude` (CLAUDE.md, settings, auto-memory) instead of a clean slate.
 - **Codex (Pattern B)**: One `codex exec` for turn 1, then `codex resume --last` for each subsequent turn, with `CODEX_HOME` redirected to a temp dir so `--last` always means "the last turn this test ran" (not whatever the user did in their real codex install). Each turn is its own process; the conversation persists via codex's session storage in the temp `CODEX_HOME`.
 - **OpenCode (Pattern B)**: One `opencode run` for turn 1, then `opencode run --continue` for each subsequent turn, with XDG config/data/cache directories redirected to a per-cell temp dir and `OPENCODE_CONFIG` pointed at a generated Bifrost provider config.
 
