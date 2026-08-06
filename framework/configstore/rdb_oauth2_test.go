@@ -712,3 +712,73 @@ func TestSweepConvergence_TokenSweepThenClientSweep(t *testing.T) {
 	_, err = s.GetOAuth2ClientByClientID(ctx, "revoked-only")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
+
+// TestRefreshOauthTokenFieldsIfActive_CAS verifies the compare-and-swap guard:
+// a write only commits while the row's stored refresh_token still matches the
+// value the caller redeemed upstream (expectedPriorRefreshToken). This is what
+// prevents two concurrent refreshes of the same row — e.g. from two different
+// cluster nodes racing the same MCP client's periodic connection checker —
+// from clobbering each other: whichever one wins the race and writes first
+// advances the row's refresh_token, and the loser's write (still carrying the
+// now-superseded prior value) is rejected instead of overwriting the winner's
+// fresher credentials.
+func TestRefreshOauthTokenFieldsIfActive_CAS(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableMCPOauthToken{}))
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour)
+
+	require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+		ID: "tok-1", AuthMode: "shared", OauthConfigID: "cfg-1", Status: "active",
+		AccessToken: "at-original", RefreshToken: "rt-original", TokenType: "Bearer",
+		ExpiresAt: &future, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error)
+
+	// Two "nodes" both read the row with rt-original as the refresh_token and
+	// both redeem it upstream (out of scope here — we're testing only the
+	// store-level CAS), racing to write back their own new credentials.
+	updatedA, err := s.RefreshOauthTokenFieldsIfActive(ctx, "tok-1", "rt-original", "at-node-a", "rt-node-a", &future, time.Now())
+	require.NoError(t, err)
+	assert.True(t, updatedA, "the first writer, whose expectedPriorRefreshToken still matches the stored value, must win")
+
+	// The second writer's redemption is now stale: the row's refresh_token has
+	// already moved to rt-node-a, so its write (still keyed off rt-original)
+	// must be rejected rather than clobbering node A's fresher credentials.
+	updatedB, err := s.RefreshOauthTokenFieldsIfActive(ctx, "tok-1", "rt-original", "at-node-b", "rt-node-b", &future, time.Now())
+	require.NoError(t, err)
+	assert.False(t, updatedB, "a write whose expectedPriorRefreshToken no longer matches the stored value must lose the race")
+
+	stored, err := s.GetOauthTokenByID(ctx, "tok-1")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, "at-node-a", stored.AccessToken, "the loser's write must not have overwritten the winner's access token")
+	assert.Equal(t, "rt-node-a", stored.RefreshToken, "the loser's write must not have overwritten the winner's refresh token")
+
+	// A write with the now-current refresh_token still succeeds — the CAS
+	// guard rejects stale writers, not every subsequent write.
+	updatedC, err := s.RefreshOauthTokenFieldsIfActive(ctx, "tok-1", "rt-node-a", "at-node-c", "rt-node-c", &future, time.Now())
+	require.NoError(t, err)
+	assert.True(t, updatedC, "a write keyed off the row's actual current refresh_token must succeed")
+}
+
+// TestRefreshOauthTokenFieldsIfActive_StatusGuardStillApplies is a narrow
+// regression check that adding the refresh_token CAS comparison did not
+// regress the pre-existing status guard: a row already flipped to
+// 'needs_reauth' (e.g. by a concurrent RotateMCPOAuthConfig) must still
+// reject the write even when expectedPriorRefreshToken matches exactly.
+func TestRefreshOauthTokenFieldsIfActive_StatusGuardStillApplies(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableMCPOauthToken{}))
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour)
+
+	require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+		ID: "tok-2", AuthMode: "shared", OauthConfigID: "cfg-2", Status: "needs_reauth",
+		AccessToken: "at-original", RefreshToken: "rt-original", TokenType: "Bearer",
+		ExpiresAt: &future, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}).Error)
+
+	updated, err := s.RefreshOauthTokenFieldsIfActive(ctx, "tok-2", "rt-original", "at-new", "rt-new", &future, time.Now())
+	require.NoError(t, err)
+	assert.False(t, updated, "a non-'active' row must reject the write even with a matching expectedPriorRefreshToken")
+}

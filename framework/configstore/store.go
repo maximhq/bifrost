@@ -554,14 +554,23 @@ type ConfigStore interface {
 	UpdateOauthToken(ctx context.Context, token *tables.TableMCPOauthToken) error
 	// RefreshOauthTokenFieldsIfActive persists a successful refresh's new
 	// access_token/refresh_token/expires_at/last_refreshed_at onto the row
-	// with the given id, but ONLY while the row's status is still 'active' —
-	// a targeted column update, not a full-row Save, so it can't clobber a
-	// status a concurrent credential rotation (RotateMCPOAuthConfig) already
-	// flipped to 'needs_reauth' while this refresh's network round-trip was
-	// in flight. Returns updated=false (no error) when the row's status was
-	// no longer 'active' at write time; the caller must treat that as
-	// requiring reauthentication rather than a successful refresh.
-	RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (updated bool, err error)
+	// with the given id, but ONLY while the row is still 'active' AND its
+	// stored refresh_token still equals expectedPriorRefreshToken (the value
+	// the caller read and redeemed upstream before this call) — a targeted,
+	// compare-and-swap column update, not a full-row Save, so it can't
+	// clobber either (a) a status a concurrent credential rotation
+	// (RotateMCPOAuthConfig) already flipped to 'needs_reauth', or (b) a
+	// newer refresh_token a different, concurrently-running refresh of this
+	// same row (typically from another cluster node, since nothing today
+	// prevents two nodes from independently redeeming the same refresh_token
+	// upstream) already wrote, while this refresh's network round-trip was
+	// in flight. Returns updated=false (no error) when either guard failed
+	// to hold at write time; the caller must treat that as its own refresh
+	// having lost the race rather than a successful one — its freshly
+	// redeemed credentials must be discarded, not retried, since the
+	// refresh_token they were redeemed against is no longer the row's live
+	// one.
+	RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, expectedPriorRefreshToken, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (updated bool, err error)
 	DeleteOauthToken(ctx context.Context, id string) error
 	// DeleteSharedOauthTokensByConfigID deletes every auth_mode='shared' row
 	// for oauthConfigID, not just the one GetSharedOauthTokenByConfigID would
