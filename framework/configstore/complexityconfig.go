@@ -3,6 +3,7 @@ package configstore
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -305,7 +306,9 @@ func (c *ComplexitySemanticConfig) Validate() error {
 	}
 	// 1 is a legal ceiling but rejects every real match, so it is treated as a
 	// misconfiguration rather than an intentional "never classify semantically".
-	if c.MinSimilarity < 0 || c.MinSimilarity >= 1 {
+	// NaN is checked separately because every comparison against it is false, so
+	// the range test alone would let it through and silently disable the floor.
+	if math.IsNaN(c.MinSimilarity) || c.MinSimilarity < 0 || c.MinSimilarity >= 1 {
 		return fmt.Errorf("semantic min_similarity must be at least 0 and less than 1, got %v", c.MinSimilarity)
 	}
 	if c.MessageHistoryCount < 1 || c.MessageHistoryCount > MaxComplexitySemanticMessageHistoryCount {

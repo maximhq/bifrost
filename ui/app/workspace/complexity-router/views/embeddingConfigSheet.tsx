@@ -33,8 +33,10 @@ interface Props {
 	providerKeyIds: string[];
 	providersLoading: boolean;
 	isVectorStoreConnected: boolean;
-	// Rendered above the footer — the page owns the copy because the warning is
-	// about the whole save, not about any field in here.
+	// Rendered above the footer, and scoped to the full re-embed that only the
+	// fields in here can trigger. Phrase-list edits cost the provider too, but
+	// they are made on the page and are reported there — repeating that here
+	// would attribute a page-level cost to these controls.
 	warning?: ReactNode;
 	canSave: boolean;
 	isSaving: boolean;

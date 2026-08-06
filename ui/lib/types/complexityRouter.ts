@@ -31,6 +31,12 @@ export interface SemanticStatusInfo {
 	total: number;
 	serving_previous?: boolean;
 	error?: string;
+	// How many phrase vectors the gateway currently holds for the configured
+	// provider/model. The cache is in-process only — vectors cannot be read back
+	// out of a vector store — so a restart empties it while the saved phrases look
+	// unchanged. Reuse cannot be inferred from the persisted config alone; zero
+	// means the next save re-embeds every phrase regardless of what changed.
+	cached_phrases?: number;
 }
 
 export interface AnalyzerConfig {
