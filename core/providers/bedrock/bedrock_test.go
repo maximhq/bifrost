@@ -3178,8 +3178,14 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 1,
-			description:    "Valid file block should create a ContentBlock",
+			// Converse rejects a message carrying a document block with no
+			// accompanying text block ("If you include a ContentBlock with a
+			// document field in the array, you must also include a ContentBlock
+			// with a text field" — API_runtime_Converse), so a document-only
+			// message gets a placeholder text block injected ahead of it. See
+			// bedrockDocumentPlaceholderText and document_placeholder_test.go.
+			expectedBlocks: 2,
+			description:    "Valid file block should create a document ContentBlock plus the required placeholder text block",
 		},
 		{
 			name: "MixedValidAndInvalidBlocks_ShouldOnlyCreateValidBlocks",
@@ -4533,9 +4539,14 @@ func TestDocumentFormatMapping(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Len(t, result.Messages, 1)
-			require.Len(t, result.Messages[0].Content, 1)
-			require.NotNil(t, result.Messages[0].Content[0].Document)
-			assert.Equal(t, tt.expectedFormat, result.Messages[0].Content[0].Document.Format,
+			// A document-only message gets a placeholder text block injected
+			// ahead of the document: Converse rejects a document ContentBlock
+			// that isn't accompanied by a text ContentBlock
+			// (API_runtime_Converse). See document_placeholder_test.go.
+			require.Len(t, result.Messages[0].Content, 2)
+			require.NotNil(t, result.Messages[0].Content[0].Text, "placeholder text block must lead")
+			require.NotNil(t, result.Messages[0].Content[1].Document)
+			assert.Equal(t, tt.expectedFormat, result.Messages[0].Content[1].Document.Format,
 				"File type %q should map to format %q", tt.fileType, tt.expectedFormat)
 		})
 	}
