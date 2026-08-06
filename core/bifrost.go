@@ -6505,6 +6505,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			baseProvider = cfg.BaseProviderType
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
+		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 
 		// Disable Anthropic raw-body passthrough when this attempt's provider isn't Anthropic-native (e.g. Bedrock).
 		clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider)
