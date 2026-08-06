@@ -68,7 +68,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test cli-harness-report test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -1821,6 +1821,10 @@ run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non
 			-run "^$$RUN_PARTS$$" \
 			$(if $(QUIET),,-v) \
 			./...
+
+cli-harness-report: ## Regenerate tests/e2e/clis/reports/index.html from existing reports/*.json, without running any tests (free, instant). Usage: make cli-harness-report
+	@$(ECHO) "$(GREEN)Rendering CLI harness report from existing reports/*.json...$(NC)"
+	@cd tests/e2e/clis && GOWORK=off go test -run "^TestRenderReport$$" -v ./...
 
 install-newman: ## Install newman + htmlextra reporter if not already installed
 	@$(USE_NODE); which newman > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman...$(NC)" && npm install -g newman)
