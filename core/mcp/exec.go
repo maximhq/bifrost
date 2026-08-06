@@ -168,6 +168,23 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 	if shouldSkipToolForRequest(ctx, clientName, toolName) {
 		return nil, nil, nil, fmt.Errorf("tool '%s' is not permitted (filtered by request context)", toolName)
 	}
+	// NeedsReauth/Disconnected clients keep their last-known ToolMap (see
+	// failConnectAttempt) so the tool stays visible in discovery instead of
+	// silently vanishing, but there's no live connection to actually run it
+	// on. Say so explicitly here rather than falling through to
+	// AcquireClientConn's generic "no active connection", which doesn't tell
+	// the caller whether this is transient or needs an admin to act. Checked
+	// only after the authorization filters above: a caller not permitted to
+	// see this client/tool in the first place must get the same generic
+	// "not permitted" error whether it's disconnected or not — surfacing
+	// client name and reauth state to an unauthorized caller would leak
+	// existence/state information the filters exist to hide.
+	if state.State == schemas.MCPConnectionStateNeedsReauth {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s needs re-authorization (its admin credential expired or was revoked)", toolName, clientName)
+	}
+	if state.State == schemas.MCPConnectionStateDisconnected {
+		return nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s is disconnected", toolName, clientName)
+	}
 	conn, release, err := m.AcquireClientConn(ctx, state)
 	if err != nil {
 		return nil, nil, nil, err
