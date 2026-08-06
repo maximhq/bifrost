@@ -86,6 +86,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.BedrockMantle,
 	schemas.Cerebras,
 	schemas.Cohere,
+	schemas.Deepgram,
 	schemas.DeepSeek,
 	schemas.Elevenlabs,
 	schemas.Gemini,

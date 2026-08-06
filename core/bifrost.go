@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/mcp/credstore"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/azure"
+	"github.com/maximhq/bifrost/core/providers/deepgram"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/bedrockmantle"
 	"github.com/maximhq/bifrost/core/providers/cerebras"
@@ -4375,6 +4376,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
 	case schemas.Nebius:
 		return nebius.NewNebiusProvider(config, bifrost.logger)
+	case schemas.Deepgram:
+		return deepgram.NewDeepgramProvider(config, bifrost.logger), nil
 	case schemas.HuggingFace:
 		return huggingface.NewHuggingFaceProvider(config, bifrost.logger), nil
 	case schemas.XAI:

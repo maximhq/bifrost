@@ -175,6 +175,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Elevenlabs,
 		schemas.Perplexity,
 		schemas.Cerebras,
+		schemas.Deepgram,
 		schemas.DeepSeek,
 		schemas.Gemini,
 		schemas.OpenRouter,
@@ -524,6 +525,18 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.Deepgram:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.DEEPGRAM_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+				DeepgramKeyConfig: &schemas.DeepgramKeyConfig{
+					URL: *schemas.NewSecretVar("env.DEEPGRAM_BASE_URL"),
+				},
+			},
+		}, nil
 	case schemas.XAI:
 		return []schemas.Key{
 			{
@@ -630,6 +643,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 					Transcription:        false,
 					TranscriptionStream:  false,
 				},
+			},
+		}, nil
+	case schemas.Deepgram:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10, // Deepgram is generally reliable
+				RetryBackoffInitial:            500 * time.Millisecond,
+				RetryBackoffMax:                8 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
 			},
 		}, nil
 	case schemas.Anthropic:

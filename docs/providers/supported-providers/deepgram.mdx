@@ -1,0 +1,324 @@
+---
+title: "Deepgram"
+description: "Deepgram API conversion guide - speech-to-text (Nova), text-to-speech (Aura), and live listen WebSocket for real-time transcription"
+icon: "waveform-lines"
+---
+
+## Overview
+
+Deepgram is an audio-focused provider for speech-to-text and text-to-speech. Bifrost supports:
+- **Pre-recorded transcription (STT)** - Multipart upload to Deepgram `POST /v1/listen` (Nova models)
+- **Live listen WebSocket** - Native Deepgram-compatible `GET /v1/listen` WebSocket proxy (binary audio in, JSON events out)
+- **Speech synthesis (TTS)** - Deepgram Aura via `POST /v1/speak` (unary and streaming)
+- **List models** - Deepgram model catalog via `GET /v1/models`
+- **Auth** - Upstream uses `Authorization: Token <api_key>` (Bifrost virtual-key Bearer stays on the gateway)
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Transcriptions (STT) | ✅ | ❌\* | `POST /v1/listen` |
+| Live Listen (STT WebSocket) | - | ✅ | `GET /v1/listen` (WebSocket upgrade) |
+| Speech (TTS) | ✅ | ✅ | `POST /v1/speak` |
+| List Models | ✅ | - | `GET /v1/models` |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+
+\* HTTP `TranscriptionStream` is not implemented. Use the live listen WebSocket for real-time STT.
+
+<Note>
+**Unsupported Operations** (❌): Chat, Responses, Text Completions, Embeddings, Images, Files, and Batch return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure Deepgram as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Deepgram** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Deepgram**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.DEEPGRAM_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve (for example, `nova-3`).
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "deepgram": {
+      "keys": [
+        {
+          "name": "deepgram-key-1",
+          "value": "env.DEEPGRAM_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Deepgram:
+    return []schemas.Key{{
+        Name:   "deepgram-key-1",
+        Value:  *schemas.NewSecretVar("env.DEEPGRAM_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+Default upstream base URL: `https://api.deepgram.com` (override with `network.base_url` if needed).
+
+---
+
+# 1. Transcription (Pre-recorded STT)
+
+Maps Bifrost `POST /v1/audio/transcriptions` to Deepgram `POST /v1/listen` with multipart form data.
+
+### Core Parameters
+
+| Bifrost field | Deepgram field | Notes |
+|---------------|----------------|-------|
+| `model` | `model` | e.g. `nova-3`, `nova-3-general` |
+| `input.file` | multipart file | Required audio bytes |
+| `input.filename` | filename | Optional; preserves extension |
+| `params.language` / `extra_params.language` | `language` | ISO language code (e.g. `en`, `ar`) |
+
+### Common Extra Params
+
+Pass Deepgram options via `extra_params` (or top-level form fields on the gateway):
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `smart_format` | boolean | Punctuation / formatting helpers |
+| `punctuate` | boolean | Add punctuation |
+| `diarize` | boolean | Speaker labels |
+| `paragraphs` | boolean | Paragraph segmentation |
+| `utterances` | boolean | Utterance-level results |
+| `numerals` | boolean | Convert numbers to numerals |
+| `detect_language` | boolean | Auto language detection |
+| `keywords` / `search` / `replace` / `redact` | string | Keyword boosting, search, replace, redact |
+| `summarize` / `topics` / `intents` / `sentiment` | boolean | Insight features |
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=deepgram/nova-3" \
+  -F "language=en" \
+  -F "smart_format=true" \
+  -F "punctuate=true"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
+    Provider: schemas.Deepgram,
+    Model:    "nova-3",
+    Input: &schemas.TranscriptionInput{
+        File:     audioBytes,
+        Filename: "audio.wav",
+    },
+    Params: &schemas.TranscriptionParameters{
+        Language: schemas.Ptr("en"),
+        ExtraParams: map[string]interface{}{
+            "smart_format": true,
+            "punctuate":    true,
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Response
+
+Bifrost maps Deepgram channel alternatives into a standard transcription response (`text`, optional `duration`, word timings when present).
+
+---
+
+# 2. Live Listen WebSocket (Real-time STT)
+
+Bifrost exposes a Deepgram-compatible live STT WebSocket at **`GET /v1/listen`**. When Deepgram is configured, Bifrost upgrades the connection and proxies binary audio + JSON control/result frames to Deepgram with the client query string preserved.
+
+This is the path LiveKit Agents and other Deepgram SDKs use for streaming STT.
+
+### URL
+
+```
+ws://localhost:8080/v1/listen?model=nova-3&language=ar&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&punctuate=false&vad_events=true&endpointing=75
+```
+
+Use `wss://` in production. Prefer `model=nova-3` or `model=deepgram/nova-3`. Bare model names default to the Deepgram provider.
+
+### Auth
+
+Send your Bifrost virtual key (or gateway auth) on the WebSocket handshake, for example:
+
+```
+Authorization: Bearer <virtual-key>
+```
+
+Bifrost selects a Deepgram key and dials upstream with `Authorization: Token <deepgram-api-key>`. Client headers such as workspace/call IDs stay on Bifrost for governance/logging and are not required upstream.
+
+### Query Parameters
+
+All query keys are forwarded to Deepgram as-is. Common parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `model` | Required. e.g. `nova-3` |
+| `language` | Concrete code (e.g. `en`, `ar`) = monolingual; omit or `multi` = multilingual |
+| `encoding` | e.g. `linear16` |
+| `sample_rate` | e.g. `16000` |
+| `channels` | e.g. `1` |
+| `interim_results` | Partial hypotheses |
+| `punctuate` / `smart_format` | Formatting |
+| `endpointing` / `vad_events` | Endpointing / VAD |
+| `utterance_end_ms` | Utterance end detection |
+
+Clients (for example LiveKit) may also send `no_delay`, `filler_words`, etc. Bifrost does not whitelist or rewrite listen query keys.
+
+### Protocol
+
+| Direction | Frame type | Payload |
+|-----------|------------|---------|
+| Client → Bifrost → Deepgram | Binary | Raw audio (e.g. PCM linear16) |
+| Client → Bifrost → Deepgram | Text | Deepgram control JSON (e.g. `CloseStream`) |
+| Deepgram → Bifrost → Client | Text | Deepgram events (`Results`, `Metadata`, `UtteranceEnd`, …) |
+
+### Logging & Cost
+
+- **One log per session** — written when the WebSocket closes (not per interim result).
+- **Audio** — client PCM is buffered (capped) and stored as WAV on the transcription input when content logging is enabled, so Logs can play/download it.
+- **Duration** — session audio seconds from Deepgram `Metadata`, `Results.start + Results.duration`, or PCM length (not per-chunk `Results.duration` alone).
+- **Live billing** — datasheet rows for Deepgram are typically **pre-recorded** rates. For live listen, Bifrost applies Pay-As-You-Go streaming rates when known:
+
+| Model family | `language` set (e.g. `ar`) | No language / `multi` |
+|--------------|----------------------------|------------------------|
+| `nova-3*` | **$0.0077 / min** monolingual | **$0.0092 / min** multilingual |
+| `flux*` | **$0.0065 / min** | **$0.0078 / min** |
+
+Other models fall back to datasheet pricing.
+
+<Note>
+The `/v1/listen` route is registered only when at least one configured provider implements live listen (currently Deepgram). Other providers are unaffected.
+</Note>
+
+---
+
+# 3. Speech (Text-to-Speech)
+
+Maps Bifrost `POST /v1/audio/speech` to Deepgram `POST /v1/speak` (Aura models). Streaming speech is also supported.
+
+### Core Parameters
+
+| Bifrost field | Deepgram field | Notes |
+|---------------|----------------|-------|
+| `model` | `model` | e.g. `aura-2-thalia-en` |
+| `input.input` | `text` | Text to synthesize |
+| `params.speed` | `speed` | Playback speed |
+| `extra_params.encoding` | `encoding` | Audio encoding |
+| `extra_params.container` | `container` | Container format |
+| `extra_params.sample_rate` | `sample_rate` | Sample rate |
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  --output speech.mp3 \
+  -d '{
+    "model": "deepgram/aura-2-thalia-en",
+    "input": "Hello from Deepgram via Bifrost.",
+    "encoding": "linear16",
+    "sample_rate": 24000
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.SpeechRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostSpeechRequest{
+    Provider: schemas.Deepgram,
+    Model:    "aura-2-thalia-en",
+    Input: &schemas.SpeechInput{
+        Input: "Hello from Deepgram via Bifrost.",
+    },
+    Params: &schemas.SpeechParameters{
+        ExtraParams: map[string]interface{}{
+            "encoding":    "linear16",
+            "sample_rate": 24000,
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 4. List Models
+
+```bash
+curl http://localhost:8080/v1/models?provider=deepgram
+```
+
+Returns Deepgram STT/TTS models available for the configured key (filtered by key allowlists / aliases when set).
+
+---
+
+## Caveats
+
+<Accordion title="Live listen is not HTTP TranscriptionStream">
+**Severity**: Medium  
+**Behavior**: `TranscriptionStream` on the Deepgram provider returns unsupported. Real-time STT uses the dedicated `/v1/listen` WebSocket proxy.  
+**Impact**: OpenAI-style streaming transcription HTTP endpoints will not stream Deepgram live results.
+</Accordion>
+
+<Accordion title="Auth header shapes differ">
+**Severity**: Low  
+**Behavior**: Bifrost clients authenticate with Bearer (virtual key). Upstream Deepgram expects `Token <api_key>`.  
+**Impact**: Do not send your Deepgram API key as the client Bearer unless you intentionally bypass virtual keys.
+</Accordion>
+
+<Accordion title="Live cost vs datasheet">
+**Severity**: Low  
+**Behavior**: Pre-recorded transcription uses datasheet `input_cost_per_second`. Live listen uses Deepgram streaming PAYG rates for `nova-3*` / `flux*` based on the `language` query param.  
+**Impact**: Cost on live sessions can differ from unary transcription for the same model name.
+</Accordion>
+
+<Accordion title="Audio buffer cap for logs">
+**Severity**: Low  
+**Behavior**: Listen session audio stored for play/download is capped (~9 MiB) so it stays under the large-payload strip threshold.  
+**Impact**: Very long calls still log transcript + usage/cost; playable audio may be truncated.
+</Accordion>

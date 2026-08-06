@@ -244,6 +244,9 @@ type TranscriptionUsage struct {
 	OutputTokens      *int                                 `json:"output_tokens,omitempty"`
 	TotalTokens       *int                                 `json:"total_tokens,omitempty"`
 	Seconds           *float64                             `json:"seconds,omitempty"` // For duration-based usage (fractional, e.g. 523.5)
+	// Cost is optional provider-reported cost (e.g. Deepgram live listen rates).
+	// When TotalCost > 0, CalculateCost trusts it instead of datasheet pricing.
+	Cost *BifrostCost `json:"cost,omitempty"`
 }
 
 type TranscriptionUsageInputTokenDetails struct {
