@@ -9,13 +9,21 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
-import { useGetMCPClientsQuery } from "@/lib/store";
+import { getUserSearchQuery } from "@/lib/registries/userPicker";
+import { useGetMCPClientsQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { ChevronDown, Fingerprint, KeyRound, LoaderCircle, PanelLeftClose, PanelLeftOpen, RotateCcw, Search, UserRound } from "lucide-react";
 import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
+// Side-effect import: registers the enterprise user search hook (if this is
+// an enterprise build) before this module's first render. OSS has no user
+// directory, so nothing registers and getUserSearchQuery() stays undefined —
+// the Users filter section renders nothing. See ui/lib/registries/userPicker.tsx.
+import "@enterprise/lib/registrations/userPicker";
 
 const COLLAPSE_STORAGE_KEY = "mcp-sessions-filter-sidebar-collapsed";
 const MCP_CLIENT_PAGE_SIZE = 25;
+const VK_PAGE_SIZE = 25;
+const USER_PAGE_SIZE = 25;
 
 // ---------------------------------------------------------------------------
 // Filter types
@@ -26,6 +34,8 @@ export interface MCPSessionFilters {
 	status: string[]; // subset of ["active", "orphaned", "needs_reauth", "needs_update", "pending"]
 	auth_mode: string[]; // subset of ["user", "vk", "session"]
 	mcp_client_id: string[]; // explicit MCP client IDs
+	virtual_key_id: string[]; // explicit VK IDs (vk-mode rows only)
+	user_id: string[]; // explicit user IDs (user-mode rows only; enterprise only, see UsersFilterSection)
 }
 
 export const EMPTY_FILTERS: MCPSessionFilters = {
@@ -33,6 +43,8 @@ export const EMPTY_FILTERS: MCPSessionFilters = {
 	status: [],
 	auth_mode: [],
 	mcp_client_id: [],
+	virtual_key_id: [],
+	user_id: [],
 };
 
 interface FilterOption {
@@ -93,12 +105,46 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	}, []);
 
 	const activeFilterCount = useMemo(() => {
-		return filters.kind.length + filters.status.length + filters.auth_mode.length + filters.mcp_client_id.length;
+		return (
+			filters.kind.length +
+			filters.status.length +
+			filters.auth_mode.length +
+			filters.mcp_client_id.length +
+			filters.virtual_key_id.length +
+			filters.user_id.length
+		);
 	}, [filters]);
 
 	const handleReset = useCallback(() => {
 		onFiltersChange(EMPTY_FILTERS);
 	}, [onFiltersChange]);
+
+	// Mirrors MCPClientFilterSection's auth-type scoping, but for section
+	// visibility rather than query narrowing: when the Identity facet pins the
+	// row set to exactly one mode, the other mode's picker can't match
+	// anything, so hide it outright rather than leave a checkbox list that
+	// would only ever come back empty. Selecting "Session" hides both, since
+	// session-bound rows have no VK or user to pick. Neither/both selected
+	// leaves both pickers visible.
+	const authModeOnly = filters.auth_mode.length === 1 ? filters.auth_mode[0] : null;
+	const showVirtualKeyFilter = authModeOnly !== "user" && authModeOnly !== "session";
+	const showUsersFilter = authModeOnly !== "vk" && authModeOnly !== "session";
+
+	// A hidden picker's stale selection would otherwise keep silently
+	// filtering (a VK pick surviving a switch to "User" identity, say) with
+	// no visible control left to clear it — so drop it the moment its section
+	// disappears.
+	useEffect(() => {
+		if (!showVirtualKeyFilter && filters.virtual_key_id.length > 0) {
+			onFiltersChange({ ...filters, virtual_key_id: [] });
+		}
+	}, [showVirtualKeyFilter, filters, onFiltersChange]);
+
+	useEffect(() => {
+		if (!showUsersFilter && filters.user_id.length > 0) {
+			onFiltersChange({ ...filters, user_id: [] });
+		}
+	}, [showUsersFilter, filters, onFiltersChange]);
 
 	if (collapsed) {
 		return (
@@ -177,6 +223,8 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 						testIdPrefix="mcp-sessions-filter-auth-mode"
 					/>
 					<MCPClientFilterSection filters={filters} onFiltersChange={onFiltersChange} />
+					{showVirtualKeyFilter && <VirtualKeyFilterSection filters={filters} onFiltersChange={onFiltersChange} />}
+					{showUsersFilter && <UsersFilterSection filters={filters} onFiltersChange={onFiltersChange} />}
 				</div>
 			</ScrollArea>
 		</div>
@@ -417,4 +465,99 @@ function MCPClientFilterSection({ filters, onFiltersChange }: SidebarProps) {
 			/>
 		</FilterSection>
 	);
+}
+
+// VirtualKeyFilterSection – restricts sessions to a set of VKs, resolved via
+// the same server-side search+limit VK picker the MCP clients sidebar uses
+// (governance/virtual-keys), rather than loading the full VK list — VK counts
+// can be huge, so this only ever fetches a page at a time, scoped by the
+// in-flight search text. The client list only fetches once the section is
+// opened or already has a selection, since most visits won't touch this
+// filter.
+function VirtualKeyFilterSection({ filters, onFiltersChange }: SidebarProps) {
+	const hasActive = filters.virtual_key_id.length > 0;
+	const [opened, setOpened] = useState(hasActive);
+	const [searchQuery, setSearchQuery] = useState("");
+	const searchInputRef = useAutoFocusOnOpen(opened);
+
+	const { data, isFetching } = useGetVirtualKeysQuery(
+		{ limit: VK_PAGE_SIZE, offset: 0, search: searchQuery || undefined },
+		{ skip: !opened && !hasActive },
+	);
+	const virtualKeys = data?.virtual_keys || [];
+
+	const toggle = (vkId: string) => {
+		const current = filters.virtual_key_id;
+		const next = current.includes(vkId) ? current.filter((v) => v !== vkId) : [...current, vkId];
+		onFiltersChange({ ...filters, virtual_key_id: next });
+	};
+
+	return (
+		<FilterSection title="Virtual Key" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-vk-toggle">
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search virtual keys"
+				items={virtualKeys.map((vk) => ({ key: vk.id, label: vk.name || vk.id }))}
+				isSelected={(key) => filters.virtual_key_id.includes(key)}
+				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="mcp-sessions-filter-vk"
+			/>
+		</FilterSection>
+	);
+}
+
+// UsersFilterSection – restricts sessions to a set of users, mirroring
+// VirtualKeyFilterSection's inline search+checkbox UI exactly (same
+// server-side search+limit shape, same lazy-fetch-on-open behavior for huge
+// user counts). Renders nothing in OSS: there's no user directory to search
+// against, so unlike the VK/MCP-client sections this can't fall back to
+// anything — an unresolvable search box would be worse than no filter at
+// all. Enterprise builds register a search hook via getUserSearchQuery()
+// (see ui/lib/registries/userPicker.tsx), wrapping the same users API the
+// single-select UserPicker (routing rules' "User" scope, the VK table's
+// user filter) already uses.
+function UsersFilterSection({ filters, onFiltersChange }: SidebarProps) {
+	const useUserSearchQuery = getUserSearchQuery();
+	const hasActive = filters.user_id.length > 0;
+	const [opened, setOpened] = useState(hasActive);
+	const [searchQuery, setSearchQuery] = useState("");
+	const searchInputRef = useAutoFocusOnOpen(opened);
+
+	// Hooks must run unconditionally, so the registry lookup above can't gate
+	// this call — pass a no-op fallback and gate the render below instead.
+	const { data, isFetching } = (useUserSearchQuery ?? useNoopUserSearchQuery)(
+		{ limit: USER_PAGE_SIZE, search: searchQuery || undefined },
+		{ skip: !opened && !hasActive },
+	);
+	if (!useUserSearchQuery) return null;
+	const users = data?.users || [];
+
+	const toggle = (userId: string) => {
+		const current = filters.user_id;
+		const next = current.includes(userId) ? current.filter((v) => v !== userId) : [...current, userId];
+		onFiltersChange({ ...filters, user_id: next });
+	};
+
+	return (
+		<FilterSection title="Users" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-users-toggle">
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search by name or email"
+				items={users.map((user) => ({ key: user.id, label: user.label }))}
+				isSelected={(key) => filters.user_id.includes(key)}
+				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="mcp-sessions-filter-user"
+			/>
+		</FilterSection>
+	);
+}
+
+// Stand-in for useUserSearchQuery when no OSS hook is registered — keeps the
+// hooks-must-run-unconditionally rule satisfied above without a real fetch.
+function useNoopUserSearchQuery() {
+	return { data: undefined, isFetching: false };
 }

@@ -152,15 +152,19 @@ type CustomersQueryParams struct {
 // the virtual key's id/name (joined). Empty filter slices match all
 // values for that field.
 type MCPSessionsFilterParams struct {
-	Search       string
-	Statuses     []string
-	AuthModes    []string // matched against auth_mode (tokens, credentials) or flow_mode (sessions, flows)
-	MCPClientIDs []string
+	Search        string
+	Statuses      []string
+	AuthModes     []string // matched against auth_mode (tokens, credentials) or flow_mode (sessions, flows)
+	MCPClientIDs  []string
+	VirtualKeyIDs []string // exact-match against virtual_key_id; only meaningful for vk-mode rows
+	UserIDs       []string // exact-match against user_id; only meaningful for user-mode rows
 	// Identity exact-matches a single resolved identity value against any of
 	// the row's identity columns (user_id, virtual_key_id, session_id). Unlike
 	// Search it is not a substring match — it pins the list to exactly one
 	// user, virtual key, or session. Typically paired with AuthModes to scope
-	// to that identity's rows for a known mode.
+	// to that identity's rows for a known mode. Distinct from UserIDs above:
+	// this is a single value used for deep-linking to one identity (e.g. the
+	// OAuth grants table's "View sessions" action), not a multi-select facet.
 	Identity string
 	// MatchedUserIDs is an optional set of user_ids that should be treated
 	// as a positive search hit alongside Search. Callers that maintain a
