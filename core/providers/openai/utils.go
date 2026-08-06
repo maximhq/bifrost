@@ -32,6 +32,12 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 	return bifrostMessages
 }
 
+// ConvertBifrostMessagesToOpenAIMessages converts Bifrost chat messages to the
+// OpenAI wire format, dropping neutral-format fields the OpenAI wire has no
+// carrier for. Over-long tool call IDs are stripped of embedded provider
+// reasoning signatures, and tool messages lose is_error so providers that reject
+// unknown message parameters never see it.
+// The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
@@ -52,6 +58,14 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				toolMsgCopy.ToolCallID = &stripped
 				openaiMessages[i].ChatToolMessage = &toolMsgCopy
 			}
+		}
+		// The OpenAI wire format has no tool-error field; strip is_error so
+		// providers that reject unknown message parameters never see it. Clone
+		// first — ChatToolMessage is shared with the caller's input.
+		if openaiMessages[i].ChatToolMessage != nil && openaiMessages[i].ChatToolMessage.IsError != nil {
+			toolMsgCopy := *openaiMessages[i].ChatToolMessage
+			toolMsgCopy.IsError = nil
+			openaiMessages[i].ChatToolMessage = &toolMsgCopy
 		}
 		if message.ChatAssistantMessage != nil {
 			// Strip the same embedded signature from over-long assistant tool call IDs. Clone the
