@@ -116,15 +116,6 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 		if perUserTLSClient != nil {
 			perUserOpts = append(perUserOpts, transport.WithHTTPBasicClient(perUserTLSClient))
 		}
-		httpTransport, err := transport.NewStreamableHTTP(targetURL, perUserOpts...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create HTTP transport: %w", err)
-		}
-		tempClient = client.NewClient(httpTransport)
-		if err := tempClient.Start(ctx); err != nil {
-			return nil, fmt.Errorf("failed to start ephemeral MCP connection: %w", err)
-		}
-
 		initRequest := mcp.InitializeRequest{
 			Params: mcp.InitializeParams{
 				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
@@ -135,17 +126,60 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 				},
 			},
 		}
-		// Bound the MCP `initialize` handshake — a stalled upstream (TCP open
-		// succeeds but JSON-RPC initialize never returns) would otherwise block
-		// the entire tool call until the parent request ctx fires. Mirrors the
-		// bound used for shared-connection Initialize in connectToMCPClient.
-		initCtx, initCancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
-		defer initCancel()
-		initResult, err := tempClient.Initialize(initCtx, initRequest)
-		if err != nil {
-			_ = tempClient.Close()
-			tempClient = nil
-			return nil, fmt.Errorf("failed to initialize ephemeral MCP connection: %w", err)
+		// Build, start, and initialize with a single retry loop covering the
+		// whole connect handshake — same recreate-fresh-per-attempt shape as
+		// connectToMCPClient's shared-connect path (each attempt closes the
+		// previous attempt's client and builds a new one) but with
+		// PerCallConnectRetryConfig, not ConnectRetryConfig: unlike the shared
+		// dial, this runs synchronously in front of a live tool call with no
+		// separate budget wrapper around it, so it can't afford the shared
+		// path's full backoff schedule. Previously Start ran once with no
+		// retry at all — a transient blip failed the whole tool call outright.
+		//
+		// Start and Initialize share one retry budget (not two separate
+		// ones) deliberately: a failed Initialize can leave the transport
+		// broken — mcp-go marks initialization state before validating the
+		// response — so a retry needs a fresh client from Start onward
+		// regardless of which of the two failed, and one combined attempt
+		// achieves that without extra bookkeeping to track which stage a
+		// given retry is rebuilding for.
+		var initResult *mcp.InitializeResult
+		if err := ExecuteWithRetry(
+			ctx,
+			func() error {
+				if tempClient != nil {
+					if closeErr := tempClient.Close(); closeErr != nil {
+						m.logger.Warn("%s Failed to close ephemeral client during retry: %v", MCPLogPrefix, closeErr)
+					}
+				}
+				httpTransport, err := transport.NewStreamableHTTP(targetURL, perUserOpts...)
+				if err != nil {
+					return fmt.Errorf("failed to create HTTP transport: %w", err)
+				}
+				tempClient = client.NewClient(httpTransport)
+				if err := tempClient.Start(ctx); err != nil {
+					return err
+				}
+
+				// Bound the MCP `initialize` handshake — a stalled upstream (TCP
+				// open succeeds but JSON-RPC initialize never returns) would
+				// otherwise block the entire tool call until the parent request
+				// ctx fires. Mirrors the bound used for shared-connection
+				// Initialize in connectToMCPClient. Fresh per attempt, not
+				// deferred to the end of the retry loop.
+				initCtx, initCancel := context.WithTimeout(ctx, MCPClientConnectionEstablishTimeout)
+				defer initCancel()
+				initResult, err = tempClient.Initialize(initCtx, initRequest)
+				return err
+			},
+			PerCallConnectRetryConfig,
+			m.logger,
+		); err != nil {
+			if tempClient != nil {
+				_ = tempClient.Close()
+				tempClient = nil
+			}
+			return nil, fmt.Errorf("failed to establish ephemeral MCP connection: %w", err)
 		}
 
 		// Build the gate response from the captured initialize result so
@@ -1706,7 +1740,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 
 		// Start the transport (with internal retries). Each retry uses a fresh client.
 		m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
-		transportRetryConfig := DefaultRetryConfig
+		transportRetryConfig := ConnectRetryConfig
 		if startErr := ExecuteWithRetry(
 			m.ctx,
 			func() error {
@@ -1767,7 +1801,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 				},
 			},
 		}
-		initRetryConfig := DefaultRetryConfig
+		initRetryConfig := ConnectRetryConfig
 		if initErr := ExecuteWithRetry(
 			m.ctx,
 			func() error {
