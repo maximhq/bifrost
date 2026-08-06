@@ -1222,6 +1222,29 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 	return nil
 }
 
+// RequiresPerCallConnection reports whether config resolves to a per-call
+// connection (true) or a persistent shared one (false), taking auth type,
+// connection type, and needs_session_stickiness into account together — the
+// same decision AcquireClientConn and UpdateClient act on. Read-only
+// passthrough to the credential store's resolver dispatch, exposed so
+// callers (e.g. the HTTP handler, to describe what an update just changed)
+// don't have to duplicate that dispatch themselves.
+func (m *MCPManager) RequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
+	return m.credStore.RequiresPerCallConnection(config)
+}
+
+// ErrMCPSharedConnectFailedAfterUpdate signals that UpdateClient's own field
+// update already committed (client.ExecutionConfig now holds the new config,
+// in-memory, with no rollback path) before the needs_session_stickiness
+// per-call->sticky dial was attempted and failed. Callers that persist config
+// to a store before calling UpdateClient (see the HTTP update handler) must
+// not roll back that persisted row on this specific error — doing so would
+// diverge the DB (old value) from the runtime (new value, parked Unstable
+// with a checker already retrying the connection) until a restart re-reads
+// the DB and silently discards the change. Wrapped via %w so errors.Is still
+// finds it under the caller-facing message.
+var ErrMCPSharedConnectFailedAfterUpdate = errors.New("mcp client fields updated, but establishing the shared connection failed")
+
 // UpdateClient updates an existing MCP client's configuration and refreshes its tool list.
 // It updates the client's execution config with new settings and retrieves updated tools
 // from the MCP server if the client is connected.
@@ -1241,105 +1264,214 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	}
 	defer func() { finish(retErr) }()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// The metadata swap runs under its own scoped lock so the two possible
+	// stickiness-transition follow-ups below — closing a connection versus
+	// dialing a new one via connectToMCPClient — can run after it's
+	// released; connectToMCPClient acquires m.mu itself, so calling it while
+	// still holding the lock here would deadlock.
+	var newConfig *schemas.MCPClientConfig
+	var becamePerCall, becameSticky bool
+	var clientName string
 
-	client, ok := m.clientMap[id]
-	if !ok {
-		return fmt.Errorf("client %s not found", id)
-	}
+	err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	if err := ValidateMCPClientName(updatedConfig.Name); err != nil {
-		return fmt.Errorf("invalid MCP client configuration: %w", err)
-	}
-
-	if updatedConfig.ConnectionType != "" && updatedConfig.ConnectionType != client.ExecutionConfig.ConnectionType {
-		return fmt.Errorf("connection type cannot be updated for client %s", id)
-	}
-	if updatedConfig.ConnectionString != nil && !updatedConfig.ConnectionString.Equals(client.ExecutionConfig.ConnectionString) {
-		return fmt.Errorf("connection string cannot be updated for client %s", id)
-	}
-	if updatedConfig.StdioConfig != nil && !stdioConfigEqual(updatedConfig.StdioConfig, client.ExecutionConfig.StdioConfig) {
-		return fmt.Errorf("stdio config cannot be updated for client %s", id)
-	}
-	if updatedConfig.InProcessServer != nil && updatedConfig.InProcessServer != client.ExecutionConfig.InProcessServer {
-		return fmt.Errorf("in-process server cannot be updated for client %s", id)
-	}
-	// Normalize empty AuthType to "headers" — both are semantically identical
-	oldAuthType := client.ExecutionConfig.AuthType
-	if oldAuthType == "" {
-		oldAuthType = schemas.MCPAuthTypeHeaders
-	}
-	newAuthType := updatedConfig.AuthType
-	if newAuthType == "" {
-		newAuthType = schemas.MCPAuthTypeHeaders
-	}
-	if newAuthType != oldAuthType {
-		return fmt.Errorf("auth_type cannot be updated for client %s", id)
-	}
-
-	oauthConfigID := client.ExecutionConfig.OauthConfigID
-	if updatedConfig.OauthConfigID != nil {
-		oauthConfigID = updatedConfig.OauthConfigID
-	}
-
-	// Create a new config struct (immutable pattern) to avoid race conditions
-	// with concurrent reads. Any snapshot holding the old ExecutionConfig pointer
-	// will continue to see consistent data.
-	newConfig := &schemas.MCPClientConfig{
-		// Immutable fields - copy from existing config
-		ID:               client.ExecutionConfig.ID,
-		ConnectionType:   client.ExecutionConfig.ConnectionType,
-		ConnectionString: client.ExecutionConfig.ConnectionString,
-		StdioConfig:      client.ExecutionConfig.StdioConfig,
-		AuthType:         client.ExecutionConfig.AuthType,
-		OauthConfigID:    oauthConfigID,
-		State:            client.ExecutionConfig.State,
-		InProcessServer:  client.ExecutionConfig.InProcessServer,
-		ConfigHash:       client.ExecutionConfig.ConfigHash,
-		ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
-		// Updatable fields - copy from updated config with proper cloning
-		Name:                  updatedConfig.Name,
-		IsCodeModeClient:      updatedConfig.IsCodeModeClient,
-		Headers:               maps.Clone(updatedConfig.Headers),
-		ToolsToExecute:        slices.Clone(updatedConfig.ToolsToExecute),
-		ToolsToAutoExecute:    slices.Clone(updatedConfig.ToolsToAutoExecute),
-		AllowedExtraHeaders:   slices.Clone(updatedConfig.AllowedExtraHeaders),
-		IsPingAvailable:       updatedConfig.IsPingAvailable,
-		ToolSyncInterval:      updatedConfig.ToolSyncInterval,
-		ToolExecutionTimeout:  updatedConfig.ToolExecutionTimeout,
-		AllowOnAllVirtualKeys: updatedConfig.AllowOnAllVirtualKeys,
-		Disabled:              updatedConfig.Disabled,
-		TLSConfig:             updatedConfig.TLSConfig,
-		PerUserHeaderKeys:     slices.Clone(updatedConfig.PerUserHeaderKeys),
-		PendingOAuthConfig:    updatedConfig.PendingOAuthConfig,
-		TokenExchange:         updatedConfig.TokenExchange,
-	}
-
-	// Atomically replace the config pointer
-	client.ExecutionConfig = newConfig
-
-	// Rebind ToolMap keys (and inner Function.Name) to the current client name.
-	newPrefix := updatedConfig.Name + "-"
-	newToolMap := make(map[string]schemas.ChatTool, len(client.ToolMap))
-	for oldToolName, tool := range client.ToolMap {
-		newToolName := oldToolName
-		if _, suffix, ok := strings.Cut(oldToolName, "-"); ok {
-			newToolName = newPrefix + suffix
+		client, ok := m.clientMap[id]
+		if !ok {
+			return fmt.Errorf("client %s not found", id)
 		}
-		if tool.Function != nil {
-			fn := *tool.Function
-			fn.Name = newToolName
-			tool.Function = &fn
+
+		if err := ValidateMCPClientName(updatedConfig.Name); err != nil {
+			return fmt.Errorf("invalid MCP client configuration: %w", err)
 		}
-		newToolMap[newToolName] = tool
+
+		if updatedConfig.ConnectionType != "" && updatedConfig.ConnectionType != client.ExecutionConfig.ConnectionType {
+			return fmt.Errorf("connection type cannot be updated for client %s", id)
+		}
+		if updatedConfig.ConnectionString != nil && !updatedConfig.ConnectionString.Equals(client.ExecutionConfig.ConnectionString) {
+			return fmt.Errorf("connection string cannot be updated for client %s", id)
+		}
+		if updatedConfig.StdioConfig != nil && !stdioConfigEqual(updatedConfig.StdioConfig, client.ExecutionConfig.StdioConfig) {
+			return fmt.Errorf("stdio config cannot be updated for client %s", id)
+		}
+		if updatedConfig.InProcessServer != nil && updatedConfig.InProcessServer != client.ExecutionConfig.InProcessServer {
+			return fmt.Errorf("in-process server cannot be updated for client %s", id)
+		}
+		// Normalize empty AuthType to "headers" — both are semantically identical
+		oldAuthType := client.ExecutionConfig.AuthType
+		if oldAuthType == "" {
+			oldAuthType = schemas.MCPAuthTypeHeaders
+		}
+		newAuthType := updatedConfig.AuthType
+		if newAuthType == "" {
+			newAuthType = schemas.MCPAuthTypeHeaders
+		}
+		if newAuthType != oldAuthType {
+			return fmt.Errorf("auth_type cannot be updated for client %s", id)
+		}
+
+		oauthConfigID := client.ExecutionConfig.OauthConfigID
+		if updatedConfig.OauthConfigID != nil {
+			oauthConfigID = updatedConfig.OauthConfigID
+		}
+
+		// Snapshot the pre-update per-call-ness so it can be compared against
+		// the post-update value below — this is what actually detects a
+		// needs_session_stickiness flip (auth types that are always per-call
+		// regardless of the field, e.g. per-user, never show a transition here).
+		wasPerCall := m.credStore.RequiresPerCallConnection(client.ExecutionConfig)
+
+		// Create a new config struct (immutable pattern) to avoid race conditions
+		// with concurrent reads. Any snapshot holding the old ExecutionConfig pointer
+		// will continue to see consistent data.
+		newConfig = &schemas.MCPClientConfig{
+			// Immutable fields - copy from existing config
+			ID:               client.ExecutionConfig.ID,
+			ConnectionType:   client.ExecutionConfig.ConnectionType,
+			ConnectionString: client.ExecutionConfig.ConnectionString,
+			StdioConfig:      client.ExecutionConfig.StdioConfig,
+			AuthType:         client.ExecutionConfig.AuthType,
+			OauthConfigID:    oauthConfigID,
+			State:            client.ExecutionConfig.State,
+			InProcessServer:  client.ExecutionConfig.InProcessServer,
+			ConfigHash:       client.ExecutionConfig.ConfigHash,
+			ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
+			// Updatable fields - copy from updated config with proper cloning
+			Name:                   updatedConfig.Name,
+			IsCodeModeClient:       updatedConfig.IsCodeModeClient,
+			Headers:                maps.Clone(updatedConfig.Headers),
+			ToolsToExecute:         slices.Clone(updatedConfig.ToolsToExecute),
+			ToolsToAutoExecute:     slices.Clone(updatedConfig.ToolsToAutoExecute),
+			AllowedExtraHeaders:    slices.Clone(updatedConfig.AllowedExtraHeaders),
+			IsPingAvailable:        updatedConfig.IsPingAvailable,
+			NeedsSessionStickiness: updatedConfig.NeedsSessionStickiness,
+			ToolSyncInterval:       updatedConfig.ToolSyncInterval,
+			ToolExecutionTimeout:   updatedConfig.ToolExecutionTimeout,
+			AllowOnAllVirtualKeys:  updatedConfig.AllowOnAllVirtualKeys,
+			Disabled:               updatedConfig.Disabled,
+			TLSConfig:              updatedConfig.TLSConfig,
+			PerUserHeaderKeys:      slices.Clone(updatedConfig.PerUserHeaderKeys),
+			PendingOAuthConfig:     updatedConfig.PendingOAuthConfig,
+			TokenExchange:          updatedConfig.TokenExchange,
+		}
+
+		// Atomically replace the config pointer
+		client.ExecutionConfig = newConfig
+		clientName = updatedConfig.Name
+
+		// Rebind ToolMap keys (and inner Function.Name) to the current client name.
+		newPrefix := updatedConfig.Name + "-"
+		newToolMap := make(map[string]schemas.ChatTool, len(client.ToolMap))
+		for oldToolName, tool := range client.ToolMap {
+			newToolName := oldToolName
+			if _, suffix, ok := strings.Cut(oldToolName, "-"); ok {
+				newToolName = newPrefix + suffix
+			}
+			if tool.Function != nil {
+				fn := *tool.Function
+				fn.Name = newToolName
+				tool.Function = &fn
+			}
+			newToolMap[newToolName] = tool
+		}
+
+		// Replace the old ToolMap with the new one
+		client.ToolMap = newToolMap
+
+		// Also update the client Name field
+		client.Name = updatedConfig.Name
+
+		// needs_session_stickiness just flipped: apply it now instead of
+		// leaving the live connection state stale until some unrelated event
+		// (a restart, a manual reconnect) happens to re-evaluate it.
+		isPerCall := m.credStore.RequiresPerCallConnection(newConfig)
+		switch {
+		case !wasPerCall && isPerCall:
+			// Sticky -> per-call: release the persistent connection right
+			// here, under the same lock CloseAndMarkNeedsReauth uses for the
+			// equivalent close (cheap, no network I/O). The checker is
+			// stopped just below, once the lock is released.
+			//
+			// Bump ConnGeneration before closing: StopChecking (below, after
+			// the lock releases) does not cancel a check already in flight,
+			// so one that started just before this transition can still
+			// complete afterward. Its result — a tool-map write-back or a
+			// state write (Unstable/Healthy) — must be recognized as stale
+			// and dropped, the same guard writeBackTools already applies to
+			// tool maps and setState now applies to state writes too.
+			client.ConnGeneration++
+			if client.CancelFunc != nil {
+				client.CancelFunc()
+				client.CancelFunc = nil
+			}
+			if client.Conn != nil {
+				if closeErr := client.Conn.Close(); closeErr != nil {
+					m.logger.Error("%s Failed to close connection for MCP client '%s': %v", MCPLogPrefix, clientName, closeErr)
+				}
+				client.Conn = nil
+			}
+			// Disabled/NeedsReauth are authoritative states set by other
+			// flows (DisableClient, credential rotation) — this transition
+			// never overrides them. Otherwise a per-call client with no
+			// persistent connection to monitor is simply Healthy, the same
+			// state per-user auth types are given at connect time.
+			if client.State != schemas.MCPConnectionStateDisabled && client.State != schemas.MCPConnectionStateNeedsReauth {
+				client.State = schemas.MCPConnectionStateHealthy
+			}
+			becamePerCall = true
+		case wasPerCall && !isPerCall:
+			// Per-call -> sticky: there is nothing to release, but a
+			// persistent connection needs to be dialed for the first time —
+			// handled after the lock is released, below.
+			becameSticky = true
+		}
+
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
 
-	// Replace the old ToolMap with the new one
-	client.ToolMap = newToolMap
+	if becamePerCall {
+		m.checkerManager.StopChecking(id)
+		m.logger.Info("%s MCP client '%s' switched to per-call connections (needs_session_stickiness=false): released its persistent connection", MCPLogPrefix, clientName)
+	}
+	if becameSticky {
+		// connectToMCPClient starts the connection checker itself on
+		// success, mirroring every other successful-connect path. On
+		// failure it does NOT start one (mirroring EnableClient's own
+		// failure handling below) — without this, a failed first dial would
+		// leave the client Unstable with nothing ever periodically retrying
+		// it, since a per-call client never had a checker running to begin
+		// with. Start one explicitly, same as EnableClient does.
+		if connErr := m.connectToMCPClient(m.ctx, newConfig); connErr != nil {
+			m.mu.Lock()
+			alreadyTerminal := false
+			if cs, exists := m.clientMap[id]; exists {
+				switch cs.State {
+				case schemas.MCPConnectionStateDisabled, schemas.MCPConnectionStateNeedsReauth:
+					alreadyTerminal = true
+				default:
+					cs.State = schemas.MCPConnectionStateUnstable
+				}
+			}
+			m.mu.Unlock()
 
-	// Also update the client Name field
-	client.Name = updatedConfig.Name
+			if !alreadyTerminal {
+				isPingAvailable := true
+				if newConfig.IsPingAvailable != nil {
+					isPingAvailable = *newConfig.IsPingAvailable
+				}
+				syncInterval := ResolveToolSyncInterval(newConfig, m.checkerManager.GetGlobalInterval())
+				checker := NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger)
+				m.checkerManager.StartChecking(checker)
+			}
+
+			return fmt.Errorf("client updated, but establishing the shared connection for needs_session_stickiness=true failed: %w: %w", ErrMCPSharedConnectFailedAfterUpdate, connErr)
+		}
+		m.logger.Info("%s MCP client '%s' switched to a shared connection (needs_session_stickiness=true): established it now", MCPLogPrefix, clientName)
+	}
 
 	return nil
 }

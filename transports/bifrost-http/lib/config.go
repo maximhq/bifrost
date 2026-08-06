@@ -1882,6 +1882,15 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 		fileClient.DiscoveredTools = existing.DiscoveredTools
 		fileClient.DiscoveredToolNameMapping = existing.DiscoveredToolNameMapping
 	}
+
+	// Not immutable, and an explicit file declaration (true or false) is
+	// honored same as the update API — but an undeclared (nil) file value
+	// must not silently clear a stored true (set via the update API, or
+	// backfilled by migration for pre-existing rows) back to per-call just
+	// because a reconciliation pass fired for some unrelated field.
+	if fileClient.NeedsSessionStickiness == nil {
+		fileClient.NeedsSessionStickiness = existing.NeedsSessionStickiness
+	}
 	return changed
 }
 
@@ -2099,6 +2108,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.DiscoveredTools = clientConfig.DiscoveredTools
 	row.DiscoveredToolNameMapping = clientConfig.DiscoveredToolNameMapping
 	row.PendingOAuthConfig = clientConfig.PendingOAuthConfig
+	row.NeedsSessionStickiness = clientConfig.NeedsSessionStickiness
 }
 
 // mergeMCPConfig merges MCP config from file with store
@@ -2280,6 +2290,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		Headers:                   clientConfig.Headers,
 		AllowedExtraHeaders:       clientConfig.AllowedExtraHeaders,
 		IsPingAvailable:           clientConfig.IsPingAvailable,
+		NeedsSessionStickiness:    clientConfig.NeedsSessionStickiness,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
 		ToolPricing:               clientConfig.ToolPricing,
@@ -6646,6 +6657,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].AllowedExtraHeaders = updatedConfig.AllowedExtraHeaders
 	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
 	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = updatedConfig.IsPingAvailable
+	c.MCPConfig.ClientConfigs[configIndex].NeedsSessionStickiness = updatedConfig.NeedsSessionStickiness
 	c.MCPConfig.ClientConfigs[configIndex].ToolSyncInterval = updatedConfig.ToolSyncInterval
 	c.MCPConfig.ClientConfigs[configIndex].ToolExecutionTimeout = updatedConfig.ToolExecutionTimeout
 	c.MCPConfig.ClientConfigs[configIndex].AllowOnAllVirtualKeys = updatedConfig.AllowOnAllVirtualKeys
