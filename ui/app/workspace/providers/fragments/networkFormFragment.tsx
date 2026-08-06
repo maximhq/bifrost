@@ -67,6 +67,15 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const isCustomProvider = !isKnownProvider(provider.name as string);
+	// Base types whose provider implementation never reads NetworkConfig.BaseURL
+	// (host/routing derived per-key instead) - keys off base type for custom providers
+	// so e.g. a custom Vertex provider isn't forced to supply/require an unused URL.
+	const effectiveProviderType = provider.custom_provider_config?.base_provider_type ?? provider.name;
+	const baseUrlNotUsed =
+		effectiveProviderType === "vllm" ||
+		effectiveProviderType === "ollama" ||
+		effectiveProviderType === "sgl" ||
+		effectiveProviderType === "vertex";
 
 	const form = useForm<NetworkOnlyFormSchema, any, NetworkOnlyFormSchema>({
 		resolver: zodResolver(networkOnlyFormSchema) as Resolver<NetworkOnlyFormSchema, any, NetworkOnlyFormSchema>,
@@ -99,7 +108,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	}, [form.formState.isDirty, dispatch]);
 
 	const onSubmit = (data: NetworkOnlyFormSchema) => {
-		const requiresBaseUrl = isCustomProvider;
+		const requiresBaseUrl = isCustomProvider && !baseUrlNotUsed;
 		if (requiresBaseUrl && (data.network_config?.base_url ?? "").trim() === "") {
 			if ((provider.network_config?.base_url ?? "").trim() !== "") {
 				toast.error("You can't remove network configuration for this provider.");
@@ -167,8 +176,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		});
 	}, [form, provider.name, provider.network_config]);
 
-	const baseURLRequired = isCustomProvider;
-	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
+	const baseURLRequired = isCustomProvider && !baseUrlNotUsed;
+	const hideBaseURL = baseUrlNotUsed;
 
 	return (
 		<Form {...form}>
