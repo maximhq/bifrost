@@ -26,9 +26,23 @@ type TableMCPClient struct {
 	HeadersJSON             string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]string
 	AllowedExtraHeadersJSON string             `gorm:"type:text" json:"-"`                              // JSON serialized []string
 	IsPingAvailable         *bool              `gorm:"default:true" json:"is_ping_available,omitempty"` // Whether the MCP server supports ping for health checks
-	ToolPricingJSON         string             `gorm:"type:text" json:"-"`                              // JSON serialized map[string]float64
-	ToolSyncInterval        int                `gorm:"default:0" json:"tool_sync_interval"`             // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
-	ToolExecutionTimeout    int                `gorm:"default:0" json:"tool_execution_timeout"`         // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
+	// NeedsSessionStickiness: nil/false = per-call connection (the default
+	// for newly created clients); true = persistent shared connection
+	// (today's only behavior — every pre-existing row is explicitly
+	// backfilled to true by the migration, so this default only applies to
+	// clients created after this column existed). Ignored/always-true for
+	// non-http connection types.
+	//
+	// Deliberately no `gorm:"default:..."` tag: a DB-level default would
+	// make ADD COLUMN's fast-default mechanism return that value for every
+	// pre-existing row immediately, so the migration's `WHERE
+	// needs_session_stickiness IS NULL` backfill would never match anything.
+	// Leaving the column plain-nullable is what lets the migration tell
+	// "pre-existing, needs backfill" (NULL) apart from "explicitly set".
+	NeedsSessionStickiness *bool  `json:"needs_session_stickiness,omitempty"`
+	ToolPricingJSON        string `gorm:"type:text" json:"-"`                      // JSON serialized map[string]float64
+	ToolSyncInterval       int    `gorm:"default:0" json:"tool_sync_interval"`     // Per-client tool sync interval in seconds (0 = use global, negative = disabled)
+	ToolExecutionTimeout   int    `gorm:"default:0" json:"tool_execution_timeout"` // Per-client tool execution timeout in seconds (0 = use global from tool_manager_config)
 
 	// Per-user OAuth: discovered tools persisted so they survive restart
 	DiscoveredToolsJSON string `gorm:"type:text" json:"-"` // JSON serialized map[string]schemas.ChatTool

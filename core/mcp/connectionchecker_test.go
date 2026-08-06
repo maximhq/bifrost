@@ -140,11 +140,12 @@ func TestPerformCheck_NilConn_SharedAuthType_TriggersReconnect(t *testing.T) {
 	manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 
 	config := &schemas.MCPClientConfig{
-		ID:               "client-reconnect-trigger",
-		Name:             "shared-client",
-		AuthType:         schemas.MCPAuthTypeHeaders,
-		ConnectionType:   schemas.MCPConnectionTypeHTTP,
-		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"), // unreachable — attempt must still be made
+		ID:                     "client-reconnect-trigger",
+		Name:                   "shared-client",
+		AuthType:               schemas.MCPAuthTypeHeaders,
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar("http://127.0.0.1:0/mcp"), // unreachable — attempt must still be made
+		NeedsSessionStickiness: schemas.Ptr(true),                             // sticky: routes through the reconnect-on-nil-conn branch under test, not checkPerCall
 	}
 	manager.mu.Lock()
 	manager.clientMap[config.ID] = &schemas.MCPClientState{
@@ -192,4 +193,37 @@ func TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap(t *testing.T) {
 	updated := manager.clientMap[config.ID].ToolMap
 	require.Contains(t, updated, "oauth-client-echo", "a successful admin-discovery cycle should populate the client's tool map")
 	require.Equal(t, schemas.MCPConnectionStateHealthy, manager.clientMap[config.ID].State)
+}
+
+// TestSetState_StaleGeneration_DoesNotOverwriteState pins the gap CodeRabbit
+// flagged: recordFailure/recordSuccess (via setState) had no generation
+// guard at all, unlike writeBackTools' existing one for tool-map writes. A
+// check that started before a sticky->per-call transition (which closes the
+// connection but, before this fix, never bumped ConnGeneration) can complete
+// afterward — StopChecking doesn't cancel an in-flight check — and its state
+// write would land on an entry that's since moved on, e.g. marking Unstable
+// a client that no longer has a persistent connection to be unstable about.
+// setState must drop a write whose captured generation no longer matches the
+// client's current one, mirroring writeBackTools' own guard exactly.
+func TestSetState_StaleGeneration_DoesNotOverwriteState(t *testing.T) {
+	manager := &MCPManager{
+		logger:    &MockLogger{},
+		clientMap: map[string]*schemas.MCPClientState{},
+	}
+	state, config := newSyncTestClientState("client-gen", "gen-client", schemas.MCPAuthTypeHeaders, nil)
+	state.State = schemas.MCPConnectionStateHealthy
+	state.ConnGeneration = 6 // already bumped past what the stale check captured
+	manager.clientMap[config.ID] = state
+
+	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
+
+	// A check that captured generation 5 (before the transition) finishing
+	// late must not move the state at all.
+	checker.setState(schemas.MCPConnectionStateUnstable, 5)
+	require.Equal(t, schemas.MCPConnectionStateHealthy, manager.clientMap[config.ID].State, "a stale-generation state write must be dropped")
+
+	// A check whose captured generation still matches the client's current
+	// one must apply normally — the guard isn't a blanket no-op.
+	checker.setState(schemas.MCPConnectionStateUnstable, 6)
+	require.Equal(t, schemas.MCPConnectionStateUnstable, manager.clientMap[config.ID].State, "a current-generation state write must still apply")
 }

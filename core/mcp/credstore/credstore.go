@@ -81,6 +81,16 @@ func (s *CredStore) RequestHeaders(ctx *schemas.BifrostContext, config *schemas.
 // unknown auth types it returns false (safe shared-mode default); the next
 // ConnectionHeaders / RequestHeaders call from the caller will surface the
 // actual "unsupported auth type" error.
+//
+// Per-user auth types are always per-call regardless of stickiness (their
+// resolver hardcodes true — there's no "shared" mode for them to opt out
+// of). Shared HTTP auth types (headers/oauth) additionally honor
+// config.NeedsSessionStickiness: only explicitly true keeps them on the
+// persistent-connection + connection-checker path (every pre-existing
+// client is backfilled to true at the DB layer so this is a no-op for
+// them); nil/false (the default for newly created clients) routes them
+// through the per-call path too, same as the per-user types. SSE and STDIO
+// ignore the flag — see needsSessionStickiness's doc comment.
 func (s *CredStore) RequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
 	if config == nil {
 		return false
@@ -89,7 +99,26 @@ func (s *CredStore) RequiresPerCallConnection(config *schemas.MCPClientConfig) b
 	if !ok {
 		return false
 	}
-	return r.RequiresPerCallConnection()
+	if r.RequiresPerCallConnection() {
+		return true
+	}
+	return !needsSessionStickiness(config)
+}
+
+// needsSessionStickiness reports whether config wants a persistent shared
+// connection (explicitly true) or a fresh per-call connection (nil/false,
+// the default for newly created clients). Only meaningful for
+// connection_type=http: SSE has no stateless mode (its session is
+// inherently bound to the open stream) and STDIO needs a persistent
+// subprocess, so both are treated as always sticky regardless of what the
+// field says — write-time validation is responsible for rejecting an
+// explicit false for those types in the first place, this is just a
+// defensive second check at the point stickiness actually matters.
+func needsSessionStickiness(config *schemas.MCPClientConfig) bool {
+	if config.ConnectionType != schemas.MCPConnectionTypeHTTP {
+		return true
+	}
+	return config.NeedsSessionStickiness != nil && *config.NeedsSessionStickiness
 }
 
 // ForceRefresh implements schemas.MCPCredentialStore.

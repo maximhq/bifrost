@@ -3993,6 +3993,17 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 // These operations involve network I/O and connection management that require mutex locks
 // which can block briefly during execution.
 
+// MCPClientRequiresPerCallConnection reports whether config resolves to a
+// per-call connection (true) or a persistent shared one (false), taking auth
+// type, connection type, and needs_session_stickiness into account together.
+// Returns false (the persistent-connection default) if MCP is not configured.
+func (bifrost *Bifrost) MCPClientRequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
+	if bifrost.MCPManager == nil {
+		return false
+	}
+	return bifrost.MCPManager.RequiresPerCallConnection(config)
+}
+
 // GetMCPClients returns all MCP clients managed by the Bifrost instance.
 //
 // Returns:
