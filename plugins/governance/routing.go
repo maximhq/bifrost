@@ -1,9 +1,12 @@
 package governance
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"math/rand/v2"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -48,6 +51,12 @@ type RoutingContext struct {
 	QueryParams              map[string]string                   // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus           // Budget and rate limit status by provider/model
 	computeComplexity        func() *complexity.ComplexityResult // Lazy complexity computation; called at most once when a rule references "complexity_tier"
+	// SessionID identifies the conversation this request belongs to. Empty
+	// means "unknown", which is the normal case and simply restores random
+	// weighted target selection. Currently populated from the x-bf-session-id
+	// header only; the full resolution ladder (harness-native IDs, prefix
+	// fingerprinting) replaces that single read without changing this field.
+	SessionID string
 }
 
 type RoutingEngine struct {
@@ -234,7 +243,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					continue
 				}
 
-				target, ok := selectWeightedTarget(rule.Targets)
+				target, ok := selectWeightedTarget(rule.Targets, routingCtx.SessionID, rule.ID)
 				if !ok {
 					re.logger.Debug("[RoutingEngine] Rule %s matched but has no valid targets (empty list or all-negative weights), skipping — note: all-zero weights use uniform selection and would not reach here", rule.Name)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' [%s] → matched but no valid targets (empty or all-negative weights), skipping", rule.Name, rule.CelExpression))
@@ -306,13 +315,21 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	return finalDecision, nil
 }
 
-// selectWeightedTarget picks one target from the slice using weighted random selection.
+// selectWeightedTarget picks one target from the slice using weighted selection.
 // Each target's Weight contributes proportionally to its probability of being chosen.
 // Weights do not need to be normalised to 100; the function normalises internally.
 // Returns ok=false only when len(targets)==0 or all targets have negative weights (filtered out).
-// When all valid targets have weight==0 the function falls back to uniform random selection
+// When all valid targets have weight==0 the function falls back to uniform selection
 // and still returns ok=true, so zero-weight targets are valid and handled.
-func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (configstoreTables.TableRoutingTarget, bool) {
+//
+// When sessionID is non-empty the selection point is derived from
+// hash(sessionID, ruleID) instead of rand, so every request in a session picks
+// the same target for a given rule. That stickiness is what makes tier state
+// worth having: a tier resolving to two weighted targets would otherwise re-roll
+// every turn and discard the provider-side prompt cache anyway, one layer below
+// the tier. The hash is stateless, so it agrees across nodes and survives
+// restarts without storage, and it stays proportional as weights change.
+func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget, sessionID, ruleID string) (configstoreTables.TableRoutingTarget, bool) {
 	if len(targets) == 0 {
 		return configstoreTables.TableRoutingTarget{}, false
 	}
@@ -330,21 +347,46 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 		return configstoreTables.TableRoutingTarget{}, false
 	}
 
+	if len(valid) == 1 {
+		return valid[0], true
+	}
+
+	sticky := sessionID != ""
+	if sticky {
+		// The cumulative walk below maps a point in [0,1) to a position in the
+		// slice, so a stable point only yields a stable target if the slice
+		// order is also stable. Targets carry no ID column and arrive in
+		// whatever order the DB returned them, so sort by the columns that
+		// uniquely identify a target within a rule. Without this, stickiness
+		// silently degrades to random on any query that reorders rows.
+		sort.SliceStable(valid, func(i, j int) bool {
+			return routingTargetIdentity(valid[i]) < routingTargetIdentity(valid[j])
+		})
+	}
+
 	total := 0.0
 	for _, t := range valid {
 		total += t.Weight
 	}
 
-	// All weights are 0 — select uniformly at random among valid targets.
+	// All weights are 0 — select uniformly among valid targets.
 	if total == 0 {
+		if sticky {
+			index := int(sessionSelectionPoint(sessionID, ruleID) * float64(len(valid)))
+			if index >= len(valid) {
+				index = len(valid) - 1
+			}
+			return valid[index], true
+		}
 		return valid[rand.IntN(len(valid))], true
 	}
 
-	if len(valid) == 1 {
-		return valid[0], true
+	point := rand.Float64()
+	if sticky {
+		point = sessionSelectionPoint(sessionID, ruleID)
 	}
 
-	r := rand.Float64() * total
+	r := point * total
 	cumulative := 0.0
 	for _, t := range valid {
 		cumulative += t.Weight
@@ -353,6 +395,37 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 		}
 	}
 	return valid[len(valid)-1], true
+}
+
+// routingTargetIdentity renders the columns of the routing target unique index
+// as a sortable string.
+//
+// A nil field and an empty one collapse to the same identity, deliberately:
+// both mean "inherit from the request" at selection time, so two targets
+// differing only that way resolve to the same provider, model, and key. Sorting
+// them as equal is therefore stable in the only sense that matters.
+func routingTargetIdentity(target configstoreTables.TableRoutingTarget) string {
+	var b strings.Builder
+	for _, field := range []*string{target.Provider, target.Model, target.KeyID} {
+		if field != nil {
+			b.WriteString(*field)
+		}
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+// sessionSelectionPoint maps a session and rule to a uniform point in [0,1).
+//
+// Keying on the rule as well as the session means a session that matches two
+// different rules gets two independent draws, rather than landing on the same
+// slice position in both — which would correlate the choices and skew the
+// aggregate distribution away from the configured weights.
+func sessionSelectionPoint(sessionID, ruleID string) float64 {
+	sum := sha256.Sum256([]byte(sessionID + "\x00" + ruleID))
+	// Take 53 bits, the exact-integer range of a float64, so every
+	// representable value is equally likely and the result is never 1.0.
+	return float64(binary.BigEndian.Uint64(sum[:8])>>11) / float64(uint64(1)<<53)
 }
 
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy
