@@ -1391,6 +1391,10 @@ type MessageSummary struct {
 	ReasoningDetails []ReasoningDetailSummary `json:"reasoning_details,omitempty"`
 	Audio            *AudioSummary            `json:"audio,omitempty"`
 	Refusal          string                   `json:"refusal,omitempty"`
+	// ToolCallID links a role:"tool" message back to the assistant tool call it answers.
+	// Required to render a tool_call_response part when re-encoding these summaries into
+	// GenAI semconv event payloads (the OTEL plugin's log export).
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // ToolCallSummary represents a summarized tool call for tracing
@@ -1454,6 +1458,12 @@ func extractMessageSummary(msg *schemas.ChatMessage) MessageSummary {
 
 	if msg.Role != "" {
 		summary.Role = string(msg.Role)
+	}
+
+	// Extract tool-result linkage (role: "tool") so the message can be paired with the
+	// assistant tool call it responds to.
+	if msg.ChatToolMessage != nil && msg.ChatToolMessage.ToolCallID != nil {
+		summary.ToolCallID = *msg.ChatToolMessage.ToolCallID
 	}
 
 	// Extract assistant-specific fields

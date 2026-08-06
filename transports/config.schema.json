@@ -3529,6 +3529,20 @@
           "minimum": 1,
           "maximum": 300
         },
+        "logs_enabled": {
+          "type": "boolean",
+          "description": "Enable OTLP log export of GenAI events. One gen_ai.client.inference.operation.details log record is emitted per LLM call, correlated with its span via trace_id/span_id.",
+          "default": false
+        },
+        "logs_endpoint": {
+          "$ref": "#/$defs/otel_endpoint",
+          "description": "OTLP logs endpoint URL (e.g., http://otel-collector:4318/v1/logs for HTTP or otel-collector:4317 for gRPC)"
+        },
+        "logs_disable_content_logging": {
+          "type": "boolean",
+          "description": "When true, message content, instructions, and tool payloads are dropped from exported log records; the events are still emitted with metadata only. Independent of disable_content_logging, which gates the same content on exported spans.",
+          "default": false
+        },
         "request_headers": {
           "type": "array",
           "items": {
@@ -3538,7 +3552,7 @@
         },
         "disable_content_logging": {
           "type": "boolean",
-          "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector.",
+          "description": "When true, message content (input/output messages, embeddings, tool definitions, and tool call arguments/results) is dropped from exported spans. Only metadata such as model, tokens, and latency is sent to the collector. Exported logs are gated separately by logs_disable_content_logging.",
           "default": false
         },
         "group_traces_by_session": {
@@ -3626,6 +3640,19 @@
           },
           "then": {
             "required": ["metrics_endpoint", "protocol"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "logs_enabled": {
+                "const": true
+              }
+            },
+            "required": ["logs_enabled"]
+          },
+          "then": {
+            "required": ["logs_endpoint"]
           }
         }
       ],

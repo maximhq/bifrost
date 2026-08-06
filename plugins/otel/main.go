@@ -113,6 +113,18 @@ type Profile struct {
 	MetricsEndpoint     *schemas.SecretVar `json:"metrics_endpoint,omitempty"`
 	MetricsPushInterval int                `json:"metrics_push_interval,omitempty"` // in seconds, default 15
 
+	// Logs export configuration. When enabled, one OTLP log record per llm.call span is
+	// exported as a GenAI event (gen_ai.client.inference.operation.details), correlated
+	// with the exported trace via trace_id/span_id.
+	LogsEnabled  bool               `json:"logs_enabled"`
+	LogsEndpoint *schemas.SecretVar `json:"logs_endpoint,omitempty"` // required when LogsEnabled
+
+	// LogsDisableContentLogging strips message content, instructions, and tool payloads
+	// from exported log records only. It is independent of DisableContentLogging, which
+	// gates the same content on exported spans — so content can live on spans only, on
+	// events only, on both, or on neither.
+	LogsDisableContentLogging bool `json:"logs_disable_content_logging,omitempty"`
+
 	// RequestHeaders lists request-header name patterns (exact or wildcard like "x-custom-*"
 	// or "*") whose captured values are attached to the root span as attributes.
 	RequestHeaders []string `json:"request_headers,omitempty"`
@@ -251,25 +263,28 @@ func hoistSpanFilter(data []byte) *PluginSpanFilter {
 // flattened to plain strings ("env.VAR_NAME" or the literal value) for DB/config-file
 // persistence.
 type profileForStorage struct {
-	Enabled                bool              `json:"enabled"`
-	TracesEnabled          bool              `json:"traces_enabled"`
-	ServiceName            string            `json:"service_name"`
-	CollectorURL           string            `json:"collector_url"`
-	Headers                map[string]string `json:"headers,omitempty"`
-	TraceHeaders           map[string]string `json:"trace_headers,omitempty"`
-	MetricsHeaders         map[string]string `json:"metrics_headers,omitempty"`
-	TraceType              TraceType         `json:"trace_type"`
-	Protocol               Protocol          `json:"protocol"`
-	TLSCACert              string            `json:"tls_ca_cert,omitempty"`
-	Insecure               bool              `json:"insecure"`
-	ExportTimeout          int               `json:"export_timeout,omitempty"`
-	MetricsEnabled         bool              `json:"metrics_enabled"`
-	MetricsEndpoint        string            `json:"metrics_endpoint,omitempty"`
-	MetricsPushInterval    int               `json:"metrics_push_interval,omitempty"`
-	RequestHeaders         []string          `json:"request_headers,omitempty"`
-	DisableContentLogging  bool              `json:"disable_content_logging,omitempty"`
-	GroupTracesBySession   bool              `json:"group_traces_by_session,omitempty"`
-	DisableRootSpanContent bool              `json:"disable_root_span_content,omitempty"`
+	Enabled                   bool              `json:"enabled"`
+	TracesEnabled             bool              `json:"traces_enabled"`
+	ServiceName               string            `json:"service_name"`
+	CollectorURL              string            `json:"collector_url"`
+	Headers                   map[string]string `json:"headers,omitempty"`
+	TraceHeaders              map[string]string `json:"trace_headers,omitempty"`
+	MetricsHeaders            map[string]string `json:"metrics_headers,omitempty"`
+	TraceType                 TraceType         `json:"trace_type"`
+	Protocol                  Protocol          `json:"protocol"`
+	TLSCACert                 string            `json:"tls_ca_cert,omitempty"`
+	Insecure                  bool              `json:"insecure"`
+	ExportTimeout             int               `json:"export_timeout,omitempty"`
+	MetricsEnabled            bool              `json:"metrics_enabled"`
+	MetricsEndpoint           string            `json:"metrics_endpoint,omitempty"`
+	MetricsPushInterval       int               `json:"metrics_push_interval,omitempty"`
+	LogsEnabled               bool              `json:"logs_enabled"`
+	LogsEndpoint              string            `json:"logs_endpoint,omitempty"`
+	LogsDisableContentLogging bool              `json:"logs_disable_content_logging,omitempty"`
+	RequestHeaders            []string          `json:"request_headers,omitempty"`
+	DisableContentLogging     bool              `json:"disable_content_logging,omitempty"`
+	GroupTracesBySession      bool              `json:"group_traces_by_session,omitempty"`
+	DisableRootSpanContent    bool              `json:"disable_root_span_content,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -292,32 +307,35 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			continue
 		}
 		out.Profiles = append(out.Profiles, profileForStorage{
-			Enabled:                p.Enabled,
-			TracesEnabled:          p.TracesEnabled,
-			ServiceName:            p.ServiceName,
-			CollectorURL:           schemas.SecretVarAsString(p.CollectorURL),
-			Headers:                p.Headers,
-			TraceHeaders:           p.TraceHeaders,
-			MetricsHeaders:         p.MetricsHeaders,
-			TraceType:              p.TraceType,
-			Protocol:               p.Protocol,
-			TLSCACert:              p.TLSCACert,
-			Insecure:               p.Insecure,
-			ExportTimeout:          p.ExportTimeout,
-			MetricsEnabled:         p.MetricsEnabled,
-			MetricsEndpoint:        schemas.SecretVarAsString(p.MetricsEndpoint),
-			MetricsPushInterval:    p.MetricsPushInterval,
-			RequestHeaders:         p.RequestHeaders,
-			DisableContentLogging:  p.DisableContentLogging,
-			GroupTracesBySession:   p.GroupTracesBySession,
-			DisableRootSpanContent: p.DisableRootSpanContent,
+			Enabled:                   p.Enabled,
+			TracesEnabled:             p.TracesEnabled,
+			ServiceName:               p.ServiceName,
+			CollectorURL:              schemas.SecretVarAsString(p.CollectorURL),
+			Headers:                   p.Headers,
+			TraceHeaders:              p.TraceHeaders,
+			MetricsHeaders:            p.MetricsHeaders,
+			TraceType:                 p.TraceType,
+			Protocol:                  p.Protocol,
+			TLSCACert:                 p.TLSCACert,
+			Insecure:                  p.Insecure,
+			ExportTimeout:             p.ExportTimeout,
+			MetricsEnabled:            p.MetricsEnabled,
+			MetricsEndpoint:           schemas.SecretVarAsString(p.MetricsEndpoint),
+			MetricsPushInterval:       p.MetricsPushInterval,
+			LogsEnabled:               p.LogsEnabled,
+			LogsEndpoint:              schemas.SecretVarAsString(p.LogsEndpoint),
+			LogsDisableContentLogging: p.LogsDisableContentLogging,
+			RequestHeaders:            p.RequestHeaders,
+			DisableContentLogging:     p.DisableContentLogging,
+			GroupTracesBySession:      p.GroupTracesBySession,
+			DisableRootSpanContent:    p.DisableRootSpanContent,
 		})
 	}
 	return sonic.Marshal(out)
 }
 
 // Redacted returns a copy of the config with sensitive fields redacted for API responses.
-// URLs (CollectorURL, MetricsEndpoint) are not secrets and are returned unchanged so the UI
+// URLs (CollectorURL, MetricsEndpoint, LogsEndpoint) are not secrets and are returned unchanged so the UI
 // can display and re-submit them without failing URL validation. For env var references on
 // those fields, only the resolved value is hidden; the env_var name is preserved.
 // Header values may carry auth tokens, so literal values are masked while "env." references
@@ -337,6 +355,7 @@ func (c *Config) Redacted() *Config {
 			rp := *p
 			rp.CollectorURL = hideResolvedEnvValue(p.CollectorURL)
 			rp.MetricsEndpoint = hideResolvedEnvValue(p.MetricsEndpoint)
+			rp.LogsEndpoint = hideResolvedEnvValue(p.LogsEndpoint)
 			rp.Headers = redactHeaderMap(p.Headers)
 			rp.TraceHeaders = redactHeaderMap(p.TraceHeaders)
 			rp.MetricsHeaders = redactHeaderMap(p.MetricsHeaders)
@@ -393,13 +412,30 @@ type otelTarget struct {
 	groupTracesBySession   bool
 	disableRootSpanContent bool
 
+	// logClient is nil unless the profile enables log export. Logs ship over their own
+	// client to their own endpoint and carry their own breaker (see logExportState), so a
+	// broken logs pipeline can never suppress trace or metrics export.
+	logClient                 OtelLogClient
+	logsURL                   string
+	logsDisableContentLogging bool
+
 	// exportTimeout bounds a single Emit. See Profile.ExportTimeout.
 	exportTimeout time.Duration
 
-	// Circuit breaker. A misconfigured endpoint fails identically for every trace, so
-	// after breakerFailureThreshold consecutive failures the target stops dialling until
-	// breakerCooldown has elapsed. Without this, a permanently wrong endpoint costs a
-	// full exportTimeout on every single request forever.
+	// Trace-export breaker. Promoted, so tripBreaker/resetBreaker/breakerOpen on the
+	// target act on the trace signal.
+	exportBreaker
+
+	// logBreaker is the log-export breaker. Kept separate from the trace one so the two
+	// signals fail independently: a dead logs endpoint must not stop trace export.
+	logBreaker exportBreaker
+}
+
+// exportBreaker is a per-signal circuit breaker. A misconfigured endpoint fails
+// identically for every trace, so after breakerFailureThreshold consecutive failures
+// the signal stops dialling until breakerCooldown has elapsed. Without this, a
+// permanently wrong endpoint costs a full exportTimeout on every single request forever.
+type exportBreaker struct {
 	consecutiveFailures atomic.Int64
 	breakerOpenUntil    atomic.Int64 // UnixNano; exports are skipped until this instant
 	suppressedExports   atomic.Int64
@@ -408,7 +444,7 @@ type otelTarget struct {
 
 // tripBreaker records a failed export and opens the circuit once the failure threshold
 // is reached.
-func (t *otelTarget) tripBreaker() {
+func (t *exportBreaker) tripBreaker() {
 	t.failedExports.Add(1)
 	if t.consecutiveFailures.Add(1) >= breakerFailureThreshold {
 		t.breakerOpenUntil.Store(time.Now().Add(breakerCooldown).UnixNano())
@@ -416,18 +452,18 @@ func (t *otelTarget) tripBreaker() {
 }
 
 // resetBreaker records a successful export, closing the circuit.
-func (t *otelTarget) resetBreaker() {
+func (t *exportBreaker) resetBreaker() {
 	t.consecutiveFailures.Store(0)
 	t.breakerOpenUntil.Store(0)
 }
 
-// breakerOpen reports whether exports to this target are currently suppressed.
+// breakerOpen reports whether exports for this signal are currently suppressed.
 // Exactly one probe is allowed through once the cooldown expires: the goroutine that
 // wins the CAS pushes the window forward by another cooldown and dials for real, so
 // concurrent callers and anyone arriving while that probe is in flight stay suppressed.
 // The probe then resets the breaker on success or re-arms it on failure; if it somehow
 // does neither, the pushed-forward window expires on its own and the next caller probes.
-func (t *otelTarget) breakerOpen() bool {
+func (t *exportBreaker) breakerOpen() bool {
 	openUntil := t.breakerOpenUntil.Load()
 	if openUntil == 0 {
 		return false
@@ -558,6 +594,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	var (
 		traceHeaders   map[string]string
 		metricsHeaders map[string]string
+		logHeaders     map[string]string
 		err            error
 	)
 	if profile.TracesEnabled {
@@ -572,6 +609,12 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 			return nil, fmt.Errorf("profile %d: %w", index, err)
 		}
 	}
+	if profile.LogsEnabled {
+		logHeaders, err = mergedResolvedHeaders(profile.Headers, nil)
+		if err != nil {
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
+	}
 
 	exportTimeout, err := resolveExportTimeout(profile.ExportTimeout)
 	if err != nil {
@@ -579,13 +622,14 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	target := &otelTarget{
-		serviceName:            serviceName,
-		traceType:              profile.TraceType,
-		requestHeaders:         slices.Clone(profile.RequestHeaders),
-		disableContentLogging:  profile.DisableContentLogging,
-		groupTracesBySession:   profile.GroupTracesBySession,
-		disableRootSpanContent: profile.DisableRootSpanContent,
-		exportTimeout:          exportTimeout,
+		serviceName:               serviceName,
+		traceType:                 profile.TraceType,
+		requestHeaders:            slices.Clone(profile.RequestHeaders),
+		disableContentLogging:     profile.DisableContentLogging,
+		groupTracesBySession:      profile.GroupTracesBySession,
+		disableRootSpanContent:    profile.DisableRootSpanContent,
+		logsDisableContentLogging: profile.LogsDisableContentLogging,
+		exportTimeout:             exportTimeout,
 	}
 
 	// Build the trace client only when traces are enabled; Inject skips a nil client.
@@ -645,6 +689,28 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		logger.Info("OTEL metrics push enabled for profile %d, pushing to %s every %d seconds", index, profile.MetricsEndpoint.GetValue(), pushInterval)
 	}
 
+	// Initialize the logs client if enabled. It reuses the profile's protocol, headers,
+	// TLS settings and export timeout, but dials its own endpoint.
+	if profile.LogsEnabled {
+		logsURL := profile.LogsEndpoint.GetValue()
+		if logsURL == "" {
+			target.closeClients()
+			return nil, fmt.Errorf("profile %d: logs_endpoint is required when logs_enabled is true", index)
+		}
+		target.logsURL = logsURL
+		switch profile.Protocol {
+		case ProtocolGRPC:
+			target.logClient, err = NewOtelLogClientGRPC(logsURL, logHeaders, profile.TLSCACert, profile.Insecure)
+		case ProtocolHTTP:
+			target.logClient, err = NewOtelLogClientHTTP(logsURL, logHeaders, profile.TLSCACert, profile.Insecure, exportTimeout)
+		}
+		if err != nil {
+			target.closeClients()
+			return nil, fmt.Errorf("profile %d: failed to initialize logs client: %w", index, err)
+		}
+		logger.Info("OTEL log export enabled for profile %d, exporting GenAI events to %s", index, logsURL)
+	}
+
 	return target, nil
 }
 
@@ -658,6 +724,28 @@ func mergedResolvedHeaders(common, overlay map[string]string) (map[string]string
 		return nil, err
 	}
 	return merged, nil
+}
+
+// closeClients releases every client this target has opened so far. Used to unwind a
+// partially built target when a later step of buildTarget fails, and by Cleanup.
+func (t *otelTarget) closeClients() error {
+	var firstErr error
+	if t.metricsExporter != nil {
+		if err := t.metricsExporter.Shutdown(context.Background()); err != nil {
+			logger.Error("failed to shutdown metrics exporter: %v", err)
+		}
+	}
+	if t.client != nil {
+		if err := t.client.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if t.logClient != nil {
+		if err := t.logClient.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // resolveExportTimeout validates a configured export_timeout (in seconds) and returns
@@ -837,6 +925,9 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace)
 				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
+			// Logs are a separate signal with their own client, endpoint and breaker, so
+			// they are emitted even when the trace client is missing or its breaker is open.
+			p.emitLogs(ctx, t, trace)
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
@@ -859,15 +950,50 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 	return nil
 }
 
+// emitLogs converts the trace to GenAI event log records and ships them to the target's
+// logs endpoint. No-op when the profile has log export disabled, when the logs breaker is
+// open, or when the trace holds no exportable LLM spans.
+func (p *OtelPlugin) emitLogs(ctx context.Context, t *otelTarget, trace *schemas.Trace) {
+	if t.logClient == nil || t.logBreaker.breakerOpen() {
+		return
+	}
+	resourceLog := p.convertTraceToResourceLogs(t.serviceName, trace, t)
+	if resourceLog == nil {
+		return
+	}
+	emitCtx, cancel := context.WithTimeout(ctx, t.exportTimeout)
+	defer cancel()
+	if err := t.logClient.EmitLogs(emitCtx, []*ResourceLog{resourceLog}); err != nil {
+		t.logBreaker.tripBreaker()
+		if n := t.logBreaker.failedExports.Load(); n == 1 || n%exportLogThrottle == 0 {
+			logger.Error("failed to emit logs for trace %s to %s: %v (%d failed exports so far)", trace.TraceID, t.logsURL, err, n)
+		}
+		return
+	}
+	t.logBreaker.resetBreaker()
+}
+
 // ExportStats reports per-target export health: how many exports failed and how many
 // were suppressed by an open circuit breaker. A rising suppressed count means the
 // target's endpoint is being treated as dead — usually a misconfigured collector URL.
+// Logs, when enabled, are reported separately under their own endpoint since they fail
+// independently of traces.
 func (p *OtelPlugin) ExportStats() map[string]struct{ Failed, Suppressed int64 } {
 	stats := make(map[string]struct{ Failed, Suppressed int64 }, len(p.targets))
 	for _, t := range p.targets {
 		stats[t.url] = struct{ Failed, Suppressed int64 }{
 			Failed:     t.failedExports.Load(),
 			Suppressed: t.suppressedExports.Load(),
+		}
+		if t.logClient == nil {
+			continue
+		}
+		// A profile may point both signals at the same host:port (gRPC), so fold rather
+		// than overwrite when the keys collide.
+		prev := stats[t.logsURL]
+		stats[t.logsURL] = struct{ Failed, Suppressed int64 }{
+			Failed:     prev.Failed + t.logBreaker.failedExports.Load(),
+			Suppressed: prev.Suppressed + t.logBreaker.suppressedExports.Load(),
 		}
 	}
 	return stats
@@ -1244,23 +1370,16 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 }
 
 // Cleanup function for the OTEL plugin. It shuts down every profile's metrics exporter
-// and closes every trace client, returning the first client-close error encountered.
+// and closes every trace and logs client, returning the first client-close error
+// encountered.
 func (p *OtelPlugin) Cleanup() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
 	var firstErr error
 	for _, t := range p.targets {
-		// Shutdown metrics exporter first
-		if t.metricsExporter != nil {
-			if err := t.metricsExporter.Shutdown(context.Background()); err != nil {
-				logger.Error("failed to shutdown metrics exporter: %v", err)
-			}
-		}
-		if t.client != nil {
-			if err := t.client.Close(); err != nil && firstErr == nil {
-				firstErr = err
-			}
+		if err := t.closeClients(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	return firstErr
