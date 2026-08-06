@@ -2,6 +2,7 @@ package otel
 
 import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
@@ -16,6 +17,18 @@ type Span = tracepb.Span
 
 // Event is an event in a span
 type Event = tracepb.Span_Event
+
+// ResourceLog is a set of log records for one resource in the OpenTelemetry format
+type ResourceLog = logspb.ResourceLogs
+
+// ScopeLog is a group of log records emitted by one instrumentation scope
+type ScopeLog = logspb.ScopeLogs
+
+// LogRecord is a single log record (a GenAI event, for this plugin) in the OpenTelemetry format
+type LogRecord = logspb.LogRecord
+
+// SeverityNumber is the numeric severity of a log record
+type SeverityNumber = logspb.SeverityNumber
 
 // KeyValue is a key-value pair in the OpenTelemetry format
 type KeyValue = commonpb.KeyValue
