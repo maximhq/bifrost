@@ -8634,6 +8634,23 @@ func (s *RDBConfigStore) ListOAuth2Sessions(ctx context.Context, params OAuth2Se
 	if len(params.Modes) > 0 {
 		base = base.Where("rt.bf_mode IN ?", params.Modes)
 	}
+	if len(params.VirtualKeyIDs) > 0 || len(params.UserIDs) > 0 {
+		// bf_sub has no dedicated identity column to scope by, so each set is
+		// paired with its own bf_mode = '...' guard and the two groups OR
+		// together — a row matches if it hits either scoped set. Parenthesized
+		// explicitly so this OR group ANDs cleanly with the filters above.
+		var clauses []string
+		var args []any
+		if len(params.VirtualKeyIDs) > 0 {
+			clauses = append(clauses, "(rt.bf_mode = 'vk' AND rt.bf_sub IN ?)")
+			args = append(args, params.VirtualKeyIDs)
+		}
+		if len(params.UserIDs) > 0 {
+			clauses = append(clauses, "(rt.bf_mode = 'user' AND rt.bf_sub IN ?)")
+			args = append(args, params.UserIDs)
+		}
+		base = base.Where(strings.Join(clauses, " OR "), args...)
+	}
 
 	var totalCount int64
 	if err := base.Session(&gorm.Session{}).Count(&totalCount).Error; err != nil {

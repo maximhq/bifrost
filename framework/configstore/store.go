@@ -185,8 +185,14 @@ type MCPSessionsFilterParams struct {
 type OAuth2SessionsQueryParams struct {
 	Search string
 	Modes  []string
-	Limit  int
-	Offset int
+	// VirtualKeyIDs/UserIDs exact-match bf_sub, scoped to rows of the
+	// matching bf_mode (there is no separate identity column to filter on —
+	// bf_sub is a single generic subject disambiguated only by bf_mode). Both
+	// may be set together: a row matches if it hits either scoped set.
+	VirtualKeyIDs []string
+	UserIDs       []string
+	Limit         int
+	Offset        int
 }
 
 // PricingOverrideFilters holds the filters for pricing overrides.
