@@ -31,6 +31,7 @@ import {
 	useVerifyMCPClientHeadersMutation,
 } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
+import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -694,23 +695,25 @@ export default function MCPClientsTable({
 			    reverification reads as the same kind of admin-credential action,
 			    not a destructive one. */}
 			<Dialog
-					open={!!exchangeVerifyClient}
-					onOpenChange={(next) => {
-						// Keep the dialog open (with a spinner) for the duration of the
-						// verify call itself, so there's visible feedback while the
-						// backend does the token exchange + live connect + tools/list
-						// round trip, instead of closing immediately on "Continue" and
-						// leaving nothing on screen until the toast lands.
-						if (!next && !(exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id))) {
-							setExchangeVerifyClient(null);
-						}
-					}}
-				>
+				open={!!exchangeVerifyClient}
+				onOpenChange={(next) => {
+					// Keep the dialog open (with a spinner) for the duration of the
+					// verify call itself, so there's visible feedback while the
+					// backend does the token exchange + live connect + tools/list
+					// round trip, instead of closing immediately on "Continue" and
+					// leaving nothing on screen until the toast lands.
+					if (!next && !(exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id))) {
+						setExchangeVerifyClient(null);
+					}
+				}}
+			>
 				<DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-md">
 					<DialogHeader className="border-b px-5 py-4 text-left">
 						<div className="flex items-start gap-3">
 							<IconWrap
-								variant={exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? "info" : "muted"}
+								variant={
+									exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? "info" : "muted"
+								}
 								icon={
 									exchangeVerifyClient && verifyingExchangeClients.includes(exchangeVerifyClient.config.client_id) ? (
 										<Loader2 className="size-4 animate-spin" />
@@ -734,9 +737,9 @@ export default function MCPClientsTable({
 								<strong>{exchangeVerifyClient?.config.name}</strong>.
 							</p>
 							<p className="text-muted-foreground/80 text-xs">
-								That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests,
-								whose tokens are exchanged automatically on every request. You only need this if the credential badge shows
-								it&apos;s expired, but running it any time is safe.
+								That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
+								are exchanged automatically on every request. You only need this if the credential badge shows it&apos;s expired, but
+								running it any time is safe.
 							</p>
 						</InfoBox>
 						<div className="flex justify-end gap-2">
@@ -842,8 +845,11 @@ export default function MCPClientsTable({
 										tooltip={
 											<>
 												<p>
-													The client's connection state (connected, disconnected, error, and so on). Per-user clients (OAuth, headers, token
-													exchange) hold no shared connection, so this links to sessions instead.
+													The client's connection state (healthy, unstable, needs re-authorization, and so on). "Unstable" reflects
+													Bifrost's own connection checks to the server, not the results of tool calls made through it: it self-heals and
+													never blocks tool calls. For per-user clients (OAuth, headers, token exchange), this reflects Bifrost's own
+													retained admin credential (used only to periodically refresh the tool list), not any individual user's own
+													session, which is unaffected either way.
 												</p>
 												<a
 													data-testid="mcp-client-state-link"
@@ -878,19 +884,14 @@ export default function MCPClientsTable({
 										c.config.auth_type === "per_user_oauth" ||
 										c.config.auth_type === "per_user_headers" ||
 										c.config.auth_type === "token_exchange";
-									// Token-exchange clients hold no per-user session rows (nothing
-									// to view), unlike per_user_oauth/per_user_headers — mirrors
-									// mcpClientSheet.tsx's hasPerUserSessions.
-									const hasPerUserSessions =
-										c.config.auth_type === "per_user_oauth" || c.config.auth_type === "per_user_headers";
 									const enabledToolsCount =
-										c.state == "connected"
+										c.state == "healthy"
 											? c.config.tools_to_execute?.includes("*")
 												? c.tools?.length
 												: (c.config.tools_to_execute?.length ?? 0)
 											: 0;
 									const autoExecuteToolsCount =
-										c.state == "connected"
+										c.state == "healthy"
 											? c.config.tools_to_auto_execute?.includes("*")
 												? c.tools?.length
 												: (c.config.tools_to_auto_execute?.length ?? 0)
@@ -912,10 +913,14 @@ export default function MCPClientsTable({
 											<TableCell>
 												<Badge
 													className={
-														c.state == "connected" ? MCP_STATUS_COLORS[c.config.is_code_mode_client ? "connected" : "disconnected"] : ""
+														c.state == "healthy"
+															? c.config.is_code_mode_client
+																? "bg-green-100 text-green-800"
+																: "bg-gray-100 text-gray-800"
+															: ""
 													}
 												>
-													{c.state == "connected" ? <>{c.config.is_code_mode_client ? "Enabled" : "Disabled"}</> : "-"}
+													{c.state == "healthy" ? <>{c.config.is_code_mode_client ? "Enabled" : "Disabled"}</> : "-"}
 												</Badge>
 											</TableCell>
 											<TableCell data-testid="mcp-client-vk-access">
@@ -926,7 +931,7 @@ export default function MCPClientsTable({
 														: "None"}
 											</TableCell>
 											<TableCell>
-												{c.state == "connected" ? (
+												{c.state == "healthy" ? (
 													<>
 														{enabledToolsCount}/{c.tools?.length}
 													</>
@@ -935,7 +940,7 @@ export default function MCPClientsTable({
 												)}
 											</TableCell>
 											<TableCell>
-												{c.state == "connected" ? (
+												{c.state == "healthy" ? (
 													<>
 														{autoExecuteToolsCount}/{c.tools?.length}
 													</>
@@ -944,35 +949,14 @@ export default function MCPClientsTable({
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
-												{isPerUserAuth && (c.state === "pending_verification" || c.state === "needs_reauth") ? (
-													// pending_verification and needs_reauth are actionable
-													// admin-facing states (bootstrap / repair the retained admin
-													// credential) rather than a live per-caller connection state —
-													// surface just the badge, not the sessions link, since there's
-													// nothing to view yet (unverified) or the link isn't the fix
-													// (repair via the actions menu is).
-													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state.replace(/_/g, " ")}</Badge>
-												) : isPerUserAuth && hasPerUserSessions ? (
-													// Per-user clients never hold a shared upstream connection, so a
-													// connection-state badge here would be misleading: point to the
-													// per-user sessions this client actually has instead.
-													<Link
-														to="/workspace/mcp-sessions"
-														search={{ mcp_client_id: [c.config.client_id] }}
-														className="text-primary text-xs font-medium hover:underline"
-														data-testid={`mcp-client-view-sessions-${c.config.client_id}`}
-													>
-														View sessions
-													</Link>
-												) : isPerUserAuth ? (
-													// Token exchange: no stored sessions to link to, and not in an
-													// actionable state (pending_verification/needs_reauth handled
-													// above), so nothing meaningful to surface: render the same
-													// blank placeholder other empty cells in this table use.
-													<span className="text-muted-foreground">-</span>
-												) : (
-													<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state.replace(/_/g, " ")}</Badge>
-												)}
+												{/* Every state (healthy/unstable/needs_reauth/pending_verification)
+												    now carries a real, meaningful signal for per-user clients too,
+												    the connection checker's periodic admin-discovery check for
+												    per-user auth types, so this is just the badge uniformly,
+												    same as shared clients. Column-header tooltip above explains
+												    that "unstable" reflects Bifrost's own connection checks, not
+												    caller traffic. */}
+												<Badge className={MCP_STATUS_COLORS[c.state]}>{titleCaseFromSnakeCase(c.state)}</Badge>
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<Switch

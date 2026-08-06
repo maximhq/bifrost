@@ -2,6 +2,17 @@ export function capitalize(name: string) {
 	return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
+// titleCaseFromSnakeCase turns a snake_case identifier (e.g. an enum-style
+// state value like "pending_verification") into a title-cased display string
+// (e.g. "Pending Verification"), for rendering in badges, labels, and the like.
+export function titleCaseFromSnakeCase(value: string): string {
+	return value
+		.split("_")
+		.filter(Boolean)
+		.map((word) => capitalize(word.toLowerCase()))
+		.join(" ");
+}
+
 export type TrimmableKeys<T> = { [K in keyof T]: T[K] extends string | string[] | undefined ? K : never }[keyof T];
 
 // trimFields trims whitespace from the named string (or string[]) fields of obj, in place.

@@ -17,7 +17,7 @@ import (
 // alone because clients verified before credential retention existed have
 // no admin row and are healthy.
 func TestProjectPerUserAdminCredentialState(t *testing.T) {
-	connected := schemas.MCPConnectionStateConnected
+	connected := schemas.MCPConnectionStateHealthy
 	needsReauth := schemas.MCPConnectionStateNeedsReauth
 
 	tests := []struct {
