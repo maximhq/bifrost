@@ -37,19 +37,18 @@ const (
 // It provides a bridge between Bifrost and various MCP servers, supporting
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
-	ctx                  context.Context
-	logger               schemas.Logger                     // Logger instance for this manager
-	credStore            schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
-	toolsManager         *ToolsManager                      // Handler for MCP tools
-	server               *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
-	clientMap            map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
-	mu                   sync.RWMutex                       // Read-write mutex for thread-safe operations
-	serverRunning        bool                               // Track whether local MCP server is running
-	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
-	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
-	reconnectingClients  sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
-	bootClientConfigs    []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
-	connectOnce          sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
+	ctx                 context.Context
+	logger              schemas.Logger                     // Logger instance for this manager
+	credStore           schemas.MCPCredentialStore         // Resolves credentials per-call for MCP tool execution
+	toolsManager        *ToolsManager                      // Handler for MCP tools
+	server              *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
+	clientMap           map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
+	mu                  sync.RWMutex                       // Read-write mutex for thread-safe operations
+	serverRunning       bool                               // Track whether local MCP server is running
+	checkerManager      *ConnectionCheckerManager          // Manager for per-client periodic connection checkers (liveness + discovery refresh, drives Healthy/Unstable/NeedsReauth)
+	reconnectingClients sync.Map                           // Tracks in-flight exclusive client operations per client ID (map[string]*inflightClientOp); waiters join via AwaitReconnect
+	bootClientConfigs   []*schemas.MCPClientConfig         // Client configs supplied at construction, dialed by ConnectConfiguredClients
+	connectOnce         sync.Once                          // Ensures ConnectConfiguredClients dials the boot configs exactly once
 
 	// Plugin pipeline access for connect/ping/list_tools hooks. nil-safe — gates short-circuit
 	// to the underlying op when no pipeline is configured. Also used by ToolsManager for the
@@ -102,12 +101,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 	}
 	// Creating new instance
 	manager := &MCPManager{
-		ctx:                  ctx,
-		logger:               logger,
-		clientMap:            make(map[string]*schemas.MCPClientState),
-		healthMonitorManager: NewHealthMonitorManager(),
-		toolSyncManager:      NewToolSyncManager(config.ToolSyncInterval),
-		credStore:            credStore,
+		ctx:            ctx,
+		logger:         logger,
+		clientMap:      make(map[string]*schemas.MCPClientState),
+		checkerManager: NewConnectionCheckerManager(config.ToolSyncInterval),
+		credStore:      credStore,
 	}
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
@@ -152,8 +150,8 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, credStore sche
 // (MCPConfig.ClientConfigs). It is separated from NewMCPManager so the caller can
 // run it only after all plugins are registered, ensuring every PreMCPConnectionHook
 // participates in the connection. Safe to call once after construction; clients are
-// dialed in parallel and a failed client is retained in the Disconnected state with
-// a health monitor that recovers it automatically.
+// dialed in parallel and a failed client is retained in the Unstable state with a
+// connection checker that recovers it automatically.
 func (m *MCPManager) ConnectConfiguredClients(ctx context.Context) {
 	m.connectOnce.Do(func() {
 		m.connectConfiguredClients(ctx)
@@ -178,7 +176,7 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
 			defer wg.Done()
 			if err := m.AddClient(ctx, clientConfig); err != nil {
 				m.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
-				// Retain the entry in Disconnected state and start a health monitor to
+				// Retain the entry in Unstable state and start a connection checker to
 				// recover it automatically. On startup, a connection failure is likely
 				// transient (e.g. autoscaling cold start) — the client was previously
 				// configured and should be recovered without user intervention.
@@ -187,7 +185,7 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
 					m.clientMap[clientConfig.ID] = &schemas.MCPClientState{
 						Name:            clientConfig.Name,
 						ExecutionConfig: clientConfig,
-						State:           schemas.MCPConnectionStateDisconnected,
+						State:           schemas.MCPConnectionStateUnstable,
 						ToolMap:         make(map[string]schemas.ChatTool),
 						ToolNameMapping: make(map[string]string),
 						ConnectionInfo: &schemas.MCPClientConnectionInfo{
@@ -195,15 +193,16 @@ func (m *MCPManager) connectConfiguredClients(ctx context.Context) {
 						},
 					}
 				} else {
-					m.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
+					m.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateUnstable
 				}
 				m.mu.Unlock()
 				isPingAvailable := true
 				if clientConfig.IsPingAvailable != nil {
 					isPingAvailable = *clientConfig.IsPingAvailable
 				}
-				monitor := NewClientHealthMonitor(m, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, m.logger)
-				m.healthMonitorManager.StartMonitoring(monitor)
+				syncInterval := ResolveToolSyncInterval(clientConfig, m.checkerManager.GetGlobalInterval())
+				checker := NewClientConnectionChecker(m, clientConfig.ID, syncInterval, isPingAvailable, m.logger)
+				m.checkerManager.StartChecking(checker)
 			}
 		}(clientConfig)
 	}
@@ -365,11 +364,8 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 // Returns:
 //   - error: Always returns nil, but maintains error interface for consistency
 func (m *MCPManager) Cleanup() error {
-	// Stop all health monitors first
-	m.healthMonitorManager.StopAll()
-
-	// Stop all tool syncers
-	m.toolSyncManager.StopAll()
+	// Stop all connection checkers first
+	m.checkerManager.StopAll()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -56,6 +56,19 @@ var PerCallConnectRetryConfig = RetryConfig{
 	MaxBackoff:     1 * time.Second,
 }
 
+// ProbeRetryConfig backs the periodic connection checker's own
+// heartbeat/list_tools calls (ClientConnectionChecker). Nothing is waiting
+// synchronously on this — it's a background tick — but it now carries more
+// weight than it used to: with no outer consecutive-failure counter behind
+// it, a single check's own retry-with-backoff is what absorbs an ordinary
+// transient blip before the client is marked Unstable at all. Generous
+// enough for that, short of ConnectRetryConfig's full schedule.
+var ProbeRetryConfig = RetryConfig{
+	MaxRetries:     3,
+	InitialBackoff: 500 * time.Millisecond,
+	MaxBackoff:     4 * time.Second,
+}
+
 // ToolCallRetryConfig backs the live tool-call invocation itself
 // (executeToolInternal's CallTool). Deliberately the lightest of the three —
 // a caller is waiting synchronously on this, and unlike a bare connect, the

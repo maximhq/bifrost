@@ -725,10 +725,27 @@ func (t *MCPTLSConfig) MarshalForStorage() ([]byte, error) {
 type MCPConnectionState string
 
 const (
-	MCPConnectionStateConnected           MCPConnectionState = "connected"            // Client is connected and ready to use
-	MCPConnectionStateDisconnected        MCPConnectionState = "disconnected"         // Client is not connected
+	// MCPConnectionStateHealthy means Bifrost's own periodic connection check
+	// (heartbeat/list_tools for sticky clients, list_tools for per-call ones)
+	// most recently succeeded. Replaces the old "connected" state — renamed
+	// because that name implied exactly one shared TCP connection, which
+	// doesn't fit per-call auth types cleanly.
+	MCPConnectionStateHealthy MCPConnectionState = "healthy"
+	// MCPConnectionStateUnstable means Bifrost's own periodic connection check
+	// most recently failed with a transient-classified error. Purely
+	// informational — unlike MCPConnectionStateNeedsReauth, this never gates
+	// execution; tool calls are still attempted normally. Reflects only
+	// Bifrost's own connection checks to the server, never the outcome of
+	// real tool calls made through it, in either direction. Self-heals to
+	// Healthy on the next successful check, no human action implied. Replaces
+	// the old "disconnected" state.
+	MCPConnectionStateUnstable MCPConnectionState = "unstable"
+	// MCPConnectionStateError is a data-consistency fallback used only by the
+	// HTTP client-list handler when a client is registered in the config
+	// store but missing from the runtime manager entirely — a different,
+	// deeper anomaly than anything in the normal connect/health lifecycle
+	// below, which never assigns this value.
 	MCPConnectionStateError               MCPConnectionState = "error"                // Client is in an error state, and cannot be used
-	MCPConnectionStatePendingTools        MCPConnectionState = "pending_tools"        // Connected but tools not yet populated
 	MCPConnectionStatePendingVerification MCPConnectionState = "pending_verification" // Declared (typically via config.json) but the one-time auth/test flow has not been completed by an admin yet
 	MCPConnectionStateDisabled            MCPConnectionState = "disabled"             // Client is intentionally disabled by the user
 	// MCPConnectionStateNeedsReauth means this client was previously authorized and
@@ -740,10 +757,14 @@ const (
 	//   - Shared-connection auth types: the connection credential itself died; the
 	//     upstream OAuth token was rejected/expired with no way to silently recover
 	//     (see ErrOAuth2TokenExpired) and the connection cannot be re-established
-	//     until an admin reauthorizes. The runtime manager holds this state.
+	//     until an admin reauthorizes. The runtime manager holds this state, and
+	//     unlike Unstable, it IS a hard gate: prepareToolExecution refuses tool
+	//     calls outright rather than attempting them against a known-dead
+	//     credential, and the periodic checker goes quiet on this client until
+	//     an explicit reauthorize — no auto-heal.
 	//   - Per-user auth types: a response-only projection computed when listing the
 	//     registry, never stored in the runtime manager (whose state stays
-	//     connected). It means the retained admin credential used for periodic
+	//     healthy). It means the retained admin credential used for periodic
 	//     tool-list discovery needs repair; end-user credentials and tool calls
 	//     keep working, only the tool list stops refreshing until an admin repairs
 	//     the discovery credential.
@@ -760,7 +781,7 @@ type MCPClientState struct {
 	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
 	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State           MCPConnectionState       // Connection state (connected, disconnected, error)
+	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
 	ConnGeneration  uint64                   `json:"-"` // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
 }
 
