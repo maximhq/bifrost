@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -252,6 +253,149 @@ func TestResolveAzureEndpoint_AliasOverride(t *testing.T) {
 	if got := resolveAzureEndpoint(ctx2, key); got != keyEndpoint {
 		t.Errorf("empty alias endpoint should fall through: got %q, want %q", got, keyEndpoint)
 	}
+}
+
+// TestResolvePassthroughAlias verifies that the user-facing alias name is
+// replaced by the key's wire deployment (alias model_id) in both the
+// /deployments/{name} path segment and the top-level "model" body field, so
+// aliased models work through /azure_passthrough. Each retry attempt carries
+// its own key's ResolvedAlias in ctx, which is what lets multiple keys that
+// share an alias load-balance to their own deployments.
+func TestResolvePassthroughAlias(t *testing.T) {
+	t.Parallel()
+
+	const alias = "mistral-ocr-3-0"
+	const deployment = "mistral-document-ai-2512-1-swedencentral-14"
+
+	aliasCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+			Key:    alias,
+			Config: &schemas.AliasConfig{ModelID: deployment},
+		})
+		return ctx
+	}
+
+	t.Run("no resolved alias: path and body unchanged", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"model":"` + alias + `"}`)
+		gotPath, gotBody := resolvePassthroughAlias(nil, "/openai/deployments/"+alias+"/chat/completions", body)
+		if gotPath != "/openai/deployments/"+alias+"/chat/completions" || string(gotBody) != string(body) {
+			t.Errorf("expected no-op, got path=%q body=%s", gotPath, gotBody)
+		}
+		emptyCtx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		gotPath, gotBody = resolvePassthroughAlias(emptyCtx, "/openai/deployments/"+alias+"/chat/completions", body)
+		if gotPath != "/openai/deployments/"+alias+"/chat/completions" || string(gotBody) != string(body) {
+			t.Errorf("expected no-op with empty ctx, got path=%q body=%s", gotPath, gotBody)
+		}
+	})
+
+	t.Run("deployments path segment rewritten", func(t *testing.T) {
+		t.Parallel()
+		gotPath, _ := resolvePassthroughAlias(aliasCtx(), "/openai/deployments/"+alias+"/chat/completions", nil)
+		want := "/openai/deployments/" + deployment + "/chat/completions"
+		if gotPath != want {
+			t.Errorf("\ngot:  %s\nwant: %s", gotPath, want)
+		}
+	})
+
+	t.Run("deployments segment at end of path rewritten", func(t *testing.T) {
+		t.Parallel()
+		gotPath, _ := resolvePassthroughAlias(aliasCtx(), "/openai/deployments/"+alias, nil)
+		if want := "/openai/deployments/" + deployment; gotPath != want {
+			t.Errorf("\ngot:  %s\nwant: %s", gotPath, want)
+		}
+	})
+
+	t.Run("deployments segment case-insensitive match", func(t *testing.T) {
+		t.Parallel()
+		gotPath, _ := resolvePassthroughAlias(aliasCtx(), "/openai/deployments/Mistral-OCR-3-0/embeddings", nil)
+		if want := "/openai/deployments/" + deployment + "/embeddings"; gotPath != want {
+			t.Errorf("\ngot:  %s\nwant: %s", gotPath, want)
+		}
+	})
+
+	t.Run("path with different deployment untouched", func(t *testing.T) {
+		t.Parallel()
+		path := "/openai/deployments/gpt-4o/chat/completions"
+		gotPath, _ := resolvePassthroughAlias(aliasCtx(), path, nil)
+		if gotPath != path {
+			t.Errorf("got %q, want unchanged %q", gotPath, path)
+		}
+	})
+
+	t.Run("body model field rewritten, other fields preserved", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"model":"` + alias + `","document":{"type":"document_url","document_url":"data:application/pdf;base64,AAAA"}}`)
+		_, gotBody := resolvePassthroughAlias(aliasCtx(), "/providers/mistral/azure/ocr", body)
+		var parsed struct {
+			Model    string `json:"model"`
+			Document struct {
+				Type        string `json:"type"`
+				DocumentURL string `json:"document_url"`
+			} `json:"document"`
+		}
+		if err := json.Unmarshal(gotBody, &parsed); err != nil {
+			t.Fatalf("rewritten body is not valid JSON: %v", err)
+		}
+		if parsed.Model != deployment {
+			t.Errorf("model = %q, want %q", parsed.Model, deployment)
+		}
+		if parsed.Document.Type != "document_url" || parsed.Document.DocumentURL != "data:application/pdf;base64,AAAA" {
+			t.Errorf("sibling fields not preserved: %+v", parsed.Document)
+		}
+	})
+
+	t.Run("body with different model untouched", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"model":"gpt-4o"}`)
+		_, gotBody := resolvePassthroughAlias(aliasCtx(), "/openai/v1/chat/completions", body)
+		if string(gotBody) != string(body) {
+			t.Errorf("got %s, want unchanged %s", gotBody, body)
+		}
+	})
+
+	t.Run("body without model field untouched", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"input":"hello"}`)
+		_, gotBody := resolvePassthroughAlias(aliasCtx(), "/openai/v1/embeddings", body)
+		if string(gotBody) != string(body) {
+			t.Errorf("got %s, want unchanged %s", gotBody, body)
+		}
+	})
+
+	// Multipart bodies must not reach sjson.SetBytes: given a non-JSON input it
+	// discards the body and returns a bare {"model":...} object, which would
+	// destroy the uploaded file. The leading-'{' guard is what prevents that.
+	t.Run("multipart body with model form field untouched", func(t *testing.T) {
+		t.Parallel()
+		body := []byte("--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n" +
+			alias + "\r\n--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.mp3\"\r\n\r\nBINARY\r\n--b--")
+		_, gotBody := resolvePassthroughAlias(aliasCtx(), "/openai/deployments/"+alias+"/audio/transcriptions", body)
+		if string(gotBody) != string(body) {
+			t.Errorf("got %s, want unchanged %s", gotBody, body)
+		}
+	})
+
+	t.Run("per-key aliases resolve to their own deployments", func(t *testing.T) {
+		t.Parallel()
+		// Two keys sharing the alias map it to different regional deployments —
+		// the ctx carries the attempt's own resolution, so rotation load-balances.
+		for _, dep := range []string{"mistral-doc-ai-swedencentral", "mistral-doc-ai-eastus"} {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+				Key:    alias,
+				Config: &schemas.AliasConfig{ModelID: dep},
+			})
+			_, gotBody := resolvePassthroughAlias(ctx, "/providers/mistral/azure/ocr", []byte(`{"model":"`+alias+`"}`))
+			var parsed struct {
+				Model string `json:"model"`
+			}
+			if err := json.Unmarshal(gotBody, &parsed); err != nil || parsed.Model != dep {
+				t.Errorf("model = %q (err=%v), want %q", parsed.Model, err, dep)
+			}
+		}
+	})
 }
 
 // TestResolveAnthropicVersion_AliasOverride verifies the AnthropicVersion
