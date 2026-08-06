@@ -21,7 +21,10 @@ import { Info } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
+import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
+import { TLSConfigFields } from "./tlsConfigFields";
+import { TokenExchangeFields } from "./tokenExchangeFields";
 
 interface ClientFormProps {
 	open: boolean;
@@ -269,36 +272,36 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			stdio_config:
 				connectionType === "stdio"
 					? {
-						command: data.stdio_config?.command || "",
-						args: parseArrayFromText(argsText),
-						// Each row becomes KEY=value, or a bare KEY when no value is given
-						// (read from Bifrost's host environment). Rows without a name are skipped.
-						envs: Object.entries(envVars)
-							.filter(([name]) => name.trim() !== "")
-							.map(([name, value]) => {
-								const v = value.trim();
-								return v ? `${name}=${v}` : name;
-							}),
-					}
+							command: data.stdio_config?.command || "",
+							args: parseArrayFromText(argsText),
+							// Each row becomes KEY=value, or a bare KEY when no value is given
+							// (read from Bifrost's host environment). Rows without a name are skipped.
+							envs: Object.entries(envVars)
+								.filter(([name]) => name.trim() !== "")
+								.map(([name, value]) => {
+									const v = value.trim();
+									return v ? `${name}=${v}` : name;
+								}),
+						}
 					: undefined,
 			tls_config: connectionType === "http" || connectionType === "sse" ? buildTLSConfigPayload(data.tls_config) : undefined,
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-						client_id: data.oauth_config?.client_id ?? emptySecretVar,
-						client_secret:
-							data.oauth_config?.client_secret?.value ||
+							client_id: data.oauth_config?.client_id ?? emptySecretVar,
+							client_secret:
+								data.oauth_config?.client_secret?.value ||
 								data.oauth_config?.client_secret?.type === "env" ||
 								data.oauth_config?.client_secret?.type === "vault"
-								? data.oauth_config.client_secret
-								: undefined,
-						authorize_url: data.oauth_config?.authorize_url || undefined,
-						token_url: data.oauth_config?.token_url || undefined,
-						registration_url: data.oauth_config?.registration_url || undefined,
-						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
-						server_url: data.connection_string?.value || undefined,
-						resource: resourceText.trim() || undefined,
-					}
+									? data.oauth_config.client_secret
+									: undefined,
+							authorize_url: data.oauth_config?.authorize_url || undefined,
+							token_url: data.oauth_config?.token_url || undefined,
+							registration_url: data.oauth_config?.registration_url || undefined,
+							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+							server_url: data.connection_string?.value || undefined,
+							resource: resourceText.trim() || undefined,
+						}
 					: undefined,
 			// "headers" and "per_user_headers" both can carry static admin
 			// headers on data.headers (per-user values are submitted
@@ -311,17 +314,17 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			token_exchange:
 				authType === "token_exchange"
 					? {
-						audience: data.token_exchange?.audience?.trim() || "",
-						client_id: data.token_exchange?.client_id ?? emptySecretVar,
-						client_secret:
-							data.token_exchange?.client_secret?.value ||
+							audience: data.token_exchange?.audience?.trim() || "",
+							client_id: data.token_exchange?.client_id ?? emptySecretVar,
+							client_secret:
+								data.token_exchange?.client_secret?.value ||
 								data.token_exchange?.client_secret?.type === "env" ||
 								data.token_exchange?.client_secret?.type === "vault"
-								? data.token_exchange.client_secret
-								: undefined,
-						scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
-						authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
-					}
+									? data.token_exchange.client_secret
+									: undefined,
+							scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
+							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+						}
 					: undefined,
 			tools_to_execute: ["*"],
 		};
@@ -610,7 +613,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											    tool use via the inline auth landing page. */}
 											<div className="space-y-1">
 												<div className="space-y-0.5">
-													<div className="text-sm font-medium">Required Headers</div>
+													<Label htmlFor="per-user-header-keys">Required Headers</Label>
 													<p className="text-muted-foreground text-sm">
 														Comma-separated list of header names each caller must supply when they first use this server (e.g.{" "}
 														<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user - never stored on this server config.
@@ -657,151 +660,66 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									)}
 
 									{authType === "token_exchange" && (
-										<div className="space-y-4" data-testid="token-exchange-fields">
-											<p className="text-muted-foreground text-sm">
-												Each caller's identity token is exchanged automatically for a short-lived token scoped to this server - users never
-												authenticate to it individually, and this server connects per tool call instead of holding a shared connection.
-												Callers must authenticate with their identity provider token; virtual keys alone cannot use this server. Creating
-												the server verifies it as you, using your own signed-in identity.
-											</p>
-											<FormField
+										<div data-testid="token-exchange-fields">
+											<TokenExchangeFields
 												control={control}
-												name="token_exchange.audience"
-												render={({ field }) => (
-													<FormItem>
-														<div className="flex items-center gap-2">
-															<FormLabel>Audience</FormLabel>
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-																	</TooltipTrigger>
-																	<TooltipContent className="max-w-xs">
-																		<p>
-																			The resource identifier this server is registered as at your identity provider. Exchanged tokens are
-																			scoped to it.
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														</div>
-														<FormControl>
-															<Input
-																data-testid="token-exchange-audience-input"
-																placeholder="api://my-mcp-server"
-																value={field.value || ""}
-																onChange={(e) => {
-																	field.onChange(e.target.value);
-																	clearErrors("token_exchange.audience");
-																}}
-															/>
-														</FormControl>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
-											<FormField
-												control={control}
-												name="token_exchange.client_id"
-												render={({ field }) => (
-													<FormItem>
-														<div className="flex items-center gap-2">
-															<FormLabel>Exchange Client ID</FormLabel>
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-																	</TooltipTrigger>
-																	<TooltipContent className="max-w-xs">
-																		<p>
-																			A dedicated application at your identity provider with the token exchange (or on-behalf-of) grant
-																			enabled and permission to request this audience. Not the SSO login application.
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														</div>
-														<SecretVarInput
-															value={field.value}
-															onChange={(value) => {
-																field.onChange(value);
-																clearErrors("token_exchange.client_id");
-															}}
-															placeholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
-															data-testid="token-exchange-client-id-input"
-														/>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
-											<FormField
-												control={control}
-												name="token_exchange.client_secret"
-												render={({ field }) => (
-													<FormItem>
-														<FormLabel>Exchange Client Secret (optional)</FormLabel>
-														<SecretVarInput
-															value={field.value}
-															onChange={field.onChange}
-															placeholder="env.EXCHANGE_CLIENT_SECRET"
-															maskNonEnvValue
-															data-testid="token-exchange-client-secret-input"
-														/>
-														<p className="text-muted-foreground text-xs">Omit for public clients.</p>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
-											<FormField
-												control={control}
-												name="token_exchange.authorization_server_url"
-												render={({ field }) => (
-													<FormItem>
-														<div className="flex items-center gap-2">
-															<FormLabel>Authorization Server URL (optional)</FormLabel>
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-																	</TooltipTrigger>
-																	<TooltipContent className="max-w-xs">
-																		<p>
-																			Only needed when the audience above is registered on a different authorization server than the one
-																			your SSO login uses - for example, Okta&apos;s per-resource Custom Authorization Servers. Leave blank
-																			to use your SSO login&apos;s issuer, which is correct for most providers.
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														</div>
-														<FormControl>
-															<Input
-																data-testid="token-exchange-authorization-server-url-input"
-																placeholder="https://your-domain.okta.com/oauth2/your-auth-server-id"
-																value={field.value || ""}
-																onChange={(e) => field.onChange(e.target.value)}
-															/>
-														</FormControl>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
-											<div className="space-y-1">
-												<div className="space-y-0.5">
-													<div className="text-sm font-medium">Scopes (optional)</div>
+												beforeFields={
 													<p className="text-muted-foreground text-sm">
-														Comma-separated scopes to request on exchanged tokens. Include <code>offline_access</code> (where your identity
-														provider supports it) so the retained discovery credential can renew itself in the background.
+														Each caller's identity token is exchanged automatically for a short-lived token scoped to this server - users
+														never authenticate to it individually, and this server connects per tool call instead of holding a shared
+														connection. Callers must authenticate with their identity provider token; virtual keys alone cannot use this
+														server. Creating the server verifies it as you, using your own signed-in identity.
 													</p>
-												</div>
-												<Textarea
-													data-testid="token-exchange-scopes-textarea"
-													className="h-20"
-													placeholder="jira.read, jira.write, offline_access"
-													value={tokenExchangeScopesText}
-													onChange={(e) => setTokenExchangeScopesText(e.target.value)}
-												/>
-											</div>
+												}
+												gridClassName="space-y-4"
+												audienceLabel={
+													<>
+														Audience <span className="text-destructive">*</span>
+													</>
+												}
+												audienceTooltip="The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
+												audienceTestId="token-exchange-audience-input"
+												onAudienceTouched={() => clearErrors("token_exchange.audience")}
+												clientIdLabel={
+													<>
+														Exchange Client ID <span className="text-destructive">*</span>
+													</>
+												}
+												clientIdTooltip="A dedicated application at your identity provider with the token exchange (or on-behalf-of) grant enabled and permission to request this audience. Not the SSO login application."
+												clientIdPlaceholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
+												clientIdTestId="token-exchange-client-id-input"
+												onClientIdTouched={() => clearErrors("token_exchange.client_id")}
+												clientIdRedactNonEnvValue={false}
+												clientSecretLabel="Exchange Client Secret (optional)"
+												clientSecretPlaceholder="env.EXCHANGE_CLIENT_SECRET"
+												clientSecretHelperText="Omit for public clients."
+												clientSecretTestId="token-exchange-client-secret-input"
+												clientSecretHideValueWhenEnv={false}
+												clientSecretMaskNonEnvValue={true}
+												clientSecretRedactNonEnvValue={false}
+												authServerUrlLabel="Authorization Server URL (optional)"
+												authServerUrlTooltip={
+													<>
+														Only needed when the audience above is registered on a different authorization server than the one your SSO
+														login uses - for example, Okta&apos;s per-resource Custom Authorization Servers. Leave blank to use your SSO
+														login&apos;s issuer, which is correct for most providers.
+													</>
+												}
+												authServerUrlTestId="token-exchange-authorization-server-url-input"
+												scopes={{
+													variant: "textarea",
+													value: tokenExchangeScopesText,
+													onChange: setTokenExchangeScopesText,
+													label: "Scopes (optional)",
+													helperText: (
+														<>
+															Comma-separated scopes to request on exchanged tokens. Include <code>offline_access</code> (where your
+															identity provider supports it) so the retained discovery credential can renew itself in the background.
+														</>
+													),
+													testId: "token-exchange-scopes-textarea",
+												}}
+											/>
 										</div>
 									)}
 
@@ -811,161 +729,33 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 												<AccordionTrigger className="py-0" data-testid="oauth-advanced-trigger">
 													<span className="text-sm font-medium">OAuth Client Advanced Settings</span>
 												</AccordionTrigger>
-												<AccordionContent className="space-y-4 pt-4 pb-0">
-													{/* OAuth Client ID */}
-													<FormField
+												<AccordionContent className="pt-4 pb-0">
+													<OAuthAdvancedFields
 														control={control}
-														name="oauth_config.client_id"
-														render={({ field }) => (
-															<FormItem>
-																<div className="flex items-center gap-2">
-																	<FormLabel>OAuth Client ID (optional)</FormLabel>
-																	<TooltipProvider>
-																		<Tooltip>
-																			<TooltipTrigger asChild>
-																				<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-																			</TooltipTrigger>
-																			<TooltipContent className="max-w-xs">
-																				<p>
-																					Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register
-																					with the OAuth provider if supported.
-																				</p>
-																			</TooltipContent>
-																		</Tooltip>
-																	</TooltipProvider>
-																</div>
-																<FormControl>
-																	<SecretVarInput
-																		value={field.value}
-																		onChange={field.onChange}
-																		placeholder="your-client-id (auto-generated if empty)"
-																		data-testid="mcp-oauth-client-id"
-																	/>
-																</FormControl>
-																<p className="text-muted-foreground text-xs">
-																	Will be auto-generated via dynamic registration if left empty and provider supports it
-																</p>
-																<FormMessage />
-															</FormItem>
-														)}
+														scopesRaw={scopesText}
+														onScopesRawChange={setScopesText}
+														scopesLabel="Scopes (optional, comma-separated)"
+														scopesTestId="mcp-oauth-scopes-input"
+														resource={{ mode: "raw", value: resourceText, onChange: setResourceText }}
+														resourceLabel="Resource"
+														resourceTestId="mcp-oauth-resource-input"
+														clientIdLabel="OAuth Client ID (optional)"
+														clientIdPlaceholder="your-client-id (auto-generated if empty)"
+														clientIdHelperText="Will be auto-generated via dynamic registration if left empty and provider supports it"
+														clientIdTooltip="Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register with the OAuth provider if supported."
+														clientIdTestId="mcp-oauth-client-id"
+														clientSecretLabel="OAuth Client Secret (optional for PKCE)"
+														clientSecretPlaceholder="your-client-secret"
+														clientSecretHelperText="Leave empty for public clients using PKCE"
+														clientSecretTestId="mcp-oauth-client-secret"
+														authorizeUrlLabel="Authorization URL (optional, auto-discovered)"
+														authorizeUrlTestId="mcp-oauth-authorize-url"
+														tokenUrlLabel="Token URL (optional, auto-discovered)"
+														tokenUrlTestId="mcp-oauth-token-url"
+														registrationUrlLabel="Registration URL (optional, auto-discovered)"
+														registrationUrlTestId="mcp-oauth-registration-url"
+														onFieldTouched={(field) => clearErrors(`oauth_config.${field}`)}
 													/>
-
-													{/* OAuth Client Secret */}
-													<FormField
-														control={control}
-														name="oauth_config.client_secret"
-														render={({ field }) => (
-															<FormItem>
-																<FormLabel>OAuth Client Secret (optional for PKCE)</FormLabel>
-																<FormControl>
-																	<SecretVarInput
-																		value={field.value}
-																		onChange={field.onChange}
-																		placeholder="your-client-secret"
-																		hideValueWhenEnv
-																		maskNonEnvValue
-																		data-testid="mcp-oauth-client-secret"
-																	/>
-																</FormControl>
-																<p className="text-muted-foreground text-xs">Leave empty for public clients using PKCE</p>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
-
-													{/* OAuth Authorize URL */}
-													<FormField
-														control={control}
-														name="oauth_config.authorize_url"
-														render={({ field }) => (
-															<FormItem>
-																<FormLabel>Authorization URL (optional, auto-discovered)</FormLabel>
-																<FormControl>
-																	<Input
-																		{...field}
-																		value={field.value ?? ""}
-																		onChange={(e) => {
-																			field.onChange(e);
-																			clearErrors("oauth_config.authorize_url");
-																		}}
-																		placeholder="https://provider.com/oauth/authorize"
-																		data-testid="mcp-oauth-authorize-url"
-																	/>
-																</FormControl>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
-
-													{/* OAuth Token URL */}
-													<FormField
-														control={control}
-														name="oauth_config.token_url"
-														render={({ field }) => (
-															<FormItem>
-																<FormLabel>Token URL (optional, auto-discovered)</FormLabel>
-																<FormControl>
-																	<Input
-																		{...field}
-																		value={field.value ?? ""}
-																		onChange={(e) => {
-																			field.onChange(e);
-																			clearErrors("oauth_config.token_url");
-																		}}
-																		placeholder="https://provider.com/oauth/token"
-																		data-testid="mcp-oauth-token-url"
-																	/>
-																</FormControl>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
-
-													{/* OAuth Registration URL */}
-													<FormField
-														control={control}
-														name="oauth_config.registration_url"
-														render={({ field }) => (
-															<FormItem>
-																<FormLabel>Registration URL (optional, auto-discovered)</FormLabel>
-																<FormControl>
-																	<Input
-																		{...field}
-																		value={field.value ?? ""}
-																		onChange={(e) => {
-																			field.onChange(e);
-																			clearErrors("oauth_config.registration_url");
-																		}}
-																		placeholder="https://provider.com/oauth/register"
-																		data-testid="mcp-oauth-registration-url"
-																	/>
-																</FormControl>
-																<FormMessage />
-															</FormItem>
-														)}
-													/>
-
-													{/* Scopes (local state, not RHF field) */}
-													<div className="space-y-2">
-														<Label>Scopes (optional, comma-separated)</Label>
-														<Input
-															value={scopesText}
-															onChange={(e) => setScopesText(e.target.value)}
-															placeholder="read, write, admin"
-															data-testid="mcp-oauth-scopes-input"
-														/>
-													</div>
-
-													{/* OAuth Resource Indicator (local state, not RHF field) */}
-													<div className="space-y-2">
-														<Label>Resource</Label>
-														<Input
-															value={resourceText}
-															onChange={(e) => setResourceText(e.target.value)}
-															placeholder="https://provider.example.com/mcp or urn:example:mcp"
-															data-testid="mcp-oauth-resource-input"
-														/>
-													</div>
 												</AccordionContent>
 											</AccordionItem>
 										</Accordion>
@@ -978,54 +768,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 												<span className="text-sm font-medium">TLS / Certificate</span>
 											</AccordionTrigger>
 											<AccordionContent className="space-y-4 pt-4 pb-0">
-												<FormField
-													control={control}
-													name="tls_config.insecure_skip_verify"
-													render={({ field }) => (
-														<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-															<div className="space-y-0.5">
-																<FormLabel>Skip TLS verification</FormLabel>
-																<p className="text-muted-foreground text-sm">
-																	Disable TLS certificate verification. Use only in trusted isolated environments. Takes priority over CA
-																	certificate.
-																</p>
-															</div>
-															<FormControl>
-																<Switch
-																	checked={field.value ?? false}
-																	onCheckedChange={field.onChange}
-																	data-testid="mcp-tls-insecure-skip-verify"
-																/>
-															</FormControl>
-														</FormItem>
-													)}
-												/>
-												<FormField
-													control={control}
-													name="tls_config.ca_cert_pem"
-													render={({ field }) => (
-														<FormItem>
-															<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
-															<FormControl>
-																<SecretVarInput
-																	variant="textarea"
-																	placeholder={`-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE----- or env.MCP_CA_CERT_PEM`}
-																	className="font-mono text-xs"
-																	rows={6}
-																	hideValueWhenEnv
-																	redactNonEnvValue
-																	{...field}
-																	value={field.value}
-																	data-testid="mcp-tls-ca-cert-pem"
-																/>
-															</FormControl>
-															<p className="text-muted-foreground text-sm">
-																PEM-encoded CA certificate to trust for MCP server connections (e.g. self-signed or private CA).
-															</p>
-															<FormMessage />
-														</FormItem>
-													)}
-												/>
+												<TLSConfigFields control={control} />
 											</AccordionContent>
 										</AccordionItem>
 									</Accordion>
@@ -1074,8 +817,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 									{/* Args (local state) */}
 									<div className="space-y-2">
-										<Label>Arguments (comma-separated)</Label>
+										<Label htmlFor="stdio-args-input">Arguments (comma-separated)</Label>
 										<Input
+											id="stdio-args-input"
 											value={argsText}
 											onChange={(e) => setArgsText(e.target.value)}
 											placeholder="--port, 3000, --config, config.json"
@@ -1084,9 +828,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									</div>
 
 									{/* Envs (local state) */}
-									<div className="space-y-2">
+									<div className="space-y-2" role="group" aria-labelledby="stdio-envs-label">
 										<div className="flex items-center gap-2">
-											<Label>Environment Variables</Label>
+											<Label id="stdio-envs-label">Environment Variables</Label>
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild>
