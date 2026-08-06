@@ -724,8 +724,25 @@ func (m *ToolsManager) executeToolInternal(
 		},
 	}
 
+	// ToolCallRetryConfig, not ConnectRetryConfig/PerCallConnectRetryConfig:
+	// unlike a bare connect, this call may not be idempotent, so it only gets
+	// a couple of quick, latency-conscious attempts. isTransientToolCallError
+	// (ToolCallRetryConfig's configured classifier) already treats
+	// 401/403/unauthorized/forbidden as non-retryable — those fail
+	// immediately here with zero retries and fall through to the
+	// isAuthFailureErrorText handling below unchanged.
 	toolCallStart := time.Now()
-	toolResponse, callErr := clientConn.CallTool(toolCtx, callRequest)
+	var toolResponse *mcp.CallToolResult
+	callErr := ExecuteWithRetry(
+		toolCtx,
+		func() error {
+			var err error
+			toolResponse, err = clientConn.CallTool(toolCtx, callRequest)
+			return err
+		},
+		ToolCallRetryConfig,
+		m.logger,
+	)
 	schemas.AddUpstreamLatency(ctx, time.Since(toolCallStart))
 	if callErr != nil {
 		// Sentinel-wrapped so the gate can classify error.type (timeout vs tool_error).
