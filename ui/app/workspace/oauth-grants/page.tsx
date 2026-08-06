@@ -17,6 +17,8 @@ export default function OAuthGrantsPage() {
 		{
 			q: parseAsString.withDefault(""),
 			bf_mode: parseAsArrayOf(parseAsString).withDefault([]),
+			virtual_key_id: parseAsArrayOf(parseAsString).withDefault([]),
+			user_id: parseAsArrayOf(parseAsString).withDefault([]),
 			offset: parseAsInteger.withDefault(0),
 		},
 		{ history: "push" },
@@ -24,11 +26,19 @@ export default function OAuthGrantsPage() {
 
 	const debouncedSearch = useDebouncedValue(urlState.q, 300);
 
-	const filters: OAuthGrantFilters = useMemo(() => ({ mode: urlState.bf_mode }), [urlState.bf_mode]);
+	const filters: OAuthGrantFilters = useMemo(
+		() => ({ mode: urlState.bf_mode, virtual_key_id: urlState.virtual_key_id, user_id: urlState.user_id }),
+		[urlState.bf_mode, urlState.virtual_key_id, urlState.user_id],
+	);
 
 	const setFilters = useCallback(
 		(newFilters: OAuthGrantFilters) => {
-			void setUrlState({ bf_mode: newFilters.mode.length ? newFilters.mode : null, offset: 0 });
+			void setUrlState({
+				bf_mode: newFilters.mode.length ? newFilters.mode : null,
+				virtual_key_id: newFilters.virtual_key_id.length ? newFilters.virtual_key_id : null,
+				user_id: newFilters.user_id.length ? newFilters.user_id : null,
+				offset: 0,
+			});
 		},
 		[setUrlState],
 	);
@@ -36,6 +46,8 @@ export default function OAuthGrantsPage() {
 	const { data, isLoading, isFetching, isError, error } = useGetOAuth2GrantsQuery({
 		q: debouncedSearch || undefined,
 		bf_mode: filters.mode.length ? filters.mode : undefined,
+		virtual_key_id: filters.virtual_key_id.length ? filters.virtual_key_id : undefined,
+		user_id: filters.user_id.length ? filters.user_id : undefined,
 		limit: PAGE_SIZE,
 		offset: urlState.offset,
 	});
@@ -46,7 +58,7 @@ export default function OAuthGrantsPage() {
 
 	const page = data?.sessions ?? [];
 	const totalCount = data?.total_count ?? 0;
-	const hasActiveFilters = !!urlState.q || filters.mode.length > 0;
+	const hasActiveFilters = !!urlState.q || filters.mode.length > 0 || filters.virtual_key_id.length > 0 || filters.user_id.length > 0;
 
 	// Snap the offset back into range when the total shrinks past the current
 	// page (e.g. a revoke removes the last row on the last page). Without this
