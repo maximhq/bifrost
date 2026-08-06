@@ -92,9 +92,24 @@ parse_args() {
                     exit 1
                 fi
                 ;;
+            --migrate-only|-migrate-only)
+                export BIFROST_MIGRATE_ONLY=1
+                shift
+                ;;
+            --no-migrate|-no-migrate)
+                export BIFROST_NO_MIGRATE=1
+                shift
+                ;;
+            --matview-refresh-only|-matview-refresh-only)
+                export BIFROST_MATVIEW_REFRESH_ONLY=1
+                shift
+                ;;
             *)
-                # Keep other arguments for the main application
-                set -- "$@" "$1"
+                # Ignore anything else (including the default CMD /app/main):
+                # the exec below passes an explicit, fixed argument list, so
+                # unrecognized args were never forwarded. The previous
+                # rotate-and-shift (`set -- "$@" "$1"; shift`) kept $# constant
+                # and looped forever on any unrecognized argument.
                 shift
                 ;;
         esac
@@ -102,9 +117,22 @@ parse_args() {
 }
 
 # Parse arguments if any are provided
-if [ $# -gt 1 ]; then
+if [ $# -gt 0 ]; then
     parse_args "$@"
 fi
 
+# Migration flags via env vars so k8s Jobs/Deployments can toggle them
+# without overriding the container command.
+EXTRA_ARGS=""
+case "$BIFROST_MIGRATE_ONLY" in
+    1|true|TRUE|True) EXTRA_ARGS="$EXTRA_ARGS --migrate-only" ;;
+esac
+case "$BIFROST_NO_MIGRATE" in
+    1|true|TRUE|True) EXTRA_ARGS="$EXTRA_ARGS --no-migrate" ;;
+esac
+case "$BIFROST_MATVIEW_REFRESH_ONLY" in
+    1|true|TRUE|True) EXTRA_ARGS="$EXTRA_ARGS --matview-refresh-only" ;;
+esac
+
 # Build the command with environment variables and standard arguments
-exec /app/main -app-dir "$APP_DIR" -port "$APP_PORT" -host "$APP_HOST" -log-level "$LOG_LEVEL" -log-style "$LOG_STYLE"
+exec /app/main -app-dir "$APP_DIR" -port "$APP_PORT" -host "$APP_HOST" -log-level "$LOG_LEVEL" -log-style "$LOG_STYLE" $EXTRA_ARGS

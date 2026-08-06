@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/postgresconn"
 
 	"gorm.io/gorm"
@@ -22,7 +23,10 @@ type PostgresConfig struct {
 	// interval mostly affects how quickly idle clusters notice the rolling
 	// 30-day filter window has aged. Set "off" (or any non-positive duration)
 	// to disable materialized-view maintenance entirely: views are neither
-	// created nor refreshed and dashboard queries use the raw tables.
+	// created nor refreshed and dashboard queries use the raw tables. Set
+	// "manual" to keep the views — created, repaired, and refreshed once at
+	// boot — but leave the recurring refresh to an out-of-band job (a
+	// --matview-refresh-only CronJob, pg_cron).
 	MatViewRefreshInterval string `json:"matview_refresh_interval,omitempty"`
 
 	// MatViewRefreshTimeout bounds a single refresh pass. A refresh holds a pooled
@@ -49,6 +53,14 @@ const defaultMatViewRefreshInterval = time.Minute
 // this is clamped up. The activity-gate skip would mostly absorb the damage,
 // but the floor stops misconfig from becoming a foot-gun.
 const minMatViewRefreshInterval = 5 * time.Second
+
+// matViewRefreshManual is the sentinel resolveMatViewRefreshInterval returns for
+// matview_refresh_interval: "manual" — views are created, repaired, and refreshed
+// once at boot, then left to an out-of-band refresher. It has to be distinct from
+// 0 ("off"), which skips view maintenance entirely and keeps the read path on the
+// raw tables. Parsed durations can never collide with it: any non-positive
+// duration already resolves to 0.
+const matViewRefreshManual = time.Duration(-1)
 
 // matview refresh timeout bounds. A tick that outlives its budget is cancelled so
 // the pooled connection and the session advisory lock are released; the next tick
@@ -102,7 +114,8 @@ func resolveMatViewRefreshTimeout(raw string, interval time.Duration, logger sch
 
 // resolveMatViewRefreshInterval parses the configured duration string with
 // fallback + clamp. Logs a warning on a bad string so misconfig is noticed.
-// Returns 0 when maintenance is disabled ("off" or a non-positive duration).
+// Returns 0 when maintenance is disabled ("off" or a non-positive duration),
+// and matViewRefreshManual for "manual" (views maintained, no periodic refresh).
 func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Duration {
 	if raw == "" {
 		return defaultMatViewRefreshInterval
@@ -111,9 +124,13 @@ func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Durat
 		logger.Info("logstore: matview maintenance disabled via config")
 		return 0
 	}
+	if raw == "manual" {
+		logger.Info("logstore: periodic matview refresh disabled via config; views are maintained but refreshed out of band")
+		return matViewRefreshManual
+	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("logstore: invalid matview_refresh_interval %q (%s); using default %s", raw, err, defaultMatViewRefreshInterval))
+		logger.Warn("logstore: invalid matview_refresh_interval %q (%v); using default %s", raw, err, defaultMatViewRefreshInterval)
 		return defaultMatViewRefreshInterval
 	}
 	if d <= 0 {
@@ -121,10 +138,10 @@ func resolveMatViewRefreshInterval(raw string, logger schemas.Logger) time.Durat
 		return 0
 	}
 	if d < minMatViewRefreshInterval {
-		logger.Warn(fmt.Sprintf("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval))
+		logger.Warn("logstore: matview_refresh_interval %s is below floor %s; clamping to %s", d, minMatViewRefreshInterval, minMatViewRefreshInterval)
 		return minMatViewRefreshInterval
 	}
-	logger.Info(fmt.Sprintf("logstore: matview refresh interval set to %s", d))
+	logger.Info("logstore: matview refresh interval set to %s", d)
 	return d
 }
 
@@ -227,13 +244,14 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	}
 	logger.Info("logstore: runtime connection pool ready")
 	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
-	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0}
+	// Only "off" (0) disables maintenance; "manual" still owns the views and so
+	// must keep self-heal armed.
+	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval == 0}
 
-	// Run all index builds sequentially in a single goroutine to prevent
-	// deadlocks from concurrent CREATE INDEX CONCURRENTLY on the same table.
-	// Each function is idempotent and acquires its own advisory lock for
-	// cross-node serialization. Running in a goroutine avoids blocking pod startup.
-	go func() {
+	// Run all index builds sequentially to prevent deadlocks from concurrent
+	// CREATE INDEX CONCURRENTLY on the same table. Each function is idempotent
+	// and the advisory lock serializes builds across cluster nodes.
+	runIndexMaintenance := func() {
 		if db.Dialector.Name() != "postgres" {
 			return
 		}
@@ -241,45 +259,72 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		lock, err := acquireIndexLock(context.Background(), db, logger)
 		if err != nil {
 			// Lock is taken by another node, so we will skip the index build
+			logger.Warn("logstore: skipping index maintenance, could not acquire index lock: %v", err)
 			return
 		}
 		defer lock.release(context.Background())
 
 		if err := ensureMetadataGINIndex(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: metadata GIN index build failed: %s (queries will still work without the index)", err))
+			logger.Warn("logstore: metadata GIN index build failed: %v (queries will still work without the index)", err)
 		} else {
 			logger.Info("logstore: metadata GIN index is ready")
 		}
 
 		if err := ensureMultiTeamBusinessUnitGINIndexes(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: team/business-unit GIN index build failed: %s (filtering will still work without the index)", err))
+			logger.Warn("logstore: team/business-unit GIN index build failed: %v (filtering will still work without the index)", err)
 		} else {
 			logger.Info("logstore: team/business-unit GIN indexes are ready")
 		}
 
 		if err := ensureDashboardEnhancements(context.Background(), lock.conn); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: dashboard enhancements failed: %s (dashboard will still work with partial data)", err))
+			logger.Warn("logstore: dashboard enhancements failed: %v (dashboard will still work with partial data)", err)
 		} else {
 			logger.Info("logstore: dashboard enhancements completed")
 		}
 
 		if err := ensurePerformanceIndexes(context.Background(), lock.conn, logger); err != nil {
-			logger.Warn(fmt.Sprintf("logstore: performance index build failed: %s (queries will still work without the indexes)", err))
+			logger.Warn("logstore: performance index build failed: %v (queries will still work without the indexes)", err)
 		} else {
 			logger.Info("logstore: performance indexes are ready")
 		}
-	}()
+	}
 
-	// Create materialized views and start periodic refresh for dashboard queries.
-	go func() {
-		if db.Dialector.Name() != "postgres" || refreshInterval <= 0 {
+	switch {
+	case migrator.SkipStartupMigrations():
+		// Server pods started with --no-migrate — and the --matview-refresh-only
+		// cron, which implies it — leave index maintenance to the out-of-band
+		// --migrate-only job. Checked before OneShotMaintenance so a matview
+		// refresh job doesn't re-run index maintenance on every tick.
+		logger.Info("logstore: --no-migrate set; skipping index maintenance (owned by the --migrate-only job)")
+	case migrator.OneShotMaintenance():
+		// One-shot migration job owns index maintenance: run it synchronously
+		// so the process doesn't exit mid-CREATE INDEX CONCURRENTLY (a killed
+		// build leaves an INVALID index behind for the next run to rebuild).
+		logger.Info("logstore: running index maintenance synchronously (--migrate-only)")
+		runIndexMaintenance()
+	default:
+		// Default single-process mode: build in the background so index work
+		// never blocks startup.
+		go runIndexMaintenance()
+	}
+
+	// Create materialized views, run one initial refresh, and start the periodic
+	// refresher for dashboard queries — unless the refresher is disabled.
+	runMatViewBoot := func() {
+		if db.Dialector.Name() != "postgres" || refreshInterval == 0 {
 			return
 		}
 		if err := ensureMatViews(context.Background(), db); err != nil {
 			logger.Warn(fmt.Sprintf("logstore: matview creation failed: %s (dashboard queries will use raw tables)", err))
 			return
 		}
-		refreshTimeout := resolveMatViewRefreshTimeout(config.MatViewRefreshTimeout, refreshInterval, logger)
+		// "manual" has no cadence to size a per-pass budget from, so derive the
+		// timeout from the default interval instead of the sentinel.
+		timeoutBasis := refreshInterval
+		if timeoutBasis == matViewRefreshManual {
+			timeoutBasis = defaultMatViewRefreshInterval
+		}
+		refreshTimeout := resolveMatViewRefreshTimeout(config.MatViewRefreshTimeout, timeoutBasis, logger)
 
 		// The initial refresh gets the same budget as a periodic tick; on a large
 		// logs table it can be slow, and it must not hold the advisory lock forever.
@@ -294,8 +339,23 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 			// canUseMatView() returns false so all queries use raw tables.
 			d.matViewsReady.Store(true)
 		}
+		if migrator.OneShotMaintenance() {
+			// One-shot job: the ensure + refresh above is the whole job, no ticker.
+			return
+		}
+		if refreshInterval == matViewRefreshManual {
+			logger.Info("logstore: periodic matview refresh disabled (matview_refresh_interval=manual); refresh out of band, e.g. a --matview-refresh-only job or pg_cron")
+			return
+		}
 		startMatViewRefresher(context.Background(), db, refreshInterval, refreshTimeout, logger, &d.matViewsReady)
-	}()
+	}
+	if migrator.OneShotMaintenance() {
+		// Run synchronously so the one-shot process finishes the pass before
+		// exiting instead of being killed mid-DDL when the store closes.
+		runMatViewBoot()
+	} else {
+		go runMatViewBoot()
+	}
 
 	return d, nil
 }
