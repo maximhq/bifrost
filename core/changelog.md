@@ -1,3 +1,5 @@
+- fix: carry tool-result `is_error` across the chat/Responses mux in both directions, and stop the unmarshal reattach gate from dropping a tool message that marks a failure without a `tool_call_id` (#5890)
+- fix: mark failed MCP tool executions as errors instead of replaying them to the model as successful results - covers agent-loop execution errors, the MCP protocol's own `isError` flag which was previously discarded, and CodeMode lookup/sandbox failures (#5890)
 - fix: carry tool-result `is_error` through the chat completions surface so Anthropic replay and Bedrock Converse status reflect failed tool calls [@AidanAllchin](https://github.com/AidanAllchin)
 - fix: preserve encrypted reasoning as a Bedrock replay signature when translating Responses history [@zachgersh](https://github.com/zachgersh)
 - feat: add proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)

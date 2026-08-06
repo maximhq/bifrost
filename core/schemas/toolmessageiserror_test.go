@@ -65,3 +65,30 @@ func TestChatMessageIsErrorRoundTrip(t *testing.T) {
 		t.Fatalf("explicit is_error:false must survive marshal, got: %s", out)
 	}
 }
+
+// TestChatMessageIsErrorWithoutToolCallID guards the reattach gate in
+// ChatMessage.UnmarshalJSON. The gate keys solely on ToolCallID, so a tool
+// message carrying only is_error would drop the entire ChatToolMessage and
+// silently make the marker conditional on a sibling field.
+func TestChatMessageIsErrorWithoutToolCallID(t *testing.T) {
+	var msg ChatMessage
+	if err := Unmarshal([]byte(`{"role":"tool","content":"boom","is_error":true}`), &msg); err != nil {
+		t.Fatalf("unmarshal tool message: %v", err)
+	}
+	if msg.ChatToolMessage == nil {
+		t.Fatal("ChatToolMessage must attach when is_error is present without tool_call_id")
+	}
+	if msg.ChatToolMessage.IsError == nil || !*msg.ChatToolMessage.IsError {
+		t.Fatal("is_error must survive unmarshal without a tool_call_id")
+	}
+
+	// A tool message with neither field must still leave ChatToolMessage nil,
+	// so the gate does not start attaching empty structs to every message.
+	var bare ChatMessage
+	if err := Unmarshal([]byte(`{"role":"user","content":"hi"}`), &bare); err != nil {
+		t.Fatalf("unmarshal bare message: %v", err)
+	}
+	if bare.ChatToolMessage != nil {
+		t.Fatalf("ChatToolMessage must stay nil when neither field is present, got %+v", bare.ChatToolMessage)
+	}
+}
