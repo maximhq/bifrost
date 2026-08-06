@@ -560,14 +560,23 @@ func createToolResultMessage(toolCall schemas.ChatAssistantMessageToolCall, resu
 		content = result
 	}
 
+	toolMsg := &schemas.ChatToolMessage{
+		ToolCallID: toolCall.ID,
+	}
+	// The error text alone reads as an ordinary result to the model. Mark the
+	// result failed so providers whose wire carries the marker (Anthropic
+	// tool_result.is_error, Bedrock toolResult.status) can trigger the repair
+	// behaviour they document for it.
+	if err != nil {
+		toolMsg.IsError = schemas.Ptr(true)
+	}
+
 	return &schemas.ChatMessage{
 		Role: schemas.ChatMessageRoleTool,
 		Content: &schemas.ChatMessageContent{
 			ContentStr: &content,
 		},
-		ChatToolMessage: &schemas.ChatToolMessage{
-			ToolCallID: toolCall.ID,
-		},
+		ChatToolMessage: toolMsg,
 	}
 }
 
