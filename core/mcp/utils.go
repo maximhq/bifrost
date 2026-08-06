@@ -22,12 +22,53 @@ type RetryConfig struct {
 	MaxRetries     int           // Maximum number of retry attempts (not including the initial attempt)
 	InitialBackoff time.Duration // Initial backoff duration
 	MaxBackoff     time.Duration // Maximum backoff duration
+	// IsRetryable classifies an attempt's error as worth retrying or not.
+	// Nil defaults to isTransientError (connect-shaped: unrecognized errors
+	// default to retryable). ToolCallRetryConfig overrides this with
+	// isTransientToolCallError (the opposite default — see its doc comment).
+	IsRetryable func(error) bool
 }
 
-var DefaultRetryConfig = RetryConfig{
+// ConnectRetryConfig backs every connection-establishment step — the shared
+// persistent dial (connectToMCPClient) and the ephemeral per-call connect
+// (AcquireClientConn's per-user/per-call branch) alike. Nothing user-facing
+// is blocked synchronously on this in the shared case, and in the per-call
+// case it's a one-time cost paid before the tool call runs — generous
+// retries are the right tradeoff here.
+var ConnectRetryConfig = RetryConfig{
 	MaxRetries:     5,
 	InitialBackoff: 1 * time.Second,
 	MaxBackoff:     30 * time.Second,
+}
+
+// PerCallConnectRetryConfig backs the ephemeral per-call connect+init steps
+// (AcquireClientConn's per-user/per-call branch) — distinct from both of the
+// other two configs, not a reuse of either. It runs synchronously in front
+// of a live tool call with no separate budget wrapper (unlike
+// ConnectRetryConfig's shared dial, mostly background/setup), so it can't
+// afford ConnectRetryConfig's full ~31s-worst-case schedule. But establishing
+// a connection has no side effects on the upstream — safe to retry harder
+// than the tool call that follows it, which might not be idempotent — so
+// it's more generous than ToolCallRetryConfig, not just a copy of it.
+var PerCallConnectRetryConfig = RetryConfig{
+	MaxRetries:     3,
+	InitialBackoff: 250 * time.Millisecond,
+	MaxBackoff:     1 * time.Second,
+}
+
+// ToolCallRetryConfig backs the live tool-call invocation itself
+// (executeToolInternal's CallTool). Deliberately the lightest of the three —
+// a caller is waiting synchronously on this, and unlike a bare connect, the
+// call itself may not be safe to retry blindly (non-idempotent tools), so it
+// trades retry depth for latency: a couple of quick attempts to ride out a
+// genuine blip, nothing more. Uses isTransientToolCallError, not the default
+// isTransientError, so an unrecognized (likely application-level) failure
+// is never retried — see that function's doc comment.
+var ToolCallRetryConfig = RetryConfig{
+	MaxRetries:     2,
+	InitialBackoff: 200 * time.Millisecond,
+	MaxBackoff:     200 * time.Millisecond,
+	IsRetryable:    isTransientToolCallError,
 }
 
 // GetClientForTool safely finds a client that has the specified tool.
@@ -199,34 +240,14 @@ func isTransientError(err error) bool {
 		}
 	}
 
-	// Transient errors that SHOULD be retried
-	transientErrors := []string{
-		// Network errors
-		"connection refused", "connection reset", "broken pipe",
-		"network is unreachable", "no route to host",
-		// Timeout errors
-		"timeout", "deadline exceeded", "i/o timeout",
-		// DNS errors
-		"no such host", "name resolution failed",
-		// HTTP errors
-		"503", "502", "504", "429", "500", // Service Unavailable, Bad Gateway, Gateway Timeout, Too Many Requests, Internal Server Error
-		// Connection errors
-		"connection error", "connection lost", "connection failed",
-		// I/O errors
-		"i/o error", "read error", "write error",
-		// Temporary errors
-		"temporary failure", "try again",
-	}
-
-	for _, transientErr := range transientErrors {
+	for _, transientErr := range transientErrorSubstrings {
 		if strings.Contains(strings.ToLower(errStr), transientErr) {
 			return true
 		}
 	}
 
 	// Check for net.Error types (timeout-related errors)
-	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if netErr, ok := errors.AsType[net.Error](err); ok {
 		// Timeout errors are transient and should be retried
 		if netErr.Timeout() {
 			return true
@@ -234,8 +255,68 @@ func isTransientError(err error) bool {
 	}
 
 	// Default: treat as transient to be safe (connection-related errors)
-	// This ensures we retry unknown errors that are likely transient
+	// This ensures we retry unknown errors that are likely transient — the
+	// right default for connection-establishment callers, where an
+	// unrecognized failure is still usually infra-related. NOT the right
+	// default for a tool call already past a live connection — see
+	// isTransientToolCallError below, which shares the same substring list
+	// but flips this default.
 	return true
+}
+
+// transientErrorSubstrings is the shared substring list both isTransientError
+// (connection-establishment, default-retry-unknown) and
+// isTransientToolCallError (tool calls, default-don't-retry-unknown) match
+// against — one source of truth for what "looks like a transport blip" means,
+// even though the two callers apply opposite defaults to anything outside it.
+var transientErrorSubstrings = []string{
+	// Network errors
+	"connection refused", "connection reset", "broken pipe",
+	"network is unreachable", "no route to host",
+	// Timeout errors
+	"timeout", "deadline exceeded", "i/o timeout",
+	// DNS errors
+	"no such host", "name resolution failed",
+	// HTTP errors
+	"503", "502", "504", "429", "500", // Service Unavailable, Bad Gateway, Gateway Timeout, Too Many Requests, Internal Server Error
+	// Connection errors
+	"connection error", "connection lost", "connection failed",
+	// I/O errors
+	"i/o error", "read error", "write error",
+	// Temporary errors
+	"temporary failure", "try again",
+}
+
+// isTransientToolCallError is ToolCallRetryConfig's classifier: a live tool
+// call already has a working connection (AcquireClientConn succeeded to get
+// here), so an error at this point is either a genuine transport blip
+// (matches transientErrorSubstrings — worth one quick retry) or something
+// application-level (a tool's own business-logic failure, bad arguments, a
+// panic in the tool implementation) that retrying can't fix and might
+// actively harm if the tool isn't idempotent. Unlike isTransientError, this
+// does NOT default to true for unrecognized text — only a positive match
+// against known transport-failure shapes triggers a retry; everything else
+// (including net.Error timeouts, which isTransientError treats as transient
+// but which already have "timeout"/"deadline exceeded" in the substring list
+// above anyway) goes straight through as non-retryable.
+func isTransientToolCallError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	// Auth failures are checked first, before the transient substring scan:
+	// error text like "401 unauthorized: try again" would otherwise match
+	// "try again" below and get retried, contradicting the non-retryable
+	// auth-failure rule this classifier exists to enforce for tool calls.
+	if isAuthFailureErrorText(errStr) {
+		return false
+	}
+	for _, transientErr := range transientErrorSubstrings {
+		if strings.Contains(errStr, transientErr) {
+			return true
+		}
+	}
+	return false
 }
 
 // isAuthFailureErrorText reports whether a raw upstream tool-call error looks
@@ -289,6 +370,10 @@ func ExecuteWithRetry(
 ) error {
 	var lastErr error
 	backoff := config.InitialBackoff
+	isRetryable := config.IsRetryable
+	if isRetryable == nil {
+		isRetryable = isTransientError
+	}
 
 	for attempt := 0; attempt <= config.MaxRetries; attempt++ {
 		// Check context before attempting
@@ -305,7 +390,7 @@ func ExecuteWithRetry(
 		}
 
 		// Check if error is transient - if not, fail immediately without retrying
-		if !isTransientError(lastErr) {
+		if !isRetryable(lastErr) {
 			logger.Debug("%s permanent error (not retrying): %v", MCPLogPrefix, lastErr)
 			return lastErr
 		}
@@ -360,7 +445,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 	}
 
 	var toolsResponse *mcp.ListToolsResult
-	retryConfig := DefaultRetryConfig
+	retryConfig := ConnectRetryConfig
 	err := ExecuteWithRetry(
 		ctx,
 		func() error {
