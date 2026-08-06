@@ -109,8 +109,67 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	return nil
 }
 
+// fetchModelListing performs a single GET request against an OpenRouter listing
+// endpoint (e.g. /v1/models or /v1/embeddings/models) and decodes it into a
+// BifrostListModelsResponse. modelsFetched is false when the caller should treat
+// a non-2xx response as "no models" rather than a hard error (key-validation flow).
+func (provider *OpenRouterProvider) fetchModelListing(ctx *schemas.BifrostContext, keyValue string, path string) (response *schemas.BifrostListModelsResponse, latency time.Duration, modelsFetched bool, bifrostErr *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + path)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	if keyValue != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
+	}
+
+	// Make request
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, latency, false, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, latency, false, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
+	}
+
+	response = &schemas.BifrostListModelsResponse{}
+	// Copy response body before releasing
+	responseBody := append([]byte(nil), resp.Body()...)
+
+	// Pass nil requestBody for GET requests - HandleProviderResponse will skip raw request capture
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, latency, false, bifrostErr
+	}
+
+	// Set raw request/response if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, latency, true, nil
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
+//
+// OpenRouter publishes embedding models via a dedicated /v1/embeddings/models
+// endpoint rather than including them in /v1/models (unlike every other provider
+// we support, which lists embeddings alongside chat models in one catalog). Both
+// endpoints are fetched here and merged so governance's model-catalog checks
+// (e.g. VK wildcard allow-lists) see embedding models too. The embeddings fetch
+// is best-effort: a failure there does not fail chat-model discovery.
 func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	// Validate the key first using /v1/auth/key (only during provider add/update).
 	// OpenRouter's /v1/models doesn't require auth, so we need this extra check.
@@ -122,68 +181,33 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		}
 	}
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
-	req.Header.SetMethod(http.MethodGet)
-	req.Header.SetContentType("application/json")
 	keyValue := key.Value.GetValue()
-	if keyValue != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
-	}
 
-	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
+	chatResponse, latency, modelsFetched, bifrostErr := provider.fetchModelListing(ctx, keyValue, providerUtils.GetPathFromContext(ctx, "/v1/models"))
 	if bifrostErr != nil {
 		if shouldValidate {
-			// Key is valid (validated above) but transport error on models endpoint.
-			// Return empty response; allowed models will be backfilled below.
-			return &schemas.BifrostListModelsResponse{}, nil
-		}
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	modelsFetched := true
-	if resp.StatusCode() != fasthttp.StatusOK {
-		if shouldValidate {
-			// Key is valid (validated above) but /v1/models returned error (e.g., privacy/guardrail settings).
-			// Continue with empty response; allowed models will be backfilled below.
-			modelsFetched = false
+			// Key is valid (validated above) but /v1/models errored (transport or
+			// e.g. privacy/guardrail settings). Continue with empty response;
+			// allowed models will be backfilled below.
+			chatResponse = &schemas.BifrostListModelsResponse{}
 		} else {
-			bifrostErr := providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 			return nil, bifrostErr
 		}
 	}
 
 	var openrouterResponse schemas.BifrostListModelsResponse
 	if modelsFetched {
-		// Copy response body before releasing
-		responseBody := append([]byte(nil), resp.Body()...)
+		openrouterResponse = *chatResponse
+	}
 
-		// Pass nil requestBody for GET requests - HandleProviderResponse will skip raw request capture
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &openrouterResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if bifrostErr != nil {
-			return nil, bifrostErr
-		}
-
-		// Set raw request if enabled
-		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			openrouterResponse.ExtraFields.RawRequest = rawRequest
-		}
-
-		// Set raw response if enabled
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-			openrouterResponse.ExtraFields.RawResponse = rawResponse
-		}
+	// Best-effort merge of the embeddings catalog. Always fetched from the fixed
+	// /v1/embeddings/models path (not GetPathFromContext) — a URL-path override in
+	// context is meant for the primary model-list request and must not be replayed
+	// here too, or this would duplicate the chat-model fetch instead of discovering
+	// embeddings. Ignored on failure so a transient/unsupported embeddings endpoint
+	// never blocks chat-model discovery.
+	if embeddingsResponse, _, embeddingsFetched, _ := provider.fetchModelListing(ctx, keyValue, "/v1/embeddings/models"); embeddingsFetched {
+		openrouterResponse.Data = append(openrouterResponse.Data, embeddingsResponse.Data...)
 	}
 
 	// OpenRouter model IDs in the API response do NOT include the "openrouter/" prefix
