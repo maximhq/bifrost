@@ -579,6 +579,44 @@ func TestBedrockTransportHTTP2Config(t *testing.T) {
 	assert.Equal(t, schemas.DefaultMaxIdleConnsPerHost, transport.MaxIdleConnsPerHost)
 	assert.Equal(t, schemas.DefaultMaxIdleConnsPerHost, transport.MaxIdleConns)
 	assert.True(t, transport.ForceAttemptHTTP2)
+	assert.Nil(t, transport.HTTP2, "ping keepalive must stay off when the interval is unset")
+}
+
+func TestBedrockTransportHTTP2PingKeepalive(t *testing.T) {
+	newTransport := func(t *testing.T, enforceHTTP2 bool, pingIntervalSeconds int) *http.Transport {
+		t.Helper()
+		config := &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				EnforceHTTP2:                   enforceHTTP2,
+				HTTP2PingIntervalInSeconds:     pingIntervalSeconds,
+			},
+		}
+		config.CheckAndSetDefaults()
+
+		provider, err := NewBedrockProvider(config, noopLogger{})
+		require.NoError(t, err)
+
+		transport, ok := provider.client.Transport.(*http.Transport)
+		require.True(t, ok, "transport should be *http.Transport")
+		return transport
+	}
+
+	t.Run("enforced with a positive interval configures the PING keepalive", func(t *testing.T) {
+		transport := newTransport(t, true, 45)
+		require.NotNil(t, transport.HTTP2, "enforce_http2 + positive interval must set transport.HTTP2")
+		assert.Equal(t, 45*time.Second, transport.HTTP2.SendPingTimeout)
+	})
+
+	t.Run("enforced with a zero interval leaves the keepalive off", func(t *testing.T) {
+		transport := newTransport(t, true, 0)
+		assert.Nil(t, transport.HTTP2, "enforce_http2 alone must not imply pinging")
+	})
+
+	t.Run("non-enforced with a positive interval leaves the keepalive off", func(t *testing.T) {
+		transport := newTransport(t, false, 45)
+		assert.Nil(t, transport.HTTP2, "a ping interval without enforce_http2 must be a no-op")
+	})
 }
 
 func TestBedrockTransportCustomMaxConns(t *testing.T) {

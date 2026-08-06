@@ -43,6 +43,7 @@ const NetworkConfigSchema = z
 		keep_alive_timeout_in_seconds: z.number().int().min(1).max(3600).optional(),
 		max_conns_per_host: z.number().int().min(1).max(10000).optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z.number().int().min(0).max(3600).optional(),
 	})
 	.refine((v) => v.retry_backoff_initial <= v.retry_backoff_max, {
 		message: "Initial backoff must be <= max backoff",
