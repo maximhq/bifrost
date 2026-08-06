@@ -90,7 +90,7 @@ func TestCloseAndMarkNeedsReauth_ClosesLiveConnectionAndFlipsState(t *testing.T)
 	m.clientMap[config.ID] = &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
-		State:           schemas.MCPConnectionStateConnected,
+		State:           schemas.MCPConnectionStateHealthy,
 		CancelFunc:      func() { cancelCalled = true },
 	}
 	m.mu.Unlock()
@@ -130,7 +130,7 @@ func TestCloseAndMarkNeedsReauth_PerUserAuth_ReturnsNotApplicable(t *testing.T) 
 	m.clientMap[config.ID] = &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
-		State:           schemas.MCPConnectionStateConnected,
+		State:           schemas.MCPConnectionStateHealthy,
 	}
 	m.mu.Unlock()
 
@@ -141,7 +141,7 @@ func TestCloseAndMarkNeedsReauth_PerUserAuth_ReturnsNotApplicable(t *testing.T) 
 	m.mu.RLock()
 	state := *m.clientMap[config.ID]
 	m.mu.RUnlock()
-	assert.Equal(t, schemas.MCPConnectionStateConnected, state.State, "state must be untouched for a not-applicable auth type")
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State, "state must be untouched for a not-applicable auth type")
 }
 
 // TestCloseAndMarkNeedsReauth_Disabled_IsNoOp covers a rotation racing a

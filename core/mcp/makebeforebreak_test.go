@@ -176,7 +176,7 @@ func TestConnectToMCPClient_MakeBeforeBreak_ServesDuringDialAndClosesOldConn(t *
 	before, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)
 	require.NotNil(t, before.Conn)
-	require.Equal(t, schemas.MCPConnectionStateConnected, before.State)
+	require.Equal(t, schemas.MCPConnectionStateHealthy, before.State)
 	oldConn := before.Conn
 
 	// Kick off the reconnect with the new dial parked behind the gate.
@@ -196,7 +196,7 @@ func TestConnectToMCPClient_MakeBeforeBreak_ServesDuringDialAndClosesOldConn(t *
 	// its tool map intact, and a tool call through it must succeed.
 	mid, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)
-	assert.Equal(t, schemas.MCPConnectionStateConnected, mid.State, "client must stay Connected for the whole dial window")
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, mid.State, "client must stay Healthy for the whole dial window")
 	assert.Same(t, oldConn, mid.Conn, "the old connection must keep serving during the dial")
 	assert.Contains(t, mid.ToolMap, toolName, "the tool map must stay populated during the dial")
 	require.NoError(t, callEchoTool(m, toolName), "a tool call through the old connection must succeed mid-dial")
@@ -206,7 +206,7 @@ func TestConnectToMCPClient_MakeBeforeBreak_ServesDuringDialAndClosesOldConn(t *
 
 	after, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)
-	assert.Equal(t, schemas.MCPConnectionStateConnected, after.State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, after.State)
 	require.NotNil(t, after.Conn)
 	assert.NotSame(t, oldConn, after.Conn, "the swap must install a fresh connection")
 	assert.Contains(t, after.ToolMap, toolName)
@@ -279,8 +279,8 @@ func TestConnectToMCPClient_MakeBeforeBreak_ConcurrentCallsAcrossSwap(t *testing
 
 // =============================================================================
 // Failure paths: a failed re-dial must land in exactly today's post-failure
-// state (Disconnected or NeedsReauth, nil Conn, empty tool maps) with the old
-// connection closed.
+// state (Unstable or NeedsReauth, nil Conn, last-known-good tool maps
+// preserved) with the old connection closed.
 // =============================================================================
 
 // flipCredStore succeeds on the first ConnectionHeaders resolution (the
@@ -325,9 +325,9 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_ResetsStateAndClosesOldC
 		wantState schemas.MCPConnectionState
 	}{
 		{
-			name:      "generic failure lands in Disconnected",
+			name:      "generic failure lands in Unstable",
 			failWith:  fmt.Errorf("connection refused"),
-			wantState: schemas.MCPConnectionStateDisconnected,
+			wantState: schemas.MCPConnectionStateUnstable,
 		},
 		{
 			name:      "dead OAuth2 credential lands in NeedsReauth",
@@ -398,11 +398,11 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_ResetsStateAndClosesOldC
 // callbacks must be no-ops.
 // =============================================================================
 
-func TestClientToolSyncer_PerformSync_StaleGenerationWriteDropped(t *testing.T) {
+func TestConnectionChecker_PerformCheck_StaleGenerationWriteDropped(t *testing.T) {
 	// Server whose tools/list handling can be parked, so a connection swap can
-	// be interleaved between performSync's snapshot and its write-back. The
+	// be interleaved between the check's snapshot and its write-back. The
 	// gate is armed only after the initial connect, so the connect's own
-	// tools/list passes through untouched and exactly the syncer's request
+	// tools/list passes through untouched and exactly the checker's request
 	// parks.
 	var gateMu sync.Mutex
 	gateArmed := false
@@ -444,26 +444,28 @@ func TestClientToolSyncer_PerformSync_StaleGenerationWriteDropped(t *testing.T) 
 
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 
-	// Arm the gate for the syncer's tools/list.
+	// Arm the gate for the checker's tools/list.
 	gateMu.Lock()
 	gateArmed = true
 	gateMu.Unlock()
 
-	syncer := NewClientToolSyncer(m, config.ID, config.Name, time.Minute, &MockLogger{})
-	syncDone := make(chan struct{})
+	// isPingAvailable=false: skip straight to list_tools, matching the gate
+	// above (which only parks tools/list requests).
+	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+	checkDone := make(chan struct{})
 	go func() {
-		syncer.performSync()
-		close(syncDone)
+		checker.performCheck()
+		close(checkDone)
 	}()
 
 	select {
 	case <-listArrived:
 	case <-time.After(10 * time.Second):
-		t.Fatal("syncer's tools/list never reached the server")
+		t.Fatal("checker's tools/list never reached the server")
 	}
 
-	// While the sync is parked, simulate a completed reconnect swap: bump the
-	// generation and install a marker tool map.
+	// While the check is parked, simulate a completed reconnect swap: bump
+	// the generation and install a marker tool map.
 	markerTools := map[string]schemas.ChatTool{"marker-tool": {}}
 	m.mu.Lock()
 	m.clientMap[config.ID].ConnGeneration++
@@ -472,14 +474,14 @@ func TestClientToolSyncer_PerformSync_StaleGenerationWriteDropped(t *testing.T) 
 
 	close(listRelease)
 	select {
-	case <-syncDone:
+	case <-checkDone:
 	case <-time.After(10 * time.Second):
-		t.Fatal("performSync never finished")
+		t.Fatal("performCheck never finished")
 	}
 
 	after, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)
-	assert.Contains(t, after.ToolMap, "marker-tool", "a sync that spanned a connection swap must not clobber the post-swap tool map")
+	assert.Contains(t, after.ToolMap, "marker-tool", "a check that spanned a connection swap must not clobber the post-swap tool map")
 	assert.Len(t, after.ToolMap, 1)
 }
 
@@ -492,21 +494,21 @@ func TestHandleSSEConnectionLost_StaleGenerationNoOp(t *testing.T) {
 	m.clientMap[config.ID] = &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
-		State:           schemas.MCPConnectionStateConnected,
+		State:           schemas.MCPConnectionStateHealthy,
 		ConnGeneration:  2,
 	}
 
 	// A callback registered against the replaced connection (generation 1)
-	// must not flip the freshly connected client to Disconnected.
+	// must not flip the freshly connected client to Unstable.
 	m.handleSSEConnectionLost(config.ID, config.Name, 1, fmt.Errorf("idle timeout"))
-	assert.Equal(t, schemas.MCPConnectionStateConnected, m.clientMap[config.ID].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, m.clientMap[config.ID].State)
 
 	// An unknown client is a no-op.
 	m.handleSSEConnectionLost("missing-client", "missing-client", 2, fmt.Errorf("idle timeout"))
 
 	// The current generation's callback performs today's transition.
 	m.handleSSEConnectionLost(config.ID, config.Name, 2, fmt.Errorf("idle timeout"))
-	assert.Equal(t, schemas.MCPConnectionStateDisconnected, m.clientMap[config.ID].State)
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, m.clientMap[config.ID].State)
 
 	// The Disabled guard is preserved even for a current-generation callback.
 	m.clientMap[config.ID].State = schemas.MCPConnectionStateDisabled
