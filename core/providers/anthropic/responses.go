@@ -5312,6 +5312,15 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesImageBlock())
 								}
+							case AnthropicContentBlockTypeDocument:
+								// A tool returning a PDF (Claude Code's Read tool, for one)
+								// nests a document block here. Dropping it leaves the
+								// function_call_output with an empty content array, which
+								// OpenAI rejects outright:
+								// "Missing required parameter: 'input[N].content[0]'".
+								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
+									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
+								}
 							}
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
@@ -5747,6 +5756,15 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 							case AnthropicContentBlockTypeImage:
 								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesImageBlock())
+								}
+							case AnthropicContentBlockTypeDocument:
+								// A tool returning a PDF (Claude Code's Read tool, for one)
+								// nests a document block here. Dropping it leaves the
+								// function_call_output with an empty content array, which
+								// OpenAI rejects outright:
+								// "Missing required parameter: 'input[N].content[0]'".
+								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
+									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
 								}
 							}
 						}
@@ -8017,7 +8035,47 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 		}
 	}
 
+	// Anthropic's document block has an optional `title`; OpenAI's Responses
+	// API rejects an input_file that carries inline file_data without a
+	// filename. Synthesize one so a title-less document (the common case when
+	// a tool returns a PDF) still converts into an acceptable request.
+	file := resultBlock.ResponsesInputMessageContentBlockFile
+	if file.FileData != nil && (file.Filename == nil || *file.Filename == "") {
+		file.Filename = schemas.Ptr(defaultDocumentFilename(src))
+	}
+
 	return resultBlock
+}
+
+// defaultDocumentFilename builds a filename for a document block that has no
+// title, picking the extension from the source's media type. Anthropic
+// defaults document blocks to PDF, so that's the fallback.
+func defaultDocumentFilename(src *AnthropicSource) string {
+	mediaType := ""
+	if src != nil && src.MediaType != nil {
+		mediaType = *src.MediaType
+	}
+	if src != nil && src.Type == "text" {
+		mediaType = "text/plain"
+	}
+
+	ext := ".pdf"
+	switch mediaType {
+	case "", "application/pdf":
+		ext = ".pdf"
+	case "text/plain":
+		ext = ".txt"
+	default:
+		// "application/json" -> ".json", "text/markdown" -> ".markdown".
+		if _, subtype, found := strings.Cut(mediaType, "/"); found && subtype != "" {
+			// Strip vendor/suffix decorations: "vnd.ms-excel+xml" -> "xml".
+			if _, suffix, hasSuffix := strings.Cut(subtype, "+"); hasSuffix && suffix != "" {
+				subtype = suffix
+			}
+			ext = "." + subtype
+		}
+	}
+	return "document" + ext
 }
 
 // Helper functions for MCP tool/server conversion
