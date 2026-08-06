@@ -1555,6 +1555,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					Headers:                   dbClient.Headers,
 					AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 					IsPingAvailable:           dbClient.IsPingAvailable,
+					NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 					ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 					ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 					ToolPricing:               dbClient.ToolPricing,
@@ -1605,6 +1606,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			Headers:                   dbClient.Headers,
 			AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 			IsPingAvailable:           dbClient.IsPingAvailable,
+			NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 			ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 			ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 			AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
@@ -2036,6 +2038,7 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		Headers:                   dbClient.Headers,
 		AllowedExtraHeaders:       dbClient.AllowedExtraHeaders,
 		IsPingAvailable:           dbClient.IsPingAvailable,
+		NeedsSessionStickiness:    dbClient.NeedsSessionStickiness,
 		ToolSyncInterval:          time.Duration(dbClient.ToolSyncInterval) * time.Second,
 		ToolExecutionTimeout:      time.Duration(dbClient.ToolExecutionTimeout) * time.Second,
 		AllowOnAllVirtualKeys:     dbClient.AllowOnAllVirtualKeys,
@@ -2137,23 +2140,24 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 		}
 		toolExecutionTimeoutSec := toolExecutionTimeoutDurationToStoredSeconds(clientConfigCopy.ToolExecutionTimeout)
 		dbClient := tables.TableMCPClient{
-			ClientID:              clientConfigCopy.ID,
-			Name:                  clientConfigCopy.Name,
-			IsCodeModeClient:      clientConfigCopy.IsCodeModeClient,
-			ConnectionType:        string(clientConfigCopy.ConnectionType),
-			ConnectionString:      clientConfigCopy.ConnectionString,
-			StdioConfig:           clientConfigCopy.StdioConfig,
-			TLSConfig:             clientConfigCopy.TLSConfig,
-			AuthType:              string(clientConfigCopy.AuthType),
-			OauthConfigID:         clientConfigCopy.OauthConfigID,
-			ToolsToExecute:        clientConfigCopy.ToolsToExecute,
-			ToolsToAutoExecute:    clientConfigCopy.ToolsToAutoExecute,
-			Headers:               clientConfigCopy.Headers,
-			AllowedExtraHeaders:   clientConfigCopy.AllowedExtraHeaders,
-			IsPingAvailable:       clientConfigCopy.IsPingAvailable,
-			ToolSyncInterval:      toolSyncIntervalSec,
-			ToolExecutionTimeout:  toolExecutionTimeoutSec,
-			AllowOnAllVirtualKeys: clientConfigCopy.AllowOnAllVirtualKeys,
+			ClientID:               clientConfigCopy.ID,
+			Name:                   clientConfigCopy.Name,
+			IsCodeModeClient:       clientConfigCopy.IsCodeModeClient,
+			ConnectionType:         string(clientConfigCopy.ConnectionType),
+			ConnectionString:       clientConfigCopy.ConnectionString,
+			StdioConfig:            clientConfigCopy.StdioConfig,
+			TLSConfig:              clientConfigCopy.TLSConfig,
+			AuthType:               string(clientConfigCopy.AuthType),
+			OauthConfigID:          clientConfigCopy.OauthConfigID,
+			ToolsToExecute:         clientConfigCopy.ToolsToExecute,
+			ToolsToAutoExecute:     clientConfigCopy.ToolsToAutoExecute,
+			Headers:                clientConfigCopy.Headers,
+			AllowedExtraHeaders:    clientConfigCopy.AllowedExtraHeaders,
+			IsPingAvailable:        clientConfigCopy.IsPingAvailable,
+			NeedsSessionStickiness: clientConfigCopy.NeedsSessionStickiness,
+			ToolSyncInterval:       toolSyncIntervalSec,
+			ToolExecutionTimeout:   toolExecutionTimeoutSec,
+			AllowOnAllVirtualKeys:  clientConfigCopy.AllowOnAllVirtualKeys,
 			// DiscoveredTools has json:"-" so deepCopy loses it; use original clientConfig
 			DiscoveredTools:           clientConfig.DiscoveredTools,
 			DiscoveredToolNameMapping: clientConfig.DiscoveredToolNameMapping,
@@ -2423,6 +2427,13 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		// This preserves the existing DB value when the request omits the field
 		if clientConfigCopy.IsPingAvailable != nil {
 			updates["is_ping_available"] = *clientConfigCopy.IsPingAvailable
+		}
+
+		// Only update needs_session_stickiness if explicitly provided
+		// (non-nil); this preserves the existing DB value when the request
+		// omits the field.
+		if clientConfigCopy.NeedsSessionStickiness != nil {
+			updates["needs_session_stickiness"] = *clientConfigCopy.NeedsSessionStickiness
 		}
 
 		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {
@@ -7273,8 +7284,8 @@ func (s *RDBConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oa
 // MarkAdminExchangeTokenNeedsReauthByMCPClientID flips status to
 // 'needs_reauth' on a single row: the token_exchange client's retained admin
 // bootstrap credential (auth_mode='admin', mcp_client_id=<id>,
-// oauth_config_id='' — see isExchangeBackedTokenRow in framework/oauth2 for
-// the same row shape). The oauth_config_id='' filter excludes a
+// oauth_config_id=” — see isExchangeBackedTokenRow in framework/oauth2 for
+// the same row shape). The oauth_config_id=” filter excludes a
 // per_user_oauth client's admin row, which is keyed by mcp_client_id too but
 // carries a real oauth_config_id and is already covered by
 // MarkTokensNeedsReauthByConfigID.

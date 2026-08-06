@@ -226,6 +226,7 @@ export default function MCPClientSheet({
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
+			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
 			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
 			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
@@ -267,6 +268,7 @@ export default function MCPClientSheet({
 		},
 	});
 	const isDisabled = form.watch("disabled");
+	const needsSessionStickiness = form.watch("needs_session_stickiness");
 
 	// Reset form when mcpClient changes
 	useEffect(() => {
@@ -274,6 +276,7 @@ export default function MCPClientSheet({
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
 			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
+			needs_session_stickiness: mcpClient.config.needs_session_stickiness === true,
 			allow_on_all_virtual_keys: mcpClient.config.allow_on_all_virtual_keys || false,
 			disabled: mcpClient.config.disabled || false,
 			headers: mcpClient.config.headers,
@@ -345,6 +348,10 @@ export default function MCPClientSheet({
 		form.formState.dirtyFields.token_exchange?.authorization_server_url ||
 		tokenExchangeScopesDirty
 	);
+	// Gates the "takes effect immediately" warning below the toggle — the
+	// backend applies a stickiness change live (opens or closes the shared
+	// connection) as part of the same update, not on some later reconnect.
+	const needsSessionStickinessDirty = !!form.formState.dirtyFields.needs_session_stickiness;
 
 	const handleNavigate = useCallback(
 		(direction: "prev" | "next") => {
@@ -413,6 +420,10 @@ export default function MCPClientSheet({
 					name: data.name,
 					is_code_mode_client: data.is_code_mode_client,
 					is_ping_available: data.is_ping_available,
+					// Only meaningful (and only accepted) for http clients — an
+					// explicit false is rejected for sse/stdio, which always keep
+					// a persistent connection regardless of this field.
+					needs_session_stickiness: mcpClient.config.connection_type === "http" ? data.needs_session_stickiness : undefined,
 					allow_on_all_virtual_keys: data.allow_on_all_virtual_keys,
 					disabled: data.disabled,
 					headers: data.headers ?? {},
@@ -776,6 +787,55 @@ export default function MCPClientSheet({
 														</FormItem>
 													)}
 												/>
+												{mcpClient.config.connection_type === "http" &&
+													mcpClient.config.auth_type !== "per_user_oauth" &&
+													mcpClient.config.auth_type !== "per_user_headers" &&
+													mcpClient.config.auth_type !== "token_exchange" && (
+														<>
+															<FormField
+																control={form.control}
+																name="needs_session_stickiness"
+																render={({ field }) => (
+																	<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+																		<div className="flex items-center gap-2">
+																			<FormLabel>Maintain Persistent Connection</FormLabel>
+																			<TooltipProvider>
+																				<Tooltip>
+																					<TooltipTrigger asChild>
+																						<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																					</TooltipTrigger>
+																					<TooltipContent className="max-w-xs">
+																						<p>
+																							Enable to keep one shared connection open and reused across every caller. Disable to connect
+																							fresh on every call instead.
+																						</p>
+																					</TooltipContent>
+																				</Tooltip>
+																			</TooltipProvider>
+																		</div>
+																		<FormControl>
+																			<Switch
+																				checked={field.value === true}
+																				onCheckedChange={field.onChange}
+																				data-testid="mcpclient-session-stickiness-switch"
+																			/>
+																		</FormControl>
+																	</FormItem>
+																)}
+															/>
+															{needsSessionStickinessDirty && (
+																<div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+																	<Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+																	<p>
+																		Toggling this takes effect immediately on save:{" "}
+																		{needsSessionStickiness
+																			? "the shared connection will be opened now."
+																			: "the existing shared connection will be closed now."}
+																	</p>
+																</div>
+															)}
+														</>
+													)}
 											</div>
 										</div>
 
