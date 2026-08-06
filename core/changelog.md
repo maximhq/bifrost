@@ -1,3 +1,4 @@
+- fix: preserve encrypted reasoning as a Bedrock replay signature when translating Responses history [@zachgersh](https://github.com/zachgersh)
 - feat: add proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)
 - feat: add `WithFasthttpBufferSizes` option to `HTTPClientFactory` for configurable SCIM read/write buffers, fixing failures when IdP token endpoints return headers larger than the 4KB default (#5808)
 - fix: move SSE heartbeat handling into a common structure so client-disconnect detection is proactive instead of only firing on the next write attempt (#5850)
@@ -9,3 +10,5 @@
 - fix: bedrock invoke flow now retains image/tool_use/tool_return content blocks that were previously dropped by the decoder (#5814)
 - fix: inject placeholder text block for document-only messages on Bedrock, which otherwise rejected the request (#5817)
 - fix: retain tool `cache_control` markers through Bedrock Converse invoke requests so prompt caching applies to system blocks and tools (#5811)
+- feat: opt-in HTTP/2 PING keepalives on the Bedrock provider via a configurable interval (0 = off) [@jeremym-tanium](https://github.com/jeremym-tanium)
+- fix: clamp http2_ping_interval_in_seconds to avoid int64 overflow on conversion to time.Duration [@jeremym-tanium](https://github.com/jeremym-tanium)

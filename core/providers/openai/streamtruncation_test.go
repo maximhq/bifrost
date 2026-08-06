@@ -323,6 +323,70 @@ func TestResponsesStreamTruncatedBeforeCompleted(t *testing.T) {
 	assertTruncationError(t, chunks[len(chunks)-1].BifrostError)
 }
 
+// chatChunkNullDeltaFinish reproduces the terminal-chunk shape some OpenAI-compatible
+// upstreams send: "delta" is null (or absent) alongside "finish_reason", rather than
+// an empty object. ToBifrostResponsesStreamResponse must not discard finish_reason
+// just because delta is nil, or the Responses->Chat-Completions fallback below never
+// produces a Completed event and the stream closes with no usage/stop_reason at all.
+func chatChunkNullDeltaFinish(finishReason string) string {
+	return `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[{"index":0,"delta":null,"finish_reason":"` + finishReason + `"}],` +
+		`"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}` + "\n\n"
+}
+
+// A Responses request that falls back to Chat Completions (because the custom
+// provider config disables native Responses but allows Chat Completions) must still
+// produce a completed Responses stream event with usage/stop_reason, even when the
+// upstream's terminal chunk carries "delta":null alongside "finish_reason".
+func TestResponsesStreamFallbackNullDeltaFinishStillCompletes(t *testing.T) {
+	server := completeSSEServer(t, chatChunk("hello", nil)+chatChunkNullDeltaFinish("stop")+"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			AllowedRequests: &schemas.AllowedRequests{
+				ChatCompletionStream: true,
+				ResponsesStream:      false,
+			},
+		},
+	}, testNoopLogger{})
+
+	request := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+	stream, bifrostErr := provider.ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	var completed *schemas.BifrostResponsesStreamResponse
+	for _, chunk := range collectChunks(t, stream) {
+		if chunk.BifrostError != nil {
+			t.Fatalf("unexpected error chunk: %+v", chunk.BifrostError)
+		}
+		if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+			completed = chunk.BifrostResponsesStreamResponse
+		}
+	}
+
+	if completed == nil {
+		t.Fatal("expected a completed Responses stream event; stream closed silently instead")
+	}
+	if completed.Response == nil || completed.Response.Usage == nil {
+		t.Fatal("expected completed event to carry usage")
+	}
+	if completed.Response.StopReason == nil || *completed.Response.StopReason != "stop" {
+		t.Fatalf("expected stop_reason stop, got %+v", completed.Response.StopReason)
+	}
+}
+
 // A non-EOF read error is already a reported failure. The truncation guard that
 // follows the read loop must not fire a second time for the same dead stream, or
 // the client sees two errors for one request and the retryable 502 synthesized by

@@ -4550,7 +4550,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 			}
 		}
 	} else if msg.ResponsesReasoning != nil {
-		if msg.ResponsesReasoning.Summary != nil {
+		if len(msg.ResponsesReasoning.Summary) > 0 {
 			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
 				reasoningBlock := BedrockContentBlock{
 					ReasoningContent: &BedrockReasoningContent{
@@ -4561,14 +4561,11 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 				}
 				reasoningBlocks = append(reasoningBlocks, reasoningBlock)
 			}
-		} else if msg.ResponsesReasoning.EncryptedContent != nil {
-			// Bedrock doesn't have a direct equivalent to encrypted content,
-			// so we'll store it as a regular reasoning block with a special marker
-			encryptedText := fmt.Sprintf("[ENCRYPTED_REASONING: %s]", *msg.ResponsesReasoning.EncryptedContent)
+		} else if msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
 			reasoningBlock := BedrockContentBlock{
 				ReasoningContent: &BedrockReasoningContent{
 					ReasoningText: &BedrockReasoningContentText{
-						Text: &encryptedText,
+						Signature: msg.ResponsesReasoning.EncryptedContent,
 					},
 				},
 			}
