@@ -22,14 +22,15 @@ func snapshotAddClientState(m *MCPManager, id string) (state schemas.MCPClientSt
 }
 
 // TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection covers
-// AddClient's per_user_headers registration path, where nil, non-nil-empty,
-// and populated DiscoveredTools carry three different lifecycle meanings: a
-// nil map means admin verification has never run (park in
-// pending_verification, before ever reaching the RequiresPerCallConnection
-// branch below); a non-nil empty map means verification ran but the server
-// legitimately exposes zero tools (pending_tools); and a populated map means
-// verification ran and discovered tools are restored (connected). All three
-// cases must also preserve ConnectionURL from ConnectionString.
+// AddClient's per_user_headers registration path, where nil vs. non-nil
+// DiscoveredTools carries a real lifecycle distinction, but non-nil-empty vs.
+// populated does not: a nil map means admin verification has never run (park
+// in pending_verification, before ever reaching the RequiresPerCallConnection
+// branch below); any non-nil map (empty or populated) means verification ran
+// and lands in Healthy — an empty ToolMap already says "no tools discovered
+// yet" (or "server legitimately exposes zero tools") on its own, no dedicated
+// pending_tools state needed. All three cases must also preserve
+// ConnectionURL from ConnectionString.
 func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -48,22 +49,22 @@ func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 			wantToolCount:   0,
 		},
 		{
-			name:            "non-nil empty DiscoveredTools is pending_tools",
+			name:            "non-nil empty DiscoveredTools is healthy with zero tools",
 			clientID:        "discovered-tools-empty",
 			clientName:      "discovered_tools_empty",
 			discoveredTools: map[string]schemas.ChatTool{},
-			wantState:       schemas.MCPConnectionStatePendingTools,
+			wantState:       schemas.MCPConnectionStateHealthy,
 			wantToolCount:   0,
 		},
 		{
-			name:       "populated DiscoveredTools restores tools as connected",
+			name:       "populated DiscoveredTools restores tools as healthy",
 			clientID:   "discovered-tools-populated",
 			clientName: "discovered_tools_populated",
 			discoveredTools: map[string]schemas.ChatTool{
 				"tool-a": {},
 				"tool-b": {},
 			},
-			wantState:     schemas.MCPConnectionStateConnected,
+			wantState:     schemas.MCPConnectionStateHealthy,
 			wantToolCount: 2,
 		},
 	}
