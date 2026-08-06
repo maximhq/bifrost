@@ -1,0 +1,306 @@
+---
+title: "Munsit"
+description: "Munsit API integration guide - Arabic speech synthesis, speech transcription, realtime WebSocket TTS, model discovery, streaming support, and API key authentication"
+icon: "m"
+---
+
+import { Accordion, Note, Tip, Warning, Tabs, Tab } from "fumadocs-ui/components";
+
+# Munsit
+
+## Overview
+
+Munsit is a **custom speech AI provider** focused on high-quality Arabic speech technologies.
+
+Bifrost converts standard speech synthesis and transcription requests into Munsit's API format while exposing a unified interface compatible with every other provider.
+
+Key characteristics:
+
+- **Arabic-first Text-to-Speech**
+- **Speech-to-Text transcription**
+- **Streaming speech synthesis**
+- **Realtime WebSocket TTS sessions**
+- **Model discovery through the Models API**
+- **API key authentication using `x-api-key`**
+
+---
+
+## Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint | Notes |
+|-----------|---------------|-----------|----------|-------|
+| Speech Synthesis | ✅ | ✅ | `/api/v1/text-to-speech/{model_id}` | Supports Arabic voices |
+| Realtime Sessions | — | ✅ | `/api/v1/websocket/text-to-speech` | Bifrost: `GET /v1/realtime?model=munsit/{model}` |
+| Speech Transcription | ✅ | ❌ | Provider endpoint | Audio transcription |
+| List Models | ✅ | ❌ | `/api/v1/models` | Returns available TTS/STT models |
+| Chat Completions | ❌ | ❌ | Not supported | |
+| Text Completions | ❌ | ❌ | Not supported | |
+| Embeddings | ❌ | ❌ | Not supported | |
+| Image Generation | ❌ | ❌ | Not supported | |
+
+---
+
+# Speech Synthesis
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Bifrost Parameter | Munsit Parameter | Notes |
+|-------------------|------------------|------|
+| `model` | URL Path (`{model_id}`) | Required |
+| `input.input` | `text` | Required |
+| `voice_config.voice` | `voice_id` | Required |
+| `speed` | `speed` | Direct mapping |
+| `extra_params.stability` | `stability` | Optional |
+| `stream` | `streaming` | Automatically enabled for streaming |
+
+---
+
+### Filtered Parameters
+
+The following parameters are ignored because Munsit does not currently support them:
+
+- `temperature`
+- `top_p`
+- `seed`
+- `tool_choice`
+- `tools`
+- `reasoning_effort`
+- `response_format`
+
+---
+
+## Message Conversion
+
+Speech synthesis accepts:
+
+- ✅ Plain text
+- ❌ SSML
+- ❌ Images
+- ❌ Audio input
+
+---
+
+## Response Conversion
+
+Bifrost converts the provider response into the standard `BifrostSpeechResponse`.
+
+For non-streaming requests:
+
+- Raw audio bytes are returned.
+
+For streaming requests:
+
+- Audio chunks are emitted as `BifrostStreamChunk`.
+
+---
+
+# Speech Transcription
+
+## Request Parameters
+
+Supported inputs:
+
+- Audio file upload
+- Language (optional)
+
+The uploaded audio is forwarded to Munsit's transcription endpoint.
+
+---
+
+## Response Conversion
+
+Munsit's transcription response is converted into the standard Bifrost transcription format.
+
+---
+
+# List Models
+
+Bifrost retrieves models from:
+
+```
+GET /api/v1/models
+```
+
+The provider response is transformed into the standard `BifrostListModelsResponse`.
+
+---
+
+## Streaming
+
+Munsit supports **HTTP streaming** for speech synthesis.
+
+Streaming behavior:
+
+- Request body contains:
+
+```json
+{
+  "streaming": true
+}
+```
+
+Audio is streamed progressively to the client.
+
+---
+
+# Realtime Sessions
+
+Munsit supports **WebSocket realtime TTS** through Bifrost's Realtime API.
+
+| Detail | Value |
+|--------|-------|
+| Bifrost endpoint | `GET /v1/realtime?model=munsit/{model}` |
+| Upstream endpoint | `WSS /api/v1/websocket/text-to-speech` |
+| Auth | Same `x-api-key` as REST (query param + header) |
+| Turn start | `response.create` flushes buffered text after PreHooks |
+| Turn finalize | Client WebSocket close (Munsit has no `response.done`) |
+
+Typical client event flow:
+
+1. `session.update` — maps to Munsit `initConnection` (model + voice)
+2. `conversation.item.create` — buffers text upstream (no early synthesis trigger)
+3. `response.create` — flushes synthesis after governance PreHooks succeed
+
+WebRTC SDP exchange is not supported for Munsit.
+
+---
+
+## Authentication
+
+**Authentication Type**
+
+API Key
+
+```
+x-api-key: YOUR_API_KEY
+```
+
+Every request must include the `x-api-key` header.
+
+---
+
+## Configuration
+
+**HTTP Settings**
+
+- **Base URL:** `https://api.munsit.com`
+- **API Version:** `v1`
+- **Authentication:** `x-api-key`
+- **Streaming:** Supported
+- **Max Connections:** 5000 per host
+- **Idle Timeout:** 60 seconds
+
+---
+
+## Caveats
+
+<Accordion title="Speech only provider">
+
+**Severity:** Medium
+
+Munsit currently provides speech synthesis and speech transcription APIs only.
+
+Chat completions, embeddings, reasoning, and image generation are not available.
+
+</Accordion>
+
+<Accordion title="Voice ID is required">
+
+**Severity:** High
+
+Speech synthesis requests require a valid `voice_id`.
+
+Requests without a voice identifier will fail.
+
+</Accordion>
+
+<Accordion title="Model ID is part of the URL">
+
+**Severity:** Medium
+
+Unlike OpenAI-compatible providers, the model is supplied as part of the endpoint:
+
+```
+/api/v1/text-to-speech/{model_id}
+```
+
+rather than inside the JSON body.
+
+</Accordion>
+
+---
+
+<Warning>
+
+**Unsupported Operations**
+
+- Chat Completions
+- Text Completions
+- Embeddings
+- Image Generation
+- Tool Calling
+
+</Warning>
+
+<Note>
+
+Munsit is optimized for Arabic speech synthesis and transcription.
+
+</Note>
+
+<Tip>
+
+Use the **List Models** endpoint to dynamically retrieve supported models instead of hardcoding model names.
+
+</Tip>
+
+---
+
+# Examples
+
+<Tabs>
+
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"munsit/faseeh-v1-preview",
+    "input":{
+      "input":"مرحباً بك"
+    },
+    "params":{
+      "voice_config":{
+        "voice":"VOICE_ID"
+      }
+    }
+  }'
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+response, err := client.Speech(
+    ctx,
+    &schemas.BifrostSpeechRequest{
+        Model: "munsit/faseeh-v1-preview",
+        Input: &schemas.Input{
+            Input: "مرحباً بك",
+        },
+        Params: &schemas.BifrostSpeechParams{
+            VoiceConfig: &schemas.BifrostVoiceConfig{
+                Voice: schemas.Ptr("VOICE_ID"),
+            },
+        },
+    },
+)
+```
+
+</Tab>
+
+</Tabs>

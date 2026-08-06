@@ -25,6 +25,7 @@ type BifrostSpeechResponse struct {
 	NormalizedAlignment *SpeechAlignment           `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
 	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	ResponseFormat      string                     `json:"response_format,omitempty"`
 }
 
 func (r *BifrostSpeechResponse) BackfillParams(request *BifrostSpeechRequest) {
@@ -170,4 +171,7 @@ type SpeechUsage struct {
 	// duration-based audio models (e.g. ElevenLabs sound effects) so per-second
 	// pricing can be applied; zero for token/character-billed TTS.
 	AudioSeconds int `json:"audio_seconds,omitempty"`
+	// Cost is optional provider-reported cost (e.g. Munsit credit-based TTS).
+	// When TotalCost > 0, CalculateCost trusts it instead of datasheet pricing.
+	Cost *BifrostCost `json:"cost,omitempty"`
 }

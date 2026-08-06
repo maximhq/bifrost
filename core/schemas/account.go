@@ -139,6 +139,7 @@ type Key struct {
 	ReplicateKeyConfig     *ReplicateKeyConfig     `json:"replicate_key_config,omitempty"`      // Replicate-specific key configuration
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
+	MunsitKeyConfig        *MunsitKeyConfig        `json:"munsit_key_config,omitempty"`         // Munsit-specific key configuration
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
@@ -778,6 +779,16 @@ type OllamaKeyConfig struct {
 // enabling per-key routing and round-robin load balancing across multiple SGLang instances.
 type SGLKeyConfig struct {
 	URL SecretVar `json:"url"` // SGLang server base URL (required, supports env. prefix)
+}
+
+// MunsitKeyConfig represents the Munsit-specific key configuration.
+// It allows each key to target a different Munsit server URL (e.g. a
+// self-hosted or regional deployment), enabling per-key routing and
+// round-robin load balancing across multiple Munsit instances.
+// When URL is empty, the provider falls back to network_config.base_url
+// and then to https://api.munsit.com.
+type MunsitKeyConfig struct {
+	URL SecretVar `json:"url"` // Optional Munsit server base URL (supports env. prefix); overrides provider base_url when set
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

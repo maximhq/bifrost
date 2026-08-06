@@ -350,17 +350,31 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 	for {
 		messageType, message, err := clientConn.ReadMessage()
 		if err != nil {
-			finalizeRealtimeTurnHooksOnTransportError(
-				h.client,
-				bifrostCtx,
-				session,
-				providerKey,
-				model,
-				&key,
-				499,
-				"client_closed_request",
-				"client realtime websocket disconnected before turn completed",
-			)
+			if closer, ok := provider.(schemas.RealtimeFinalizeOnCloseProvider); ok && closer.ShouldFinalizeRealtimeTurnOnClose() && (session.PeekRealtimeTurnHooks() != nil || len(session.PeekRealtimeTurnInputs()) > 0) {
+				_ = finalizeRealtimeTurnHooks(
+					h.client,
+					bifrostCtx,
+					session,
+					provider,
+					providerKey,
+					model,
+					&key,
+					nil,
+					session.ConsumeRealtimeOutputText(),
+				)
+			} else {
+				finalizeRealtimeTurnHooksOnTransportError(
+					h.client,
+					bifrostCtx,
+					session,
+					providerKey,
+					model,
+					&key,
+					499,
+					"client_closed_request",
+					"client realtime websocket disconnected before turn completed",
+				)
+			}
 			if isNormalWebSocketClosure(err) {
 				return nil
 			}
@@ -382,11 +396,23 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 		inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
 
 		startsTurn := provider.ShouldStartRealtimeTurn(event)
+		deferTurnStart := false
+		if startsTurn {
+			if deferred, ok := provider.(schemas.RealtimeDeferredTurnStartProvider); ok && deferred.ShouldDeferRealtimeTurnStart() {
+				// Deferred providers wait until after event translation to start
+				// turn hooks, but still run PreHooks before the upstream write so
+				// authorization cannot be bypassed by a concurrent relay.
+				deferTurnStart = true
+			}
+		}
+		// Reject a second in-flight turn before any upstream write (deferred or not).
 		if startsTurn {
 			if session.PeekRealtimeTurnHooks() != nil {
 				clientConn.writeRealtimeError(newRealtimeWireBifrostError(400, "invalid_request_error", "Conversation already has an active response in progress."))
 				continue
 			}
+		}
+		if startsTurn && !deferTurnStart {
 			if toolSummary != "" {
 				session.RecordRealtimeToolOutput(toolItemID, toolSummary, string(message))
 			}
@@ -402,7 +428,7 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 		sanitizeRealtimeSessionEventForProvider(event)
 		providerEvent, err := provider.ToProviderRealtimeEvent(event)
 		if err != nil {
-			if startsTurn {
+			if startsTurn && !deferTurnStart {
 				if finalizeErr := finalizeRealtimeTurnHooksWithError(
 					h.client,
 					bifrostCtx,
@@ -427,12 +453,22 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 		updateRealtimeSessionFromEvent(session, event)
 
 		// Record tool output / input only after the event passed validation.
-		if !startsTurn {
+		if !startsTurn || deferTurnStart {
 			if toolSummary != "" {
 				session.RecordRealtimeToolOutput(toolItemID, toolSummary, string(message))
 			}
 			if inputSummary != "" {
 				session.RecordRealtimeInput(inputItemID, inputSummary, string(message))
+			}
+		}
+
+		// Deferred turn-start: run security/policy PreHooks after validation but
+		// still before the upstream write so a rejecting ShortCircuit cannot race
+		// with provider output on the concurrent relay.
+		if deferTurnStart {
+			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+				clientConn.writeRealtimeError(bifrostErr)
+				return nil
 			}
 		}
 
