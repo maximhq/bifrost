@@ -5171,13 +5171,17 @@ func (c *Config) rebuildInterfaceCaches() {
 	var httpTransport []schemas.HTTPTransportPlugin
 
 	for _, p := range *basePlugins {
-		if llmPlugin, ok := p.(schemas.LLMPlugin); ok {
+		// Use the framework's As* helpers rather than bare type assertions: a .so plugin
+		// is wrapped in a DynamicPlugin that satisfies every hook interface even when the
+		// .so exports none of those symbols, so bare assertions put every dynamic plugin
+		// into all three caches and invoke no-op hooks on every request.
+		if llmPlugin := plugins.AsLLMPlugin(p); llmPlugin != nil {
 			llm = append(llm, llmPlugin)
 		}
-		if mcpPlugin, ok := p.(schemas.MCPPlugin); ok {
+		if mcpPlugin := plugins.AsMCPPlugin(p); mcpPlugin != nil {
 			mcp = append(mcp, mcpPlugin)
 		}
-		if httpPlugin, ok := p.(schemas.HTTPTransportPlugin); ok {
+		if httpPlugin := plugins.AsHTTPTransportPlugin(p); httpPlugin != nil {
 			httpTransport = append(httpTransport, httpPlugin)
 		}
 		if cm, ok := p.(schemas.ConfigMarshallerPlugin); ok {
