@@ -377,12 +377,32 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 		newRefreshToken = strings.TrimSpace(newTokenResponse.RefreshToken)
 	}
 
-	updated, err := p.configStore.RefreshOauthTokenFieldsIfActive(ctx, token.ID, newAccessToken, newRefreshToken, newExpiresAt, now)
+	// expectedPriorRefreshToken is token.RefreshToken as read above, before
+	// the upstream exchangeRefreshToken call — it's the value this refresh
+	// actually redeemed. The store only commits if that's still the row's
+	// live refresh_token, so a concurrent refresh of the same row (e.g. from
+	// another cluster node) that already won the race is never overwritten.
+	updated, err := p.configStore.RefreshOauthTokenFieldsIfActive(ctx, token.ID, token.RefreshToken, newAccessToken, newRefreshToken, newExpiresAt, now)
 	if err != nil {
 		return fmt.Errorf("failed to update token: %w", err)
 	}
 	if !updated {
-		return fmt.Errorf("token was reauthorized or rotated during refresh, discarding this refresh: %w", schemas.ErrOAuth2TokenExpired)
+		// The CAS was lost — someone else (another cluster node, a concurrent
+		// refresh, an explicit reauthorize) already moved refresh_token past
+		// what this attempt read. That's not necessarily bad news: drop any
+		// stale cached copy and reload the row fresh. If it's still active,
+		// the winner already supplied current credentials — this attempt's
+		// own (now-discarded) result was simply redundant, not a sign the
+		// credential is dead. Only report ErrOAuth2TokenExpired (which
+		// callers map to NeedsReauth) when the row is genuinely gone or
+		// landed in a non-active terminal state.
+		p.EvictUserTokenByID(token.ID)
+		reloaded, reloadErr := p.configStore.GetOauthTokenByID(ctx, token.ID)
+		if reloadErr == nil && reloaded != nil && reloaded.Status == "active" {
+			logger.Debug("OAuth refresh CAS lost but the row is still active (refreshed elsewhere): token_id=%s auth_mode=%s", token.ID, token.AuthMode)
+			return nil
+		}
+		return fmt.Errorf("token was reauthorized, rotated, or already refreshed elsewhere during this refresh, discarding this refresh: %w", schemas.ErrOAuth2TokenExpired)
 	}
 
 	// Drop any cached copy of the old access token; the next lookup reads
