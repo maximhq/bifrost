@@ -80,6 +80,99 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	}
 }
 
+// TestCustomProviderExtraParamsForwardedAutomatically verifies that custom
+// OpenAI-compatible providers preserve provider-specific extra params.
+func TestCustomProviderExtraParamsForwardedAutomatically(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.ModelProvider("custom-openai"),
+		Model:    "deepseek-v4",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			ExtraParams: map[string]interface{}{
+				"thinking": false,
+				"chat_template_kwargs": map[string]interface{}{
+					"enable_thinking": false,
+				},
+			},
+		},
+	}
+
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		req,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, req), nil
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var body map[string]interface{}
+	if err := sonic.Unmarshal(wireBody, &body); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if body["thinking"] != false {
+		t.Fatalf("expected thinking=false, got %v", body["thinking"])
+	}
+
+	rawKwargs, ok := body["chat_template_kwargs"]
+	if !ok {
+		t.Fatal("chat_template_kwargs missing from outgoing request body")
+	}
+	kwargs, ok := rawKwargs.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected chat_template_kwargs to be an object, got %T", rawKwargs)
+	}
+	if kwargs["enable_thinking"] != false {
+		t.Fatalf("expected enable_thinking=false, got %v", kwargs["enable_thinking"])
+	}
+}
+
+func TestStandardProviderExtraParamsNotForwardedAutomatically(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			ExtraParams: map[string]interface{}{
+				"thinking": true,
+				"chat_template_kwargs": map[string]interface{}{
+					"enable_thinking": true,
+				},
+			},
+		},
+	}
+
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		req,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIChatRequest(ctx, req), nil
+		},
+	)
+	if bifrostErr != nil {
+		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
+	}
+
+	var body map[string]interface{}
+	if err := sonic.Unmarshal(wireBody, &body); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if _, ok := body["thinking"]; ok {
+		t.Fatal("thinking must not be forwarded for a standard provider")
+	}
+	if _, ok := body["chat_template_kwargs"]; ok {
+		t.Fatal("chat_template_kwargs must not be forwarded for a standard provider")
+	}
+}
+
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
