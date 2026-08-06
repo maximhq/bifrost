@@ -28,6 +28,49 @@ func ToOpenAIRerankRequest(request *schemas.BifrostRerankRequest) *OpenAIRerankR
 	return converted
 }
 
+// MarshalJSON serializes "documents" into the shape most OpenAI-compatible
+// rerank servers expect: a plain string array when none of the documents
+// carry an id/meta, otherwise a uniform array of {text,id,meta} objects
+// (r.Documents marshals natively into that shape). The array is never a mix
+// of strings and objects, since some strict string-array upstreams (e.g.
+// llama.cpp) reject a "documents" array containing any non-string element.
+// A nil/empty Documents slice is left untouched so it keeps marshaling to
+// null/[] exactly as the native struct tag would.
+func (r *OpenAIRerankRequest) MarshalJSON() ([]byte, error) {
+	if r == nil {
+		return []byte("null"), nil
+	}
+	type Alias OpenAIRerankRequest
+
+	if len(r.Documents) == 0 {
+		return sonic.Marshal((*Alias)(r))
+	}
+
+	allPlain := true
+	for _, doc := range r.Documents {
+		if doc.ID != nil || len(doc.Meta) > 0 {
+			allPlain = false
+			break
+		}
+	}
+	if !allPlain {
+		return sonic.Marshal((*Alias)(r))
+	}
+
+	plainDocs := make([]string, len(r.Documents))
+	for i, doc := range r.Documents {
+		plainDocs[i] = doc.Text
+	}
+	override := struct {
+		*Alias
+		Documents []string `json:"documents"`
+	}{
+		Alias:     (*Alias)(r),
+		Documents: plainDocs,
+	}
+	return sonic.Marshal(override)
+}
+
 // ToBifrostRerankResponse converts an OpenAI-compatible rerank response to Bifrost format
 func (response *OpenAIRerankResponse) ToBifrostRerankResponse(documents []schemas.RerankDocument, returnDocuments bool) *schemas.BifrostRerankResponse {
 	if response == nil {
