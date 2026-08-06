@@ -1100,7 +1100,35 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s is not disabled (current state: %s)", clientState.ExecutionConfig.Name, clientState.State)
 	}
+	m.mu.Unlock()
 
+	// Guard against concurrent reconnects for the same client from any caller
+	// (health monitor, manual API call, etc.) BEFORE mutating Disabled, not
+	// after: connectToMCPClient's own Disabled guard only bails out while
+	// State is Disabled AND config.Disabled is still true (see its call
+	// site), so flipping Disabled first and only losing this guard
+	// afterwards would let a concurrent ReconnectClient read Disabled=false,
+	// sail past that guard, and connect the entry while its State is still
+	// Disabled — silently enabling the client out from under an EnableClient
+	// call that then reports "already in progress" as if nothing happened.
+	// Registration is atomic: whichever caller arrives second gets the error
+	// immediately.
+	finish, ok := m.beginExclusiveClientOp(id)
+	if !ok {
+		return fmt.Errorf("reconnect already in progress for this client")
+	}
+	defer func() { finish(retErr) }()
+
+	m.mu.Lock()
+	clientState, ok = m.clientMap[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("client %s not found", id)
+	}
+	if clientState.State != schemas.MCPConnectionStateDisabled {
+		m.mu.Unlock()
+		return fmt.Errorf("client %s is not disabled (current state: %s)", clientState.ExecutionConfig.Name, clientState.State)
+	}
 	clientState.ExecutionConfig.Disabled = false
 	configCopy := clientState.ExecutionConfig
 	m.mu.Unlock()
@@ -1123,15 +1151,6 @@ func (m *MCPManager) EnableClient(id string) (retErr error) {
 		m.logger.Debug("%s Per-user auth MCP client '%s' enabled (no persistent connection)", MCPLogPrefix, configCopy.Name)
 		return nil
 	}
-
-	// Guard against concurrent reconnects for the same client from any caller
-	// (health monitor, manual API call, etc.). Registration is atomic: whichever
-	// caller arrives second gets the "already in progress" error immediately.
-	finish, ok := m.beginExclusiveClientOp(id)
-	if !ok {
-		return fmt.Errorf("reconnect already in progress for this client")
-	}
-	defer func() { finish(retErr) }()
 
 	if err := m.connectToMCPClient(m.ctx, configCopy); err != nil {
 		// Connection failed — leave the entry as Disconnected so the health monitor can
@@ -1553,10 +1572,16 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 			// during connection attempts; it transitions to Connected only on
 			// success. The generation bump invalidates any late writer that
 			// captured the detached connection (tool syncer, SSE loss callback).
+			//
+			// ToolMap/ToolNameMapping are deliberately left as last-known-good,
+			// not cleared here: the success path below replaces both wholesale
+			// after discovery regardless, and failConnectAttempt relies on
+			// finding the previous maps still in place if this dial fails —
+			// clearing them here would make a second consecutive failed
+			// close-first reconnect (STDIO, in-process, or no live connection)
+			// lose its last-known tools instead of just the first one.
 			existingClient.State = schemas.MCPConnectionStateDisconnected
 			existingClient.Conn = nil
-			existingClient.ToolMap = make(map[string]schemas.ChatTool)
-			existingClient.ToolNameMapping = make(map[string]string)
 			existingClient.ConnectionInfo = &schemas.MCPClientConnectionInfo{
 				Type: config.ConnectionType,
 			}
@@ -1797,7 +1822,7 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 		// carries that signal. Never clobber Disabled (DisableClient is
 		// authoritative, same invariant the health monitor's updateClientState
 		// guard preserves).
-		needsReauth := isOAuth2TokenExpiredErrorText(gateErr.GetErrorString())
+		needsReauth := gateErr.Error != nil && errors.Is(gateErr.Error.Error, schemas.ErrOAuth2TokenExpired)
 		m.failConnectAttempt(entry, config, cancel, externalClient, oldCancel, oldConn, needsReauth)
 		return fmt.Errorf("failed to connect MCP client %s: %s", config.Name, gateErr.GetErrorString())
 	}
@@ -1984,11 +2009,11 @@ func (m *MCPManager) closeConnHandles(cancel context.CancelFunc, conn *client.Cl
 // failConnectAttempt is the shared teardown for every failure exit of
 // connectToMCPClient after the client entry has been prepared. It first
 // writes the standard post-failure entry state under m.mu: no connection,
-// cleared tool maps, connection info reduced to the bare type, a generation
-// bump, and State Disconnected (or NeedsReauth when the failure was
-// classified as a dead OAuth2 credential). Only then are the half-built new
-// connection handles and the previous connection captured for
-// make-before-break closed, outside the lock.
+// last-known tool maps left intact, connection info reduced to the bare
+// type, a generation bump, and State Disconnected (or NeedsReauth when the
+// failure was classified as a dead OAuth2 credential). Only then are the
+// half-built new connection handles and the previous connection captured
+// for make-before-break closed, outside the lock.
 //
 // The order is load-bearing: during a make-before-break dial the map entry
 // still references the old connection, and other closers (RemoveClient)
@@ -1997,8 +2022,9 @@ func (m *MCPManager) closeConnHandles(cancel context.CancelFunc, conn *client.Cl
 // the transport's own idempotence check suffices; closing first would race
 // it. The generation bump invalidates late writers that captured the old
 // connection: a tool-sync tick whose list_tools succeeded on the old
-// connection mid-dial must not repopulate the cleared tool map of a
-// Disconnected or NeedsReauth entry, and a late SSE loss callback from the
+// connection mid-dial must not write its results over this entry (toolsync.go
+// compares the generation it captured before running against the current one
+// and drops the write on mismatch), and a late SSE loss callback from the
 // torn-down connection must not overwrite the failure state.
 //
 // Disabled entries keep the state DisableClient wrote, and an entry removed
@@ -2011,8 +2037,15 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 	if clientState, exists := m.clientMap[config.ID]; exists && clientState == entry && clientState.State != schemas.MCPConnectionStateDisabled {
 		clientState.Conn = nil
 		clientState.CancelFunc = nil
-		clientState.ToolMap = make(map[string]schemas.ChatTool)
-		clientState.ToolNameMapping = make(map[string]string)
+		// ToolMap/ToolNameMapping are deliberately left as last-known-good, not
+		// cleared: GetClientForTool resolves by tool name against this map, and
+		// wiping it here made a dead connection indistinguishable from a tool
+		// that never existed ("not available or not permitted" instead of
+		// "client needs re-authorization" — see prepareToolExecution's
+		// State-specific checks, which now give the real reason). Callers that
+		// build the advertised tool list (GetToolPerClient) filter on State
+		// directly rather than relying on an empty map, so this doesn't cause
+		// a disconnected client's tools to keep being offered.
 		clientState.ConnectionInfo = &schemas.MCPClientConnectionInfo{
 			Type: config.ConnectionType,
 		}
