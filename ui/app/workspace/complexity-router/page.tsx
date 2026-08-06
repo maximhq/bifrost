@@ -154,19 +154,77 @@ export default function ComplexityRouterPage() {
 		[liveKeywords],
 	);
 
-	// Saving re-runs warmup. It is a no-op when only the threshold or timeout
-	// changed (the phrase fingerprint is unchanged), but re-embeds every phrase
-	// when the provider, model, or a list changed.
-	const willReembed = useMemo(() => {
-		if (!data || !isClassifierConfigured) return false;
+	// Every embedding-cost warning below is about what the pending save will do,
+	// so it is gated on there being a pending save at all. Without this the page
+	// compares the form against a stale `data` and bills a save that cannot
+	// happen: Restore defaults persists server-side and resets the form, leaving
+	// it clean while the config query has not refetched yet — the exact window
+	// where a "saving will embed N phrases" line appears next to a disabled Save.
+	const hasPendingSave = isDirty;
+
+	// Saving re-runs warmup, but what it costs depends on what changed, because
+	// the gateway caches a vector per phrase (semanticEmbeddingCache).
+	//
+	// Provider and model are the cache's identity: changing either invalidates
+	// every vector at once, so the whole list is re-embedded.
+	//
+	// An empty cache means the same thing. It lives only in the gateway's memory
+	// — a stored vector cannot be read back out of a vector store — so a restart
+	// drops every vector while the saved phrases look untouched. Inferring reuse
+	// from the persisted config alone promised "N reused" for phrases the gateway
+	// no longer holds, so the count comes from the status payload instead.
+	const cachedPhrases = semanticStatus?.cached_phrases;
+	const willReembedAll = useMemo(() => {
+		if (!data || !isClassifierConfigured || !hasPendingSave) return false;
 		const saved = data.semantic;
 		if (!saved) return true;
-		return (
-			saved.provider !== liveSemantic?.provider ||
-			saved.embedding_model !== liveSemantic?.embedding_model ||
-			JSON.stringify(data.keywords) !== JSON.stringify(liveKeywords)
+		if (cachedPhrases !== undefined && cachedPhrases === 0) return true;
+		return saved.provider !== liveSemantic?.provider || saved.embedding_model !== liveSemantic?.embedding_model;
+	}, [data, isClassifierConfigured, hasPendingSave, liveSemantic, cachedPhrases]);
+
+	// Editing the lists only pays for phrase text the gateway has not embedded
+	// before. The cache is keyed by phrase alone, so moving a phrase between
+	// tiers costs nothing — only genuinely new text reaches the provider.
+	//
+	// Both sides are compared in the gateway's own phrase space, not as typed:
+	// normalizeComplexityKeywordList (framework/configstore) lowercases, trims,
+	// and dedupes before anything is embedded or cached, so "Give me the SQL"
+	// and "give me the sql" are one phrase and one embedding. Comparing raw text
+	// counted every mixed-case phrase as new, which is most of the defaults.
+	const { newPhraseCount, reusedPhraseCount } = useMemo(() => {
+		if (!data || !isClassifierConfigured || !hasPendingSave || willReembedAll) {
+			return { newPhraseCount: 0, reusedPhraseCount: 0 };
+		}
+		const normalize = (phrase: string) => phrase.trim().toLowerCase();
+		const savedPhrases = new Set(
+			[
+				...(data.keywords?.simple_keywords ?? []),
+				...(data.keywords?.medium_keywords ?? []),
+				...(data.keywords?.complex_keywords ?? []),
+			].map(normalize),
 		);
-	}, [data, isClassifierConfigured, liveSemantic, liveKeywords]);
+		// A Set because the gateway dedupes too: the same phrase in two tiers is
+		// one embedding, so counting it twice would overstate the bill.
+		const live = new Set(
+			[...(liveKeywords?.simple_keywords ?? []), ...(liveKeywords?.medium_keywords ?? []), ...(liveKeywords?.complex_keywords ?? [])]
+				.map(normalize)
+				.filter(Boolean),
+		);
+		let added = 0;
+		live.forEach((phrase) => {
+			if (!savedPhrases.has(phrase)) added += 1;
+		});
+		// The saved lists are what the gateway *last warmed*, not necessarily what
+		// it still holds: retain only prunes to the active phrases after a warmup
+		// that finished, so a run that failed partway leaves fewer vectors cached
+		// than there are saved phrases. Cap reuse at what the gateway reports so
+		// the two counts still sum to the live list rather than promising vectors
+		// that are not there.
+		const carried = Math.min(live.size - added, cachedPhrases ?? live.size - added);
+		return { newPhraseCount: live.size - carried, reusedPhraseCount: carried };
+	}, [data, isClassifierConfigured, hasPendingSave, willReembedAll, liveKeywords, cachedPhrases]);
+
+	const willReembed = willReembedAll || newPhraseCount > 0;
 
 	useEffect(() => {
 		if (!data || isDirty) return;
@@ -264,15 +322,34 @@ export default function ComplexityRouterPage() {
 
 	// Rendered on the page and again inside the sheet: the re-embed cost is a
 	// consequence of saving, and either surface can trigger the save.
-	const reembedWarning = willReembed ? (
+	// Only a full re-embed is worth warning about in the sheet: every field that
+	// can cause one lives there, and the sheet has its own Save. Adding phrases
+	// is a page-level edit and is reported on the page instead, so the two
+	// surfaces no longer repeat the same sentence at each other.
+	const reembedAllWarning = willReembedAll ? (
 		<Alert variant="warning" data-testid="complexity-router-reembed-warning">
 			<TriangleAlert className="h-4 w-4" />
 			<AlertDescription>
-				Saving will embed all {totalPhrases} reference phrases through the selected provider. This uses embedding tokens and may take a
-				short time. Changes only to the threshold, timeout, or storage reuse the current embeddings.
+				Saving will embed all {totalPhrases} reference phrases through the selected provider. Changing the provider or model invalidates
+				every stored vector, so the whole list is embedded again. This uses embedding tokens and may take a short time.
 			</AlertDescription>
 		</Alert>
 	) : null;
+
+	// Phrases already embedded on this gateway are reused, so the bill is the
+	// new text alone rather than the whole list.
+	const newPhraseWarning =
+		!willReembedAll && newPhraseCount > 0 ? (
+			<Alert variant="warning" data-testid="complexity-router-new-phrase-warning">
+				<TriangleAlert className="h-4 w-4" />
+				<AlertDescription>
+					Saving will embed {newPhraseCount} new reference phrase{newPhraseCount === 1 ? "" : "s"} through the selected provider. The other{" "}
+					{reusedPhraseCount} reuse the embeddings this gateway already holds.
+				</AlertDescription>
+			</Alert>
+		) : null;
+
+	const reembedWarning = reembedAllWarning ?? newPhraseWarning;
 
 	return (
 		<>
@@ -471,7 +548,7 @@ export default function ComplexityRouterPage() {
 				providerKeyIds={enabledKeyIdsForProvider}
 				providersLoading={isProviderListLoading}
 				isVectorStoreConnected={isVectorStoreConnected}
-				warning={reembedWarning}
+				warning={reembedAllWarning}
 				canSave={canSave}
 				isSaving={isSaving}
 				onSave={() => void submit()}

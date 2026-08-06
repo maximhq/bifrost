@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -297,6 +298,17 @@ func TestChromemStore_Pagination(t *testing.T) {
 	badCursor := "not-a-number"
 	_, _, err := ts.Store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, &badCursor, 2)
 	assert.Error(t, err)
+
+	// A caller-supplied limit is unbounded, so offset+limit can overflow int64
+	// and wrap negative. Nothing downstream catches that: the end > total check
+	// is false for a negative end, and the slice bounds then panic. Every page
+	// past the first is reachable this way, since it needs a non-zero cursor.
+	hugeLimit := int64(math.MaxInt64)
+	firstCursor := "1"
+	results, next, err := ts.Store.GetAll(ts.ctx, ChromemTestNamespace, nil, nil, &firstCursor, hugeLimit)
+	require.NoError(t, err)
+	assert.Nil(t, next, "a limit past the end leaves nothing to page to")
+	assert.Len(t, results, 4, "an oversized limit returns the remainder, not a panic")
 }
 
 func TestChromemStore_DimensionHandling(t *testing.T) {

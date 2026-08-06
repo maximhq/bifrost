@@ -3671,11 +3671,6 @@
           ],
           "default": "500ms"
         },
-        "fallback": {
-          "type": "string",
-          "enum": ["lexical", "none"],
-          "description": "Retained for compatibility; neither value changes behavior. Semantic is the only classifier that runs, so a request it cannot serve publishes no tier and is recorded as 'skipped' (default: none)"
-        },
         "min_similarity": {
           "type": "number",
           "minimum": 0,

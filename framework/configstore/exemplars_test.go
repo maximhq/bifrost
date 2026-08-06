@@ -53,6 +53,13 @@ func TestDefaultComplexityExemplarsBalanceSurfaceForm(t *testing.T) {
 	type lengths struct{ min, median, max int }
 	measured := make([]lengths, 0, len(tiers))
 	for _, tier := range tiers {
+		// TestDefaultComplexityExemplars already enforces the per-tier count, but
+		// it is a separate test: an emptied tier would reach the min/median/max
+		// indexing below and panic, taking the whole package's test binary with it
+		// instead of naming the tier at fault.
+		if len(tier.values) == 0 {
+			t.Fatalf("%s has no default exemplars", tier.name)
+		}
 		counts := make([]int, 0, len(tier.values))
 		for _, value := range tier.values {
 			counts = append(counts, len(strings.Fields(value)))
