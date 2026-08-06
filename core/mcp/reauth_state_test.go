@@ -143,7 +143,7 @@ func TestSetState_PreservesNeedsReauth(t *testing.T) {
 	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
 
 	// A failed check tick (recordFailure's path) tries to write Unstable first.
-	checker.setState(schemas.MCPConnectionStateUnstable)
+	checker.setState(schemas.MCPConnectionStateUnstable, 0)
 	m.mu.RLock()
 	stateAfterFailureTick := m.clientMap[config.ID].State
 	m.mu.RUnlock()
@@ -152,7 +152,7 @@ func TestSetState_PreservesNeedsReauth(t *testing.T) {
 	// A successful check (recordSuccess's path) tries to write Healthy — this
 	// must also be rejected: the check succeeding against a stale/absent
 	// transport does not mean the credential is fixed.
-	checker.setState(schemas.MCPConnectionStateHealthy)
+	checker.setState(schemas.MCPConnectionStateHealthy, 0)
 	m.mu.RLock()
 	stateAfterSuccessTick := m.clientMap[config.ID].State
 	m.mu.RUnlock()
@@ -204,7 +204,7 @@ func TestSetState_StillPreservesDisabled(t *testing.T) {
 	m.mu.Unlock()
 
 	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
-	checker.setState(schemas.MCPConnectionStateHealthy)
+	checker.setState(schemas.MCPConnectionStateHealthy, 0)
 
 	m.mu.RLock()
 	state := m.clientMap[config.ID].State

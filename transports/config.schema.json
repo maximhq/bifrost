@@ -5018,6 +5018,11 @@
           "description": "Whether the MCP server supports ping for health checks (default: true)",
           "default": true
         },
+        "needs_session_stickiness": {
+          "type": "boolean",
+          "description": "Only meaningful for connection_type 'http': whether this client maintains one persistent connection reused across every caller (true) or connects fresh per call (false, the default for newly created clients). SSE and STDIO always behave as sticky regardless of this field.",
+          "default": false
+        },
         "tool_pricing": {
           "type": "object",
           "description": "Tool pricing map (tool name to cost per execution)",

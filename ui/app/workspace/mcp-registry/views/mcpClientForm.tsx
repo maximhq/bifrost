@@ -479,6 +479,44 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											</FormItem>
 										)}
 									/>
+									{connectionType === "http" &&
+										authType !== "per_user_oauth" &&
+										authType !== "per_user_headers" &&
+										authType !== "token_exchange" && (
+											<FormField
+												control={control}
+												name="needs_session_stickiness"
+												render={({ field }) => (
+													<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+														<div className="flex items-center gap-2">
+															<FormLabel htmlFor="needs-session-stickiness">Maintain Persistent Connection</FormLabel>
+															<TooltipProvider>
+																<Tooltip>
+																	<TooltipTrigger asChild>
+																		<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																	</TooltipTrigger>
+																	<TooltipContent className="max-w-xs">
+																		<p>
+																			Enable to keep one shared connection open and reused across every caller. Disable to connect fresh on
+																			every call instead, same as per-user auth types. Only applies to HTTP connections; SSE and STDIO always
+																			keep a persistent connection.
+																		</p>
+																	</TooltipContent>
+																</Tooltip>
+															</TooltipProvider>
+														</div>
+														<FormControl>
+															<Switch
+																id="needs-session-stickiness"
+																data-testid="mcp-needs-session-stickiness"
+																checked={field.value === true}
+																onCheckedChange={field.onChange}
+															/>
+														</FormControl>
+													</FormItem>
+												)}
+											/>
+										)}
 								</div>
 							</div>
 
@@ -505,6 +543,13 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 															setValue("auth_type", "none");
 															setValue("headers", undefined);
 															setValue("oauth_config", undefined);
+														}
+														// needs_session_stickiness=false is rejected for
+														// non-http connection types; SSE/STDIO always keep
+														// a persistent connection regardless, so drop any
+														// explicit false picked while http was selected.
+														if (value !== "http") {
+															setValue("needs_session_stickiness", undefined);
 														}
 														clearErrors();
 													}}

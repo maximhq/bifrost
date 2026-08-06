@@ -465,6 +465,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"drop_oauth_config_token_id_column"}, run: migrationDropOauthConfigTokenIDColumn},
 	{IDs: []string{"add_mcp_admin_auth_mode_indexes"}, run: migrationAddMCPAdminAuthModeIndexes},
 	{IDs: []string{"add_mcp_client_token_exchange_json_column"}, run: migrationAddMCPClientTokenExchangeJSONColumn},
+	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -4565,6 +4566,46 @@ func migrationAddIsPingAvailableColumnToMCPClientTable(ctx context.Context, db *
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running is_ping_available migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddNeedsSessionStickinessColumn adds the needs_session_stickiness
+// column to the config_mcp_clients table, backfilled true for every existing
+// row — preserves today's persistent-connection behavior for every
+// pre-existing shared client by default; only newly-opted-in clients get the
+// per-call model.
+func migrationAddNeedsSessionStickinessColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_needs_session_stickiness_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "needs_session_stickiness") {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "needs_session_stickiness"); err != nil {
+					return err
+				}
+				// Set default value for existing rows
+				if err := tx.Model(&tables.TableMCPClient{}).Where("needs_session_stickiness IS NULL").Update("needs_session_stickiness", true).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableMCPClient{}, "needs_session_stickiness"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running needs_session_stickiness migration: %s", err.Error())
 	}
 	return nil
 }
