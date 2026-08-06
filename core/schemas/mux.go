@@ -213,6 +213,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					respBlocks[i].FileID = block.File.FileID
 					respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
+						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
 						FileType: block.File.FileType,
 					}
@@ -616,7 +617,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				if block.File != nil {
 					responseBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
+						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
+						FileType: block.File.FileType,
 					}
 					responseBlocks[i].FileID = block.File.FileID
 				}
@@ -924,7 +927,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					if block.ResponsesInputMessageContentBlockFile != nil {
 						chatBlocks[i].File = &ChatInputFile{
 							FileData: block.ResponsesInputMessageContentBlockFile.FileData,
+							FileURL:  block.ResponsesInputMessageContentBlockFile.FileURL,
 							Filename: block.ResponsesInputMessageContentBlockFile.Filename,
+							FileType: block.ResponsesInputMessageContentBlockFile.FileType,
 							FileID:   block.FileID,
 						}
 					}
