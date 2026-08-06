@@ -125,7 +125,7 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 
 	t.Run("DeepSeek does not embed the id", func(t *testing.T) {
 		msg := newMsg()
-		blocks := convertBifrostReasoningToAnthropicThinking(msg, schemas.DeepSeek, "deepseek-chat")
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.DeepSeek, "deepseek-chat")
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
 		}
@@ -145,7 +145,7 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 
 	t.Run("OpenAI embeds the id", func(t *testing.T) {
 		msg := newMsg()
-		blocks := convertBifrostReasoningToAnthropicThinking(msg, schemas.OpenAI, "gpt-5")
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.OpenAI, "gpt-5")
 		if len(blocks) != 1 {
 			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
 		}
@@ -155,6 +155,23 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 		id, _, ok := providerUtils.ExtractReasoningItemID(*blocks[0].Signature)
 		if !ok || id == nil || *id != *msg.ID {
 			t.Errorf("OpenAI-sourced signature = %q, want an embedded id %q", *blocks[0].Signature, *msg.ID)
+		}
+	})
+
+	// A custom provider reports its own key, so the gate has to resolve it back to
+	// the base provider type Bifrost recorded on the context -- otherwise OpenAI
+	// models served through an openai-based custom provider silently lose the id.
+	t.Run("openai-based custom provider embeds the id", func(t *testing.T) {
+		msg := newMsg()
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+		blocks := convertBifrostReasoningToAnthropicThinking(ctx, msg, schemas.ModelProvider("my-openai"), "my-gpt-deployment")
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
+		}
+		id, _, ok := providerUtils.ExtractReasoningItemID(*blocks[0].Signature)
+		if !ok || id == nil || *id != *msg.ID {
+			t.Errorf("custom-provider signature = %q, want an embedded id %q", *blocks[0].Signature, *msg.ID)
 		}
 	})
 }

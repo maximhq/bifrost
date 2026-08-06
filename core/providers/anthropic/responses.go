@@ -2640,7 +2640,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						// embedID gates smuggling the real OpenAI reasoning item id into
 						// signature/data (see providerUtils.ShouldEmbedReasoningItemID and
 						// convertBifrostReasoningToAnthropicThinking for why).
-						embedID := providerUtils.ShouldEmbedReasoningItemID(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.RoutingInfo.Model)
+						embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.RoutingInfo.Model)
 						contentBlock.Type = AnthropicContentBlockTypeThinking
 						contentBlock.Thinking = schemas.Ptr("")
 						signature := ""
@@ -2665,7 +2665,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						// When thinking is enabled, reasoning content might be incorrectly classified as FunctionCall
 						if bifrostResp.Item.ResponsesReasoning != nil {
 							// This is actually reasoning content, not a function call
-							embedID := providerUtils.ShouldEmbedReasoningItemID(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.RoutingInfo.Model)
+							embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.RoutingInfo.Model)
 							contentBlock.Type = AnthropicContentBlockTypeThinking
 							contentBlock.Thinking = schemas.Ptr("")
 							signature := ""
@@ -4597,7 +4597,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			flushPendingToolResults()
 
 			// Handle reasoning as thinking content
-			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(&msg, provider, model)
+			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(ctx, &msg, provider, model)
 			pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 
 		case schemas.ResponsesMessageTypeFunctionCall:
@@ -6103,9 +6103,9 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 // echoes the block back on a later turn, a fresh random id gets minted and paired
 // with the original (still real) encrypted_content -- a mismatch OpenAI rejects
 // with "Encrypted content item_id did not match the target item id."
-func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string) []AnthropicContentBlock {
+func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string) []AnthropicContentBlock {
 	var thinkingBlocks []AnthropicContentBlock
-	embedID := providerUtils.ShouldEmbedReasoningItemID(sourceProvider, model)
+	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model)
 
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
