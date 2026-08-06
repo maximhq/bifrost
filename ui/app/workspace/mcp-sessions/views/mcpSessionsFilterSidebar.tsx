@@ -7,12 +7,15 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
+import { useGetMCPClientsQuery } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { ChevronDown, Fingerprint, KeyRound, PanelLeftClose, PanelLeftOpen, RotateCcw, UserRound } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronDown, Fingerprint, KeyRound, LoaderCircle, PanelLeftClose, PanelLeftOpen, RotateCcw, Search, UserRound } from "lucide-react";
+import { type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const COLLAPSE_STORAGE_KEY = "mcp-sessions-filter-sidebar-collapsed";
+const MCP_CLIENT_PAGE_SIZE = 25;
 
 // ---------------------------------------------------------------------------
 // Filter types
@@ -22,12 +25,14 @@ export interface MCPSessionFilters {
 	kind: string[]; // subset of ["token", "header"]
 	status: string[]; // subset of ["active", "orphaned", "needs_reauth", "needs_update", "pending"]
 	auth_mode: string[]; // subset of ["user", "vk", "session"]
+	mcp_client_id: string[]; // explicit MCP client IDs
 }
 
 export const EMPTY_FILTERS: MCPSessionFilters = {
 	kind: [],
 	status: [],
 	auth_mode: [],
+	mcp_client_id: [],
 };
 
 interface FilterOption {
@@ -88,7 +93,7 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 	}, []);
 
 	const activeFilterCount = useMemo(() => {
-		return filters.kind.length + filters.status.length + filters.auth_mode.length;
+		return filters.kind.length + filters.status.length + filters.auth_mode.length + filters.mcp_client_id.length;
 	}, [filters]);
 
 	const handleReset = useCallback(() => {
@@ -171,6 +176,7 @@ export function MCPSessionsFilterSidebar({ filters, onFiltersChange }: SidebarPr
 						onChange={(auth_mode) => onFiltersChange({ ...filters, auth_mode })}
 						testIdPrefix="mcp-sessions-filter-auth-mode"
 					/>
+					<MCPClientFilterSection filters={filters} onFiltersChange={onFiltersChange} />
 				</div>
 			</ScrollArea>
 		</div>
@@ -185,11 +191,13 @@ function FilterSection({
 	title,
 	children,
 	defaultOpen = false,
+	onOpenChange,
 	testId,
 }: {
 	title: string;
 	children: React.ReactNode;
 	defaultOpen?: boolean;
+	onOpenChange?: (open: boolean) => void;
 	testId?: string;
 }) {
 	const [open, setOpen] = useState(defaultOpen);
@@ -198,8 +206,13 @@ function FilterSection({
 		if (defaultOpen) setOpen(true);
 	}, [defaultOpen]);
 
+	const handleOpenChange = (next: boolean) => {
+		setOpen(next);
+		onOpenChange?.(next);
+	};
+
 	return (
-		<Collapsible open={open} onOpenChange={setOpen} className="last:pb-2">
+		<Collapsible open={open} onOpenChange={handleOpenChange} className="last:pb-2">
 			<CollapsibleTrigger
 				className="flex h-8 w-full cursor-pointer items-center gap-1.5 px-2 py-2 text-sm font-medium hover:opacity-80"
 				data-testid={testId}
@@ -273,6 +286,135 @@ function CheckboxFilterSection({
 					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${option.value}` : undefined}
 				/>
 			))}
+		</FilterSection>
+	);
+}
+
+function useAutoFocusOnOpen(isOpen: boolean) {
+	const ref = useRef<HTMLInputElement>(null);
+	// Skip the initial mount so focus isn't stolen when the section starts open
+	// from URL state; only focus on an explicit open action by the user.
+	const mounted = useRef(false);
+	useEffect(() => {
+		if (!mounted.current) {
+			mounted.current = true;
+			return;
+		}
+		if (isOpen) ref.current?.focus({ preventScroll: true });
+	}, [isOpen]);
+	return ref;
+}
+
+// SearchableCheckboxList – checkbox rows with a search input. Client-side label
+// filtering is applied on top of the (debounced) onSearch callback so the caller
+// can fetch server-side results. Mirrors the MCP clients filter sidebar pattern.
+function SearchableCheckboxList({
+	items,
+	isSelected,
+	onToggle,
+	placeholder = "Search...",
+	inputRef,
+	testIdPrefix,
+	onSearch,
+	fetching,
+}: {
+	items: { key: string; label: string }[];
+	isSelected: (key: string) => boolean;
+	onToggle: (key: string) => void;
+	placeholder?: string;
+	inputRef?: Ref<HTMLInputElement>;
+	testIdPrefix?: string;
+	onSearch?: (query: string) => void;
+	fetching?: boolean;
+}) {
+	const [query, setQuery] = useState("");
+	const normalized = query.trim().toLowerCase();
+	const filtered = normalized ? items.filter((item) => item.label.toLowerCase().includes(normalized)) : items;
+
+	useEffect(() => {
+		if (!onSearch) return;
+		const timer = setTimeout(() => onSearch(query.trim()), 300);
+		return () => clearTimeout(timer);
+	}, [query, onSearch]);
+
+	return (
+		<>
+			<div className="relative border-b">
+				{fetching ? (
+					<LoaderCircle className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 animate-spin" />
+				) : (
+					<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				)}
+				<Input
+					ref={inputRef}
+					value={query}
+					onChange={(e) => setQuery(e.target.value)}
+					placeholder={placeholder}
+					className="h-8 border-0 pl-8 text-xs"
+					data-testid={testIdPrefix ? `${testIdPrefix}-search` : undefined}
+				/>
+			</div>
+			{filtered.map((item) => (
+				<CheckboxFilterItem
+					key={item.key}
+					label={item.label}
+					checked={isSelected(item.key)}
+					onCheckedChange={() => onToggle(item.key)}
+					testId={testIdPrefix ? `${testIdPrefix}-checkbox-${item.key}` : undefined}
+				/>
+			))}
+			{filtered.length === 0 && <div className="text-muted-foreground flex h-9 items-center px-3 text-xs">No results</div>}
+		</>
+	);
+}
+
+// MCPClientFilterSection – restricts sessions to a set of MCP clients, resolved
+// via server-side search (mirrors VKAccessFilterSection in the MCP clients
+// sidebar). Scoped to per_user_oauth/per_user_headers clients only — those are
+// the only auth types that ever produce a session row here. Further narrowed
+// by the Type filter when it picks a single kind: OAuth (token) → only
+// per_user_oauth clients, Headers (header) → only per_user_headers clients.
+// Neither/both selected falls back to the full per-user set. The client list
+// only fetches once the section is opened or already has a selection, since
+// most visits won't touch this filter.
+function MCPClientFilterSection({ filters, onFiltersChange }: SidebarProps) {
+	const hasActive = filters.mcp_client_id.length > 0;
+	const [opened, setOpened] = useState(hasActive);
+	const [searchQuery, setSearchQuery] = useState("");
+	const searchInputRef = useAutoFocusOnOpen(opened);
+
+	const authType = useMemo(() => {
+		const onlyOAuth = filters.kind.includes("token") && !filters.kind.includes("header");
+		const onlyHeaders = filters.kind.includes("header") && !filters.kind.includes("token");
+		if (onlyOAuth) return "per_user_oauth";
+		if (onlyHeaders) return "per_user_headers";
+		return "per_user_oauth,per_user_headers";
+	}, [filters.kind]);
+
+	const { data, isFetching } = useGetMCPClientsQuery(
+		{ limit: MCP_CLIENT_PAGE_SIZE, offset: 0, search: searchQuery || undefined, auth_type: authType },
+		{ skip: !opened && !hasActive },
+	);
+	const mcpClients = data?.clients || [];
+
+	const toggle = (clientId: string) => {
+		const current = filters.mcp_client_id;
+		const next = current.includes(clientId) ? current.filter((v) => v !== clientId) : [...current, clientId];
+		onFiltersChange({ ...filters, mcp_client_id: next });
+	};
+
+	return (
+		<FilterSection title="MCP Server" defaultOpen={hasActive} onOpenChange={setOpened} testId="mcp-sessions-filter-mcp-client-toggle">
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search MCP servers"
+				items={mcpClients.map((client) => ({ key: client.config.client_id, label: client.config.name || client.config.client_id }))}
+				isSelected={(key) => filters.mcp_client_id.includes(key)}
+				onToggle={toggle}
+				onSearch={setSearchQuery}
+				fetching={isFetching}
+				testIdPrefix="mcp-sessions-filter-mcp-client"
+			/>
 		</FilterSection>
 	);
 }
