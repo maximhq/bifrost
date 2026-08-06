@@ -1488,7 +1488,7 @@ func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Ta
 	return nil
 }
 
-func (m *MockConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
+func (m *MockConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, expectedPriorRefreshToken, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
 	return true, nil
 }
 
