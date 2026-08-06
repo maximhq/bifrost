@@ -4,10 +4,9 @@ import { SecretVar } from "./schemas";
 export type MCPConnectionType = "http" | "stdio" | "sse";
 
 export type MCPConnectionState =
-	| "connected"
-	| "disconnected"
+	| "healthy"
+	| "unstable"
 	| "error"
-	| "pending_tools"
 	| "pending_verification"
 	| "disabled"
 	| "needs_reauth";

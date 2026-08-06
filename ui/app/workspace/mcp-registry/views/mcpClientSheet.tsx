@@ -17,7 +17,6 @@ import { CodeEditor } from "@/components/ui/codeEditor";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -42,6 +41,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
+import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
 import { TokenExchangeFields } from "./tokenExchangeFields";
 
@@ -96,38 +96,6 @@ function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): n
 		}
 	}
 	return Math.ceil(total);
-}
-
-/** Consistent title + one-line description used for every subsection across all tabs. */
-function SectionHeader({
-	title,
-	description,
-	testId,
-	action,
-}: {
-	title: string;
-	description: string;
-	testId?: string;
-	/** Optional trailing action (e.g. an "Add X" button) rendered right-aligned on the same row as the title. */
-	action?: React.ReactNode;
-}) {
-	const header = (
-		<div className="space-y-1">
-			<Label className="text-sm font-medium" data-testid={testId}>
-				{title}
-			</Label>
-			<p className="text-muted-foreground text-xs">{description}</p>
-		</div>
-	);
-
-	if (!action) return header;
-
-	return (
-		<div className="flex items-start justify-between gap-4">
-			{header}
-			{action}
-		</div>
-	);
 }
 
 export default function MCPClientSheet({
@@ -269,13 +237,13 @@ export default function MCPClientSheet({
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
-					client_id: mcpClient.config.oauth_client_id,
-					client_secret: mcpClient.config.oauth_client_secret,
-					authorize_url: mcpClient.config.oauth_authorize_url,
-					token_url: mcpClient.config.oauth_token_url,
-					registration_url: mcpClient.config.oauth_registration_url,
-					resource: mcpClient.config.oauth_resource,
-				}
+						client_id: mcpClient.config.oauth_client_id,
+						client_secret: mcpClient.config.oauth_client_secret,
+						authorize_url: mcpClient.config.oauth_authorize_url,
+						token_url: mcpClient.config.oauth_token_url,
+						registration_url: mcpClient.config.oauth_registration_url,
+						resource: mcpClient.config.oauth_resource,
+					}
 				: undefined,
 			// Unlike oauth_config, token_exchange is replaced wholesale server-side
 			// (only client_id/client_secret get redacted-value preservation) — so
@@ -283,17 +251,17 @@ export default function MCPClientSheet({
 			// with its current stored value rather than left blank.
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
-					audience: mcpClient.config.token_exchange?.audience,
-					client_id: mcpClient.config.token_exchange?.client_id,
-					client_secret: mcpClient.config.token_exchange?.client_secret,
-					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
-				}
+						audience: mcpClient.config.token_exchange?.audience,
+						client_id: mcpClient.config.token_exchange?.client_id,
+						client_secret: mcpClient.config.token_exchange?.client_secret,
+						authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		},
 	});
@@ -317,13 +285,13 @@ export default function MCPClientSheet({
 			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 			oauth_config: supportsOAuthCredentialUpdate
 				? {
-					client_id: mcpClient.config.oauth_client_id,
-					client_secret: mcpClient.config.oauth_client_secret,
-					authorize_url: mcpClient.config.oauth_authorize_url,
-					token_url: mcpClient.config.oauth_token_url,
-					registration_url: mcpClient.config.oauth_registration_url,
-					resource: mcpClient.config.oauth_resource,
-				}
+						client_id: mcpClient.config.oauth_client_id,
+						client_secret: mcpClient.config.oauth_client_secret,
+						authorize_url: mcpClient.config.oauth_authorize_url,
+						token_url: mcpClient.config.oauth_token_url,
+						registration_url: mcpClient.config.oauth_registration_url,
+						resource: mcpClient.config.oauth_resource,
+					}
 				: undefined,
 			// Unlike oauth_config, token_exchange is replaced wholesale server-side
 			// (only client_id/client_secret get redacted-value preservation) — so
@@ -331,17 +299,17 @@ export default function MCPClientSheet({
 			// with its current stored value rather than left blank.
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
-					audience: mcpClient.config.token_exchange?.audience,
-					client_id: mcpClient.config.token_exchange?.client_id,
-					client_secret: mcpClient.config.token_exchange?.client_secret,
-					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
-				}
+						audience: mcpClient.config.token_exchange?.audience,
+						client_id: mcpClient.config.token_exchange?.client_id,
+						client_secret: mcpClient.config.token_exchange?.client_secret,
+						authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
+					}
 				: undefined,
 			tls_config: mcpClient.config.tls_config
 				? {
-					insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
-					ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
-				}
+						insecure_skip_verify: mcpClient.config.tls_config.insecure_skip_verify,
+						ca_cert_pem: mcpClient.config.tls_config.ca_cert_pem,
+					}
 				: undefined,
 		});
 	}, [form, mcpClient, supportsOAuthCredentialUpdate, supportsTokenExchangeCredentialUpdate]);
@@ -415,9 +383,9 @@ export default function MCPClientSheet({
 				? undefined
 				: oauthScopesRaw.trim()
 					? oauthScopesRaw
-						.split(",")
-						.map((s) => s.trim())
-						.filter(Boolean)
+							.split(",")
+							.map((s) => s.trim())
+							.filter(Boolean)
 					: [];
 			// Only rotate when the user actually changed a field, and never
 			// alongside a disable (the backend rejects that combination
@@ -434,9 +402,9 @@ export default function MCPClientSheet({
 			const shouldUpdateTokenExchange = supportsTokenExchangeCredentialUpdate && tokenExchangeCredentialsDirty;
 			const tokenExchangeScopes = tokenExchangeScopesRaw.trim()
 				? tokenExchangeScopesRaw
-					.split(",")
-					.map((s) => s.trim())
-					.filter(Boolean)
+						.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean)
 				: [];
 			await updateMCPClient({
 				id: mcpClient.config.client_id,
@@ -456,30 +424,30 @@ export default function MCPClientSheet({
 					allowed_extra_headers: data.allowed_extra_headers,
 					oauth_config: shouldRotateOAuthCredentials
 						? {
-							client_id: oauthClientID,
-							client_secret: oauthClientSecret,
-							authorize_url: data.oauth_config?.authorize_url || undefined,
-							token_url: data.oauth_config?.token_url || undefined,
-							registration_url: data.oauth_config?.registration_url || undefined,
-							scopes: oauthScopes,
-							resource: data.oauth_config?.resource || undefined,
-						}
+								client_id: oauthClientID,
+								client_secret: oauthClientSecret,
+								authorize_url: data.oauth_config?.authorize_url || undefined,
+								token_url: data.oauth_config?.token_url || undefined,
+								registration_url: data.oauth_config?.registration_url || undefined,
+								scopes: oauthScopes,
+								resource: data.oauth_config?.resource || undefined,
+							}
 						: undefined,
 					token_exchange: shouldUpdateTokenExchange
 						? {
-							audience: data.token_exchange?.audience?.trim() || "",
-							client_id: data.token_exchange?.client_id ?? { value: "", ref: "" },
-							client_secret: data.token_exchange?.client_secret,
-							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
-							scopes: tokenExchangeScopes,
-						}
+								audience: data.token_exchange?.audience?.trim() || "",
+								client_id: data.token_exchange?.client_id ?? { value: "", ref: "" },
+								client_secret: data.token_exchange?.client_secret,
+								authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+								scopes: tokenExchangeScopes,
+							}
 						: undefined,
 					tls_config:
 						data.tls_config !== undefined
 							? {
-								insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
-								ca_cert_pem: data.tls_config.ca_cert_pem,
-							}
+									insecure_skip_verify: data.tls_config.insecure_skip_verify ?? false,
+									ca_cert_pem: data.tls_config.ca_cert_pem,
+								}
 							: undefined,
 					vk_configs: vkConfigsDirty ? vkConfigs : undefined,
 				},
@@ -710,7 +678,7 @@ export default function MCPClientSheet({
 													<span className="font-mono break-all">
 														{mcpClient.config.connection_type === "stdio"
 															? `${mcpClient.config.stdio_config?.command ?? ""} ${(mcpClient.config.stdio_config?.args ?? []).join(" ")}`.trim() ||
-															"-"
+																"-"
 															: mcpClient.config.connection_string?.type === "env" || mcpClient.config.connection_string?.type === "vault"
 																? mcpClient.config.connection_string.ref
 																: mcpClient.config.connection_string?.value || "-"}
@@ -729,7 +697,7 @@ export default function MCPClientSheet({
 																	return [name, valueParts.join("=")];
 																}),
 															)}
-															onChange={() => { }}
+															onChange={() => {}}
 															fixedKeys={mcpClient.config.stdio_config.envs.map((env) => env.split("=")[0])}
 															valuePlaceholder="—"
 															label=""
@@ -960,79 +928,78 @@ export default function MCPClientSheet({
 											<SectionHeader
 												title="Headers"
 												description="Static headers and header-based access rules sent with every request to this server."
+												testId="headers-heading"
 											/>
-											<FormField
-												control={form.control}
-												name="headers"
-												render={({ field }) => (
-													<FormItem className="flex flex-col gap-3">
-														<FormControl>
-															<HeadersTable
-																value={field.value || {}}
-																onChange={field.onChange}
-																keyPlaceholder="Header name"
-																valuePlaceholder="Header value"
-																label=""
-																useSecretVarInput
-															/>
-														</FormControl>
-														<FormMessage />
-													</FormItem>
-												)}
-											/>
-											{mcpClient.config.auth_type === "per_user_headers" && (
+											<div className="rounded-md border p-4">
 												<FormField
 													control={form.control}
-													name="per_user_header_keys"
+													name="headers"
 													render={({ field }) => (
-														<FormItem className="space-y-1">
-															<div className="space-y-0.5">
-																<div className="flex items-center gap-2">
-																	<FormLabel>Required Headers</FormLabel>
-																	<TooltipProvider>
-																		<Tooltip>
-																			<TooltipTrigger asChild>
-																				<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-																			</TooltipTrigger>
-																			<TooltipContent className="max-w-xs">
-																				<p>
-																					Changing this list marks existing per-user header submissions as needing an update, so callers
-																					resubmit values on next use.
-																				</p>
-																			</TooltipContent>
-																		</Tooltip>
-																	</TooltipProvider>
-																</div>
-																<p className="text-muted-foreground text-sm">
-																	Comma-separated list of header names each caller must supply when they first use this server (e.g.{" "}
-																	<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user, not stored on this server config.
-																</p>
-															</div>
+														<FormItem className="flex flex-col gap-3">
 															<FormControl>
-																<Textarea
-																	id="mcpclient-per-user-header-keys"
-																	data-testid="mcpclient-per-user-header-keys-textarea"
-																	className="h-24"
-																	placeholder="X-API-Key, X-Tenant-ID"
-																	name={field.name}
-																	ref={field.ref}
-																	value={perUserHeaderKeysRaw}
-																	onChange={(e) => {
-																		const value = e.target.value;
-																		setPerUserHeaderKeysRaw(value);
-																		form.setValue("per_user_header_keys", parseArrayFromText(value), {
-																			shouldDirty: true,
-																			shouldValidate: true,
-																		});
-																	}}
-																	onBlur={field.onBlur}
+																<HeadersTable
+																	value={field.value || {}}
+																	onChange={field.onChange}
+																	keyPlaceholder="Header name"
+																	valuePlaceholder="Header value"
+																	label=""
+																	useSecretVarInput
 																/>
 															</FormControl>
 															<FormMessage />
 														</FormItem>
 													)}
 												/>
-											)}
+											</div>
+										</div>
+
+										{mcpClient.config.auth_type === "per_user_headers" && (
+											<>
+												<DottedSeparator />
+												<div className="space-y-4">
+													<SectionHeader
+														title="Required Headers"
+														description="Comma-separated header names each caller must supply on first use, e.g. X-API-Key, X-Tenant-ID. Values are submitted per user, not stored on this server config."
+														testId="required-headers-heading"
+														tooltip="Changing this list marks existing per-user header submissions as needing an update, so callers resubmit values on next use."
+													/>
+													<div className="rounded-md border p-4">
+														<FormField
+															control={form.control}
+															name="per_user_header_keys"
+															render={({ field }) => (
+																<FormItem>
+																	<FormControl>
+																		<Textarea
+																			id="mcpclient-per-user-header-keys"
+																			data-testid="mcpclient-per-user-header-keys-textarea"
+																			className="h-24"
+																			placeholder="X-API-Key, X-Tenant-ID"
+																			name={field.name}
+																			ref={field.ref}
+																			value={perUserHeaderKeysRaw}
+																			onChange={(e) => {
+																				const value = e.target.value;
+																				setPerUserHeaderKeysRaw(value);
+																				form.setValue("per_user_header_keys", parseArrayFromText(value), {
+																					shouldDirty: true,
+																					shouldValidate: true,
+																				});
+																			}}
+																			onBlur={field.onBlur}
+																		/>
+																	</FormControl>
+																	<FormMessage />
+																</FormItem>
+															)}
+														/>
+													</div>
+												</div>
+											</>
+										)}
+
+										<DottedSeparator />
+										<div className="space-y-4">
 											<SectionHeader
 												title="Allowed Extra Headers"
 												description="Comma-separated dynamic request header names, or * to allow all. Leave empty to block all extra headers."
@@ -1055,9 +1022,9 @@ export default function MCPClientSheet({
 																onBlur={() => {
 																	const parsed = allowedExtraHeadersRaw.trim()
 																		? allowedExtraHeadersRaw
-																			.split(",")
-																			.map((h) => h.trim())
-																			.filter(Boolean)
+																				.split(",")
+																				.map((h) => h.trim())
+																				.filter(Boolean)
 																		: [];
 																	field.onChange(parsed);
 																	field.onBlur();
