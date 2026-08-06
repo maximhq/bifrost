@@ -1,3 +1,4 @@
+- feat: add GigaChat routes
 - fix: carry tool-result `is_error` through the chat completions surface so Anthropic replay and Bedrock Converse status reflect failed tool calls [@AidanAllchin](https://github.com/AidanAllchin)
 - fix: preserve encrypted reasoning as a Bedrock replay signature when translating Responses history [@zachgersh](https://github.com/zachgersh)
 - feat: add proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)

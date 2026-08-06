@@ -4,7 +4,7 @@ import { Form } from "@/components/ui/form";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage } from "@/lib/store";
 import { useCreateProviderKeyMutation, useGetProviderKeysQuery, useUpdateProviderKeyMutation } from "@/lib/store/apis/providersApi";
-import { ModelProvider } from "@/lib/types/config";
+import { DefaultGigaChatKeyConfig, ModelProvider } from "@/lib/types/config";
 import { modelProviderKeySchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -36,20 +36,29 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 	const { data: keys = [] } = useGetProviderKeysQuery(provider.name);
 	const isEditing = keyId !== null;
 	const currentKey = keyId ? keys.find((k) => k.id === keyId) : undefined;
+	const defaultGigaChatKeyConfig = {
+		...DefaultGigaChatKeyConfig,
+		credentials: { ...(DefaultGigaChatKeyConfig.credentials ?? {}) },
+		user: { ...(DefaultGigaChatKeyConfig.user ?? {}) },
+		password: { ...(DefaultGigaChatKeyConfig.password ?? {}) },
+		access_token: { ...(DefaultGigaChatKeyConfig.access_token ?? {}) },
+	};
+	const defaultKey = {
+		id: uuid(),
+		name: "",
+		models: ["*"],
+		blacklisted_models: [],
+		weight: 1.0,
+		enabled: true,
+		...(provider.name === "gigachat" ? { gigachat_key_config: defaultGigaChatKeyConfig } : {}),
+	};
 
 	const form = useForm({
 		resolver: zodResolver(providerKeyFormSchema),
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			key: (currentKey as ProviderKeyFormValues) ?? {
-				id: uuid(),
-				name: "",
-				models: ["*"],
-				blacklisted_models: [],
-				weight: 1.0,
-				enabled: true,
-			},
+			key: (currentKey as ProviderKeyFormValues) ?? defaultKey,
 		},
 	});
 
@@ -95,6 +104,10 @@ export default function ProviderKeyForm({ provider, keyId, onCancel, onSave }: P
 		if (key.bedrock_key_config) {
 			const { _auth_type, ...rest } = key.bedrock_key_config;
 			key.bedrock_key_config = rest;
+		}
+		if (key.gigachat_key_config) {
+			const { _auth_type, ...rest } = key.gigachat_key_config;
+			key.gigachat_key_config = rest;
 		}
 		if (key.bedrock_mantle_key_config) {
 			const { _auth_type, ...rest } = key.bedrock_mantle_key_config;
