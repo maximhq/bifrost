@@ -66,6 +66,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(capModel)
+		openaiReq.stripTemperatureForReasoningModels(capModel)
 		return openaiReq
 	case schemas.Cerebras, schemas.DeepSeek, schemas.Wafer:
 		openaiReq.filterOpenAISpecificParameters(capModel)
@@ -172,6 +173,17 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(capModel string) {
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
+	}
+}
+
+// stripTemperatureForReasoningModels drops the temperature parameter for OpenAI/Azure
+// reasoning models (o1/o3/o4 series, gpt-oss, GPT-5.x), which reject any non-default
+// temperature value with a 400 error. Unlike top_p, GPT-5.x rejects temperature even
+// at the default "none" reasoning effort, so this strips unconditionally rather than
+// only for always-reasoning (-pro/-codex) variants.
+func (req *OpenAIChatRequest) stripTemperatureForReasoningModels(capModel string) {
+	if req.ChatParameters.Temperature != nil && isOpenAIReasoningModel(capModel) {
+		req.ChatParameters.Temperature = nil
 	}
 }
 
