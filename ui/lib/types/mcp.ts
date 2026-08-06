@@ -113,6 +113,12 @@ export interface MCPClientConfig {
 	// Required (with a non-empty audience) for token_exchange auth.
 	token_exchange?: MCPTokenExchangeConfig;
 	is_ping_available?: boolean;
+	// Only meaningful when connection_type === "http": whether this client
+	// maintains one persistent connection reused across every caller (true)
+	// or connects fresh per call (nil/false, the default for newly created
+	// clients — pre-existing clients were backfilled to true). SSE and STDIO
+	// always behave as sticky regardless of this field.
+	needs_session_stickiness?: boolean;
 	tool_pricing?: Record<string, number>;
 	// Per-client override (0 = use global, -1 = disabled). API returns NANOSECONDS
 	// (Go time.Duration), while updates send minutes — convert with
@@ -163,6 +169,9 @@ export interface CreateMCPClientRequest {
 	// the analogous role. Ignored for all other auth types.
 	user_headers?: Record<string, string>;
 	is_ping_available?: boolean;
+	// Only meaningful when connection_type === "http". See MCPClientConfig's
+	// field doc for the full contract.
+	needs_session_stickiness?: boolean;
 }
 
 export interface OAuthFlowResponse {
@@ -200,6 +209,11 @@ export interface UpdateMCPClientRequest {
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	is_ping_available?: boolean;
+	// Only meaningful when connection_type === "http". Toggling this on an
+	// existing client takes effect immediately: switching to true dials the
+	// persistent connection now, switching to false closes it. See
+	// MCPClientConfig's field doc for the full contract.
+	needs_session_stickiness?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)

@@ -54,6 +54,12 @@ type MCPManagerInterface interface {
 	// GetClients returns all MCP clients
 	GetClients() []schemas.MCPClientState
 
+	// RequiresPerCallConnection reports whether config resolves to a
+	// per-call connection (true) or a persistent shared one (false), taking
+	// auth type, connection type, and needs_session_stickiness into account
+	// together.
+	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
+
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 

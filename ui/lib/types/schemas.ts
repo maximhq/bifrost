@@ -1101,6 +1101,7 @@ export const mcpClientUpdateSchema = z
 	.object({
 		is_code_mode_client: z.boolean().optional(),
 		is_ping_available: z.boolean().optional(),
+		needs_session_stickiness: z.boolean().optional(),
 		allow_on_all_virtual_keys: z.boolean().optional(),
 		disabled: z.boolean().optional(),
 		name: z
