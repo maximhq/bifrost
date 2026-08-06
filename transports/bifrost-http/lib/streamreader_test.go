@@ -420,9 +420,9 @@ func TestSSEStreamReaderRawAndWrapperMixed(t *testing.T) {
 	}
 
 	go func() {
-		r.Send(bedrockBinary)                       // raw binary passthrough
-		r.Send(preformattedSSE)                     // pre-formatted SSE string
-		r.SendEvent("", []byte(`{"final":true}`))   // wrapper method
+		r.Send(bedrockBinary)                     // raw binary passthrough
+		r.Send(preformattedSSE)                   // pre-formatted SSE string
+		r.SendEvent("", []byte(`{"final":true}`)) // wrapper method
 		r.Done()
 	}()
 
@@ -685,10 +685,11 @@ func TestSSEStreamReaderConcurrentSendEvent(t *testing.T) {
 	}
 }
 
-// TestSSEStreamReaderSendHeartbeat verifies the heartbeat frame is a valid SSE
+// TestSSEStreamReaderSendHeartbeat verifies the heartbeat frame is a bare SSE
 // comment line (starts with ':', per the WHATWG SSE spec every compliant client
-// ignores a comment line) so it can be sent as a disconnect-detection probe
-// without ever surfacing to application code as a real event.
+// ignores a comment line) with no trailing blank line, so it never dispatches
+// an event in any decoder -- including non-conforming ones that dispatch empty
+// events on a blank line (#5874).
 func TestSSEStreamReaderSendHeartbeat(t *testing.T) {
 	r := NewSSEStreamReader()
 	go func() {
@@ -701,12 +702,8 @@ func TestSSEStreamReaderSendHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := string(buf[:n])
-	if len(got) == 0 || got[0] != ':' {
-		t.Errorf("heartbeat frame = %q, want a line starting with ':' (SSE comment)", got)
-	}
-	if got[len(got)-2:] != "\n\n" {
-		t.Errorf("heartbeat frame = %q, want it terminated by a blank line", got)
+	if got, want := string(buf[:n]), ": heartbeat\n"; got != want {
+		t.Errorf("heartbeat frame = %q, want %q", got, want)
 	}
 }
 
