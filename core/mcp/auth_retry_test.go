@@ -64,17 +64,14 @@ func TestIsAuthFailureErrorText_OpposesIsTransientErrorOnAuthText(t *testing.T) 
 
 // isAuthFailureErrorText must NOT match Bifrost's own internal
 // ErrOAuth2TokenExpired sentinel text (schemas.ErrOAuth2TokenExpired says
-// "oauth2 token expired") — that's isOAuth2TokenExpiredErrorText's job, a
-// genuinely different detector for a genuinely different failure class (a
-// connect-time failure already classified by Bifrost's own refresh logic,
-// vs. a raw unclassified upstream rejection here).
+// "oauth2 token expired") — that sentinel is a genuinely different failure
+// class (a connect-time failure already classified by Bifrost's own refresh
+// logic via errors.Is, not text matching — see connectToMCPClient) vs. a raw
+// unclassified upstream rejection here.
 func TestIsAuthFailureErrorText_DoesNotOverlapOAuth2TokenExpiredSentinel(t *testing.T) {
 	sentinelText := schemas.ErrOAuth2TokenExpired.Error()
 	if isAuthFailureErrorText(sentinelText) {
 		t.Fatalf("isAuthFailureErrorText unexpectedly matched Bifrost's own %q sentinel text", sentinelText)
-	}
-	if !isOAuth2TokenExpiredErrorText(sentinelText) {
-		t.Fatalf("isOAuth2TokenExpiredErrorText should still match its own sentinel text")
 	}
 }
 

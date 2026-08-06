@@ -238,26 +238,6 @@ func isTransientError(err error) bool {
 	return true
 }
 
-// isOAuth2TokenExpiredErrorText reports whether a connect-failure message
-// indicates the underlying failure was schemas.ErrOAuth2TokenExpired — a
-// shared client's OAuth2 credential that has permanently died (refresh
-// rejected/expired, no way to silently recover) and needs a human to
-// reauthorize it — as opposed to a generic connectivity failure that a
-// routine reconnect can resolve on its own.
-//
-// connectToMCPClient's op closure returns this sentinel (wrapped via %w by
-// framework/oauth2) as a plain Go error, but runConnectWithPluginPipeline
-// (unlike RunWithPluginPipeline, used for tool/ping/list_tools calls) only
-// carries opErr.Error() as a string on the *schemas.BifrostError it returns —
-// it does not also preserve the original error on ErrorField.Error — so
-// errors.Is/errors.As is not usable on the gateErr the caller receives.
-// Same substring-matching technique as isTransientError above, for the same
-// structural reason: the typed error info was already flattened to a string
-// by the time it gets here.
-func isOAuth2TokenExpiredErrorText(errStr string) bool {
-	return strings.Contains(errStr, schemas.ErrOAuth2TokenExpired.Error())
-}
-
 // isAuthFailureErrorText reports whether a raw upstream tool-call error looks
 // like an auth rejection (401/403/unauthorized/forbidden). mcp-go flattens
 // HTTP status codes into a plain error string by the time a CallTool error
@@ -265,24 +245,20 @@ func isOAuth2TokenExpiredErrorText(errStr string) bool {
 // isTransientError above, substring matching on the same class of text is
 // the only option.
 //
-// This is deliberately a separate function from both of the above, not a
-// reuse of either:
+// This is deliberately not a reuse of isTransientError: that function matches
+// this exact substring class too, but as a PERMANENT signal (don't retry) for
+// its connection-establishment callers — the opposite polarity needed here,
+// where the same text is the POSITIVE trigger for a forced-refresh-and-retry.
+// A tool call that reaches this point already has a live, previously-healthy
+// connection (AcquireClientConn already succeeded once), so a 401/403 here
+// means the upstream server is actively rejecting a credential Bifrost's own
+// bookkeeping still considers valid — worth reacting to, not giving up on.
 //
-//   - isTransientError matches this exact substring class too, but as a
-//     PERMANENT signal (don't retry) for its connection-establishment
-//     callers — the opposite polarity needed here, where the same text is
-//     the POSITIVE trigger for a forced-refresh-and-retry. A tool call that
-//     reaches this point already has a live, previously-healthy connection
-//     (AcquireClientConn already succeeded once), so a 401/403 here means
-//     the upstream server is actively rejecting a credential Bifrost's own
-//     bookkeeping still considers valid — worth reacting to, not giving up
-//     on.
-//   - isOAuth2TokenExpiredErrorText matches Bifrost's OWN internal sentinel
-//     text (schemas.ErrOAuth2TokenExpired), surfaced only after Bifrost's
-//     own refresh logic already ran and classified a credential as
-//     permanently dead. A raw CallTool error never goes through that
-//     classification at all — it's the upstream server's rejection text
-//     verbatim, not Bifrost's.
+// This is also distinct from schemas.ErrOAuth2TokenExpired-based
+// classification (see connectToMCPClient), which fires only after Bifrost's
+// own refresh logic already ran and classified a credential as permanently
+// dead. A raw CallTool error never goes through that classification at all —
+// it's the upstream server's rejection text verbatim, not Bifrost's.
 func isAuthFailureErrorText(errStr string) bool {
 	lower := strings.ToLower(errStr)
 	for _, needle := range []string{"401", "403", "unauthorized", "forbidden"} {

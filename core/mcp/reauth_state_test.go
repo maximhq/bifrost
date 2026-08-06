@@ -11,37 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestIsOAuth2TokenExpiredErrorText covers the substring-matching fallback
-// connectToMCPClient relies on to recognize schemas.ErrOAuth2TokenExpired at
-// the failure site: runConnectWithPluginPipeline flattens the underlying Go
-// error to a string (see the doc comment on isOAuth2TokenExpiredErrorText),
-// so errors.Is/As isn't usable there, and text matching is the only option
-// left, mirroring isTransientError.
-func TestIsOAuth2TokenExpiredErrorText(t *testing.T) {
-	wrappedOnce := fmt.Errorf("refresh token rejected by upstream OAuth server, re-authentication required: %w", schemas.ErrOAuth2TokenExpired)
-	wrappedTwice := fmt.Errorf("token expired and refresh failed: %w", wrappedOnce)
-
-	tests := []struct {
-		name   string
-		errStr string
-		want   bool
-	}{
-		{"exact sentinel text", schemas.ErrOAuth2TokenExpired.Error(), true},
-		{"single %w wrap (RefreshAccessToken permanent-rejection path)", wrappedOnce.Error(), true},
-		{"double %w wrap (GetAccessToken's refresh-failed wrapper)", wrappedTwice.Error(), true},
-		{"token-not-active wrap (GetAccessToken's inactive-status path)", fmt.Errorf("oauth token is not active, status: orphaned: %w", schemas.ErrOAuth2TokenExpired).Error(), true},
-		{"unrelated connectivity error", "connection refused", false},
-		{"unrelated config error", "oauth2 config not found", false},
-		{"empty string", "", false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, isOAuth2TokenExpiredErrorText(tc.errStr))
-		})
-	}
-}
-
 // expiredOAuthCredStore simulates a shared OAuth2 credential store whose
 // refresh has permanently failed: every ConnectionHeaders call returns the
 // same error shape framework/oauth2's RefreshAccessToken/GetAccessToken
