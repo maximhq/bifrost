@@ -2169,7 +2169,7 @@
         "retention_days": {
           "type": "integer",
           "minimum": 0,
-          "description": "Days to retain log entries. 0 disables retention-based cleanup."
+          "description": "Days to retain log entries. Applies to the ClickHouse log store only, where it becomes a table TTL. SQLite and PostgreSQL use client.log_retention_days instead."
         }
       },
       "additionalProperties": false
