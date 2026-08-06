@@ -2485,10 +2485,15 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	}
 
 	if len(jsonData) == 0 {
-		// Build the batch request with proper nested structure
+		// Build the batch request with proper nested structure. Honor a caller-supplied
+		// display name (e.g. genai config.display_name), falling back to a generated one.
+		displayName := fmt.Sprintf("bifrost-batch-%d", time.Now().UnixNano())
+		if request.DisplayName != nil && *request.DisplayName != "" {
+			displayName = *request.DisplayName
+		}
 		batchReq := &GeminiBatchCreateRequest{
 			Batch: GeminiBatchConfig{
-				DisplayName: fmt.Sprintf("bifrost-batch-%d", time.Now().UnixNano()),
+				DisplayName: displayName,
 			},
 		}
 

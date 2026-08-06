@@ -2746,7 +2746,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 		// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
 		if inputFileID == "" {
-			jsonlData, err := vertexConvertRequestsToJSONL(request.Requests)
+			jsonlData, err := vertexConvertRequestsToJSONL(ctx, request.Requests, *request.Model)
 			if err != nil {
 				return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
 			}
@@ -2785,7 +2785,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToVertexBatchCreateRequest(request, jobName, inputFileID, outputURI), nil
+			return ToVertexBatchCreateRequest(ctx, request, jobName, inputFileID, outputURI), nil
 		},
 	)
 	if bodyErr != nil {
@@ -3275,8 +3275,13 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 			if err := sonic.Unmarshal(rawLine, &line); err != nil {
 				continue // skip malformed lines rather than failing the whole result set
 			}
+			// Anthropic/Claude jobs echo a native top-level custom_id; Gemini jobs carry it in labels.
+			customID := line.CustomID
+			if customID == "" {
+				customID = line.Request.Labels[vertexBatchCustomIDLabel]
+			}
 			item := schemas.BatchResultItem{
-				CustomID: line.Request.Labels[vertexBatchCustomIDLabel],
+				CustomID: customID,
 			}
 			if line.Response != nil {
 				item.Response = &schemas.BatchResultResponse{

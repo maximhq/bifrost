@@ -138,6 +138,39 @@ func TestGenAIBatchCreateConverterCarriesRawBody(t *testing.T) {
 	assert.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 }
 
+// TestGenAIBatchCreateConverterCarriesDisplayNameAndInlineTools verifies the typed batch
+// create path (used when the request is not an explicit-gemini raw passthrough) carries the
+// batch display name and every modeled inline-request field (tools, cachedContent) through.
+func TestGenAIBatchCreateConverterCarriesDisplayNameAndInlineTools(t *testing.T) {
+	rawBody := []byte(`{"batch":{"displayName":"my-batch","inputConfig":{"requests":{"requests":[{"request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"get_weather"}]}],"cachedContent":"cachedContents/abc"},"metadata":{"key":"req-1"}}]}}}}`)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "gemini-2.5-flash:batchGenerateContent")
+	ctx.Request.Header.SetMethod("POST")
+	// No x-model-provider header, so the typed path (not raw passthrough) is exercised.
+	ctx.Request.SetBody(rawBody)
+
+	req := &gemini.GeminiBatchCreateRequest{}
+	require.NoError(t, sonic.Unmarshal(rawBody, req))
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, extractAndSetModelAndRequestType(ctx, bifrostCtx, req))
+
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	batchReq, err := route.BatchRequestConverter(bifrostCtx, req)
+	require.NoError(t, err)
+	require.NotNil(t, batchReq.CreateRequest)
+
+	// #2: batch display name carried through.
+	require.NotNil(t, batchReq.CreateRequest.DisplayName)
+	assert.Equal(t, "my-batch", *batchReq.CreateRequest.DisplayName)
+
+	// #3: inline tools + cachedContent survive (not dropped by the converter).
+	require.Len(t, batchReq.CreateRequest.Requests, 1)
+	body := batchReq.CreateRequest.Requests[0].Body
+	assert.Contains(t, body, "tools")
+	assert.Equal(t, "cachedContents/abc", body["cachedContent"])
+	assert.Equal(t, "req-1", batchReq.CreateRequest.Requests[0].CustomID)
+}
+
 func TestGenAICachedContentCreateParserRejectsNonStringScalars(t *testing.T) {
 	rawBody := []byte(`{"model":123,"ttl":3600}`)
 	ctx := &fasthttp.RequestCtx{}
