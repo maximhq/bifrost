@@ -5,7 +5,7 @@ import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,6 +23,7 @@ import { useForm } from "react-hook-form";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
+import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
 import { TokenExchangeFields } from "./tokenExchangeFields";
 
@@ -272,36 +273,36 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			stdio_config:
 				connectionType === "stdio"
 					? {
-							command: data.stdio_config?.command || "",
-							args: parseArrayFromText(argsText),
-							// Each row becomes KEY=value, or a bare KEY when no value is given
-							// (read from Bifrost's host environment). Rows without a name are skipped.
-							envs: Object.entries(envVars)
-								.filter(([name]) => name.trim() !== "")
-								.map(([name, value]) => {
-									const v = value.trim();
-									return v ? `${name}=${v}` : name;
-								}),
-						}
+						command: data.stdio_config?.command || "",
+						args: parseArrayFromText(argsText),
+						// Each row becomes KEY=value, or a bare KEY when no value is given
+						// (read from Bifrost's host environment). Rows without a name are skipped.
+						envs: Object.entries(envVars)
+							.filter(([name]) => name.trim() !== "")
+							.map(([name, value]) => {
+								const v = value.trim();
+								return v ? `${name}=${v}` : name;
+							}),
+					}
 					: undefined,
 			tls_config: connectionType === "http" || connectionType === "sse" ? buildTLSConfigPayload(data.tls_config) : undefined,
 			oauth_config:
 				authType === "oauth" || authType === "per_user_oauth"
 					? {
-							client_id: data.oauth_config?.client_id ?? emptySecretVar,
-							client_secret:
-								data.oauth_config?.client_secret?.value ||
+						client_id: data.oauth_config?.client_id ?? emptySecretVar,
+						client_secret:
+							data.oauth_config?.client_secret?.value ||
 								data.oauth_config?.client_secret?.type === "env" ||
 								data.oauth_config?.client_secret?.type === "vault"
-									? data.oauth_config.client_secret
-									: undefined,
-							authorize_url: data.oauth_config?.authorize_url || undefined,
-							token_url: data.oauth_config?.token_url || undefined,
-							registration_url: data.oauth_config?.registration_url || undefined,
-							scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
-							server_url: data.connection_string?.value || undefined,
-							resource: resourceText.trim() || undefined,
-						}
+								? data.oauth_config.client_secret
+								: undefined,
+						authorize_url: data.oauth_config?.authorize_url || undefined,
+						token_url: data.oauth_config?.token_url || undefined,
+						registration_url: data.oauth_config?.registration_url || undefined,
+						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+						server_url: data.connection_string?.value || undefined,
+						resource: resourceText.trim() || undefined,
+					}
 					: undefined,
 			// "headers" and "per_user_headers" both can carry static admin
 			// headers on data.headers (per-user values are submitted
@@ -314,17 +315,17 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			token_exchange:
 				authType === "token_exchange"
 					? {
-							audience: data.token_exchange?.audience?.trim() || "",
-							client_id: data.token_exchange?.client_id ?? emptySecretVar,
-							client_secret:
-								data.token_exchange?.client_secret?.value ||
+						audience: data.token_exchange?.audience?.trim() || "",
+						client_id: data.token_exchange?.client_id ?? emptySecretVar,
+						client_secret:
+							data.token_exchange?.client_secret?.value ||
 								data.token_exchange?.client_secret?.type === "env" ||
 								data.token_exchange?.client_secret?.type === "vault"
-									? data.token_exchange.client_secret
-									: undefined,
-							scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
-							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
-						}
+								? data.token_exchange.client_secret
+								: undefined,
+						scopes: tokenExchangeScopesText.trim() ? parseArrayFromText(tokenExchangeScopesText) : undefined,
+						authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+					}
 					: undefined,
 			tools_to_execute: ["*"],
 		};
@@ -402,334 +403,386 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 								)}
 							/>
 
-							{/* Connection Type */}
-							<FormField
-								control={control}
-								name="connection_type"
-								render={({ field }) => (
-									<FormItem className="w-full">
-										<FormLabel>Connection Type</FormLabel>
-										<Select
-											value={field.value}
-											onValueChange={(value: MCPConnectionType) => {
-												field.onChange(value);
-												if (value === "stdio") {
-													setValue("auth_type", "none");
-													setValue("headers", undefined);
-													setValue("oauth_config", undefined);
-												}
-												clearErrors();
-											}}
-										>
-											<FormControl>
-												<SelectTrigger className="w-full" data-testid="connection-type-select">
-													<SelectValue placeholder="Select connection type" />
-												</SelectTrigger>
-											</FormControl>
-											<SelectContent>
-												<SelectItem value="http" data-testid="connection-type-http">
-													HTTP (Streamable)
-												</SelectItem>
-												<SelectItem value="sse" data-testid="connection-type-sse">
-													Server-Sent Events (SSE)
-												</SelectItem>
-												<SelectItem value="stdio" data-testid="connection-type-stdio">
-													STDIO
-												</SelectItem>
-											</SelectContent>
-										</Select>
-										<p className="text-muted-foreground text-xs">Connection type and authentication settings cannot be changed later.</p>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
+							<DottedSeparator />
 
-							{/* Code Mode Server */}
-							<FormField
-								control={control}
-								name="is_code_mode_client"
-								render={({ field }) => (
-									<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
-										<div className="flex items-center gap-2">
-											<Label htmlFor="code-mode">Code Mode Server</Label>
-											<TooltipProvider>
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<a
-															href="https://docs.getbifrost.ai/mcp/code-mode"
-															target="_blank"
-															rel="noopener noreferrer"
-															data-testid="code-mode-link-help"
-															className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
-															aria-label="Learn more about Code Mode"
-														>
-															<Info className="h-4 w-4 cursor-help" />
-														</a>
-													</TooltipTrigger>
-													<TooltipContent>
-														<p>Click to learn more about Code Mode</p>
-													</TooltipContent>
-												</Tooltip>
-											</TooltipProvider>
-										</div>
-										<Switch id="code-mode" data-testid="code-mode-switch" checked={field.value || false} onCheckedChange={field.onChange} />
-									</div>
-								)}
-							/>
-
-							{/* Ping Available */}
-							<FormField
-								control={control}
-								name="is_ping_available"
-								render={({ field }) => (
-									<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
-										<div className="flex items-center gap-2">
-											<Label htmlFor="ping-available">Ping Available for Health Check</Label>
-											<TooltipProvider>
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Info className="text-muted-foreground h-4 w-4 cursor-help" />
-													</TooltipTrigger>
-													<TooltipContent className="max-w-xs">
-														<p>
-															Enable to use lightweight ping method for health checks. Disable if your MCP server doesn't support ping -
-															will use listTools instead.
-														</p>
-													</TooltipContent>
-												</Tooltip>
-											</TooltipProvider>
-										</div>
-										<Switch
-											id="ping-available"
-											data-testid="mcp-is-ping-available"
-											checked={field.value === true}
-											onCheckedChange={field.onChange}
-										/>
-									</div>
-								)}
-							/>
-
-							{(connectionType === "http" || connectionType === "sse") && (
-								<>
-									{/* Connection URL */}
+							{/* Server Behavior */}
+							<div className="space-y-4">
+								<SectionHeader title="Server Behavior" description="Control how this server participates in code mode and health checks." />
+								<div className="divide-y rounded-md border">
 									<FormField
 										control={control}
-										name="connection_string"
+										name="is_code_mode_client"
 										render={({ field }) => (
-											<FormItem>
-												<FormLabel>Connection URL</FormLabel>
-												<SecretVarInput
+											<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+												<div className="flex items-center gap-2">
+													<FormLabel htmlFor="code-mode">Code Mode Server</FormLabel>
+													<TooltipProvider>
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<a
+																	href="https://docs.getbifrost.ai/mcp/code-mode"
+																	target="_blank"
+																	rel="noopener noreferrer"
+																	data-testid="code-mode-link-help"
+																	className="text-muted-foreground hover:text-foreground focus-visible:ring-ring rounded focus-visible:ring-2 focus-visible:outline-none"
+																	aria-label="Learn more about Code Mode"
+																>
+																	<Info className="h-4 w-4 cursor-help" />
+																</a>
+															</TooltipTrigger>
+															<TooltipContent>
+																<p>Click to learn more about Code Mode</p>
+															</TooltipContent>
+														</Tooltip>
+													</TooltipProvider>
+												</div>
+												<FormControl>
+													<Switch
+														id="code-mode"
+														data-testid="code-mode-switch"
+														checked={field.value || false}
+														onCheckedChange={field.onChange}
+													/>
+												</FormControl>
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="is_ping_available"
+										render={({ field }) => (
+											<FormItem className="flex flex-row items-center justify-between gap-4 px-4 py-3">
+												<div className="flex items-center gap-2">
+													<FormLabel htmlFor="ping-available">Ping Available for Health Check</FormLabel>
+													<TooltipProvider>
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+															</TooltipTrigger>
+															<TooltipContent className="max-w-xs">
+																<p>
+																	Enable to use lightweight ping method for health checks. Disable if your MCP server doesn't support ping -
+																	will use listTools instead.
+																</p>
+															</TooltipContent>
+														</Tooltip>
+													</TooltipProvider>
+												</div>
+												<FormControl>
+													<Switch
+														id="ping-available"
+														data-testid="mcp-is-ping-available"
+														checked={field.value === true}
+														onCheckedChange={field.onChange}
+													/>
+												</FormControl>
+											</FormItem>
+										)}
+									/>
+								</div>
+							</div>
+
+							<DottedSeparator />
+
+							{/* Connection & Authentication */}
+							<div className="space-y-4">
+								<SectionHeader
+									title="Connection & Authentication"
+									description="Choose how Bifrost connects to this server and, for network transports, how requests are authenticated."
+								/>
+								<div className="space-y-4 rounded-md border p-4">
+									<FormField
+										control={control}
+										name="connection_type"
+										render={({ field }) => (
+											<FormItem className="w-full">
+												<FormLabel>Connection Type</FormLabel>
+												<Select
 													value={field.value}
-													onChange={(value) => {
+													onValueChange={(value: MCPConnectionType) => {
 														field.onChange(value);
-														clearErrors("connection_string");
+														if (value === "stdio") {
+															setValue("auth_type", "none");
+															setValue("headers", undefined);
+															setValue("oauth_config", undefined);
+														}
+														clearErrors();
 													}}
-													placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
-													data-testid="connection-url-input"
-												/>
+												>
+													<FormControl>
+														<SelectTrigger className="w-full" data-testid="connection-type-select">
+															<SelectValue placeholder="Select connection type" />
+														</SelectTrigger>
+													</FormControl>
+													<SelectContent>
+														<SelectItem value="http" data-testid="connection-type-http">
+															HTTP (Streamable)
+														</SelectItem>
+														<SelectItem value="sse" data-testid="connection-type-sse">
+															Server-Sent Events (SSE)
+														</SelectItem>
+														<SelectItem value="stdio" data-testid="connection-type-stdio">
+															STDIO
+														</SelectItem>
+													</SelectContent>
+												</Select>
+												<p className="text-muted-foreground text-xs">
+													Connection type and authentication settings cannot be changed later.
+												</p>
 												<FormMessage />
 											</FormItem>
 										)}
 									/>
 
-									{/* Auth Type */}
-									<FormItem className="w-full">
-										<FormLabel>Authentication Type</FormLabel>
-										<Select value={authKind} onValueChange={(value: "none" | "headers" | "oauth") => applyAuthKind(value)}>
-											<FormControl>
-												<SelectTrigger className="w-full" data-testid="auth-type-select">
-													<SelectValue placeholder="Select authentication type" />
-												</SelectTrigger>
-											</FormControl>
-											<SelectContent>
-												<SelectItem value="none" data-testid="auth-type-none">
-													None
-												</SelectItem>
-												<SelectItem value="headers" data-testid="auth-type-headers">
-													Headers
-												</SelectItem>
-												<SelectItem value="oauth" data-testid="auth-type-oauth">
-													OAuth 2.0
-												</SelectItem>
-												{IS_ENTERPRISE && idpConfigured && (
-													<SelectItem value="token_exchange" data-testid="auth-type-token-exchange">
-														Token Exchange (On-Behalf-Of)
-													</SelectItem>
-												)}
-											</SelectContent>
-										</Select>
-									</FormItem>
-
-									{/* Auth Scope — only meaningful when there's an auth flow with a
-									    shared variant; token exchange is inherently per-caller */}
-									{authKind !== "none" && authKind !== "token_exchange" && (
-										<FormItem className="w-full">
-											<FormLabel>Auth Scope</FormLabel>
-											<Select value={authScope} onValueChange={(value: "shared" | "per_user") => applyAuthScope(value)}>
-												<FormControl>
-													<SelectTrigger className="w-full" data-testid="auth-scope-select">
-														<SelectValue placeholder="Select auth scope" />
-													</SelectTrigger>
-												</FormControl>
-												<SelectContent>
-													<SelectItem value="shared" data-testid="auth-scope-shared">
-														Shared
-													</SelectItem>
-													<SelectItem value="per_user" data-testid="auth-scope-per-user">
-														Per-User
-													</SelectItem>
-												</SelectContent>
-											</Select>
-										</FormItem>
-									)}
-
-									{authType === "headers" && (
-										<FormField
-											control={control}
-											name="headers"
-											render={({ field }) => (
-												<FormItem data-testid="mcp-headers-table">
-													<HeadersTable
-														value={field.value || {}}
-														onChange={field.onChange}
-														keyPlaceholder="Header name"
-														valuePlaceholder="Header value"
-														label="Headers"
-														useSecretVarInput
-													/>
-													{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
-													<FormMessage />
-												</FormItem>
-											)}
-										/>
-									)}
-
-									{authType === "per_user_headers" && (
-										<div className="space-y-4">
-											{/* Required header keys (admin schema). Same Textarea +
-											    comma-separated pattern as workspace/config security
-											    Required Headers, so the two surfaces stay visually
-											    consistent. End users supply values per-user at first
-											    tool use via the inline auth landing page. */}
-											<div className="space-y-1">
-												<div className="space-y-0.5">
-													<Label htmlFor="per-user-header-keys">Required Headers</Label>
-													<p className="text-muted-foreground text-sm">
-														Comma-separated list of header names each caller must supply when they first use this server (e.g.{" "}
-														<code>X-API-Key, X-Tenant-ID</code>). Values are submitted per user - never stored on this server config.
-													</p>
-												</div>
-												<Textarea
-													id="per-user-header-keys"
-													data-testid="per-user-header-keys-textarea"
-													className="h-24"
-													placeholder="X-API-Key, X-Tenant-ID"
-													value={newHeaderKeyInput}
-													onChange={(e) => {
-														setNewHeaderKeyInput(e.target.value);
-														setPerUserHeaderKeys(parseArrayFromText(e.target.value));
-													}}
-												/>
-											</div>
-
-											{/* Optional static admin headers (e.g. a fixed tenant header) */}
+									{(connectionType === "http" || connectionType === "sse") && (
+										<>
+											{/* Connection URL */}
 											<FormField
 												control={control}
-												name="headers"
+												name="connection_string"
 												render={({ field }) => (
 													<FormItem>
-														<HeadersTable
-															value={field.value || {}}
-															onChange={field.onChange}
-															keyPlaceholder="Header name"
-															valuePlaceholder="Header value"
-															label="Static Headers (optional, applied alongside user values)"
-															useSecretVarInput
+														<FormLabel>Connection URL</FormLabel>
+														<SecretVarInput
+															value={field.value}
+															onChange={(value) => {
+																field.onChange(value);
+																clearErrors("connection_string");
+															}}
+															placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
+															data-testid="connection-url-input"
 														/>
-														{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
 														<FormMessage />
 													</FormItem>
 												)}
 											/>
 
+											{/* Auth Type */}
+											<FormItem className="w-full">
+												<FormLabel>Authentication Type</FormLabel>
+												<Select value={authKind} onValueChange={(value: "none" | "headers" | "oauth") => applyAuthKind(value)}>
+													<FormControl>
+														<SelectTrigger className="w-full" data-testid="auth-type-select">
+															<SelectValue placeholder="Select authentication type" />
+														</SelectTrigger>
+													</FormControl>
+													<SelectContent>
+														<SelectItem value="none" data-testid="auth-type-none">
+															None
+														</SelectItem>
+														<SelectItem value="headers" data-testid="auth-type-headers">
+															Headers
+														</SelectItem>
+														<SelectItem value="oauth" data-testid="auth-type-oauth">
+															OAuth 2.0
+														</SelectItem>
+														{IS_ENTERPRISE && idpConfigured && (
+															<SelectItem value="token_exchange" data-testid="auth-type-token-exchange">
+																Token Exchange (On-Behalf-Of)
+															</SelectItem>
+														)}
+													</SelectContent>
+												</Select>
+											</FormItem>
+
+											{/* Auth Scope — only meaningful when there's an auth flow with a
+											    shared variant; token exchange is inherently per-caller */}
+											{authKind !== "none" && authKind !== "token_exchange" && (
+												<FormItem className="w-full">
+													<FormLabel>Auth Scope</FormLabel>
+													<Select value={authScope} onValueChange={(value: "shared" | "per_user") => applyAuthScope(value)}>
+														<FormControl>
+															<SelectTrigger className="w-full" data-testid="auth-scope-select">
+																<SelectValue placeholder="Select auth scope" />
+															</SelectTrigger>
+														</FormControl>
+														<SelectContent>
+															<SelectItem value="shared" data-testid="auth-scope-shared">
+																Shared
+															</SelectItem>
+															<SelectItem value="per_user" data-testid="auth-scope-per-user">
+																Per-User
+															</SelectItem>
+														</SelectContent>
+													</Select>
+												</FormItem>
+											)}
+										</>
+									)}
+								</div>
+							</div>
+
+							{(connectionType === "http" || connectionType === "sse") && (
+								<>
+									{authType === "headers" && (
+										<>
+											<DottedSeparator />
+											<div className="space-y-4">
+												<SectionHeader title="Headers" description="Static headers sent with every request to this server." />
+												<FormField
+													control={control}
+													name="headers"
+													render={({ field }) => (
+														<FormItem data-testid="mcp-headers-table">
+															<HeadersTable
+																value={field.value || {}}
+																onChange={field.onChange}
+																keyPlaceholder="Header name"
+																valuePlaceholder="Header value"
+																label=""
+																useSecretVarInput
+															/>
+															{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											</div>
+										</>
+									)}
+
+									{authType === "per_user_headers" && (
+										<>
+											<DottedSeparator />
+											<div className="space-y-4">
+												{/* Required header keys (admin schema). Same Textarea +
+												    comma-separated pattern as workspace/config security
+												    Required Headers, so the two surfaces stay visually
+												    consistent. End users supply values per-user at first
+												    tool use via the inline auth landing page. */}
+												<SectionHeader
+													title="Required Headers"
+													description="Comma-separated header names each caller must supply on first use, e.g. X-API-Key, X-Tenant-ID. Values are submitted per user, not stored on this server config."
+												/>
+												<div className="rounded-md border p-4">
+													<Textarea
+														id="per-user-header-keys"
+														data-testid="per-user-header-keys-textarea"
+														className="h-24"
+														placeholder="X-API-Key, X-Tenant-ID"
+														value={newHeaderKeyInput}
+														onChange={(e) => {
+															setNewHeaderKeyInput(e.target.value);
+															setPerUserHeaderKeys(parseArrayFromText(e.target.value));
+														}}
+													/>
+												</div>
+											</div>
+
+											{/* Optional static admin headers (e.g. a fixed tenant header) */}
+											<div className="space-y-4">
+												<SectionHeader title="Static Headers" description="Optional, applied alongside the values each caller supplies." />
+												<FormField
+													control={control}
+													name="headers"
+													render={({ field }) => (
+														<FormItem>
+															<HeadersTable
+																value={field.value || {}}
+																onChange={field.onChange}
+																keyPlaceholder="Header name"
+																valuePlaceholder="Header value"
+																label=""
+																useSecretVarInput
+															/>
+															{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+											</div>
+
 											{/* Sample values are collected in the MCPHeadersAuthorizer
 											    dialog that opens on Create — mirrors the OAuth flow
 											    where the verification step is also a dialog, not an
 											    inline panel. */}
-										</div>
+										</>
 									)}
 
 									{authType === "token_exchange" && (
-										<div data-testid="token-exchange-fields">
-											<TokenExchangeFields
-												control={control}
-												beforeFields={
-													<p className="text-muted-foreground text-sm">
-														Each caller's identity token is exchanged automatically for a short-lived token scoped to this server - users
-														never authenticate to it individually, and this server connects per tool call instead of holding a shared
-														connection. Callers must authenticate with their identity provider token; virtual keys alone cannot use this
-														server. Creating the server verifies it as you, using your own signed-in identity.
-													</p>
-												}
-												gridClassName="space-y-4"
-												audienceLabel={
-													<>
-														Audience <span className="text-destructive">*</span>
-													</>
-												}
-												audienceTooltip="The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
-												audienceTestId="token-exchange-audience-input"
-												onAudienceTouched={() => clearErrors("token_exchange.audience")}
-												clientIdLabel={
-													<>
-														Exchange Client ID <span className="text-destructive">*</span>
-													</>
-												}
-												clientIdTooltip="A dedicated application at your identity provider with the token exchange (or on-behalf-of) grant enabled and permission to request this audience. Not the SSO login application."
-												clientIdPlaceholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
-												clientIdTestId="token-exchange-client-id-input"
-												onClientIdTouched={() => clearErrors("token_exchange.client_id")}
-												clientIdRedactNonEnvValue={false}
-												clientSecretLabel="Exchange Client Secret (optional)"
-												clientSecretPlaceholder="env.EXCHANGE_CLIENT_SECRET"
-												clientSecretHelperText="Omit for public clients."
-												clientSecretTestId="token-exchange-client-secret-input"
-												clientSecretHideValueWhenEnv={false}
-												clientSecretMaskNonEnvValue={true}
-												clientSecretRedactNonEnvValue={false}
-												authServerUrlLabel="Authorization Server URL (optional)"
-												authServerUrlTooltip={
-													<>
-														Only needed when the audience above is registered on a different authorization server than the one your SSO
-														login uses - for example, Okta&apos;s per-resource Custom Authorization Servers. Leave blank to use your SSO
-														login&apos;s issuer, which is correct for most providers.
-													</>
-												}
-												authServerUrlTestId="token-exchange-authorization-server-url-input"
-												scopes={{
-													variant: "textarea",
-													value: tokenExchangeScopesText,
-													onChange: setTokenExchangeScopesText,
-													label: "Scopes (optional)",
-													helperText: (
-														<>
-															Comma-separated scopes to request on exchanged tokens. Include <code>offline_access</code> (where your
-															identity provider supports it) so the retained discovery credential can renew itself in the background.
-														</>
-													),
-													testId: "token-exchange-scopes-textarea",
-												}}
-											/>
-										</div>
+										<>
+											<DottedSeparator />
+											<div className="space-y-4" data-testid="token-exchange-fields">
+												<SectionHeader
+													title="Token Exchange Configuration"
+													description="Credentials and scopes used to exchange caller identity tokens for access to this server."
+													testId="token-exchange-heading"
+												/>
+												<div className="space-y-4 rounded-md border p-4">
+													<TokenExchangeFields
+														control={control}
+														beforeFields={
+															<p className="text-muted-foreground text-sm">
+																Each caller's identity token is exchanged automatically for a short-lived token scoped to this server -
+																users never authenticate to it individually, and this server connects per tool call instead of holding a
+																shared connection. Callers must authenticate with their identity provider token; virtual keys alone cannot
+																use this server. Creating the server verifies it as you, using your own signed-in identity.
+															</p>
+														}
+														gridClassName="space-y-4"
+														audienceLabel={
+															<>
+																Audience <span className="text-destructive">*</span>
+															</>
+														}
+														audienceTooltip="The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
+														audienceTestId="token-exchange-audience-input"
+														onAudienceTouched={() => clearErrors("token_exchange.audience")}
+														clientIdLabel={
+															<>
+																Exchange Client ID <span className="text-destructive">*</span>
+															</>
+														}
+														clientIdTooltip="A dedicated application at your identity provider with the token exchange (or on-behalf-of) grant enabled and permission to request this audience. Not the SSO login application."
+														clientIdPlaceholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
+														clientIdTestId="token-exchange-client-id-input"
+														onClientIdTouched={() => clearErrors("token_exchange.client_id")}
+														clientIdRedactNonEnvValue={false}
+														clientSecretLabel="Exchange Client Secret (optional)"
+														clientSecretPlaceholder="env.EXCHANGE_CLIENT_SECRET"
+														clientSecretHelperText="Omit for public clients."
+														clientSecretTestId="token-exchange-client-secret-input"
+														clientSecretHideValueWhenEnv={false}
+														clientSecretMaskNonEnvValue={true}
+														clientSecretRedactNonEnvValue={false}
+														authServerUrlLabel="Authorization Server URL (optional)"
+														authServerUrlTooltip={
+															<>
+																Only needed when the audience above is registered on a different authorization server than the one your SSO
+																login uses - for example, Okta&apos;s per-resource Custom Authorization Servers. Leave blank to use your SSO
+																login&apos;s issuer, which is correct for most providers.
+															</>
+														}
+														authServerUrlTestId="token-exchange-authorization-server-url-input"
+														scopes={{
+															variant: "textarea",
+															value: tokenExchangeScopesText,
+															onChange: setTokenExchangeScopesText,
+															label: "Scopes (optional)",
+															helperText: (
+																<>
+																	Comma-separated scopes to request on exchanged tokens. Include <code>offline_access</code> (where your
+																	identity provider supports it) so the retained discovery credential can renew itself in the background.
+																</>
+															),
+															testId: "token-exchange-scopes-textarea",
+														}}
+													/>
+												</div>
+											</div>
+										</>
 									)}
 
 									{(authType === "oauth" || authType === "per_user_oauth") && (
-										<Accordion type="single" collapsible className="w-full">
-											<AccordionItem value="oauth-advanced" className="border-b-0">
-												<AccordionTrigger className="py-0" data-testid="oauth-advanced-trigger">
-													<span className="text-sm font-medium">OAuth Client Advanced Settings</span>
-												</AccordionTrigger>
-												<AccordionContent className="pt-4 pb-0">
+										<>
+											<DottedSeparator />
+											<div className="space-y-4">
+												<SectionHeader
+													title="OAuth Configuration"
+													description="Credentials and endpoints this server uses to authenticate via OAuth."
+													testId="oauth-advanced-heading"
+												/>
+												<div className="space-y-4 rounded-md border p-4">
 													<OAuthAdvancedFields
 														control={control}
 														scopesRaw={scopesText}
@@ -756,22 +809,24 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														registrationUrlTestId="mcp-oauth-registration-url"
 														onFieldTouched={(field) => clearErrors(`oauth_config.${field}`)}
 													/>
-												</AccordionContent>
-											</AccordionItem>
-										</Accordion>
+												</div>
+											</div>
+										</>
 									)}
 
+									<DottedSeparator />
+
 									{/* TLS / Certificate */}
-									<Accordion type="single" collapsible className="w-full">
-										<AccordionItem value="tls-config" className="border-b-0">
-											<AccordionTrigger className="py-0" data-testid="tls-config-trigger">
-												<span className="text-sm font-medium">TLS / Certificate</span>
-											</AccordionTrigger>
-											<AccordionContent className="space-y-4 pt-4 pb-0">
-												<TLSConfigFields control={control} />
-											</AccordionContent>
-										</AccordionItem>
-									</Accordion>
+									<div className="space-y-4">
+										<SectionHeader
+											title="TLS / Certificate"
+											description="Configure certificate verification for HTTPS connections to this server."
+											testId="tls-config-heading"
+										/>
+										<div className="space-y-4 rounded-md border p-4">
+											<TLSConfigFields control={control} />
+										</div>
+									</div>
 								</>
 							)}
 
@@ -857,33 +912,31 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						</div>
 
 						{/* Form Footer */}
-						<div className="dark:bg-card border-border border-t bg-white px-8 py-4">
-							<div className="flex justify-end gap-2">
-								<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="cancel-client-btn">
-									Cancel
-								</Button>
-								<TooltipProvider>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span className="inline-block">
-												<Button
-													type="submit"
-													disabled={isLoading || !hasCreateMCPClientAccess}
-													isLoading={isLoading}
-													data-testid="save-client-btn"
-												>
-													Create
-												</Button>
-											</span>
-										</TooltipTrigger>
-										{!hasCreateMCPClientAccess && (
-											<TooltipContent>
-												<p>You don't have permission to perform this action</p>
-											</TooltipContent>
-										)}
-									</Tooltip>
-								</TooltipProvider>
-							</div>
+						<div className="bg-card sticky bottom-0 z-10 flex justify-end gap-2 border-t px-8 py-4">
+							<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="cancel-client-btn">
+								Cancel
+							</Button>
+							<TooltipProvider>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span className="inline-block">
+											<Button
+												type="submit"
+												disabled={isLoading || !hasCreateMCPClientAccess}
+												isLoading={isLoading}
+												data-testid="save-client-btn"
+											>
+												Create
+											</Button>
+										</span>
+									</TooltipTrigger>
+									{!hasCreateMCPClientAccess && (
+										<TooltipContent>
+											<p>You don't have permission to perform this action</p>
+										</TooltipContent>
+									)}
+								</Tooltip>
+							</TooltipProvider>
 						</div>
 					</form>
 				</Form>
