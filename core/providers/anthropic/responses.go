@@ -2445,14 +2445,33 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
 		if bifrostResp.Response != nil {
 			// Use actual usage if available (forwarded from upstream message_start).
-			// When unknown (e.g. Bedrock Converse, which only reports usage on its
-			// terminal event), omit the field entirely rather than fabricating
-			// zeros — Anthropic's own documented streaming contract tolerates usage
-			// being absent from message_start, and reporting zeros would misrepresent
-			// cost/usage telemetry to clients that read input_tokens from here.
+			// When unknown — Bedrock Converse reports usage only on its terminal event,
+			// and every provider routed through providerUtils.SendCreatedEventResponsesChunk
+			// hands us an empty BifrostResponsesResponse — the key must still be emitted.
+			// message_start.usage is not optional in practice: Anthropic populates it on
+			// every real stream, and @ai-sdk/anthropic's message_start schema marks
+			// usage.input_tokens required (id/model/role are nullish), so omitting it
+			// aborts the stream before the first token reaches the client (see #5885).
+			//
+			// Zeros rather than Anthropic's own output_tokens:1 placeholder: the frame is
+			// provisional either way, but Bifrost's Bedrock message_delta carries absolute
+			// totals rather than Anthropic's cumulative deltas, so a client that sums the
+			// two would over-count. Zero is neutral under both readings, and the terminal
+			// message_delta remains the authoritative source of the real figures.
 			var messageUsage *AnthropicUsage
 			if bifrostResp.Response.Usage != nil {
 				messageUsage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+			} else {
+				messageUsage = &AnthropicUsage{
+					InputTokens:              0,
+					OutputTokens:             0,
+					CacheReadInputTokens:     0,
+					CacheCreationInputTokens: 0,
+					CacheCreation: AnthropicUsageCacheCreation{
+						Ephemeral5mInputTokens: 0,
+						Ephemeral1hInputTokens: 0,
+					},
+				}
 			}
 			streamMessage := &AnthropicMessageResponse{
 				Type:    "message",
