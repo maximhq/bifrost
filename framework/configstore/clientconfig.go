@@ -1518,6 +1518,31 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	}
 	hash.Write([]byte("auth_type:" + authType))
 
+	// Hash NeedsSessionStickiness so toggling it in config.json drifts the
+	// hash and triggers reconciliation — without this, editing only this
+	// field would leave the row's migration-backfilled (or nil-defaulted)
+	// value in place indefinitely, since nothing else about the row changed.
+	//
+	// nil contributes nothing — identical to how this field hashed before it
+	// existed in the formula at all. That's deliberate: a config.json entry
+	// that still omits the field must keep coincidentally matching a stale
+	// (pre-migration) stored hash, so the migration's true-backfill for
+	// existing shared clients isn't clobbered by a forced file-wins resync
+	// on the next restart just because config.json never mentions the field.
+	// true and false each get their own distinct marker: only an *explicit*
+	// value in config.json represents a real opinion worth detecting as a
+	// change. Collapsing false into nil's zero-contribution (as this used to
+	// do) meant an admin's explicit `needs_session_stickiness: false` edit
+	// could coincidentally hash-match a stale stored hash and silently never
+	// take effect.
+	if m.NeedsSessionStickiness != nil {
+		if *m.NeedsSessionStickiness {
+			hash.Write([]byte("needs_session_stickiness:true"))
+		} else {
+			hash.Write([]byte("needs_session_stickiness:false"))
+		}
+	}
+
 	// Hash PerUserHeaderKeys (sorted for deterministic hashing) so edits to
 	// the declared header-name schema in config.json drift the hash.
 	if len(m.PerUserHeaderKeys) > 0 {
