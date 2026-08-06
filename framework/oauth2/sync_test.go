@@ -106,13 +106,15 @@ func (s *testConfigStore) UpdateOauthToken(_ context.Context, token *tables.Tabl
 }
 
 // RefreshOauthTokenFieldsIfActive is the test-double equivalent of the real
-// store's status-gated refresh write (see its doc comment on the interface):
-// applies the new credential fields only while the row is still 'active'.
-func (s *testConfigStore) RefreshOauthTokenFieldsIfActive(_ context.Context, id string, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
+// store's status- and refresh-token-gated compare-and-swap write (see its
+// doc comment on the interface): applies the new credential fields only
+// while the row is still 'active' AND its stored refresh_token still equals
+// expectedPriorRefreshToken.
+func (s *testConfigStore) RefreshOauthTokenFieldsIfActive(_ context.Context, id string, expectedPriorRefreshToken, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	token, ok := s.oauthTokens[id]
-	if !ok || token.Status != "active" {
+	if !ok || token.Status != "active" || token.RefreshToken != expectedPriorRefreshToken {
 		return false, nil
 	}
 	updated := *token
@@ -749,6 +751,65 @@ func TestTokenRefreshWorker_ConcurrentReauth_DoesNotOverwriteStaleRefresh(t *tes
 	assert.Equal(t, "needs_reauth", token.Status, "status flip during an in-flight refresh must not be overwritten by the stale response")
 	assert.Equal(t, "old-access-token", token.AccessToken, "stale refresh response must not overwrite credentials once needs_reauth has been set")
 	assert.Equal(t, "refresh-token", token.RefreshToken)
+}
+
+func TestRefreshAccessToken_CASLostToConcurrentActiveRefresh_ReturnsNilNotExpired(t *testing.T) {
+	// The CAS lost not because the credential died, but because a concurrent
+	// refresh of the same row (e.g. from another cluster node) already won
+	// the race and left the row active with fresh credentials. This attempt's
+	// own (now-discarded) result must not be treated as a dead credential —
+	// no ErrOAuth2TokenExpired, no NeedsReauth. Mirrors
+	// TestTokenRefreshWorker_ConcurrentReauth_DoesNotOverwriteStaleRefresh's
+	// blocking-server shape, but the concurrent write here keeps status
+	// "active" instead of flipping to needs_reauth.
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-unblock
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "stale-refreshed-access-token",
+			"refresh_token": "stale-refreshed-refresh-token",
+			"token_type":    "bearer",
+			"expires_in":    3600,
+		})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+	provider := newTestProvider(store)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var refreshErr error
+	go func() {
+		defer wg.Done()
+		refreshErr = provider.RefreshAccessToken(context.Background(), tokenID)
+	}()
+
+	<-started
+	// Simulate a concurrent refresh elsewhere winning the race: the row's
+	// refresh_token moves past what this in-flight attempt read, but status
+	// stays active — the credential is fine, just refreshed by someone else.
+	store.mu.Lock()
+	winner := *store.oauthTokens[tokenID]
+	winner.AccessToken = "winner-access-token"
+	winner.RefreshToken = "winner-refresh-token"
+	store.oauthTokens[tokenID] = &winner
+	store.mu.Unlock()
+	close(unblock)
+	wg.Wait()
+
+	assert.NoError(t, refreshErr, "a CAS loss to a still-active concurrent refresh must not surface as an error")
+	assert.NotErrorIs(t, refreshErr, schemas.ErrOAuth2TokenExpired)
+
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", token.Status)
+	assert.Equal(t, "winner-access-token", token.AccessToken, "the winning concurrent refresh's credentials must survive, not this attempt's discarded result")
+	assert.Equal(t, "winner-refresh-token", token.RefreshToken)
 }
 
 func TestTokenRefreshWorker_ConnectionRefused_DoesNotMarkNeedsReauth(t *testing.T) {

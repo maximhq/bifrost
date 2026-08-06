@@ -6817,16 +6817,31 @@ func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.Tab
 }
 
 // RefreshOauthTokenFieldsIfActive persists a successful refresh's new
-// credential fields, but only while the row is still 'active' at write time.
+// credential fields, but only while the row is still 'active' AND its
+// stored refresh_token still equals expectedPriorRefreshToken at write time.
 // Reads the row FOR UPDATE (a Postgres row lock; a no-op on SQLite, see
-// dbForUpdate) inside a transaction so the status check and the write are
-// atomic with respect to a concurrent RotateMCPOAuthConfig cascade flipping
-// the same row to 'needs_reauth' — without this, a plain full-row Save keyed
-// only on ID could silently overwrite that flip back to 'active' with a
-// refresh that started before the rotation but finished after it. Loads
-// through the model (not a raw column UPDATE) so BeforeSave's encryption
-// hook still runs exactly as it does for every other token write.
-func (s *RDBConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
+// dbForUpdate) inside a transaction so both checks and the write are atomic
+// with respect to two distinct concurrent-write hazards:
+//   - A RotateMCPOAuthConfig cascade flipping the same row to 'needs_reauth'
+//     while this refresh's network round-trip was in flight — without the
+//     status check, a plain full-row Save keyed only on ID could silently
+//     overwrite that flip back to 'active'.
+//   - A second, concurrent refresh of this same row (typically from another
+//     cluster node — nothing upstream of this call prevents two nodes from
+//     independently redeeming the same refresh_token against the IdP at
+//     once) that already won the race and wrote its own newer credentials.
+//     The row lock alone does not prevent this: both writers' status checks
+//     would still pass since the row is 'active' the whole time, so without
+//     comparing refresh_token, the second writer to reach this transaction
+//     would simply overwrite the first writer's fresher credentials with
+//     its own now-stale ones. Comparing against expectedPriorRefreshToken
+//     (the value the caller redeemed upstream, read before the network
+//     call) makes this a compare-and-swap: only the writer whose redeemed
+//     token is still the row's current one gets to commit.
+//
+// Loads through the model (not a raw column UPDATE) so BeforeSave's
+// encryption hook still runs exactly as it does for every other token write.
+func (s *RDBConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id string, expectedPriorRefreshToken, accessToken, refreshToken string, expiresAt *time.Time, lastRefreshedAt time.Time) (bool, error) {
 	updated := false
 	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var current tables.TableMCPOauthToken
@@ -6837,6 +6852,11 @@ func (s *RDBConfigStore) RefreshOauthTokenFieldsIfActive(ctx context.Context, id
 			return err
 		}
 		if current.Status != "active" {
+			return nil
+		}
+		if current.RefreshToken != expectedPriorRefreshToken {
+			// Someone else already advanced this row past the refresh_token
+			// this call redeemed upstream — this refresh lost the race.
 			return nil
 		}
 		current.AccessToken = accessToken
