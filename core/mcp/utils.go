@@ -630,15 +630,22 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 }
 
 // createToolResponseMessage creates a tool response message with the execution result.
-func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, responseText string) *schemas.ChatMessage {
+// isError carries the MCP protocol's own tool-failure signal (mcp.CallToolResult.IsError),
+// which reports that the tool ran and failed -- distinct from a transport-level error.
+func createToolResponseMessage(toolCall schemas.ChatAssistantMessageToolCall, responseText string, isError bool) *schemas.ChatMessage {
+	toolMsg := &schemas.ChatToolMessage{
+		ToolCallID: toolCall.ID,
+	}
+	if isError {
+		toolMsg.IsError = schemas.Ptr(true)
+	}
+
 	return &schemas.ChatMessage{
 		Role: schemas.ChatMessageRoleTool,
 		Content: &schemas.ChatMessageContent{
 			ContentStr: &responseText,
 		},
-		ChatToolMessage: &schemas.ChatToolMessage{
-			ToolCallID: toolCall.ID,
-		},
+		ChatToolMessage: toolMsg,
 	}
 }
 

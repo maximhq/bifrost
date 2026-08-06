@@ -647,6 +647,15 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			rm.ResponsesToolMessage.CallID = cm.ChatToolMessage.ToolCallID
 		}
 
+		// The chat surface marks a failed tool result with a bool and carries no
+		// error text, so there is nothing to put in ResponsesToolMessage.Error.
+		// Status "incomplete" is the equivalent signal on this surface, and is
+		// what the Anthropic Responses converter already reads back as is_error
+		// (providers/anthropic/responses.go).
+		if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
+			rm.Status = Ptr("incomplete")
+		}
+
 		// If tool output content exists, add it to function_call_output
 		// For function_call_output, get content from cm.Content since rm.Content is not set
 		if messageType == ResponsesMessageTypeFunctionCallOutput && cm.Content != nil {
@@ -837,6 +846,15 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				if rm.ResponsesToolMessage != nil && rm.ResponsesToolMessage.CallID != nil {
 					cm.ChatToolMessage = &ChatToolMessage{
 						ToolCallID: rm.ResponsesToolMessage.CallID,
+					}
+
+					// Both spellings the Responses surface uses for a failed tool
+					// result collapse to the chat surface's single bool. Mirrors
+					// the same pair the Anthropic Responses converter treats as
+					// is_error (providers/anthropic/responses.go).
+					if (rm.ResponsesToolMessage.Error != nil && *rm.ResponsesToolMessage.Error != "") ||
+						(rm.Status != nil && *rm.Status == "incomplete") {
+						cm.ChatToolMessage.IsError = Ptr(true)
 					}
 
 					// Extract content from ResponsesFunctionToolCallOutput if present

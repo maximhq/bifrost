@@ -723,8 +723,12 @@ func (m *ToolsManager) executeToolInternal(
 	// Extract text from MCP response
 	responseText := extractTextFromMCPResponse(toolResponse, toolName)
 
-	// Create tool response message
-	return createToolResponseMessage(*toolCall, responseText), executionConfig.Name, sanitizedToolName, nil
+	// Create tool response message. toolResponse.IsError is the server reporting a
+	// failed execution over a successful call, so it must reach the model as a
+	// failure rather than as ordinary result text. toolResponse is nil-checked for
+	// the same reason extractTextFromMCPResponse checks it above.
+	isToolError := toolResponse != nil && toolResponse.IsError
+	return createToolResponseMessage(*toolCall, responseText, isToolError), executionConfig.Name, sanitizedToolName, nil
 }
 
 // ExecuteAgentForChatRequest executes agent mode for a chat request, handling
