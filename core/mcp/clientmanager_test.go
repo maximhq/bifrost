@@ -166,3 +166,42 @@ func TestCloseAndMarkNeedsReauth_Disabled_IsNoOp(t *testing.T) {
 	m.mu.RUnlock()
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State)
 }
+
+// TestEnableClient_GuardLostLeavesDisabledUntouched pins the ordering
+// CodeRabbit flagged: EnableClient must acquire the exclusive per-client
+// operation guard (beginExclusiveClientOp) before flipping
+// ExecutionConfig.Disabled, not after. Flipping it first and only then
+// losing the guard to a concurrent operation (e.g. ReconnectClient) would
+// leave the entry looking enabled to that other caller's connectToMCPClient
+// call while State is still Disabled, letting it dial the entry out from
+// under this failed EnableClient — which then returns "already in progress"
+// even though the client was actually just connected by the race winner.
+func TestEnableClient_GuardLostLeavesDisabledUntouched(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	config := newSharedOAuthClientConfig("client-enable-race")
+	config.Disabled = true
+
+	m.mu.Lock()
+	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateDisabled,
+	}
+	m.mu.Unlock()
+
+	// Simulate a concurrent operation (e.g. ReconnectClient) already holding
+	// the exclusive guard for this client when EnableClient is called.
+	finish, ok := m.beginExclusiveClientOp(config.ID)
+	require.True(t, ok)
+	defer finish(nil)
+
+	err := m.EnableClient(config.ID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already in progress")
+
+	m.mu.RLock()
+	state := *m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.True(t, state.ExecutionConfig.Disabled, "a failed EnableClient (guard already held elsewhere) must not have flipped Disabled — otherwise a concurrent connectToMCPClient could dial the still-Disabled-State entry")
+	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State)
+}
