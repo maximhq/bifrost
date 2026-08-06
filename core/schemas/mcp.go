@@ -783,6 +783,17 @@ const (
 	//     keep working, only the tool list stops refreshing until an admin repairs
 	//     the discovery credential.
 	MCPConnectionStateNeedsReauth MCPConnectionState = "needs_reauth"
+	// MCPConnectionStateDegraded is a read-time aggregate value, never a
+	// node's own local State: it means multiple instances of a distributed
+	// deployment each hold a different self-reported state for the same
+	// client (e.g. one instance's periodic check currently sees Healthy
+	// while another's currently sees Unstable). Only meaningful for states
+	// that can genuinely vary per instance in the first place (Healthy,
+	// Unstable, PendingVerification); NeedsReauth/Disabled are config-
+	// sourced facts expected to already agree everywhere, so disagreement
+	// on those is a propagation problem, not something this value covers.
+	// A single-instance deployment never produces this value.
+	MCPConnectionStateDegraded MCPConnectionState = "degraded"
 )
 
 // MCPClientState represents a connected MCP client with its configuration and tools.

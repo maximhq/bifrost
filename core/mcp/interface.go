@@ -60,6 +60,12 @@ type MCPManagerInterface interface {
 	// together.
 	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
 
+	// SetStateChangeCallback registers cb to be invoked on every reactive
+	// (non-admin-driven) client connection-state transition — periodic
+	// checker transitions and reactive connect-failure classification into
+	// NeedsReauth. Pass nil to clear a previously registered callback.
+	SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState))
+
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 

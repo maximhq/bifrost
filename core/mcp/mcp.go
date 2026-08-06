@@ -55,6 +55,41 @@ type MCPManager struct {
 	// existing execute-tool hooks.
 	pluginPipelineProvider func() PluginPipeline
 	releasePluginPipeline  func(pipeline PluginPipeline)
+
+	// stateChangeCallback, if set, is invoked whenever a client's live
+	// connection state changes via a path with no admin-API call site of its
+	// own for a caller to observe the change through: reactive connect-
+	// failure classification (failConnectAttempt) and the periodic
+	// connection checker's own transitions (ClientConnectionChecker.setState).
+	// Deliberately NOT fired from admin-driven transitions
+	// (CloseAndMarkNeedsReauth, DisableClient/EnableClient, UpdateClient) —
+	// those already have their own return value/call site for a caller to
+	// react to, so firing here too would just be a redundant second signal
+	// for the same change. nil-safe: OSS behaves identically whether a
+	// callback is registered or not.
+	//
+	// No cross-transition ordering guarantee: each call site commits its
+	// state change under m.mu, then invokes cb after releasing it (a
+	// registered callback may do arbitrary work, including I/O, which must
+	// never run while holding m.mu — see the two call sites' own comments).
+	// Two transitions committed in quick succession from different
+	// goroutines can therefore have their callback invocations observed out
+	// of commit order. A consumer that needs to track a client's presumed
+	// current state across every event would need its own sequencing; one
+	// that only reacts to a specific newState value in an idempotent way
+	// (the only kind of consumer this exists for today) is unaffected.
+	stateChangeCallback func(clientID, name string, oldState, newState schemas.MCPConnectionState)
+}
+
+// SetStateChangeCallback registers cb to be invoked on every reactive
+// (non-admin-driven) client state transition — see the stateChangeCallback
+// field doc for exactly which transitions that covers. Pass nil to clear a
+// previously registered callback. Safe to call at any time; takes effect on
+// the next transition.
+func (m *MCPManager) SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stateChangeCallback = cb
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
