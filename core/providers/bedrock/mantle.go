@@ -57,12 +57,12 @@ func isMantleModel(ctx *schemas.BifrostContext, model string) bool {
 // (capability-resolved) model for correct path gating; the request body still carries the
 // wire request.Model. Frontier families (closed gpt-5.x, Gemma 4) live under the "openai/v1"
 // base path; gpt-oss uses the bare "v1" path.
-func mantleOpenAIURL(region, model, path string) string {
+func mantleOpenAIURL(endpoints *schemas.BedrockEndpoints, region, model, path string) string {
 	base := "v1"
 	if strings.Contains(model, "gpt-5") || strings.Contains(model, "gemma-4") {
 		base = "openai/v1"
 	}
-	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/%s/%s", region, base, path)
+	return fmt.Sprintf("https://%s/%s/%s", resolveBedrockHost(endpoints, bedrockServiceMantle, region), base, path)
 }
 
 // SignMantleV4Headers computes SigV4 auth headers for a mantle request by signing a dummy
@@ -140,7 +140,7 @@ func (provider *BedrockProvider) mantleChatCompletions(
 	request *schemas.BifrostChatRequest,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -178,7 +178,7 @@ func (provider *BedrockProvider) mantleChatCompletionsStream(
 	request *schemas.BifrostChatRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
+	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -215,7 +215,7 @@ func (provider *BedrockProvider) mantleResponses(
 	request *schemas.BifrostResponsesRequest,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
+	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
@@ -253,7 +253,7 @@ func (provider *BedrockProvider) mantleResponsesStream(
 	request *schemas.BifrostResponsesRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	region := resolveBedrockRegion(ctx, key, request.Model)
-	url := mantleOpenAIURL(region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
+	url := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "responses")
 
 	// SigV4 (empty key value): sign the exact body the handler builds via a signer closure.
 	// Bearer (key has a value): no signer; auth flows through the Authorization header.
