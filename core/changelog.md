@@ -1,3 +1,4 @@
+- fix: always emit a well-formed `message_start` on the Anthropic surface - the frame now carries a `message` object with a `usage` object and an array `content` even when the upstream created event has no payload, and the chat-completions converter no longer panics on a content-less assistant message
 - fix: carry tool-result `is_error` across the chat/Responses mux in both directions, and stop the unmarshal reattach gate from dropping a tool message that marks a failure without a `tool_call_id` (#5890)
 - fix: mark failed MCP tool executions as errors instead of replaying them to the model as successful results - covers agent-loop execution errors, the MCP protocol's own `isError` flag which was previously discarded, and CodeMode lookup/sandbox failures (#5890)
 - fix: carry tool-result `is_error` through the chat completions surface so Anthropic replay and Bedrock Converse status reflect failed tool calls [@AidanAllchin](https://github.com/AidanAllchin)
