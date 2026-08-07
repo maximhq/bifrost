@@ -1,3 +1,4 @@
+- fix: complete Gemini streaming Responses terminal events, response.completed now carries the output array and reasoning items keep their accumulated thought text and thoughtSignature (closes #5259) (thanks [@fus3r](https://github.com/fus3r)!)
 - feat: add `BifrostContextKeyCompatDroppedParams` so the compat plugin can carry its dropped-parameter list per request instead of on the shared plugin struct (#5902)
 - fix: always emit a well-formed `message_start` on the Anthropic surface - the frame now carries a `message` object with a `usage` object and an array `content` even when the upstream created event has no payload, and the chat-completions converter no longer panics on a content-less assistant message
 - fix: carry tool-result `is_error` across the chat/Responses mux in both directions, and stop the unmarshal reattach gate from dropping a tool message that marks a failure without a `tool_call_id` (#5890)
