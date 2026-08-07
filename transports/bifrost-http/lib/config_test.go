@@ -412,6 +412,12 @@ type MockConfigStore struct {
 		teams       []tables.TableTeam
 		virtualKeys []tables.TableVirtualKey
 	}
+	// governanceItemsUpdated records the rows handed to the store's update path,
+	// so a test can assert on the exact struct the config sync would persist
+	// rather than only on what the mock chose to keep.
+	governanceItemsUpdated struct {
+		budgets []tables.TableBudget
+	}
 	flushSessionsCalled bool
 }
 
@@ -760,6 +766,12 @@ func (m *MockConfigStore) CreateBudget(ctx context.Context, budget *tables.Table
 }
 
 func (m *MockConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error {
+	// Recording only: deliberately does not simulate the store's own field
+	// preservation, so a test can assert on exactly what the config sync hands
+	// down rather than on the store's compensation for it.
+	if budget != nil {
+		m.governanceItemsUpdated.budgets = append(m.governanceItemsUpdated.budgets, *budget)
+	}
 	return nil
 }
 
@@ -1699,6 +1711,68 @@ func (m *MockConfigStore) RescheduleWebhookJob(ctx context.Context, id, runnerID
 
 func (m *MockConfigStore) DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error {
 	return nil
+}
+
+// TestMergeGovernanceConfig_ForceFileSyncPreservesBudgetRuntimeState verifies the
+// startup force-sync keeps runtime-owned budget counters.
+//
+// With source_of_truth=config.json every file-present budget is pushed into
+// budgetsToUpdate even when its ConfigHash matches, because the stored hash cannot
+// prove the row is unmodified. That is correct for configuration-owned fields, but
+// the file row carries CurrentUsage=0 and a zero LastReset, and those two are
+// runtime-owned: GenerateBudgetHash excludes them precisely because config.json
+// never authors them.
+func TestMergeGovernanceConfig_ForceFileSyncPreservesBudgetRuntimeState(t *testing.T) {
+	initTestLogger()
+
+	lastReset := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	store := NewMockConfigStore()
+	dbGovernance := &configstore.GovernanceConfig{
+		Budgets: []tables.TableBudget{{
+			ID:            "budget-runtime-state",
+			MaxLimit:      100,
+			ResetDuration: "1h",
+			CurrentUsage:  42.5,
+			LastReset:     lastReset,
+		}},
+	}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		Governance: &configstore.GovernanceConfig{
+			// Configuration-owned fields only, exactly as declared in config.json.
+			Budgets: []tables.TableBudget{{
+				ID:            "budget-runtime-state",
+				MaxLimit:      250,
+				ResetDuration: "1h",
+			}},
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	require.Len(t, store.governanceItemsUpdated.budgets, 1,
+		"force sync must push the file-present budget through the update path")
+	persisted := store.governanceItemsUpdated.budgets[0]
+	assert.Equal(t, 250.0, persisted.MaxLimit, "configuration-owned max_limit must follow the file")
+	assert.Equal(t, 42.5, persisted.CurrentUsage,
+		"runtime-owned current_usage must not be written back as the file's zero value")
+	assert.True(t, persisted.LastReset.Equal(lastReset),
+		"runtime-owned last_reset must not be written back as the Go zero timestamp: got %s, want %s",
+		persisted.LastReset.UTC(), lastReset)
+
+	require.Len(t, config.GovernanceConfig.Budgets, 1)
+	inMemory := config.GovernanceConfig.Budgets[0]
+	assert.Equal(t, 250.0, inMemory.MaxLimit, "in-memory snapshot must pick up the file's max_limit")
+	assert.Equal(t, 42.5, inMemory.CurrentUsage,
+		"in-memory snapshot must keep the persisted usage the governance store will load")
+	assert.True(t, inMemory.LastReset.Equal(lastReset),
+		"in-memory snapshot must keep the persisted last_reset: got %s, want %s",
+		inMemory.LastReset.UTC(), lastReset)
 }
 
 func TestMergeGovernanceConfig_SyncsComplexityAnalyzerConfig(t *testing.T) {
