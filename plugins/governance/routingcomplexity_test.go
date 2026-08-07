@@ -27,7 +27,7 @@ func TestCELExpressionReferencesComplexityTierIdentifierOnly(t *testing.T) {
 		},
 		{
 			name:       "identifier in in-list",
-			expression: `complexity_tier in ["COMPLEX", "REASONING"]`,
+			expression: `complexity_tier in ["MEDIUM", "COMPLEX"]`,
 			expected:   true,
 		},
 		{
@@ -100,10 +100,10 @@ func TestCELComplexityTierVariable(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:       "tier equals REASONING",
-			expression: `complexity_tier == "REASONING"`,
+			name:       "tier equals MEDIUM",
+			expression: `complexity_tier == "MEDIUM"`,
 			variables: map[string]interface{}{
-				"complexity_tier": "REASONING",
+				"complexity_tier": "MEDIUM",
 			},
 			expected: true,
 		},
@@ -125,7 +125,7 @@ func TestCELComplexityTierVariable(t *testing.T) {
 		},
 		{
 			name:       "tier in list",
-			expression: `complexity_tier in ["COMPLEX", "REASONING"]`,
+			expression: `complexity_tier in ["MEDIUM", "COMPLEX"]`,
 			variables: map[string]interface{}{
 				"complexity_tier": "COMPLEX",
 			},
@@ -382,4 +382,137 @@ func complexityRoutingRule(id string, expression string) *configstoreTables.Tabl
 			{Provider: &provider, Model: &model, Weight: 1.0},
 		},
 	}
+}
+
+func TestValidateRoutingCELExpression_ComplexityTierLiterals(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+		wantErr    string
+	}{
+		{"valid equality", `complexity_tier == "COMPLEX"`, ""},
+		{"valid inequality", `complexity_tier != "SIMPLE"`, ""},
+		{"valid in list", `complexity_tier in ["SIMPLE", "MEDIUM"]`, ""},
+		{"removed tier", `complexity_tier == "REASONING"`, "REASONING"},
+		{"removed tier reversed operands", `"REASONING" == complexity_tier`, "REASONING"},
+		{"removed tier in list", `complexity_tier in ["COMPLEX", "REASONING"]`, "REASONING"},
+		{"case typo", `complexity_tier == "complex"`, "complex"},
+		{"typo in negated membership", `!(complexity_tier in ["Simple", "MEDIUM"])`, "Simple"},
+		{"unrelated literal untouched", `headers["x-mode"] == "REASONING"`, ""},
+		{"string literal not identifier", `model == "complexity_tier"`, ""},
+		{"dynamic comparison untouched", `complexity_tier == model`, ""},
+		{"combined valid and invalid", `model == "gpt-4o" && complexity_tier == "HARD"`, "HARD"},
+		{"empty expression", ``, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRoutingCELExpression(tt.expression)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Contains(t, err.Error(), "valid tiers")
+		})
+	}
+}
+
+func TestNormalizeDeprecatedComplexityTierLiterals(t *testing.T) {
+	tests := []struct {
+		name        string
+		expression  string
+		want        string
+		wantChanged bool
+	}{
+		{
+			name:        "equality double quoted",
+			expression:  `complexity_tier == "REASONING"`,
+			want:        `complexity_tier == "COMPLEX"`,
+			wantChanged: true,
+		},
+		{
+			name:        "equality reversed operands",
+			expression:  `"REASONING" == complexity_tier`,
+			want:        `"COMPLEX" == complexity_tier`,
+			wantChanged: true,
+		},
+		{
+			name:        "inequality single quoted",
+			expression:  `complexity_tier != 'REASONING'`,
+			want:        `complexity_tier != 'COMPLEX'`,
+			wantChanged: true,
+		},
+		{
+			name:        "membership list",
+			expression:  `complexity_tier in ['REASONING', 'COMPLEX']`,
+			want:        `complexity_tier in ['COMPLEX', 'COMPLEX']`,
+			wantChanged: true,
+		},
+		{
+			name:        "combined with other predicates",
+			expression:  `headers["x-env"] == "prod" && complexity_tier == "REASONING"`,
+			want:        `headers["x-env"] == "prod" && complexity_tier == "COMPLEX"`,
+			wantChanged: true,
+		},
+		{
+			name:        "unrelated literal preserved alongside tier comparison",
+			expression:  `complexity_tier == "REASONING" && headers["x-mode"] == "REASONING"`,
+			want:        `complexity_tier == "COMPLEX" && headers["x-mode"] == "REASONING"`,
+			wantChanged: true,
+		},
+		{
+			name:        "unrelated model and param literals preserved",
+			expression:  `model == "REASONING" && complexity_tier in ["REASONING"] && params["mode"] == "REASONING"`,
+			want:        `model == "REASONING" && complexity_tier in ["COMPLEX"] && params["mode"] == "REASONING"`,
+			wantChanged: true,
+		},
+		{
+			name:        "unrelated literal alone untouched",
+			expression:  `headers["x-mode"] == "REASONING"`,
+			want:        `headers["x-mode"] == "REASONING"`,
+			wantChanged: false,
+		},
+		{
+			name:        "valid tier untouched",
+			expression:  `complexity_tier == "COMPLEX"`,
+			want:        `complexity_tier == "COMPLEX"`,
+			wantChanged: false,
+		},
+		{
+			name:        "dynamic comparison untouched",
+			expression:  `complexity_tier == model`,
+			want:        `complexity_tier == model`,
+			wantChanged: false,
+		},
+		{
+			name:        "malformed expression untouched",
+			expression:  `complexity_tier == "REASONING`,
+			want:        `complexity_tier == "REASONING`,
+			wantChanged: false,
+		},
+		{
+			name:        "empty expression",
+			expression:  ``,
+			want:        ``,
+			wantChanged: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, changed := NormalizeDeprecatedComplexityTierLiterals(tt.expression)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantChanged, changed)
+		})
+	}
+}
+
+func TestNormalizedDeprecatedTierExpressionPassesValidation(t *testing.T) {
+	// The write path normalizes before validating: a legacy REASONING rule
+	// must come out of normalization as an expression validation accepts.
+	normalized, changed := NormalizeDeprecatedComplexityTierLiterals(`complexity_tier == "REASONING"`)
+	require.True(t, changed)
+	require.NoError(t, ValidateRoutingCELExpression(normalized))
 }
