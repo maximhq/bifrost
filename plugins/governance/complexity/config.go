@@ -24,6 +24,17 @@ const (
 	TierComplex = "COMPLEX"
 )
 
+// Routing mechanism values recorded when a routing rule demands a complexity
+// tier. They surface in request logs (complexity_mechanism column) so admins can
+// see how each routing decision was classified. "skipped" means classification
+// was demanded but produced no tier (unsupported input, no signal, or the
+// analyzer is disabled). Future classifiers add their own values here
+// (e.g. "semantic", "llm").
+const (
+	MechanismLexical = "lexical"
+	MechanismSkipped = "skipped"
+)
+
 // Default boundaries are tuned to the 1.00 positive-weight scale in
 // keywords.go; retune them together with the dimension weights.
 const (
