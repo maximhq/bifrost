@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -18,6 +19,50 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+// Bedrock invoke API token-count response header names. Bedrock sets these
+// on every invoke response; some models (e.g. Cohere Embed) omit token counts
+// from the response body, so the headers are the only source.
+const (
+	bedrockInputTokenHeader  = "X-Amzn-Bedrock-Input-Token-Count"
+	bedrockOutputTokenHeader = "X-Amzn-Bedrock-Output-Token-Count"
+)
+
+// parseBedrockInvokeUsageFromHeaders extracts token counts from Bedrock invoke
+// response headers. Returns nil when both headers are absent, both fail to
+// parse, or both resolve to zero; a legitimate zero in one header is preserved
+// when the other is non-zero. Header lookup is case-insensitive to tolerate
+// non-canonical capitalisation from intermediate proxies.
+func parseBedrockInvokeUsageFromHeaders(headers map[string]string) *schemas.BifrostLLMUsage {
+	if len(headers) == 0 {
+		return nil
+	}
+
+	var inStr, outStr string
+	for k, v := range headers {
+		if strings.EqualFold(k, bedrockInputTokenHeader) {
+			inStr = v
+		} else if strings.EqualFold(k, bedrockOutputTokenHeader) {
+			outStr = v
+		}
+	}
+	if inStr == "" && outStr == "" {
+		return nil
+	}
+
+	usage := &schemas.BifrostLLMUsage{}
+	if n, err := strconv.Atoi(strings.TrimSpace(inStr)); err == nil {
+		usage.PromptTokens = n
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(outStr)); err == nil {
+		usage.CompletionTokens = n
+	}
+	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 {
+		return nil
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	return usage
+}
 
 // awsRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
 // (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions (us-gov-east-1) are
