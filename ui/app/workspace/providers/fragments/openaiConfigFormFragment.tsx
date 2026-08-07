@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
@@ -26,6 +27,7 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 		reValidateMode: "onChange",
 		defaultValues: {
 			disable_store: provider.openai_config?.disable_store ?? false,
+			region: provider.openai_config?.region ?? "",
 		},
 	});
 
@@ -36,14 +38,16 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 	useEffect(() => {
 		form.reset({
 			disable_store: provider.openai_config?.disable_store ?? false,
+			region: provider.openai_config?.region ?? "",
 		});
-	}, [form, provider.name, provider.openai_config?.disable_store]);
+	}, [form, provider.name, provider.openai_config?.disable_store, provider.openai_config?.region]);
 
 	const onSubmit = (data: OpenAIConfigFormSchema) => {
 		updateProvider(
 			buildProviderUpdatePayload(provider, {
 				openai_config: {
 					disable_store: data.disable_store,
+					region: data.region || "",
 				},
 			}),
 		)
@@ -90,6 +94,42 @@ export function OpenAIConfigFormFragment({ provider }: OpenAIConfigFormFragmentP
 										/>
 									</FormControl>
 								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
+					<FormField
+						control={form.control}
+						name="region"
+						render={({ field }) => (
+							<FormItem>
+								<div className="space-y-0.5">
+									<FormLabel>Data Residency Region</FormLabel>
+									<p className="text-muted-foreground text-xs">
+										Route requests to OpenAI&apos;s regional-processing (data-residency) endpoint. Selecting a region sends traffic
+										to that region&apos;s host (e.g. eu.api.openai.com) and applies the region&apos;s uplifted pricing. Requires an
+										eligible region-scoped OpenAI Project key.
+									</p>
+								</div>
+								<FormControl>
+									<Select
+										value={field.value || "us"}
+										disabled={!hasUpdateProviderAccess}
+										onValueChange={(value) => {
+											field.onChange(value === "us" ? "" : value);
+											form.trigger("region");
+										}}
+									>
+										<SelectTrigger data-testid="provider-openai-region-select" className="w-full">
+											<SelectValue placeholder="Default (Global / US)" />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value="us">Default (Global / US)</SelectItem>
+											<SelectItem value="eu">European Union (eu.api.openai.com)</SelectItem>
+										</SelectContent>
+									</Select>
+								</FormControl>
 								<FormMessage />
 							</FormItem>
 						)}
