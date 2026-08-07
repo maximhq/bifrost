@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -279,6 +280,23 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
 		}
+
+		// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
+		// OpenAI-shaped Responses schema. Preserve them here so ToGeminiResponsesResponse
+		// can restore them on the GenAI generateContent egress path.
+		extraFields := map[string]interface{}{}
+		if response.ResponseID != "" {
+			extraFields["responseId"] = response.ResponseID
+		}
+		if len(candidate.SafetyRatings) > 0 {
+			extraFields["safetyRatings"] = candidate.SafetyRatings
+		}
+		if candidate.AvgLogprobs != 0 {
+			extraFields["avgLogprobs"] = candidate.AvgLogprobs
+		}
+		if len(extraFields) > 0 {
+			bifrostResp.ProviderExtraFields = extraFields
+		}
 	}
 
 	return bifrostResp
@@ -545,10 +563,29 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(lastWebSearchCall, webSearchAnnotations, lastRenderedContent)
 			}
 
+			// Restore safetyRatings/avgLogprobs preserved by ToResponsesBifrostResponsesResponse
+			// (they have no field in Bifrost's OpenAI-shaped Responses schema).
+			if bifrostResp.ProviderExtraFields != nil {
+				if ratings := extractGeminiSafetyRatings(bifrostResp.ProviderExtraFields["safetyRatings"]); ratings != nil {
+					candidate.SafetyRatings = ratings
+				}
+				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.ProviderExtraFields["avgLogprobs"]); ok {
+					candidate.AvgLogprobs = avgLogprobs
+				}
+			}
+
 			candidates = append(candidates, candidate)
 		}
 
 		geminiResp.Candidates = candidates
+	}
+
+	// Restore the native provider responseId (rather than the synthesized resp_... internal ID)
+	// when this response originated from a Gemini/Vertex candidate that carried one.
+	if bifrostResp.ProviderExtraFields != nil {
+		if responseID, ok := bifrostResp.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
+			geminiResp.ResponseID = responseID
+		}
 	}
 
 	// Convert usage metadata
@@ -567,6 +604,49 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 	}
 
 	return geminiResp
+}
+
+// extractGeminiSafetyRatings recovers []*SafetyRating from ProviderExtraFields["safetyRatings"].
+// Handles both the in-memory pointer (normal non-streaming path) and a JSON-decoded
+// []interface{}/map form (e.g. if the response was round-tripped through JSON).
+func extractGeminiSafetyRatings(v interface{}) []*SafetyRating {
+	if v == nil {
+		return nil
+	}
+	if ratings, ok := v.([]*SafetyRating); ok {
+		return ratings
+	}
+	b, err := sonic.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var ratings []*SafetyRating
+	if err := sonic.Unmarshal(b, &ratings); err != nil {
+		return nil
+	}
+	return ratings
+}
+
+// extractGeminiAvgLogprobs recovers a float64 from ProviderExtraFields["avgLogprobs"].
+func extractGeminiAvgLogprobs(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case nil:
+		return 0, false
+	case float64:
+		return val, true
+	case float32:
+		return float64(val), true
+	default:
+		b, err := sonic.Marshal(v)
+		if err != nil {
+			return 0, false
+		}
+		var f float64
+		if err := sonic.Unmarshal(b, &f); err != nil {
+			return 0, false
+		}
+		return f, true
+	}
 }
 
 // BifrostToGeminiStreamState tracks state when converting Bifrost streams to Gemini format
@@ -840,6 +920,20 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			if state.HasWebSearch && state.WebSearchCall != nil {
 				candidate.GroundingMetadata = buildGroundingMetadataFromWebSearch(state.WebSearchCall, state.Annotations, state.RenderedContent)
 			}
+
+			// Restore safetyRatings/avgLogprobs/responseId preserved by closeGeminiOpenItems
+			// (they have no field in Bifrost's OpenAI-shaped Responses schema).
+			if bifrostResp.Response.ProviderExtraFields != nil {
+				if ratings := extractGeminiSafetyRatings(bifrostResp.Response.ProviderExtraFields["safetyRatings"]); ratings != nil {
+					candidate.SafetyRatings = ratings
+				}
+				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.Response.ProviderExtraFields["avgLogprobs"]); ok {
+					candidate.AvgLogprobs = avgLogprobs
+				}
+				if responseID, ok := bifrostResp.Response.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
+					streamResp.ResponseID = responseID
+				}
+			}
 		}
 
 	// Response failed
@@ -902,6 +996,12 @@ type GeminiResponsesStreamState struct {
 	Model      *string // Model version
 	CreatedAt  int     // Timestamp for consistency
 	ResponseID *string // Gemini's responseId
+
+	// Candidate metadata that only arrives on the terminal chunk (alongside finishReason).
+	// Preserved here so closeGeminiOpenItems can stash them onto the response.completed
+	// event's ProviderExtraFields for the reverse (Bifrost -> Gemini) conversion to restore.
+	SafetyRatings []*SafetyRating
+	AvgLogprobs   float64
 
 	// Content tracking
 	HasStartedText     bool            // Whether we've started text content
@@ -976,6 +1076,8 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.MessageID = nil
 	state.Model = nil
 	state.ResponseID = nil
+	state.SafetyRatings = nil
+	state.AvgLogprobs = 0
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedCompleted = false
@@ -1072,6 +1174,14 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 				partResponses := processGeminiPart(part, state, sequenceNumber+len(responses))
 				responses = append(responses, partResponses...)
 			}
+		}
+
+		// safetyRatings/avgLogprobs only arrive on the terminal chunk, alongside finishReason.
+		if len(candidate.SafetyRatings) > 0 {
+			state.SafetyRatings = candidate.SafetyRatings
+		}
+		if candidate.AvgLogprobs != 0 {
+			state.AvgLogprobs = candidate.AvgLogprobs
 		}
 
 		// Check for finish reason (indicates end of generation)
@@ -1954,6 +2064,23 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 			failedStatus := "failed"
 			completedResp.Status = &failedStatus
 		}
+	}
+
+	// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's
+	// OpenAI-shaped Responses schema. Preserve them here so ToGeminiResponsesStreamResponse
+	// can restore them on the GenAI streamGenerateContent egress path.
+	extraFields := map[string]interface{}{}
+	if state.ResponseID != nil && *state.ResponseID != "" {
+		extraFields["responseId"] = *state.ResponseID
+	}
+	if len(state.SafetyRatings) > 0 {
+		extraFields["safetyRatings"] = state.SafetyRatings
+	}
+	if state.AvgLogprobs != 0 {
+		extraFields["avgLogprobs"] = state.AvgLogprobs
+	}
+	if len(extraFields) > 0 {
+		completedResp.ProviderExtraFields = extraFields
 	}
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{

@@ -51,19 +51,31 @@ func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
 	t.Parallel()
 
 	var captured map[string]any
+	// Handlers run on their own goroutine, so they assert with t.Errorf and
+	// return an error status rather than t.Fatalf: FailNow is only legal from
+	// the goroutine running the test, and from a handler it aborts the response
+	// mid-write, surfacing an opaque transport error instead of this message.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/anthropic/v1/messages" {
-			t.Fatalf("path = %q, want /anthropic/v1/messages", r.URL.Path)
+			t.Errorf("path = %q, want /anthropic/v1/messages", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("x-api-key"); got != "test-api-key" {
-			t.Fatalf("x-api-key = %q, want test-api-key", got)
+			t.Errorf("x-api-key = %q, want test-api-key", got)
+			http.Error(w, "unexpected api key", http.StatusBadRequest)
+			return
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read body: %v", err)
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
 		}
 		if err := json.Unmarshal(body, &captured); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "decode body", http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -103,18 +115,26 @@ func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/anthropic/v1/messages" {
-			t.Fatalf("path = %q, want /anthropic/v1/messages", r.URL.Path)
+			t.Errorf("path = %q, want /anthropic/v1/messages", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("x-api-key"); got != "test-api-key" {
-			t.Fatalf("x-api-key = %q, want test-api-key", got)
+			t.Errorf("x-api-key = %q, want test-api-key", got)
+			http.Error(w, "unexpected api key", http.StatusBadRequest)
+			return
 		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read body: %v", err)
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
 		}
 		if err := json.Unmarshal(body, &captured); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "decode body", http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -165,10 +185,14 @@ func TestChatCompletion_DisablesThinkingForForcedToolChoice(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read body: %v", err)
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
 		}
 		if err := json.Unmarshal(body, &captured); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "decode body", http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -227,10 +251,14 @@ func TestResponses_DisablesThinkingForForcedToolChoice(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read body: %v", err)
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
 		}
 		if err := json.Unmarshal(body, &captured); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "decode body", http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -289,7 +317,9 @@ func TestChatCompletion_DefaultsToOpenAIEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
 		if got := r.Header.Get("Authorization"); got != "Bearer test-api-key" {
-			t.Fatalf("Authorization = %q, want Bearer test-api-key", got)
+			t.Errorf("Authorization = %q, want Bearer test-api-key", got)
+			http.Error(w, "unexpected authorization", http.StatusBadRequest)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
@@ -329,10 +359,14 @@ func TestChatCompletion_OpenAIEndpointDisablesThinkingForRequiredToolChoice(t *t
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read body: %v", err)
+			t.Errorf("read body: %v", err)
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
 		}
 		if err := json.Unmarshal(body, &captured); err != nil {
-			t.Fatalf("decode body: %v", err)
+			t.Errorf("decode body: %v", err)
+			http.Error(w, "decode body", http.StatusInternalServerError)
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
