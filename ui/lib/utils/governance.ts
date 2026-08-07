@@ -69,6 +69,30 @@ function addUTCMonthsClamped(date: Date, months: number): void {
 	date.setUTCDate(Math.min(day, lastDay));
 }
 
+/** Snaps a calendar-aligned reset timestamp to its UTC period boundary. */
+function snapToCalendarPeriodStart(date: Date, unit: string): void {
+	switch (unit) {
+		case "d":
+			date.setUTCHours(0, 0, 0, 0);
+			break;
+		case "w": {
+			date.setUTCHours(0, 0, 0, 0);
+			const daysFromMonday = (date.getUTCDay() + 6) % 7;
+			date.setUTCDate(date.getUTCDate() - daysFromMonday);
+			break;
+		}
+		case "M":
+			date.setUTCDate(1);
+			date.setUTCHours(0, 0, 0, 0);
+			break;
+		case "y":
+		case "Y":
+			date.setUTCMonth(0, 1);
+			date.setUTCHours(0, 0, 0, 0);
+			break;
+	}
+}
+
 /** Calculates when a cycle-based override will expire on the budget's current reset schedule. */
 export function getBudgetOverrideValidUntil(
 	budget: Pick<BudgetOverrideFields, "max_limit"> & { last_reset: string; reset_duration: string },
@@ -80,8 +104,10 @@ export function getBudgetOverrideValidUntil(
 	const validUntil = new Date(budget.last_reset);
 	if (!match || Number.isNaN(validUntil.getTime())) return null;
 
+	const unit = match[2];
+	if (calendarAligned) snapToCalendarPeriodStart(validUntil, unit);
 	const durationValue = Number(match[1]) * cycles;
-	switch (match[2]) {
+	switch (unit) {
 		case "s":
 			validUntil.setTime(validUntil.getTime() + durationValue * 1000);
 			break;
