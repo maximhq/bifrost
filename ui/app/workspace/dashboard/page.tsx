@@ -59,6 +59,7 @@ export default function DashboardPage() {
 			stop_reasons: parseAsSafeArrayOf.withDefault([]),
 			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			missing_cost_only: parseAsBoolean.withDefault(false),
+			inverse: parseAsBoolean.withDefault(false),
 			metadata_filters: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
 			token_chart: parseAsString.withDefault("bar"),
@@ -135,6 +136,7 @@ export default function DashboardPage() {
 			...(urlState.stop_reasons.length > 0 && { stop_reasons: urlState.stop_reasons }),
 			...(urlState.cache_hit_types.length > 0 && { cache_hit_types: urlState.cache_hit_types }),
 			...(urlState.missing_cost_only && { missing_cost_only: true }),
+			...(urlState.inverse && { inverse: true }),
 			...(metadataFilters &&
 				Object.keys(metadataFilters).length > 0 && {
 					metadata_filters: metadataFilters,
@@ -163,6 +165,7 @@ export default function DashboardPage() {
 			urlState.stop_reasons,
 			urlState.cache_hit_types,
 			urlState.missing_cost_only,
+			urlState.inverse,
 			metadataFilters,
 			urlState.user_ids,
 			urlState.team_ids,
@@ -361,6 +364,7 @@ export default function DashboardPage() {
 				stop_reasons: newFilters.stop_reasons || [],
 				cache_hit_types: newFilters.cache_hit_types || [],
 				missing_cost_only: newFilters.missing_cost_only ?? false,
+				inverse: newFilters.inverse ?? false,
 				metadata_filters:
 					newFilters.metadata_filters && Object.keys(newFilters.metadata_filters).length > 0
 						? JSON.stringify(newFilters.metadata_filters)
