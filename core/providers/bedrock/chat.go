@@ -68,8 +68,13 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	if !schemas.BedrockModelSupportsCachePoints(capModel) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
-	} else if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
-		downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+	} else {
+		if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+		}
+		// See the same call in ToBedrockResponsesRequest: exceeding the cap is a hard rejection,
+		// so trim the earliest markers rather than let the request fail.
+		clampBedrockCachePoints(bedrockReq)
 	}
 
 	return bedrockReq, nil
