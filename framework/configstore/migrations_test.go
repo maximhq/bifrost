@@ -2937,3 +2937,174 @@ func TestMigrationAddBudgetOverrideAnchorColumns(t *testing.T) {
 	require.NotNil(t, anchor)
 	assert.True(t, anchor.UTC().Equal(lastReset))
 }
+
+func setupComplexityExemplarMigrationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableGovernanceConfig{}))
+	require.NoError(t, db.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	return db
+}
+
+func seedComplexityAnalyzerConfig(t *testing.T, db *gorm.DB, value string) {
+	t.Helper()
+	require.NoError(t, db.Create(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: value,
+	}).Error)
+}
+
+func readRawComplexityAnalyzerConfig(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var entry tables.TableGovernanceConfig
+	require.NoError(t, db.First(&entry, "key = ?", tables.ConfigComplexityAnalyzerConfigKey).Error)
+	return entry.Value
+}
+
+func TestMigrationBackfillDefaultComplexityExemplars(t *testing.T) {
+	ctx := context.Background()
+	defaults := DefaultComplexityExemplars()
+
+	t.Run("backfills persisted config and preserves administrator state", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testSemanticAnalyzerConfig()
+		config.Keywords = ComplexityEditableKeywordConfig{
+			SimpleKeywords:  []string{"custom simple"},
+			MediumKeywords:  []string{"custom medium", defaults.SimpleKeywords[0]},
+			ComplexKeywords: []string{"custom complex"},
+		}
+		config.ConfigHashes = ComplexityAnalyzerConfigHashes{
+			TierBoundaries:   "tier-hash",
+			SimpleKeywords:   "simple-hash",
+			MediumKeywords:   "medium-hash",
+			ComplexKeywords:  "complex-hash",
+			SemanticSettings: "semantic-hash",
+		}
+		config.EmbeddingFingerprint = "old-fingerprint"
+		expectedSemantic := config.Normalized().Semantic
+
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		got, err := DecodeComplexityAnalyzerConfig([]byte(readRawComplexityAnalyzerConfig(t, db)))
+		require.NoError(t, err)
+		assert.Equal(t, expectedSemantic, got.Semantic)
+		assert.Equal(t, config.ConfigHashes, got.ConfigHashes)
+		assert.Empty(t, got.EmbeddingFingerprint)
+		assert.Contains(t, got.Keywords.SimpleKeywords, "custom simple")
+		assert.Contains(t, got.Keywords.MediumKeywords, "custom medium")
+		assert.Contains(t, got.Keywords.ComplexKeywords, "custom complex")
+
+		crossTierDefault := normalizeComplexityExemplarKey(defaults.SimpleKeywords[0])
+		assert.NotContains(t, got.Keywords.SimpleKeywords, crossTierDefault)
+		assert.Contains(t, got.Keywords.MediumKeywords, crossTierDefault)
+
+		for _, phrase := range defaults.SimpleKeywords[1:] {
+			assert.Contains(t, got.Keywords.SimpleKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+		for _, phrase := range defaults.MediumKeywords {
+			assert.Contains(t, got.Keywords.MediumKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+		for _, phrase := range defaults.ComplexKeywords {
+			assert.Contains(t, got.Keywords.ComplexKeywords, normalizeComplexityExemplarKey(phrase))
+		}
+	})
+
+	t.Run("canonicalizes legacy keyword fields", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{
+			"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4},
+			"keywords":{
+				"simple_keywords":["legacy simple"],
+				"code_keywords":["legacy code"],
+				"technical_keywords":["legacy technical"],
+				"reasoning_keywords":["legacy reasoning"]
+			}
+		}`)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		raw := readRawComplexityAnalyzerConfig(t, db)
+		assert.NotContains(t, raw, `"code_keywords"`)
+		assert.NotContains(t, raw, `"technical_keywords"`)
+		assert.NotContains(t, raw, `"reasoning_keywords"`)
+		got, err := DecodeComplexityAnalyzerConfig([]byte(raw))
+		require.NoError(t, err)
+		assert.Contains(t, got.Keywords.SimpleKeywords, "legacy simple")
+		assert.Contains(t, got.Keywords.MediumKeywords, "legacy code")
+		assert.Contains(t, got.Keywords.MediumKeywords, "legacy technical")
+		assert.Contains(t, got.Keywords.ComplexKeywords, "legacy reasoning")
+	})
+
+	t.Run("does not create or replace an absent config", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		var count int64
+		require.NoError(t, db.Model(&tables.TableGovernanceConfig{}).
+			Where("key = ?", tables.ConfigComplexityAnalyzerConfigKey).
+			Count(&count).Error)
+		assert.Zero(t, count)
+	})
+
+	t.Run("leaves an empty config unchanged", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, "")
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+		assert.Empty(t, readRawComplexityAnalyzerConfig(t, db))
+	})
+
+	t.Run("does not overwrite malformed config", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		seedComplexityAnalyzerConfig(t, db, `{`)
+
+		err := migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger)
+		require.ErrorContains(t, err, "decode persisted complexity analyzer config")
+		assert.Equal(t, `{`, readRawComplexityAnalyzerConfig(t, db))
+	})
+
+	t.Run("keeps a complete config byte-for-byte unchanged", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testComplexityAnalyzerConfig()
+		config.Keywords = defaults
+		config.EmbeddingFingerprint = "keep-fingerprint"
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		assert.Equal(t, string(raw), readRawComplexityAnalyzerConfig(t, db))
+	})
+
+	t.Run("allows more than 500 phrases", func(t *testing.T) {
+		db := setupComplexityExemplarMigrationDB(t)
+		config := testSemanticAnalyzerConfig()
+		config.Keywords.SimpleKeywords = make([]string, 501)
+		for index := range config.Keywords.SimpleKeywords {
+			config.Keywords.SimpleKeywords[index] = fmt.Sprintf("existing simple %d", index)
+		}
+		config.Keywords.MediumKeywords = []string{"existing medium"}
+		config.Keywords.ComplexKeywords = []string{"existing complex"}
+		raw, err := encodeComplexityAnalyzerConfig(config.Normalized())
+		require.NoError(t, err)
+		seedComplexityAnalyzerConfig(t, db, string(raw))
+
+		require.NoError(t, migrationBackfillDefaultComplexityExemplars(ctx, db, testMigrationLogger))
+
+		got, err := DecodeComplexityAnalyzerConfig([]byte(readRawComplexityAnalyzerConfig(t, db)))
+		require.NoError(t, err)
+		total := len(got.Keywords.SimpleKeywords) + len(got.Keywords.MediumKeywords) + len(got.Keywords.ComplexKeywords)
+		assert.Greater(t, total, 500)
+	})
+}
