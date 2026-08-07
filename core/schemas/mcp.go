@@ -146,7 +146,7 @@ type MCPCredentialStore interface {
 	// ConnectionHeaders returns the headers to attach when opening an upstream
 	// transport. Called from two sites:
 	//
-	//  1. At AddClient / Reconnect / UpdateClientConnection for shared-
+	//  1. At AddClient / Reconnect / UpdateClientCredentials for shared-
 	//     connection auth types (none, headers, server_oauth). The caller
 	//     wraps the Bifrost lifecycle context into a synthetic BifrostContext
 	//     with no identity, so the resolver returns admin-level headers
