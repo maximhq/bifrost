@@ -3490,15 +3490,18 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	// Gemini declaration-drop gate reads Params.IncludeServerSideToolInvocations,
 	// so leaving it in ExtraParams silently drops function tools when a request
 	// combines them with a server-side tool (issue #5679). Unregistered fields
-	// are captured as json.RawMessage, so decode rather than type-assert.
+	// are captured as json.RawMessage holding the bare true/false token, so a
+	// string comparison is enough.
 	if raw, exists := req.ExtraParams["include_server_side_tool_invocations"]; exists {
 		switch v := raw.(type) {
 		case bool:
 			params.IncludeServerSideToolInvocations = schemas.Ptr(v)
 		case json.RawMessage:
-			var optIn bool
-			if sonic.Unmarshal(v, &optIn) == nil {
-				params.IncludeServerSideToolInvocations = schemas.Ptr(optIn)
+			switch strings.TrimSpace(string(v)) {
+			case "true":
+				params.IncludeServerSideToolInvocations = schemas.Ptr(true)
+			case "false":
+				params.IncludeServerSideToolInvocations = schemas.Ptr(false)
 			}
 		}
 	}
