@@ -20566,3 +20566,152 @@ func TestResolveSetupToken_TrimsSurroundingWhitespace(t *testing.T) {
 	configData := &ConfigData{SetupToken: schemas.NewSecretVar("  my-token  ")}
 	assert.Equal(t, "my-token", resolveSetupToken(configData))
 }
+
+// =============================================================================
+// SEMANTIC COMPLEXITY VECTOR STORE VALIDATION
+// =============================================================================
+//
+// | Test Name                                                        | What It Tests                                      |
+// |------------------------------------------------------------------|----------------------------------------------------|
+// | TestValidateComplexitySemanticVectorStore_FileExternalFailsBoot   | config.json "external" + no store → startup error  |
+// | TestValidateComplexitySemanticVectorStore_FileExternalIsTrimmed   | " External " in config.json still fails boot       |
+// | TestValidateComplexitySemanticVectorStore_StoredExternalWarnsOnly | DB-only "external" boots, logs, stays recoverable  |
+// | TestValidateComplexitySemanticVectorStore_ConfiguredStorePasses   | "external" + configured store → no error, no log   |
+// | TestValidateComplexitySemanticVectorStore_NonExternalModesPass    | embedded/auto never block boot                     |
+
+// recordingLogger captures Error lines so the degraded-boot path can be asserted
+// to be loud rather than silently permissive.
+type recordingLogger struct {
+	testLogger
+	errors []string
+}
+
+func (l *recordingLogger) Error(msg string, args ...any) {
+	l.errors = append(l.errors, fmt.Sprintf(msg, args...))
+}
+
+// complexityConfigWithVectorStore builds a valid semantic block pinned to the
+// given vector store mode; the other fields are irrelevant to this validation
+// but are set so the config would survive normalization.
+func complexityConfigWithVectorStore(mode string) *configstore.ComplexityAnalyzerConfig {
+	return &configstore.ComplexityAnalyzerConfig{
+		Semantic: &configstore.ComplexitySemanticConfig{
+			Provider:       schemas.OpenAI,
+			EmbeddingModel: "text-embedding-3-small",
+			Dimension:      1536,
+			Fallback:       configstore.ComplexitySemanticFallbackLexical,
+			VectorStore:    mode,
+		},
+	}
+}
+
+// newTestChromemStore returns a real in-process chromem store, matching what the
+// semantic classifier creates for its embedded mode.
+func newTestChromemStore(t *testing.T) vectorstore.VectorStore {
+	t.Helper()
+	store, err := vectorstore.NewVectorStore(context.Background(), &vectorstore.Config{
+		Enabled: true,
+		Type:    vectorstore.VectorStoreTypeChromem,
+		Config:  vectorstore.ChromemConfig{},
+	}, &testLogger{})
+	if err != nil {
+		t.Fatalf("failed to create chromem vector store: %v", err)
+	}
+	t.Cleanup(func() { store.Close(context.Background(), "") })
+	return store
+}
+
+func TestValidateComplexitySemanticVectorStore_FileExternalFailsBoot(t *testing.T) {
+	initTestLogger()
+	config := &Config{
+		GovernanceConfig: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: complexityConfigWithVectorStore(configstore.ComplexitySemanticVectorStoreExternal),
+		},
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: complexityConfigWithVectorStore(configstore.ComplexitySemanticVectorStoreExternal),
+		},
+	}
+
+	err := validateComplexitySemanticVectorStore(config, configData)
+	assert.Error(t, err, "config.json asking for an external store that does not exist must fail boot")
+	assert.Contains(t, err.Error(), "no vector store is configured")
+}
+
+func TestValidateComplexitySemanticVectorStore_FileExternalIsTrimmed(t *testing.T) {
+	initTestLogger()
+	config := &Config{
+		GovernanceConfig: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: complexityConfigWithVectorStore(configstore.ComplexitySemanticVectorStoreExternal),
+		},
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: complexityConfigWithVectorStore("  External  "),
+		},
+	}
+
+	err := validateComplexitySemanticVectorStore(config, configData)
+	assert.Error(t, err, "the raw file value is compared before normalization, so casing and padding must not hide it")
+}
+
+func TestValidateComplexitySemanticVectorStore_StoredExternalWarnsOnly(t *testing.T) {
+	recorder := &recordingLogger{}
+	SetLogger(recorder)
+	t.Cleanup(initTestLogger)
+
+	config := &Config{
+		GovernanceConfig: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: complexityConfigWithVectorStore(configstore.ComplexitySemanticVectorStoreExternal),
+		},
+	}
+	// config.json carries no governance section at all: the setting can only have
+	// come from the database, which is unreachable while the server refuses to boot.
+	configData := &ConfigData{}
+
+	err := validateComplexitySemanticVectorStore(config, configData)
+	assert.NoError(t, err, "a stored-only external vector store must not strand the operator with an unbootable server")
+	assert.Len(t, recorder.errors, 1, "booting degraded must still be reported")
+	assert.Contains(t, recorder.errors[0], "no vector store is configured")
+}
+
+func TestValidateComplexitySemanticVectorStore_ConfiguredStorePasses(t *testing.T) {
+	recorder := &recordingLogger{}
+	SetLogger(recorder)
+	t.Cleanup(initTestLogger)
+
+	config := &Config{
+		GovernanceConfig: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: complexityConfigWithVectorStore(configstore.ComplexitySemanticVectorStoreExternal),
+		},
+		VectorStore: newTestChromemStore(t),
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: complexityConfigWithVectorStore(configstore.ComplexitySemanticVectorStoreExternal),
+		},
+	}
+
+	assert.NoError(t, validateComplexitySemanticVectorStore(config, configData))
+	assert.Empty(t, recorder.errors, "a satisfied requirement must not log")
+}
+
+func TestValidateComplexitySemanticVectorStore_NonExternalModesPass(t *testing.T) {
+	recorder := &recordingLogger{}
+	SetLogger(recorder)
+	t.Cleanup(initTestLogger)
+
+	for _, mode := range []string{
+		configstore.ComplexitySemanticVectorStoreEmbedded,
+		configstore.ComplexitySemanticVectorStoreAuto,
+	} {
+		config := &Config{
+			GovernanceConfig: &configstore.GovernanceConfig{
+				ComplexityAnalyzerConfig: complexityConfigWithVectorStore(mode),
+			},
+		}
+		assert.NoError(t, validateComplexitySemanticVectorStore(config, &ConfigData{}), "mode %q must boot without a vector store", mode)
+	}
+	assert.Empty(t, recorder.errors)
+}
