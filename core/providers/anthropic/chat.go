@@ -680,6 +680,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// (Anthropic API + Opus 4.8+ only).
 	seenConversation := false
 	midConvSystemSupported := SupportsMidConversationSystem(bifrostReq.Provider, capModel)
+	// See the same gate in ConvertBifrostMessagesToAnthropicMessages: when the native
+	// role:"system" form isn't available, inline as a user turn instead of hoisting into the
+	// top-level system block, which would invalidate the cached prefix behind it. Anthropic
+	// model family only — these call sites also serve DeepSeek/Fireworks/SGL, which keep hoisting.
+	inlineMidConvSystem := schemas.IsAnthropicModelFamily(ctx, capModel)
 
 	i := 0
 	for i < len(messages) {
@@ -687,11 +692,16 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		switch msg.Role {
 		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
-			// Anthropic placement rule: a mid-conv system message must end the array
-			// or be immediately followed by an assistant turn. Anything else (e.g.
-			// [user, system, user]) returns a 400, so fall through to top-level system.
-			midConvPlacementOK := i == len(messages)-1 ||
-				messages[i+1].Role == schemas.ChatMessageRoleAssistant
+			// Anthropic placement rule, both clauses: a mid-conv system message must FOLLOW a
+			// user message (or an assistant message ending in server-tool use) AND must end the
+			// array or be immediately followed by an assistant turn. Violating either returns a
+			// 400 ("messages.N: role 'system' must follow a 'user' message ..."). Checking only
+			// the trailing clause lets [.., assistant, system, assistant] through to a 400, so
+			// both are checked here; the assistant-ending-in-server-tool-use exception is not
+			// recognized, which only costs a cache-preserving fallback, never a rejection.
+			midConvPlacementOK := (i == len(messages)-1 ||
+				messages[i+1].Role == schemas.ChatMessageRoleAssistant) &&
+				i > 0 && messages[i-1].Role == schemas.ChatMessageRoleUser
 			if seenConversation && midConvSystemSupported && midConvPlacementOK {
 				// Mid-conversation system message — emit directly as role:"system".
 				var content AnthropicContent
@@ -740,6 +750,18 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 							newContent = AnthropicContent{ContentBlocks: blocks}
 						}
 					}
+				}
+				// Native form unavailable (unsupported model, or a placement Anthropic
+				// rejects). Inline in place so the cache anchor stays inside `messages`
+				// rather than collapsing the cached prefix from the top-level system block.
+				var inlined *AnthropicMessage
+				if seenConversation && inlineMidConvSystem {
+					inlined = inlineMidConversationSystem(&newContent)
+				}
+				if inlined != nil {
+					anthropicMessages = append(anthropicMessages, *inlined)
+					i++
+					continue
 				}
 				systemContent = appendToSystemContent(systemContent, newContent)
 				// If the entire transcript consists only of system/developer messages
@@ -970,6 +992,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// provider does not support. Fail-closed tool validation stays in
 	// ValidateToolsForProvider; this is strip-silently for additive fields.
 	stripUnsupportedAnthropicFields(anthropicReq, bifrostReq.Provider, capModel)
+
+	// Exceeding the provider's cache-checkpoint cap is a hard rejection, not a degradation, so
+	// trim the earliest markers rather than let the whole request fail. Runs last, after every
+	// converter branch (including the mid-conversation inline fallback) has contributed markers.
+	clampAnthropicCacheBreakpoints(anthropicReq)
 
 	return anthropicReq, nil
 }
