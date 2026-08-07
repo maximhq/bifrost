@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -66,6 +67,13 @@ type SemanticStatusInfo struct {
 type SemanticResult struct {
 	Tier  string
 	Score float64
+	// MinSimilarity is the configured floor Score was tested against, echoed so
+	// callers can log a near miss without re-reading classifier state.
+	MinSimilarity float64
+	// Accepted reports whether Score cleared MinSimilarity. A rejected result
+	// still carries its tier and score for logging, but callers must not route
+	// on it — they resolve it through the configured fallback instead.
+	Accepted bool
 	// MatchedExemplar is the tier phrase this request landed on. Tier and Score
 	// report what the classifier decided and how confidently; without the phrase
 	// itself a routing log cannot distinguish a sound match from an accidental
@@ -218,6 +226,19 @@ func (c *SemanticClassifier) Fallback() string {
 	return c.config.Semantic.Fallback
 }
 
+// Timeout returns the per-request embedding budget currently in force,
+// resolving an unset value the same way the embedding path does. Callers need
+// it to say what a classification ran out of: "timed out" without the budget
+// leaves an operator unable to tell a too-tight setting from a stalled provider.
+func (c *SemanticClassifier) Timeout() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.config == nil || c.config.Semantic == nil || c.config.Semantic.Timeout <= 0 {
+		return configstore.DefaultComplexitySemanticTimeout
+	}
+	return c.config.Semantic.Timeout
+}
+
 // IsConfigured reports whether semantic classification is enabled in the
 // current complexity configuration, independently from warmup readiness.
 func (c *SemanticClassifier) IsConfigured() bool {
@@ -265,9 +286,19 @@ func (c *SemanticClassifier) Classify(ctx context.Context, text string) (*Semant
 		return nil, fmt.Errorf("embedding dimension %d does not match the active semantic generation dimension %d", len(embedding), dimension)
 	}
 
+	// MinSimilarity is deliberately not pushed into the query. Backends that
+	// filter server-side (Weaviate's certainty, Qdrant's score threshold) would
+	// drop the rejected candidate instead of returning it, and its score is
+	// exactly what makes a near miss diagnosable in the request log. Asking for
+	// a single result means the backend does the same work either way.
+	//
+	// The floor passed down is 0 rather than "no floor": a nearest exemplar with
+	// negative similarity points away from every tier, so it is never a
+	// defensible classification, and 0 is valid on every backend (Weaviate
+	// rejects a negative certainty).
 	results, err := store.GetNearest(ctx, namespace, embedding,
 		[]vectorstore.Query{{Field: semanticMetadataKind, Operator: vectorstore.QueryOperatorEqual, Value: semanticMetadataKindExample}},
-		[]string{semanticMetadataTier}, -1, 1)
+		[]string{semanticMetadataTier}, 0, 1)
 	if err != nil {
 		return nil, fmt.Errorf("query complexity exemplars: %w", err)
 	}
@@ -278,9 +309,12 @@ func (c *SemanticClassifier) Classify(ctx context.Context, text string) (*Semant
 	if !ok || !isComplexityTier(tier) {
 		return nil, fmt.Errorf("nearest complexity exemplar has invalid tier metadata")
 	}
+	score := *results[0].Score
 	return &SemanticResult{
 		Tier:            tier,
-		Score:           *results[0].Score,
+		Score:           score,
+		MinSimilarity:   semantic.MinSimilarity,
+		Accepted:        semantic.MinSimilarity <= 0 || score >= semantic.MinSimilarity,
 		MatchedExemplar: exemplars[results[0].ID],
 	}, nil
 }

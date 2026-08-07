@@ -137,13 +137,24 @@ const DefaultComplexitySemanticTimeout = 100 * time.Millisecond
 // embeds the analyzer's shared per-tier keyword lists as its exemplars; there
 // is no separate exemplar storage.
 type ComplexitySemanticConfig struct {
-	Provider           schemas.ModelProvider `json:"provider"`
-	EmbeddingModel     string                `json:"embedding_model"`
-	Dimension          int                   `json:"dimension"`
-	Timeout            time.Duration         `json:"timeout,omitempty"`
-	Fallback           string                `json:"fallback,omitempty"`
-	CountTowardBudgets bool                  `json:"count_toward_budgets,omitempty"`
-	VectorStore        string                `json:"vector_store,omitempty"`
+	Provider       schemas.ModelProvider `json:"provider"`
+	EmbeddingModel string                `json:"embedding_model"`
+	Timeout        time.Duration         `json:"timeout,omitempty"`
+	// MinSimilarity is the floor a nearest-exemplar match must clear before its
+	// tier is used. Without it the nearest exemplar always wins, however
+	// unrelated the request is — semantic classification would never abstain,
+	// unlike the lexical analyzer, which returns no tier when it sees no signal.
+	// A match below the floor is treated exactly like an unavailable classifier
+	// and resolves through Fallback. Zero (the default) disables the floor and
+	// restores "nearest exemplar always wins".
+	//
+	// The value is compared against the VectorStore backend's own similarity
+	// score, and those scales are not identical: chromem, Qdrant, Pinecone, and
+	// Redis report raw cosine similarity, while Weaviate reports certainty
+	// ((cosine+1)/2). Retune this when switching backends.
+	MinSimilarity      float64 `json:"min_similarity,omitempty"`
+	CountTowardBudgets bool    `json:"count_toward_budgets,omitempty"`
+	VectorStore        string  `json:"vector_store,omitempty"`
 }
 
 // UnmarshalJSON accepts Timeout as a duration string ("100ms") or a JSON number
@@ -234,6 +245,7 @@ func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
 		Dimension:          c.Dimension,
 		Timeout:            c.Timeout,
 		Fallback:           strings.ToLower(strings.TrimSpace(c.Fallback)),
+		MinSimilarity:      c.MinSimilarity,
 		CountTowardBudgets: c.CountTowardBudgets,
 		VectorStore:        strings.ToLower(strings.TrimSpace(c.VectorStore)),
 	}
@@ -262,6 +274,11 @@ func (c *ComplexitySemanticConfig) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("semantic timeout must be positive, got %v", c.Timeout)
+	}
+	// 1 is a legal ceiling but rejects every real match, so it is treated as a
+	// misconfiguration rather than an intentional "never classify semantically".
+	if c.MinSimilarity < 0 || c.MinSimilarity >= 1 {
+		return fmt.Errorf("semantic min_similarity must be at least 0 and less than 1, got %v", c.MinSimilarity)
 	}
 	switch c.VectorStore {
 	case ComplexitySemanticVectorStoreAuto, ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreExternal:
