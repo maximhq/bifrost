@@ -128,7 +128,7 @@ func (provider *XAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 
 // ChatCompletion performs a chat completion request to the xAI API.
 func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAIChatCompletionRequest(
+	response, bifrostErr := openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
@@ -143,6 +143,11 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 		nil,
 		provider.logger,
 	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	response.Usage.NormalizeProviderCost()
+	return response, nil
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the xAI API.
@@ -175,7 +180,7 @@ func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 
 // Responses performs a responses request to the xAI API.
 func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAIResponsesRequest(
+	response, bifrostErr := openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
@@ -190,6 +195,11 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 		nil,
 		provider.logger,
 	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	response.Usage.NormalizeProviderCost()
+	return response, nil
 }
 
 // ResponsesStream performs a streaming responses request to the xAI API.
@@ -253,7 +263,7 @@ func (provider *XAIProvider) TranscriptionStream(ctx *schemas.BifrostContext, po
 
 // ImageGeneration performs an image generation request to the xAI API.
 func (provider *XAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAIImageGenerationRequest(
+	response, bifrostErr := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/images/generations"),
@@ -266,6 +276,11 @@ func (provider *XAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key sc
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	response.Usage.NormalizeProviderCost()
+	return response, nil
 }
 
 // ImageGenerationStream is not supported by the xAI provider.
