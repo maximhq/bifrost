@@ -6687,9 +6687,9 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	return nil
 }
 
-// UpdateMCPClientConnection updates the auth credentials (headers) for an existing MCP client.
+// UpdateMCPClientCredentials updates the auth credentials (headers) for an existing MCP client.
 // It delegates the actual reconnection (with the new credentials) to the Bifrost client.
-func (c *Config) UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
+func (c *Config) UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
@@ -6716,7 +6716,7 @@ func (c *Config) UpdateMCPClientConnection(ctx context.Context, id string, newCo
 
 	// Attempt the credential swap on the runtime side first.
 	// If this fails, nothing in our in-memory config has changed.
-	if err := c.client.UpdateMCPClientConnection(id, newConfig); err != nil {
+	if err := c.client.UpdateMCPClientCredentials(id, newConfig); err != nil {
 		return fmt.Errorf("failed to update MCP client credentials: %w", err)
 	}
 

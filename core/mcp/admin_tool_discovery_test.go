@@ -234,37 +234,117 @@ func TestPerformAdminToolDiscovery_PerUserHeaders_ConvertsHeadersAndDispatches(t
 	}
 }
 
-// TestPerformAdminToolDiscovery_UnsupportedAuthType_ReturnsError confirms
-// every non-per-user auth type falls into the default branch and errors
-// instead of attempting discovery — shared auth types have no distinct
-// "admin" credential to sync with.
+// TestPerformAdminToolDiscovery_UnsupportedAuthType_ReturnsError confirms a
+// genuinely unknown auth type falls into the default branch and errors
+// instead of attempting discovery.
 func TestPerformAdminToolDiscovery_UnsupportedAuthType_ReturnsError(t *testing.T) {
-	authTypes := []schemas.MCPAuthType{
-		schemas.MCPAuthTypeNone,
-		schemas.MCPAuthTypeHeaders,
-		schemas.MCPAuthTypeOauth,
-		schemas.MCPAuthType("something_unknown"),
+	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer x"}}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+
+	config := &schemas.MCPClientConfig{
+		ID:       "client-3",
+		Name:     "shared-client",
+		AuthType: schemas.MCPAuthType("something_unknown"),
 	}
 
-	for _, authType := range authTypes {
+	tools, mapping, err := m.performAdminToolDiscovery(context.Background(), config)
+	require.Error(t, err)
+	require.Nil(t, tools)
+	require.Nil(t, mapping)
+	require.True(t, strings.Contains(err.Error(), "admin tool discovery not supported for auth_type"))
+}
+
+// TestPerformAdminToolDiscovery_SharedOAuth_PerCall_ExtractsBearerTokenAndDispatches
+// pins the fix for the shared-OAuth-per-call tool-discovery bug: auth_type
+// "oauth" now routes through the same bearer-based dispatch as
+// per_user_oauth/token_exchange, since sharedOAuthResolver.AdminConnectionHeaders
+// delegates to ConnectionHeaders for a per-call client (see credstore's
+// shared_oauth.go) instead of erroring.
+func TestPerformAdminToolDiscovery_SharedOAuth_PerCall_ExtractsBearerTokenAndDispatches(t *testing.T) {
+	ts, rec := buildAdminDiscoveryHTTPServer(t)
+
+	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-secret-token"}}}
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+
+	config := &schemas.MCPClientConfig{
+		ID:               "client-5",
+		Name:             "shared-oauth-client",
+		AuthType:         schemas.MCPAuthTypeOauth,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+		// NeedsSessionStickiness left nil: the default per-call value.
+	}
+
+	tools, mapping, err := m.performAdminToolDiscovery(context.Background(), config)
+	require.NoError(t, err)
+	require.Contains(t, tools, "shared-oauth-client-echo")
+	require.Equal(t, "echo", mapping["echo"])
+	require.Equal(t, 1, cred.callCount())
+
+	authVals := rec.headerValues("Authorization")
+	require.NotEmpty(t, authVals)
+	for _, v := range authVals {
+		require.Equal(t, "Bearer shared-secret-token", v)
+	}
+}
+
+// TestPerformAdminToolDiscovery_SharedHeadersAndNone_PerCall_ConvertsHeadersAndDispatches
+// is the shared headers/none counterpart, table-driven since both route
+// through the same headers-map dispatch branch as per_user_headers.
+func TestPerformAdminToolDiscovery_SharedHeadersAndNone_PerCall_ConvertsHeadersAndDispatches(t *testing.T) {
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone} {
 		t.Run(string(authType), func(t *testing.T) {
-			cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer x"}}}
+			ts, rec := buildAdminDiscoveryHTTPServer(t)
+
+			cred := &fakeAdminCredStore{headers: http.Header{"X-Api-Key": []string{"shared-key-1"}}}
 			m := &MCPManager{credStore: cred, logger: &MockLogger{}}
 
 			config := &schemas.MCPClientConfig{
-				ID:       "client-3",
-				Name:     "shared-client",
-				AuthType: authType,
+				ID:               "client-6",
+				Name:             "shared-headers-client",
+				AuthType:         authType,
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar(ts.URL),
 			}
 
 			tools, mapping, err := m.performAdminToolDiscovery(context.Background(), config)
-			require.Error(t, err)
-			require.Nil(t, tools)
-			require.Nil(t, mapping)
-			require.True(t, strings.Contains(err.Error(), "admin tool discovery not supported for auth_type"))
-			require.Zero(t, cred.callCount(), "unsupported auth types must not resolve admin credentials")
+			require.NoError(t, err)
+			require.Contains(t, tools, "shared-headers-client-echo")
+			require.Equal(t, "echo", mapping["echo"])
+			require.Equal(t, 1, cred.callCount())
+
+			apiKeyVals := rec.headerValues("X-Api-Key")
+			require.NotEmpty(t, apiKeyVals)
+			for _, v := range apiKeyVals {
+				require.Equal(t, "shared-key-1", v)
+			}
 		})
 	}
+}
+
+// TestPerformAdminToolDiscovery_SharedHeaders_PerCall_EmptyHeadersStillDispatches
+// pins the VerifyHeadersConnection guard relaxation: a shared headers/none
+// client with NO resolved headers at all (auth carried entirely by other
+// static config headers, or none) must still attempt discovery rather than
+// erroring on "user headers are required" — that guard is per_user_headers
+// specific.
+func TestPerformAdminToolDiscovery_SharedHeaders_PerCall_EmptyHeadersStillDispatches(t *testing.T) {
+	ts, _ := buildAdminDiscoveryHTTPServer(t)
+
+	cred := &fakeAdminCredStore{headers: http.Header{}} // resolves to nothing
+	m := &MCPManager{credStore: cred, logger: &MockLogger{}}
+
+	config := &schemas.MCPClientConfig{
+		ID:               "client-7",
+		Name:             "shared-none-client",
+		AuthType:         schemas.MCPAuthTypeNone,
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL),
+	}
+
+	tools, _, err := m.performAdminToolDiscovery(context.Background(), config)
+	require.NoError(t, err)
+	require.Contains(t, tools, "shared-none-client-echo")
 }
 
 // TestPerformAdminToolDiscovery_CredStoreError_Propagates confirms a

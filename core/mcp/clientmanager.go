@@ -362,8 +362,12 @@ func (m *MCPManager) CloseAndMarkNeedsReauth(id string) (retErr error) {
 	if !ok {
 		return fmt.Errorf("client %s not found", id)
 	}
+	// Covers both genuine per-user auth types (always per-call) and a shared
+	// HTTP client (oauth/headers) currently running in per-call mode via
+	// needs_session_stickiness nil/false — either way there is no
+	// persistent connection here to close.
 	if clientState.ExecutionConfig != nil && m.credStore.RequiresPerCallConnection(clientState.ExecutionConfig) {
-		return fmt.Errorf("per-user auth clients do not maintain a shared upstream connection (each user manages their own auth): %w", schemas.ErrMCPReconnectNotApplicable)
+		return fmt.Errorf("client uses per-call connections; there is no persistent connection to close: %w", schemas.ErrMCPReconnectNotApplicable)
 	}
 	if clientState.State == schemas.MCPConnectionStateDisabled {
 		// DisableClient is authoritative; a rotation racing a disable must
@@ -410,12 +414,14 @@ func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s not found", id)
 	}
-	// Per-user auth types do not maintain a persistent upstream connection —
-	// auth is resolved per request/user identity, so there's nothing to
-	// reconnect.
+	// Per-call clients have no persistent upstream connection to reconnect —
+	// this covers both genuine per-user auth types (always per-call, auth
+	// resolved per request/user identity) and a shared HTTP client
+	// (oauth/headers) currently running in per-call mode via
+	// needs_session_stickiness nil/false.
 	if client.ExecutionConfig != nil && m.credStore.RequiresPerCallConnection(client.ExecutionConfig) {
 		m.mu.Unlock()
-		return fmt.Errorf("per-user auth clients do not maintain a shared upstream connection (each user manages their own auth): %w", schemas.ErrMCPReconnectNotApplicable)
+		return fmt.Errorf("client uses per-call connections; there is no persistent connection to reconnect: %w", schemas.ErrMCPReconnectNotApplicable)
 	}
 	// Clients awaiting admin OAuth authorization have no token to connect
 	// with; a reconnect attempt would only flip them out of
@@ -634,6 +640,38 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 			}
 		}
 		m.mu.Unlock()
+		// A client with nothing to restore gets its first discovery pass
+		// synchronously here — mirrors per_user_headers/token_exchange's own
+		// admin-verify-at-setup-time step (VerifyHeadersConnection /
+		// VerifyPerUserOAuthConnection, run by the create/verify HTTP
+		// handler before this ever runs). Shared oauth/headers/none have no
+		// such separate step, so without this they'd sit at Healthy/0-tools
+		// until the periodic checker's first tick — which, since Start()
+		// uses the slow healthyInterval (not the fast Unstable one) for a
+		// client that already starts Healthy, could be minutes away.
+		// Best-effort: a failure here just means the periodic checker's own
+		// retries pick it up shortly instead — not a reason to fail the
+		// whole add/connect.
+		if len(config.DiscoveredTools) == 0 {
+			if tools, mapping, discErr := m.performAdminToolDiscovery(requestCtx, config); discErr != nil {
+				m.logger.Debug("%s Initial per-call tool discovery failed for MCP client '%s': %v — the periodic checker will retry", MCPLogPrefix, config.Name, discErr)
+			} else {
+				m.SetClientTools(config.ID, tools, mapping)
+			}
+		}
+		// Start the connection checker so this client's tools stay current
+		// going forward. Released BEFORE this, mirroring connectToMCPClient's
+		// own success path (StartMonitoring -> Start() takes m.mu.RLock
+		// internally, so calling it under the write lock above would deadlock).
+		if config.ID != BifrostMCPClientKey {
+			isPingAvailable := true
+			if config.IsPingAvailable != nil {
+				isPingAvailable = *config.IsPingAvailable
+			}
+			syncInterval := ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval())
+			checker := NewClientConnectionChecker(m, config.ID, syncInterval, isPingAvailable, m.logger)
+			m.checkerManager.StartChecking(checker)
+		}
 		return nil
 	}
 
@@ -798,7 +836,7 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 // provided user-submitted header values to verify the server is reachable
 // and discover available tools. The connection is closed after verification.
 //
-// Used in two paths:
+// Used in three paths:
 //   - Admin test flow: admin enters sample values during MCP client creation,
 //     this runs an Initialize handshake against the upstream to validate the
 //     schema (PerUserHeaderKeys) + discover tools. The discovered tools then
@@ -807,11 +845,16 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 //     workspace submit URL surfaced inline by MCPAuthRequiredError. The
 //     handler runs this before upserting the row so a bad submission returns
 //     422 immediately instead of failing on the next tool call.
+//   - Shared headers/none per-call discovery: performAdminToolDiscovery's
+//     periodic refresh for a client running per-call (needs_session_stickiness
+//     nil/false). userHeaders here is whatever AdminConnectionHeaders
+//     resolved, which may legitimately be empty for these auth types.
 //
 // Parameters:
 //   - config: MCP client configuration (connection URL, name, PerUserHeaderKeys, etc.)
-//   - userHeaders: caller-supplied header_name → value map (must cover every
-//     PerUserHeaderKeys entry; the caller validates that before invoking).
+//   - userHeaders: caller-supplied header_name → value map. Must cover every
+//     PerUserHeaderKeys entry for auth_type=per_user_headers (the caller
+//     validates that before invoking); may be empty for shared headers/none.
 //
 // Returns:
 //   - map[string]schemas.ChatTool: discovered tools keyed by prefixed name
@@ -821,7 +864,15 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 	if config.ConnectionString == nil || config.ConnectionString.GetValue() == "" {
 		return nil, nil, fmt.Errorf("connection URL is required for per-user headers verification")
 	}
-	if len(userHeaders) == 0 {
+	// Non-empty userHeaders is only required for genuinely per-user auth:
+	// PerUserHeaderKeys declares a schema of headers every caller must
+	// supply, so an empty map there is always a caller bug. A shared
+	// headers/none client (performAdminToolDiscovery's per-call discovery
+	// path, added for the needs_session_stickiness feature) has no such
+	// schema — it may legitimately have no admin-configured Authorization
+	// header at all, with auth carried entirely by other static config
+	// headers (already layered in below) or none.
+	if config.AuthType == schemas.MCPAuthTypePerUserHeaders && len(userHeaders) == 0 {
 		return nil, nil, fmt.Errorf("user headers are required for per-user headers verification")
 	}
 
@@ -941,34 +992,39 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 	return tools, toolNameMapping, nil
 }
 
-// performAdminToolDiscovery resolves the retained admin bootstrap credential
-// for a per_user_oauth/per_user_headers/token_exchange client (via
-// credStore.AdminConnectionHeaders) and runs a one-shot ephemeral
+// performAdminToolDiscovery resolves the credential for a per-call client
+// (via credStore.AdminConnectionHeaders) and runs a one-shot ephemeral
 // connect-discover-close cycle, reusing the exact same verification
 // functions the one-time bootstrap flow itself uses
 // (VerifyPerUserOAuthConnection / VerifyHeadersConnection) — this is the
 // periodic connection checker's per-call counterpart to reusing a live Conn
 // for sticky clients.
+//
+// Covers two families:
+//   - Per-user (per_user_oauth, per_user_headers, token_exchange): always
+//     per-call, resolves the retained admin bootstrap credential — a
+//     separate credential from any individual end user's own session.
+//   - Shared (oauth, headers, none) running per-call via
+//     needs_session_stickiness nil/false: resolves the same credential a
+//     real tool call would (see each resolver's AdminConnectionHeaders —
+//     there is no separate "admin" concept for these types).
 func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *schemas.MCPClientConfig) (map[string]schemas.ChatTool, map[string]string, error) {
-	if config.AuthType != schemas.MCPAuthTypePerUserOauth && config.AuthType != schemas.MCPAuthTypePerUserHeaders && config.AuthType != schemas.MCPAuthTypeTokenExchange {
-		return nil, nil, fmt.Errorf("admin tool discovery not supported for auth_type %q", config.AuthType)
-	}
-
 	headers, err := m.credStore.AdminConnectionHeaders(ctx, config)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to resolve admin credential: %w", err)
 	}
 	switch config.AuthType {
-	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange:
-		// Both resolve to a bearer credential (the retained bootstrap token,
-		// or a client-credentials token for token exchange), so they share
-		// the bearer-based one-shot verification path.
+	case schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeTokenExchange, schemas.MCPAuthTypeOauth:
+		// All three resolve to a bearer credential (the retained bootstrap
+		// token, a client-credentials token for token exchange, or the
+		// shared oauth token), so they share the bearer-based one-shot
+		// verification path.
 		accessToken := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
 		if accessToken == "" {
 			return nil, nil, fmt.Errorf("admin credential resolved no access token")
 		}
 		return m.VerifyPerUserOAuthConnection(ctx, config, accessToken)
-	case schemas.MCPAuthTypePerUserHeaders:
+	case schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone:
 		userHeaders := make(map[string]string, len(headers))
 		for k := range headers {
 			userHeaders[k] = headers.Get(k)
@@ -992,9 +1048,7 @@ func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.Ch
 	defer m.mu.Unlock()
 
 	if client, exists := m.clientMap[clientID]; exists {
-		for toolName, tool := range tools {
-			client.ToolMap[toolName] = tool
-		}
+		maps.Copy(client.ToolMap, tools)
 		client.ToolNameMapping = toolNameMapping
 		client.State = schemas.MCPConnectionStateHealthy
 		m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
@@ -1476,7 +1530,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 	return nil
 }
 
-// UpdateClientConnection updates auth-related fields (headers) for an existing MCP client by
+// UpdateClientCredentials updates auth-related fields (headers) for an existing MCP client by
 // closing the current connection and establishing a new one so the new credentials are verified
 // before being committed. Non-credential metadata (name, tools, etc.) is preserved from the
 // current execution config.
@@ -1492,7 +1546,7 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 //
 // Returns:
 //   - error: Any connection error; nil on success
-func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPClientConfig) (retErr error) {
+func (m *MCPManager) UpdateClientCredentials(id string, newConfig *schemas.MCPClientConfig) (retErr error) {
 	if newConfig == nil {
 		return fmt.Errorf("newConfig must not be nil")
 	}
@@ -1511,10 +1565,74 @@ func (m *MCPManager) UpdateClientConnection(id string, newConfig *schemas.MCPCli
 		m.mu.RUnlock()
 		return fmt.Errorf("client %s not found", id)
 	}
-	// Per-user auth clients have no persistent connection — reconnect/update is not applicable.
+	// Per-call clients have no persistent connection to update — this covers
+	// both genuine per-user auth types (always per-call) and a shared HTTP
+	// client (oauth/headers) currently running in per-call mode via
+	// needs_session_stickiness nil/false. Either way connectToMCPClient below
+	// (a real persistent dial) does not apply.
 	if client.ExecutionConfig != nil && m.credStore.RequiresPerCallConnection(client.ExecutionConfig) {
+		// A client still in PendingVerification is completing its FIRST
+		// connection here — e.g. a config.json-bootstrapped OAuth client
+		// whose admin just finished the browser consent flow. AddClient's
+		// own per-call branch (see its PendingOAuthConfig early-return) is
+		// what would normally perform this exact state transition, but it
+		// never gets a second chance to run for an already-registered
+		// client: the entry was created once, at boot, and parked here.
+		// Mirror that same transition now, or this client is stuck showing
+		// pending_verification — with no way to retry (the pending OAuth
+		// stash this endpoint requires is already cleared) — until a
+		// restart re-runs AddClient from scratch and does it correctly.
+		if client.State == schemas.MCPConnectionStatePendingVerification {
+			m.mu.RUnlock()
+			m.mu.Lock()
+			if cs, exists := m.clientMap[id]; exists && cs.State == schemas.MCPConnectionStatePendingVerification {
+				cs.ExecutionConfig = newConfig
+				if len(newConfig.DiscoveredTools) > 0 {
+					maps.Copy(cs.ToolMap, newConfig.DiscoveredTools)
+					cs.ToolNameMapping = newConfig.DiscoveredToolNameMapping
+				}
+				cs.State = schemas.MCPConnectionStateHealthy
+			}
+			m.mu.Unlock()
+			// A client with nothing to restore gets its first discovery pass
+			// synchronously here — see AddClient's per-call branch (mirrors
+			// its own identical comment). Without this, a shared
+			// oauth/headers/none client completing its first connection here
+			// would sit at Healthy/0-tools until the periodic checker's
+			// first tick, which could be minutes away (Start() uses the slow
+			// healthyInterval, not the fast Unstable one, for an
+			// already-Healthy client). Best-effort: a failure here just
+			// means the periodic checker's own retries pick it up shortly.
+			if len(newConfig.DiscoveredTools) == 0 {
+				if tools, mapping, discErr := m.performAdminToolDiscovery(m.ctx, newConfig); discErr != nil {
+					m.logger.Debug("%s Initial per-call tool discovery failed for MCP client '%s': %v — the periodic checker will retry", MCPLogPrefix, newConfig.Name, discErr)
+				} else {
+					m.SetClientTools(id, tools, mapping)
+				}
+			}
+			// Start the connection checker so this client's tools stay
+			// current going forward — mirrors AddClient's per-call branch
+			// (see its own comment): without this, nothing else ever
+			// revisits this client.
+			if id != BifrostMCPClientKey {
+				isPingAvailable := true
+				if newConfig.IsPingAvailable != nil {
+					isPingAvailable = *newConfig.IsPingAvailable
+				}
+				syncInterval := ResolveToolSyncInterval(newConfig, m.checkerManager.GetGlobalInterval())
+				checker := NewClientConnectionChecker(m, id, syncInterval, isPingAvailable, m.logger)
+				m.checkerManager.StartChecking(checker)
+			}
+			return nil
+		}
+		// Already past that first connection (a plain reauthorize of an
+		// already-Healthy client): a per-call client dials fresh on every
+		// call and already picks up whatever credential is current in the
+		// DB, so there is genuinely nothing left to do — that's a no-op,
+		// not a failure, hence the shared "not applicable" sentinel rather
+		// than an opaque error.
 		m.mu.RUnlock()
-		return fmt.Errorf("connection update is not supported for per-user auth clients")
+		return fmt.Errorf("client uses per-call connections; there is no persistent connection to update: %w", schemas.ErrMCPReconnectNotApplicable)
 	}
 	if client.ExecutionConfig == nil {
 		m.mu.RUnlock()

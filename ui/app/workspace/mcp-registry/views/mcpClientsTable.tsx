@@ -52,6 +52,7 @@ import {
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { IconWrap, InfoBox } from "./authorizerUi";
 import MCPClientSheet from "./mcpClientSheet";
+import { canReconnectMCPClient } from "./mcpClientsTable.utils";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import { MCPUsageGuideSheet } from "./mcpUsageGuide";
@@ -65,7 +66,7 @@ function MCPClientActionsMenu({
 	isAuthorizing,
 	isReauthorizing,
 	isVerifyingExchange,
-	isPerUserAuth,
+	canReconnect,
 	onEdit,
 	onReconnect,
 	onAuthorize,
@@ -81,7 +82,7 @@ function MCPClientActionsMenu({
 	isAuthorizing: boolean;
 	isReauthorizing: boolean;
 	isVerifyingExchange: boolean;
-	isPerUserAuth: boolean;
+	canReconnect: boolean;
 	onEdit: (client: MCPClient) => void;
 	onReconnect: (client: MCPClient) => void;
 	onAuthorize: (client: MCPClient) => void;
@@ -149,16 +150,10 @@ function MCPClientActionsMenu({
 						Authorize
 					</DropdownMenuItem>
 				)}
-				{hasUpdateAccess && (
+				{hasUpdateAccess && canReconnect && (
 					<DropdownMenuItem
 						className="cursor-pointer"
-						disabled={
-							isPerUserAuth ||
-							client.config.disabled ||
-							isReconnecting ||
-							client.state === "pending_verification" ||
-							client.state === "needs_reauth"
-						}
+						disabled={client.config.disabled || isReconnecting || client.state === "pending_verification" || client.state === "needs_reauth"}
 						onSelect={(e) => {
 							e.preventDefault();
 							onReconnect(client);
@@ -298,7 +293,6 @@ export default function MCPClientsTable({
 		authorizeUrl: string;
 		oauthConfigId: string;
 		mcpClientId: string;
-		popup: Window | null;
 		isPerUserOauth: boolean;
 	} | null>(null);
 	// Drives the MCPHeadersAuthorizer dialog for a config.json-bootstrapped
@@ -363,22 +357,12 @@ export default function MCPClientsTable({
 			return;
 		}
 		const isPerUserOauth = client.config.auth_type === "per_user_oauth";
-		// Open a blank popup synchronously, before the initiateVerification
-		// await, so the click's transient user-activation is captured here
-		// rather than consumed by the network round-trip — otherwise the
-		// browser can block OAuth2Authorizer's later window.open entirely.
-		// OAuth2Authorizer navigates this handle once authorize_url is known.
-		// Not needed for per_user_oauth: that flow shows a confirm step first
-		// and opens its own popup synchronously from that step's own button
-		// click, so pre-opening one here would just leak an unused window.
-		let popup: Window | null = null;
-		if (!isPerUserOauth) {
-			const width = 600;
-			const height = 700;
-			const left = window.screen.width / 2 - width / 2;
-			const top = window.screen.height / 2 - height / 2;
-			popup = window.open("", "oauth_popup", `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
-		}
+		// OAuth2Authorizer always shows a confirm step first and opens its own
+		// popup synchronously from that step's own "Continue" click, for both
+		// OAuth flavors — nothing to pre-open here. (This used to pre-open a
+		// blank popup for the shared-oauth case, based on a stale assumption
+		// that only per_user_oauth showed a confirm step; that left a stray
+		// blank tab open alongside the dialog on every shared-OAuth authorize.)
 		try {
 			setAuthorizingClients((prev) => [...prev, client.config.client_id]);
 			const response = await initiateVerification(client.config.client_id).unwrap();
@@ -387,11 +371,9 @@ export default function MCPClientsTable({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
 					mcpClientId: client.config.client_id,
-					popup,
 					isPerUserOauth,
 				});
 			} else {
-				popup?.close();
 				toast({
 					title: "Authorization failed",
 					description: "Unexpected response from server. Please try again.",
@@ -399,7 +381,6 @@ export default function MCPClientsTable({
 				});
 			}
 		} catch (error) {
-			popup?.close();
 			toast({ title: "Authorization failed", description: getErrorMessage(error), variant: "destructive" });
 		} finally {
 			setAuthorizingClients((prev) => prev.filter((id) => id !== client.config.client_id));
@@ -650,7 +631,6 @@ export default function MCPClientsTable({
 					authorizeUrl={bootstrapAuthorize.authorizeUrl}
 					oauthConfigId={bootstrapAuthorize.oauthConfigId}
 					mcpClientId={bootstrapAuthorize.mcpClientId}
-					initialPopup={bootstrapAuthorize.popup}
 					isPerUserOauth={bootstrapAuthorize.isPerUserOauth}
 				/>
 			)}
@@ -826,11 +806,15 @@ export default function MCPClientsTable({
 				)}
 			</div>
 
-			<div className="flex grow flex-col overflow-auto">
-				<div className="mb-2 grow overflow-auto rounded-sm border">
-					<Table data-testid="mcp-clients-table" className="w-full min-w-[1516px] table-fixed">
-						<TableHeader className="sticky top-0">
-							<TableRow className="bg-muted/50">
+			<div className="flex grow flex-col overflow-hidden">
+				<div className="mb-2 grow overflow-hidden rounded-sm border">
+					<Table
+						data-testid="mcp-clients-table"
+						containerClassName="h-full overflow-auto"
+						className="w-full min-w-[1516px] table-fixed"
+					>
+						<TableHeader className="bg-muted sticky top-0 z-20">
+							<TableRow>
 								<TableHead className="w-[260px] font-semibold">Name</TableHead>
 								<TableHead className="w-[150px] font-semibold">Connection Type</TableHead>
 								<TableHead className="w-[150px] font-semibold">Auth Type</TableHead>
@@ -865,7 +849,7 @@ export default function MCPClientsTable({
 									/>
 								</TableHead>
 								<TableHead className="w-[90px] font-semibold">Status</TableHead>
-								<TableHead className={`bg-muted/50 sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
+								<TableHead className={`bg-muted sticky right-0 z-10 w-14 text-right ${PIN_SHADOW_RIGHT}`}></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -877,13 +861,7 @@ export default function MCPClientsTable({
 								</TableRow>
 							) : (
 								mcpClients.map((c: MCPClient) => {
-									// Per-user auth types (OAuth + headers) don't hold a shared
-									// upstream connection, so reconnect is a no-op for them — the
-									// backend's ReconnectClient rejects with ErrMCPReconnectNotApplicable.
-									const isPerUserAuth =
-										c.config.auth_type === "per_user_oauth" ||
-										c.config.auth_type === "per_user_headers" ||
-										c.config.auth_type === "token_exchange";
+									const canReconnect = canReconnectMCPClient(c.config);
 									const enabledToolsCount =
 										c.state == "healthy"
 											? c.config.tools_to_execute?.includes("*")
@@ -1007,7 +985,7 @@ export default function MCPClientsTable({
 													isAuthorizing={authorizingClients.includes(c.config.client_id)}
 													isReauthorizing={reauthorizingClients.includes(c.config.client_id)}
 													isVerifyingExchange={verifyingExchangeClients.includes(c.config.client_id)}
-													isPerUserAuth={isPerUserAuth}
+													canReconnect={canReconnect}
 													onEdit={handleRowClick}
 													onReconnect={(client) => void handleReconnect(client)}
 													onAuthorize={(client) => void handleStartBootstrap(client)}
