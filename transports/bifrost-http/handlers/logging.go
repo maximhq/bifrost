@@ -400,6 +400,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 	r.GET("/api/logs/recalculate-cost/status", lib.ChainMiddlewares(h.getRecalculateCostStatus, middlewares...))
+	r.POST("/api/logs/recalculate-cost/cancel", lib.ChainMiddlewares(h.cancelRecalculateCost, middlewares...))
 
 	// MCP Tool Log retrieval with filtering, search, and pagination
 	r.GET("/api/mcp-logs", lib.ChainMiddlewares(h.getMCPLogs, middlewares...))
@@ -2142,6 +2143,66 @@ func (h *LoggingHandler) getRecalculateCostStatus(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, recalcJobStatusFromRow(job))
+}
+
+// cancelRecalculateCost handles POST /api/logs/recalculate-cost/cancel. With an
+// ?id= it cancels that job; otherwise it cancels the current in-flight one. Costs
+// already recalculated are kept — cancelling stops further work, it does not undo
+// what was committed. It responds with the job's status after the cancellation so
+// the caller can settle its progress UI from the same shape it was polling.
+//
+// Cancelling a job that has already reached a terminal status is not an error: the
+// job is simply returned as-is, which keeps a click racing the last batch from
+// surfacing a spurious failure.
+func (h *LoggingHandler) cancelRecalculateCost(ctx *fasthttp.RequestCtx) {
+	if h.sidekiqRunner == nil || h.sidekiqStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
+		return
+	}
+
+	var (
+		job *tables.TableSidekiqJob
+		err error
+	)
+	if id := strings.TrimSpace(string(ctx.QueryArgs().Peek("id"))); id != "" {
+		job, err = h.sidekiqStore.GetSidekiqJob(ctx, id)
+	} else {
+		job, err = h.sidekiqStore.GetInFlightSidekiqJobByKind(ctx, logging.CostRecalcJobKind)
+	}
+	if err != nil {
+		logger.Error("failed to look up recalculate-cost job to cancel: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to look up the recalculation job")
+		return
+	}
+	if job == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "No recalculation job to cancel")
+		return
+	}
+	// Guard the id-supplied path: this endpoint must not become a way to cancel
+	// arbitrary background jobs of other kinds.
+	if job.Kind != logging.CostRecalcJobKind {
+		SendError(ctx, fasthttp.StatusBadRequest, "Job is not a cost recalculation")
+		return
+	}
+	if tables.IsSidekiqTerminalStatus(job.Status) {
+		SendJSON(ctx, recalcJobStatusFromRow(job))
+		return
+	}
+
+	if _, err := h.sidekiqRunner.Cancel(ctx, job.ID); err != nil {
+		logger.Error("failed to cancel recalculate-cost job %s: %v", job.ID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel the recalculation")
+		return
+	}
+
+	// Re-read so the response carries the cancelled status and the counters committed
+	// before the stop. The handler may still be unwinding, so its final progress
+	// snapshot can land moments later — the caller's next poll picks that up.
+	if fresh, ferr := h.sidekiqStore.GetSidekiqJob(ctx, job.ID); ferr == nil && fresh != nil {
+		SendJSON(ctx, recalcJobStatusFromRow(fresh))
+		return
+	}
+	SendJSON(ctx, recalcJobStatus{ID: job.ID, Status: tables.SidekiqStatusCancelled})
 }
 
 // recalcJobStatus is the API view of a cost-recalculation job: the durable sidekiq
