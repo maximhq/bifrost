@@ -1,1 +1,1 @@
-- perf: bulk virtual key provider replacement and direct VK lookup to eliminate per-provider round trips in the governance store (#5844)
+- chore: upgraded core to v1.7.7 and framework to v1.5.7

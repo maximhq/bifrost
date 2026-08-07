@@ -1252,7 +1252,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		parsedErr := providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		wait()
 		fasthttp.ReleaseResponse(resp)
@@ -2415,8 +2415,7 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			return nil, bifrostErr
 		}
 		if resp.StatusCode() != fasthttp.StatusOK {
-			// log full error
-			provider.logger.Error("failed to download video: " + string(resp.Body()))
+			provider.logger.Error("failed to download video: status %d", resp.StatusCode())
 			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 				nil,

@@ -1,6 +1,8 @@
 // Generates the "Cross-Provider Prompt-Cache Matrix" folder consumed by
 // augment-provider-harness.mjs.
 //
+// (createHash is used only to bound prompt_cache_key to OpenAI's 64-char limit; see cacheKeyFor.)
+//
 // WHAT THIS TESTS THAT THE OTHER TWO CACHE FOLDERS DON'T
 // -------------------------------------------------------------------------------------------
 // midconv-system-cache-parity.mjs proves one converter (Bedrock) drops one breakpoint, measured
@@ -61,6 +63,8 @@
 // and these rows match six of them (openai/anthropic/gemini/vertex/bedrock/azure), so a default
 // parallel run would execute every request up to six times over.
 
+import { createHash } from "node:crypto";
+
 const J = (v) => JSON.stringify(v);
 
 // Hit-rate floor for EXPLICIT-breakpoint cells only. A warm byte-identical repeat reads
@@ -84,6 +88,64 @@ const ACK = "OK.";
 // hit the cap without erroring. Usage is reported either way, and usage is all this suite reads -
 // so no `thinking` field is sent at all, keeping the payload valid across every provider here.
 const MAX_TOKENS = 256;
+
+// ...but usage is NOT all the harness reads: the collection-level test asserts every 2xx inference
+// response carries non-empty content, and it only forgives an empty body on finish_reason "stop".
+// o-series/gpt-5 reasoning models bill reasoning against the same completion budget, so at 256 they
+// spend the whole cap thinking about a one-word answer and return finish_reason "length" with
+// content:"" - which reads as a caching failure when the cache actually worked (those rounds
+// reported cached_tokens 16512). Give just those cells enough headroom to emit the ack after
+// reasoning. Kept per-cell rather than raising MAX_TOKENS globally so the other ~30 cells x 2 arms
+// x 4 rounds don't pay for it. The value must stay identical across rounds - every round of a cell
+// sends byte-identical bytes on purpose, and that is what makes the cache measurement meaningful.
+const REASONING_MAX_TOKENS = 4096;
+
+// Cells whose default reasoning effort burns the completion budget before any visible text. Newer
+// siblings (gpt-5.6, gpt-5.6-sol) answered fine at 256 and are deliberately not listed - this is a
+// remedy for observed truncation, not a blanket policy for the model family.
+//
+// The Claude entry is the same failure in the adaptive-thinking family. Sonnet 5 rejects
+// thinking:{type:"enabled"} with a 400 and is adaptive-only, so it thinks by default and there is
+// no budget_tokens knob to turn it down with
+// (https://platform.claude.com/docs/en/build-with-claude/extended-thinking). At 256 it spends the
+// entire cap thinking about a one-word answer and the turn ends mid-thinking, which returns
+// stop_reason "max_tokens" with content:[] - reproduced directly against Bedrock:
+//
+//   max_tokens 64  -> stop_reason max_tokens, content [], output_tokens 64
+//   unconstrained  -> content ["thinking", "text"]
+//
+// That empty content array reads as a caching failure when the cache actually worked (the failing
+// rounds reported cache_creation/cache_read of 29727). Its adaptive-only siblings already in the
+// matrix (vertex/claude-opus-4-7, vertex/claude-opus-4-8, bedrock_mantle/anthropic.claude-opus-4-8)
+// answered inside 256 and stay unlisted, per the observed-truncation-only rule above.
+const REASONING_BUDGET_MODELS = new Set([
+  "openai/gpt-5",
+  "openai/gpt-5-mini",
+  "bedrock/global.anthropic.claude-sonnet-5",
+]);
+
+const maxTokensFor = (cell) => (REASONING_BUDGET_MODELS.has(cell.model) ? REASONING_MAX_TOKENS : MAX_TOKENS);
+
+// OpenAI rejects prompt_cache_key longer than 64 chars at runtime
+// ("string_above_max_length ... got a string with length 65"). Note the published spec does NOT
+// declare that bound on the chat/responses request schema - only on CompactResponseMethodPublicBody
+// - so this is enforced-but-undocumented and can't be caught by schema validation.
+//
+// cellId has no length bound: it embeds cell.model, which already carries its own provider prefix,
+// so the provider lands in the key twice ("bedrock__gpt__bedrock-openai-gpt-5-6-sol__control" = 65).
+// Dropping the redundant provider would fit today at 63 of 64, which is one longer model name away
+// from breaking again - so bound it instead. The readable form is kept whenever it fits, and a
+// sha256 suffix takes over when it doesn't, which keeps distinct cells distinct.
+//
+// Deterministic on purpose: the generated collection is diffed, and every round of a cell must send
+// byte-identical bytes for the cache measurement to mean anything.
+const CACHE_KEY_MAX = 64;
+const cacheKeyFor = (cellId) => {
+  const full = `bf-cache-matrix-${cellId}`;
+  if (full.length <= CACHE_KEY_MAX) return full;
+  const digest = createHash("sha256").update(cellId).digest("hex").slice(0, 12);
+  return `${full.slice(0, CACHE_KEY_MAX - digest.length - 1)}-${digest}`;
+};
 
 // Per-cell cold cache. Providers match cached prefixes account-wide, so without a salt the first
 // cell to run writes a prefix every later cell reads, and the matrix measures request ordering
@@ -199,7 +261,7 @@ function anthropicBody(cell, arm, cellId) {
 
   return {
     model: cell.model,
-    max_tokens: MAX_TOKENS,
+    max_tokens: maxTokensFor(cell),
     system: [
       { type: "text", text: salt(cellId), cache_control: cc },
       { type: "text", text: SEG, cache_control: cc },
@@ -230,7 +292,7 @@ function chatBody(cell, arm, cellId) {
     messages.push({ role: "user", content: `${REMINDER}\n\n${QUESTION}` });
   }
 
-  const body = { model: cell.model, max_tokens: MAX_TOKENS, messages };
+  const body = { model: cell.model, max_tokens: maxTokensFor(cell), messages };
   // OpenAI routes cache lookups by prefix hash; without an affinity key, consecutive identical
   // requests can land on different machines and miss for reasons that have nothing to do with the
   // payload. This is not hypothetical: azure/gpt-4o-mini measured 0% on both arms without the key
@@ -238,7 +300,7 @@ function chatBody(cell, arm, cellId) {
   // on every OpenAI-family cell; acceptance was probed on all four surfaces (openai, azure,
   // bedrock, bedrock_mantle) rather than assumed, since an unsupported parameter is a 400 and a
   // 400 reads as a caching failure. Gemini has no equivalent and must not receive it.
-  if (cell.family === "gpt") body.prompt_cache_key = `bf-cache-matrix-${cellId}`;
+  if (cell.family === "gpt") body.prompt_cache_key = cacheKeyFor(cellId);
   return body;
 }
 
@@ -323,7 +385,10 @@ if (pm.response.code < 400) {
     shape: ${J(cell.shape)},
     mechanism: ${J(cell.mechanism)},
     arm: ${J(arm.key)},
-    read: read, write: write, uncached: uncached, hitRate: hitRate
+    read: read, write: write, uncached: uncached, hitRate: hitRate,
+    // Carried so render-cache-parity-report.mjs scores this cell against the same floor the
+    // assertion below uses, rather than duplicating the constant and drifting from it.
+    hitRateFloor: ${HIT_RATE_FLOOR}
   }));
   pm.test(${J(`Cache matrix [${label}] reads the whole warm prefix`)}, function () {
     pm.expect(hitRate, detail +
@@ -373,7 +438,9 @@ ${
     mechanism: ${J(cell.mechanism)},
     arm: ${J(arm.key)},
     read: read, write: write, uncached: uncached,
-    hitRate: best, series: series
+    // Implicit cells assert only "cached at least once", so the renderer scores hitRate > 0 for
+    // them; hitRateFloor is carried anyway so the report can show the bar that was applied.
+    hitRate: best, series: series, hitRateFloor: 0
   }));
   // Deliberately only "caching engaged at least once". Implicit caching is best-effort and
   // non-deterministic at the provider — measured directly against Google, byte-identical repeats

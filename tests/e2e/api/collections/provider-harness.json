@@ -1378,7 +1378,7 @@
                       }
                     },
                     {
-                      "name": "anthropic/claude-opus-4-1",
+                      "name": "anthropic/claude-opus-4-6",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -1389,7 +1389,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"anthropic/claude-opus-4-1\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                          "raw": "{\n  \"model\": \"anthropic/claude-opus-4-6\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/v1/chat/completions",
@@ -18512,7 +18512,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Latest news\"}]}],\n  \"tools\": [{\"googleSearch\":{}}]\n}"
+                  "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Latest news on AI regulation in EU.\"}]}],\n  \"tools\": [{\"googleSearch\":{}}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/{{genaiModel}}:generateContent",
@@ -45438,6 +45438,11 @@
                   "  var j = pm.response.json();",
                   "  pm.expect(j.content, 'expected content array').to.be.an('array').that.is.not.empty;",
                   "});",
+                  "pm.test('Non-streaming response carries encrypted reasoning as redacted_thinking - #5186', function () {",
+                  "  var content = pm.response.json().content || [];",
+                  "  var redacted = content.filter(function (c) { return c.type === 'redacted_thinking' && c.data; });",
+                  "  pm.expect(redacted, 'expected a redacted_thinking block with non-empty data, got: ' + JSON.stringify(content.map(function (c) { return c.type; }))).to.not.be.empty;",
+                  "});",
                   "// Capture the replay content for the next request only when a redacted_thinking",
                   "// block with non-empty data is actually present, so the replay case skips",
                   "// instead of false-failing when the model didn't produce encrypted content.",
@@ -45689,13 +45694,26 @@
                   "  var j = pm.response.json();",
                   "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
                   "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
-                  "  pm.expect(msg.reasoning_details, 'expected a non-empty reasoning_details array (regression of PR #4943 if empty/missing)').to.be.an('array').that.is.not.empty;",
+                  "  var d = j.usage && j.usage.completion_tokens_details;",
+                  "  var rt = (d && d.reasoning_tokens) || 0;",
+                  "  // Opus 4.7 is adaptive-only: whether it thinks at all is the model's own",
+                  "  // per-request decision, so requiring reasoning_details unconditionally",
+                  "  // asserts that decision rather than anything Bifrost controls. Verified",
+                  "  // live - Bifrost sent thinking{type:adaptive,display:summarized} plus",
+                  "  // output_config{effort:high} and Anthropic replied content ['text'] with",
+                  "  // output_tokens_details.thinking_tokens = 0. Assert the real contract:",
+                  "  // reasoning tokens billed means the details must survive the mapping.",
+                  "  if (rt > 0) {",
+                  "    pm.expect(msg.reasoning_details, 'reasoning_tokens=' + rt + ' were billed, so reasoning_details must be populated (regression of PR #4943 if empty/missing)').to.be.an('array').that.is.not.empty;",
+                  "  } else {",
+                  "    pm.expect(msg.content, 'no reasoning tokens billed, so the model must at least have answered').to.be.a('string').that.is.not.empty;",
+                  "  }",
                   "});",
                   "pm.collectionVariables.unset('anthropicThinkingReplayMessage39');",
                   "try {",
                   "  var body = pm.response.json();",
                   "  var msg = body.choices[0].message;",
-                  "  if (msg && msg.reasoning_details && msg.reasoning_details.length) {",
+                  "  if (msg) {",
                   "    pm.collectionVariables.set('anthropicThinkingReplayMessage39', JSON.stringify(msg));",
                   "  }",
                   "} catch (e) {}"
@@ -45713,7 +45731,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"messages\":[{\"role\":\"user\",\"content\":\"Solve 41*37 and explain your steps.\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Carefully compute 8473 * 2917 by long multiplication, showing every partial product, then verify the result by a completely different method and reconcile any discrepancy.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -45757,7 +45775,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"messages\":[{\"role\":\"user\",\"content\":\"Solve 41*37 and explain your steps.\"},{{anthropicThinkingReplayMessage39}},{\"role\":\"user\",\"content\":\"Now double that result.\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Carefully compute 8473 * 2917 by long multiplication, showing every partial product, then verify the result by a completely different method and reconcile any discrepancy.\"},{{anthropicThinkingReplayMessage39}},{\"role\":\"user\",\"content\":\"Now double that result.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
