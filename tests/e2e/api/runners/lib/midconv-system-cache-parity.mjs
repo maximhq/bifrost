@@ -419,7 +419,13 @@ if (pm.response.code < 400) {
     read: read,
     write: write,
     uncached: uncached,
-    hitRate: hitRate
+    hitRate: hitRate,
+    // Carried so render-cache-parity-report.mjs can reproduce the verdict this cell actually
+    // asserts below, instead of assuming every cell wants a high hit rate - midconv_contentstr
+    // deliberately expects only the system floor, and a report that flagged it red would be
+    // reporting correct behaviour as a defect.
+    expectHit: ${kase.expectHit ? "true" : "false"},
+    hitRateFloor: ${HIT_RATE_FLOOR}
   }));
 ${
   kase.expectHit

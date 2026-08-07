@@ -1877,6 +1877,16 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %s\n' "            not a bearer token Postman can use directly, so this is the one leg that still needs its own auth step)."; \
 		printf '  %s\n' "  ENV_FILE still overrides any of the above if set - these are just sane defaults from what's already injected."; \
 		printf '  %s\n' "  Skipped cells (provider genuinely can't do it, e.g. OpenAI+PDF, Anthropic+audio/video) are listed in the folder description."; \
+		printf '\n%s\n' "$(CYAN)Cache Parity Matrices$(NC) ('Cross-Cut Rounds 34 + 35', generated - pick 'cache-parity' in the menu or FEATURE=\"cache\")"; \
+		printf '  %s\n' "Round 34 (Mid-Conversation System Cache-Anchor Parity) runs the same conversation on three legs - direct Bedrock Converse"; \
+		printf '  %s\n' "  over SigV4, Bifrost /anthropic/v1/messages, Bifrost /openai/v1/responses - and diffs the cache read/write counts. The direct"; \
+		printf '  %s\n' "  leg is the baseline: a Bifrost leg reading materially less on identical bytes means a dropped cache breakpoint."; \
+		printf '  %s\n' "Round 35 (Cross-Provider Prompt-Cache Matrix) sweeps provider x model x explicit/implicit mechanism through Bifrost."; \
+		printf '  %s\n' "Both write tmp/harness-cache-parity.md. Credentials reuse the same AWS_*/provider keys as the Round 33 token-parity matrix."; \
+		printf '  %s\n' "Selecting 'cache-parity' in the interactive menu does NOT drop the run to PARALLEL=0: those rows are pulled out of the main"; \
+		printf '  %s\n' "  pass (which keeps its per-provider parallelism) and replayed afterwards in one sequential newman, because they match every"; \
+		printf '  %s\n' "  provider fork and would otherwise run up to six times each. Driving them by hand with FEATURE=\"cache\" has no such"; \
+		printf '  %s\n' "  protection - add PARALLEL=0 yourself in that case."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
 		printf '  %s\n' "make run-provider-harness-test                       # full provider sweep"; \
@@ -1902,6 +1912,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/harness-token-parity-*.json" "Per-newman-process token parity fragments (one per provider fork in parallel mode)."; \
 		printf '  %-30s %s\n' "tmp/harness-token-parity.md"     "Direct-vs-Bifrost token usage table (prompt/completion/cached/total per backend+modality) - see Token Parity Matrix above."; \
 		printf '  %-30s %s\n' ""                                "  Same table is also injected into tmp/newman-report.html when present (sequential mode / PARALLEL=0 only)."; \
+		printf '  %-30s %s\n' "tmp/harness-cache-parity-*.json" "Per-newman-process cache parity fragments (CACHE_ANCHOR_REPORT + CACHE_MATRIX_REPORT blobs)."; \
+		printf '  %-30s %s\n' "tmp/harness-cache-parity.md"     "Round 34 direct-vs-Bifrost cache hit-rate table + Round 35 cross-provider matrix - see Cache Parity Matrices above."; \
+		printf '  %-30s %s\n' "tmp/newman-report-cache-parity.json" "Newman report for the deferred sequential cache pass (merged into tmp/newman-report.json)."; \
+		printf '  %-30s %s\n' "tmp/newman-merge.jq"            "jq program used to merge per-provider + cache-pass reports into tmp/newman-report.json."; \
 		printf '\n'; \
 		exit 0; \
 	fi
@@ -1949,10 +1963,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		$(ECHO) "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
 	fi; \
 	TOKEN_PARITY_REPORTER=""; \
+	CACHE_PARITY_REPORTER=""; \
 	if [ "$$E2E_DEPS_READY" = "1" ]; then \
 		TOKEN_PARITY_REPORTER=",token-parity"; \
+		CACHE_PARITY_REPORTER=",cache-parity"; \
 	fi; \
-	rm -f tmp/harness-token-parity-*.json; \
+	rm -f tmp/harness-token-parity-*.json tmp/harness-cache-parity-*.json; \
+	cp tests/e2e/api/runners/lib/newman-merge.jq tmp/newman-merge.jq; \
 	if command -v gcloud > /dev/null 2>&1; then \
 		VERTEX_ACCESS_TOKEN_VAL="$$(gcloud auth print-access-token 2>/dev/null)"; \
 		if [ -n "$$VERTEX_ACCESS_TOKEN_VAL" ]; then \
@@ -2044,10 +2061,29 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		--source tests/e2e/api/collections/provider-harness.json \
 		--out tmp/harness-augmented.json || { $(ECHO) "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
 	COLLECTION_FILE="tmp/harness-augmented.json"; \
+	DEFERRED_KEYS="cache-parity"; \
+	MAIN_FEATURES=""; CACHE_PASS=0; SKIP_MAIN=0; PICK_SAW_DEFERRED=0; \
+	for k in $$(printf '%s' "$$PICKED_FEATURES" | tr ',' ' '); do \
+		IS_DEFERRED=0; \
+		for d in $$DEFERRED_KEYS; do if [ "$$k" = "$$d" ]; then IS_DEFERRED=1; fi; done; \
+		if [ "$$IS_DEFERRED" = "1" ]; then PICK_SAW_DEFERRED=1; \
+		else MAIN_FEATURES="$${MAIN_FEATURES:+$$MAIN_FEATURES,}$$k"; fi; \
+	done; \
+	if [ -n "$$PICKED_FEATURES" ]; then \
+		CACHE_PASS=$$PICK_SAW_DEFERRED; \
+	elif [ -z "$(RERUN_FAILED)" ] && [ -z "$(FOLDER)" ]; then \
+		CACHE_PASS=1; \
+	fi; \
+	if [ "$$CACHE_PASS" = "1" ] && [ -n "$$PICKED_FEATURES" ] && [ -z "$$MAIN_FEATURES" ]; then SKIP_MAIN=1; fi; \
+	EXCLUDE_FLAG=""; \
+	if [ "$$CACHE_PASS" = "1" ]; then \
+		EXCLUDE_FLAG="--exclude-feature-any cache-parity"; \
+		$(ECHO) "$(CYAN)cache-parity deferred to a sequential pass after the main run (its rows match every provider fork, so running them in the parallel pass would repeat each request once per fork).$(NC)"; \
+	fi; \
 	FEATURE_ANY_FLAG=""; \
-	if [ -n "$$PICKED_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$PICKED_FEATURES"; fi; \
-	if [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$PICKED_FEATURES" ]; then \
-		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$PICKED_FEATURES, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
+	if [ -n "$$MAIN_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$MAIN_FEATURES"; fi; \
+	if [ "$$SKIP_MAIN" != "1" ] && { [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$MAIN_FEATURES" ] || [ -n "$$EXCLUDE_FLAG" ]; }; then \
+		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/filter-collection.mjs \
 			--source "$$COLLECTION_FILE" \
 			--out tmp/harness-filtered.json \
@@ -2055,6 +2091,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(if $(FEATURE),--feature "$(FEATURE)",) \
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$$FEATURE_ANY_FLAG \
+			$$EXCLUDE_FLAG \
 			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { $(ECHO) "$(RED)Filter step failed$(NC)"; exit 1; }; \
 		COLLECTION_FILE="tmp/harness-filtered.json"; \
 	fi; \
@@ -2062,7 +2099,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	set -o pipefail; \
 	$(USE_NODE); \
 	PARALLEL_VAL="$(or $(PARALLEL),1)"; \
-	if [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
+	if [ "$$SKIP_MAIN" = "1" ]; then \
+		$(ECHO) "$(CYAN)cache-parity was the only selection - skipping the main pass and going straight to the sequential cache pass.$(NC)"; \
+		printf '%s' '{"collection":{},"environment":{},"run":{"executions":[],"failures":[],"stats":{"iterations":{"total":1,"pending":0,"failed":0},"items":{"total":0},"requests":{"total":0,"failed":0}},"timings":{}}}' > tmp/newman-report.json; \
+		: > tmp/newman-cli.log; \
+		NEWMAN_EXIT=0; \
+	elif [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
 		$(ECHO) "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter). Set PARALLEL=0 to disable.$(NC)"; \
 		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status; \
 		: > tmp/parallel-pids; \
@@ -2164,7 +2206,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 		$(ECHO) "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
 		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
-			jq -s 'def failed: (((.assertions // []) | any(.error?)) or ((.response.code // 0) == 0) or ((.response.code // 0) >= 400) or (.response | not)); def trimstream: if (.response.stream.type? == "Buffer" and ((.response.stream.data // []) | length) > 20000) then (.response.stream.data = .response.stream.data[:20000] | .response.stream.truncated = true) else . end; def sanitize: trimstream; {collection: (.[0].collection // {}), environment: (.[0].environment // {}), run: {executions: [.[].run.executions[]? | sanitize], failures: [.[].run.failures[]?], stats: {iterations: {total: 1, pending: 0, failed: 0}, items: {total: ([.[].run.stats.items.total // 0] | add)}, requests: {total: ([.[].run.stats.requests.total // 0] | add), failed: ([.[].run.stats.requests.failed // 0] | add)}}, timings: (.[0].run.timings // {})}}' tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			jq -s -f tmp/newman-merge.jq tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			rm -f tmp/.newman-report.slim.json; \
 			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
 			$(ECHO) "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
@@ -2254,6 +2297,48 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--reporter-htmlextra-darkTheme 2>&1 | tee tmp/newman-cli.log; \
 			NEWMAN_EXIT=$$?; \
 		fi; \
+		if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report.json ]; then \
+			$(ECHO) "$(CYAN)Sanitizing tmp/newman-report.json (newman embeds the whole parent folder in every failure)...$(NC)"; \
+			jq -s -f tmp/newman-merge.jq tmp/newman-report.json > tmp/.newman-report-sanitized.json \
+				&& mv -f tmp/.newman-report-sanitized.json tmp/newman-report.json \
+				&& rm -f tmp/.newman-report.slim.json \
+				|| { rm -f tmp/.newman-report-sanitized.json; $(ECHO) "$(YELLOW)Report sanitize failed; tmp/newman-report.json left as-is (may exceed the viewer's 512MB parse limit).$(NC)"; }; \
+		fi; \
+	fi; \
+	if [ "$$CACHE_PASS" = "1" ]; then \
+		$(ECHO) "$(CYAN)Cache parity pass (sequential, single newman - these rows match every provider fork)...$(NC)"; \
+		$(USE_NODE); node tests/e2e/api/runners/filter-collection.mjs \
+			--source tmp/harness-augmented.json \
+			--out tmp/harness-cache-filtered.json \
+			--feature-any cache-parity \
+			$(if $(PROVIDER),--provider $(PROVIDER),) || { $(ECHO) "$(RED)Cache parity filter step failed$(NC)"; }; \
+		if [ -f tmp/harness-cache-filtered.json ]; then \
+			newman run tmp/harness-cache-filtered.json \
+				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
+				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
+				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
+				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
+				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
+				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
+				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
+				--reporters cli,json$$CACHE_PARITY_REPORTER \
+				$${CACHE_PARITY_REPORTER:+--reporter-cache-parity-out "tmp/harness-cache-parity-pass.json"} \
+				--reporter-json-export tmp/newman-report-cache-parity.json 2>&1 | tee -a tmp/newman-cli.log; \
+			CACHE_EXIT=$$?; \
+			if [ "$$CACHE_EXIT" -ne 0 ]; then NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); fi; \
+			if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report-cache-parity.json ]; then \
+				jq -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-cache-parity.json > tmp/newman-report-combined.json \
+					&& mv tmp/newman-report-combined.json tmp/newman-report.json \
+					|| $(ECHO) "$(YELLOW)Cache pass report merge failed; it remains at tmp/newman-report-cache-parity.json$(NC)"; \
+			fi; \
+		fi; \
 	fi; \
 	$(ECHO) "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
 	STREAM_CANCEL_EXIT=0; \
@@ -2280,6 +2365,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			--out tmp/harness-token-parity.md \
 			--html tmp/newman-report.html || true; \
 		$(ECHO) "$(GREEN)Token parity report: tmp/harness-token-parity.md (also injected into tmp/newman-report.html when present - sequential mode / PARALLEL=0 only)$(NC)"; \
+	fi; \
+	if ls tmp/harness-cache-parity-*.json >/dev/null 2>&1; then \
+		$(ECHO) "$(CYAN)Rendering cache parity report...$(NC)"; \
+		$(USE_NODE); node tests/e2e/api/runners/render-cache-parity-report.mjs \
+			--glob "tmp/harness-cache-parity-*.json" \
+			--out tmp/harness-cache-parity.md \
+			--html tmp/newman-report.html || true; \
+		$(ECHO) "$(GREEN)Cache parity report: tmp/harness-cache-parity.md$(NC)"; \
 	fi; \
 	if [ -n "$(CI)" ] || [ -n "$$CI" ]; then \
 		$(ECHO) "$(CYAN)CI mode - skipping interactive viewer. Upload tmp/newman-report.html, tmp/harness-failures.md, and tmp/bifrost-dev.log as workflow artifacts.$(NC)"; \

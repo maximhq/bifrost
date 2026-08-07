@@ -1,2 +1,4 @@
-- feat: add proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)
-- perf: bulk virtual key provider replacement and direct VK lookup to eliminate per-provider round trips in the config store (#5844)
+- feat: expose `SetSupportedParamsForTest` on the datasheet `Store` and plumb `supports_service_tier` through it, so packages outside the datasheet package can seed capability data (#5928)
+- fix: `UpdateBudget` and `UpdateRateLimit` now carry live runtime counters (`current_usage`, `last_reset`, `token_current_usage`, `token_last_reset`, `request_current_usage`, `request_last_reset`) forward from the existing row instead of overwriting them, and `mergeGovernanceConfig` adopts the persisted counters on config force-sync (#5932)
+- fix: concurrent requests sharing a W3C trace id no longer lose log rows in the tracing store (#5356) [@AdityaPainuli](https://github.com/AdityaPainuli)
+- fix: normalize `tool_search_tool_*` on the Responses path (#5891)

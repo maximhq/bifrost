@@ -9,6 +9,7 @@
 //   node harness-viewer.mjs --report tmp/newman-report.json [--port 8090]
 
 import { readFileSync, existsSync } from "node:fs";
+import { readReport } from "./lib/read-report.mjs";
 import { createServer } from "node:http";
 import { URL } from "node:url";
 
@@ -51,7 +52,7 @@ const reconstructUrl = (urlObj) => {
 };
 
 const summarize = () => {
-  const raw = JSON.parse(readFileSync(REPORT, "utf8"));
+  const raw = readReport(REPORT);
   const execs = raw.run?.executions || [];
   return execs.map((e, idx) => {
     const folderPath = (e.item?.path || []).join(" / ");

@@ -1,1 +1,2 @@
-- chore: upgraded core to v1.7.6 and framework to v1.5.6
+- fix: join pending log entries on the trace's `InternalID` instead of its `TraceID`, so concurrent requests that inherit the same W3C trace id no longer overwrite each other's pending entry and lose log rows (#5356) [@AdityaPainuli](https://github.com/AdityaPainuli)
+- chore: upgraded core to v1.7.7 and framework to v1.5.7

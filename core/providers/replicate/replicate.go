@@ -162,7 +162,7 @@ func createPrediction(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		logger.Debug(fmt.Sprintf("error from replicate provider: %s", string(resp.Body())))
+		logger.Debug(fmt.Sprintf("error from replicate provider: status %d", resp.StatusCode()))
 		return nil, nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
@@ -217,7 +217,7 @@ func getPrediction(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from replicate provider: %s", string(resp.Body())))
+		logger.Debug(fmt.Sprintf("error from replicate provider: status %d", resp.StatusCode()))
 		return nil, nil, providerResponseHeaders, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
@@ -2949,7 +2949,7 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
@@ -3038,7 +3038,7 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(parseReplicateError(resp.Body(), resp.StatusCode()), latency)
 	}
 
@@ -3138,7 +3138,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = parseReplicateError(resp.Body(), resp.StatusCode())
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -3232,7 +3232,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = parseReplicateError(resp.Body(), resp.StatusCode())
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)

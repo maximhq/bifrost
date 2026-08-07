@@ -21,7 +21,20 @@ const FEATURES = [
   { key: "vision", label: "Vision (image input)" },
   { key: "json", label: "Structured output (JSON mode / schema)" },
   { key: "reasoning", label: "Reasoning / thinking" },
+  // Comparison matrices. Unlike the modalities above (which slice the criss-cross grid), these
+  // run the same conversation twice - once straight at the provider, once through Bifrost - and
+  // diff the usage numbers. They emit their own report artifacts (tmp/harness-token-parity.md,
+  // tmp/harness-cache-parity.md) on top of the usual pass/fail.
+  { key: "token-parity", label: "Token usage parity (direct vs Bifrost)" },
+  { key: "cache-parity", label: "Prompt cache parity / cache_control", note: "runs last, sequentially" },
 ];
+
+// Keys whose rows match EVERY provider fork, so running them in the main (parallel) pass would
+// execute each request once per fork. Rather than dragging the whole run down to PARALLEL=0, the
+// Makefile pulls these keys out of the main pass and replays them afterwards in a single
+// sequential newman - the rest of the sweep keeps its parallelism. The Makefile detects this by
+// looking for the key in the emitted CSV, so this set and the Makefile's DEFERRED_KEYS must agree.
+const DEFERRED_SEQUENTIAL = new Set(["cache-parity"]);
 
 // Need a TTY on both stdin (for keys) and stderr (for menu render). stdout is
 // intentionally NOT required - it's the result channel, often piped via $(...).
@@ -55,7 +68,8 @@ function render() {
     const box = selected.has(f.key) ? `${C.green}[x]${C.reset}` : "[ ]";
     const arrow = i === cursor ? `${C.cyan}>${C.reset}` : " ";
     const label = i === cursor ? `${C.bold}${f.label}${C.reset}` : f.label;
-    lines.push(`  ${arrow} ${box} ${label}  ${C.gray}${f.key}${C.reset}`);
+    const note = f.note ? `  ${C.yellow}(${f.note})${C.reset}` : "";
+    lines.push(`  ${arrow} ${box} ${label}  ${C.gray}${f.key}${C.reset}${note}`);
   }
   lines.push("");
   const n = selected.size;
@@ -87,6 +101,13 @@ function commit() {
   restoreTty();
   process.stdin.pause();
   if (selected.size === 0) process.exit(1);
+  const deferred = [...selected].filter((k) => DEFERRED_SEQUENTIAL.has(k));
+  if (deferred.length) {
+    writeUI(
+      `${C.yellow}[pick-features] ${deferred.join(", ")} will run last, in a single sequential pass ` +
+        `(these rows match every provider fork, so running them in the parallel pass would repeat each request once per fork).${C.reset}\n`
+    );
+  }
   // Emit empty when all are selected so the Makefile takes the no-filter path.
   if (selected.size < FEATURES.length) {
     process.stdout.write([...selected].join(","));

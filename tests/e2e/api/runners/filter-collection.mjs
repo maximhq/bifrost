@@ -13,6 +13,7 @@
 //   node filter-collection.mjs --source path.json --out /tmp/x.json --rerun-failed --report tmp/newman-report.json
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readReport } from "./lib/read-report.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -32,6 +33,17 @@ const FEATURE_PARTS = (args.feature || "").toLowerCase().split(",").map((s) => s
 // --feature-any is the OR-of-keywords counterpart of --feature (which ANDs). Item passes
 // if it matches at least one keyword. Combines with --feature/--provider via AND.
 const FEATURE_ANY_PARTS = (args["feature-any"] || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
+// --exclude-feature-any is the negation of --feature-any: an item matching ANY of these keywords
+// is dropped. It exists because the harness defers some row groups (cache-parity) to a separate
+// sequential pass, and the main pass needs to carve them out WITHOUT restating everything else as
+// a positive keyword list - the collection holds plenty of rows (management APIs, auth matrix,
+// ...) that match no modality keyword at all, so an "everything except X" expressed positively
+// would silently drop them. Applied after the positive predicates, so it always wins.
+const EXCLUDE_FEATURE_ANY_PARTS = (args["exclude-feature-any"] || "")
+  .toLowerCase()
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 // --folder is a pre-filter mirroring newman's own --folder flag, so a provider fork with zero
 // items inside the target folder gets skipped cleanly (existing "no items - skipping" logic in
 // the run-provider-harness-test Makefile target) instead of being forked and only then failing
@@ -44,8 +56,10 @@ if (!SOURCE || !OUT) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !FOLDER && !RERUN_FAILED) {
-  console.error("[filter-collection] need at least one of: --provider, --feature, --feature-any, --folder, --rerun-failed");
+if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !RERUN_FAILED) {
+  console.error(
+    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --rerun-failed"
+  );
   process.exit(2);
 }
 
@@ -104,6 +118,19 @@ const FEATURE_ALIASES = {
   vision: ["vision", "image_url", "\"type\":\"image\"", "\"type\": \"image\"", "inline_data", "filedata"],
   json: ["json_schema", "json object", "structured output", "responseschema", "response_schema", "responsemimetype", "response mime"],
   reasoning: ["reasoning", "thinking", "reasoning_effort", "budget_tokens", "thinkingbudget", "thinking_budget"],
+  // Comparison matrices, not modalities. These match on generated folder names rather than body
+  // fields because the rows are built programmatically and their request bodies look like any
+  // other chat call - only the ancestor folder identifies them (buildHaystack folds ancestor
+  // names in, which is what makes folder-name aliases work here).
+  "token-parity": ["token parity"],
+  "cache-parity": [
+    "cache-anchor",
+    "prompt-cache matrix",
+    "prompt caching",
+    "cache_control",
+    "cachepoint",
+    "cached_tokens",
+  ],
 };
 
 const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
@@ -171,7 +198,7 @@ const itemMatchesRerunFailed = (item) => {
       console.error(`[filter-collection] --rerun-failed requires ${REPORT}`);
       process.exit(2);
     }
-    const r = JSON.parse(readFileSync(REPORT, "utf8"));
+    const r = readReport(REPORT);
     failedNames = new Set();
     for (const e of r.run?.executions || []) {
       const code = e.response?.code ?? 0;
@@ -183,8 +210,15 @@ const itemMatchesRerunFailed = (item) => {
   return failedNames.has(item.name);
 };
 
+const itemIsExcluded = (item, ancestorNames) => {
+  if (!EXCLUDE_FEATURE_ANY_PARTS.length) return false;
+  const haystack = buildHaystack(item, ancestorNames);
+  return EXCLUDE_FEATURE_ANY_PARTS.some((p) => matchesKeyword(item, ancestorNames, haystack, p));
+};
+
 const passes = (item, ancestorNames) => {
   if (!item.request) return true; // folders pass; we filter their items below
+  if (itemIsExcluded(item, ancestorNames)) return false;
   return itemMatchesProvider(item, ancestorNames) &&
     itemMatchesFeature(item, ancestorNames) &&
     itemMatchesFeatureAny(item, ancestorNames) &&

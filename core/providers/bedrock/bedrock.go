@@ -810,7 +810,7 @@ func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, k
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		provider.logger.Warn("mantle list-models returned status %d: %s", resp.StatusCode, string(responseBody))
+		provider.logger.Warn("mantle list-models returned status %d", resp.StatusCode)
 		return nil
 	}
 

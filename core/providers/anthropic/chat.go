@@ -262,6 +262,73 @@ func convertMCPToolsetConfigMap(m map[string]*schemas.ChatMCPToolsetConfig) map[
 	return out
 }
 
+// promoteThinkingFromExtraParams translates Anthropic's native top-level "thinking"
+// object into this converter's inputs.
+//
+// The unified /v1/chat/completions schema has no "thinking" field (ChatParameters
+// only understands the neutral "reasoning" object plus the reasoning_* shorthands),
+// so a caller writing Anthropic's spelling has it decoded into ExtraParams. Those
+// only reach the wire when BifrostContextKeyPassthroughExtraParams is set - see
+// providerUtils.CheckContextAndGetRequestBody - which the plain unified route does
+// not set. Absent this promotion the directive is silently dropped: the model never
+// thinks and the response carries no reasoning_details.
+//
+// Two return values because Anthropic has one thinking mode the neutral type cannot
+// express. "enabled"/"disabled" map cleanly onto ChatReasoning and are returned as
+// reasoning so they flow through the model-aware mapping in ToAnthropicChatRequest -
+// budget_tokens was removed on Opus 4.7+, so copying the caller's object verbatim
+// would turn a valid request into an upstream 400. "adaptive" has no neutral
+// spelling and is returned as a ready-made AnthropicThinking instead.
+//
+// Returns (nil, nil) for anything unrecognised, leaving existing behaviour intact.
+func promoteThinkingFromExtraParams(value interface{}) (*schemas.ChatReasoning, *AnthropicThinking) {
+	if value == nil {
+		return nil, nil
+	}
+
+	// Accept the typed form as well as the decoded-JSON map, mirroring the
+	// context_management/diagnostics promotions above them.
+	var thinking AnthropicThinking
+	switch v := value.(type) {
+	case *AnthropicThinking:
+		if v == nil {
+			return nil, nil
+		}
+		thinking = *v
+	case AnthropicThinking:
+		thinking = v
+	default:
+		data, err := providerUtils.MarshalSorted(value)
+		if err != nil {
+			return nil, nil
+		}
+		if err := sonic.Unmarshal(data, &thinking); err != nil {
+			return nil, nil
+		}
+	}
+
+	switch thinking.Type {
+	case "adaptive":
+		return nil, &AnthropicThinking{Type: "adaptive", Display: thinking.Display}
+	case "enabled":
+		if thinking.BudgetTokens == nil {
+			// "enabled" without a budget is not expressible as ChatReasoning
+			// (a nil MaxTokens with no Effort falls through to the disabled
+			// branch, inverting the caller's intent). Hand it back verbatim and
+			// let Anthropic validate it against the model.
+			return nil, &AnthropicThinking{Type: "enabled", Display: thinking.Display}
+		}
+		return &schemas.ChatReasoning{MaxTokens: thinking.BudgetTokens, Display: thinking.Display}, nil
+	case "disabled":
+		// Routed through Effort "none" rather than set directly so the
+		// Fable/Mythos carve-out below (that family rejects an explicit
+		// thinking:{type:"disabled"}) still applies.
+		return &schemas.ChatReasoning{Effort: schemas.Ptr("none")}, nil
+	default:
+		return nil, nil
+	}
+}
+
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
 func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*AnthropicMessageRequest, error) {
@@ -289,6 +356,31 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// Convert parameters
 	if bifrostReq.Params != nil {
 		anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
+
+		// reasoningParams is the effective reasoning config for this request. It is
+		// normally just Params.Reasoning; when the caller used Anthropic's native
+		// "thinking" spelling on the unified route it is the promoted equivalent.
+		// Resolved here, above the tool_choice and reasoning blocks, because both
+		// branch on whether thinking is active.
+		//
+		// A local rather than a write-back to bifrostReq.Params: ExtraParams is
+		// aliased on the line above (assigned, not copied), and a cross-provider
+		// fallback re-converts this very request for the next provider, so mutating
+		// it here would leak Anthropic's normalisation into that retry.
+		//
+		// Promotion is skipped when an explicit Reasoning is present (the documented
+		// spelling for this route wins) and when the ExtraParams passthrough flag is
+		// set (there the caller's object is already merged onto the wire verbatim, so
+		// rewriting it would change bytes existing callers depend on, and promoting
+		// it would send two conflicting thinking objects).
+		reasoningParams := bifrostReq.Params.Reasoning
+		var promotedThinking *AnthropicThinking
+		if reasoningParams == nil {
+			if passthrough, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !ok || !passthrough {
+				reasoningParams, promotedThinking = promoteThinkingFromExtraParams(bifrostReq.Params.ExtraParams["thinking"])
+			}
+		}
+
 		if bifrostReq.Params.MaxCompletionTokens != nil {
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
@@ -493,9 +585,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
 					// Anthropic rejects forced tool_choice when extended thinking is active.
 					// Skip forcing tool_choice in that case; the model may still call the tool.
-					thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
-						(bifrostReq.Params.Reasoning.MaxTokens != nil ||
-							(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+					thinkingEnabled := (reasoningParams != nil &&
+						(reasoningParams.MaxTokens != nil ||
+							(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
+						promotedThinking != nil
 					if !thinkingEnabled {
 						anthropicReq.ToolChoice = &AnthropicToolChoice{
 							Type: "tool",
@@ -581,14 +674,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		}
 
 		// Convert reasoning
-		if bifrostReq.Params.Reasoning != nil {
-			if bifrostReq.Params.Reasoning.MaxTokens != nil {
+		if reasoningParams != nil {
+			if reasoningParams.MaxTokens != nil {
 				if IsAdaptiveOnlyThinkingModel(capModel) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
 				} else {
-					budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
-					if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+					budgetTokens := *reasoningParams.MaxTokens
+					if *reasoningParams.MaxTokens == -1 {
 						// anthropic does not support dynamic reasoning budget like gemini
 						// setting it to default max tokens
 						budgetTokens = MinimumReasoningMaxTokens
@@ -601,8 +694,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						BudgetTokens: schemas.Ptr(budgetTokens),
 					}
 				}
-			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-				effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
+			} else if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" {
+				effort := MapBifrostEffortToAnthropic(*reasoningParams.Effort)
 				if SupportsAdaptiveThinking(capModel) {
 					// Opus 4.6+ and Opus 4.7+: adaptive thinking + native effort
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
@@ -620,7 +713,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 				} else {
 					// Older models: budget_tokens only
-					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*reasoningParams.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 					if err != nil {
 						return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
 					}
@@ -649,11 +742,24 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// default; default to "summarized" so the text is visible unless
 			// the caller explicitly requests "omitted".
 			if anthropicReq.Thinking != nil && anthropicReq.Thinking.Type != "disabled" {
-				if bifrostReq.Params.Reasoning.Display != nil {
-					anthropicReq.Thinking.Display = bifrostReq.Params.Reasoning.Display
+				if reasoningParams.Display != nil {
+					anthropicReq.Thinking.Display = reasoningParams.Display
 				} else if IsAdaptiveOnlyThinkingModel(capModel) {
 					anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 				}
+			}
+		}
+
+		// The Anthropic-only thinking modes promoted from ExtraParams ("adaptive",
+		// and "enabled" with no budget) have no ChatReasoning equivalent, so they
+		// bypass the mapping above and land here. Placed before the DeepSeek
+		// carve-out below so that carve-out still wins.
+		if promotedThinking != nil && anthropicReq.Thinking == nil {
+			anthropicReq.Thinking = promotedThinking
+			// Same default as the neutral path: adaptive-only models omit reasoning
+			// text unless display is set, so make it visible unless asked otherwise.
+			if anthropicReq.Thinking.Display == nil && IsAdaptiveOnlyThinkingModel(capModel) {
+				anthropicReq.Thinking.Display = schemas.Ptr("summarized")
 			}
 		}
 
@@ -1115,9 +1221,34 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		}
 	}
 
-	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
-		contentStr = contentBlocks[0].Text
-		contentBlocks = nil
+	// choices[].message.content is a string on the chat completions surface, so
+	// every text block has to fold into one. Anthropic splits assistant prose
+	// into sibling text blocks whenever a server-side tool (code_execution,
+	// web_search) interrupts the turn, and leaving those as an array breaks
+	// clients that type the field as a string. Only text blocks ever reach
+	// contentBlocks here - tool_use goes to toolCalls and thinking to
+	// reasoningDetails - so an all-text check is the whole population.
+	//
+	// The join is empty on purpose: the streaming path forwards each
+	// text_delta straight through as a content delta without inserting a
+	// separator, so anything else here would make a streamed response and a
+	// non-streamed response of the same turn disagree.
+	if len(contentBlocks) > 0 {
+		allText := true
+		for _, block := range contentBlocks {
+			if block.Type != schemas.ChatContentBlockTypeText || block.Text == nil {
+				allText = false
+				break
+			}
+		}
+		if allText {
+			var joined strings.Builder
+			for _, block := range contentBlocks {
+				joined.WriteString(*block.Text)
+			}
+			contentStr = schemas.Ptr(joined.String())
+			contentBlocks = nil
+		}
 	}
 
 	// Create a single choice with the collected content
