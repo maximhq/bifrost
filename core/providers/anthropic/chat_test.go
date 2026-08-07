@@ -1664,10 +1664,64 @@ func TestToAnthropicChatRequest_MidConversationSystem_Opus48(t *testing.T) {
 	}
 }
 
-// TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement verifies
-// that a mid-conv system message with invalid placement (followed by user, not
-// assistant) falls back to top-level system accumulation rather than emitting
-// a role:"system" that would 400 on the Anthropic API.
+// assertInlinedReminder asserts that `text` reached the messages array as a mid-conversation
+// reminder inlined into a user turn (the <system-reminder> envelope), and that it did NOT end up
+// in the top-level system block. Hoisting into `system` preserves the text but renders it ahead
+// of every message, invalidating the cached prefix behind it — measured at roughly half the
+// prompt on a warm conversation. See inlineMidConversationSystem.
+func assertInlinedReminder(t *testing.T, result *AnthropicMessageRequest, text string) {
+	t.Helper()
+	want := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+
+	var found bool
+	for _, msg := range result.Messages {
+		if msg.Role != AnthropicMessageRoleUser {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text == want {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected %q inlined as a <system-reminder> user turn, roles were %v", text, chatRoleSeq(result.Messages))
+	}
+
+	if result.System != nil {
+		if result.System.ContentStr != nil && strings.Contains(*result.System.ContentStr, text) {
+			t.Errorf("mid-conversation content %q was hoisted into top-level system; that collapses the cached prefix", text)
+		}
+		for _, block := range result.System.ContentBlocks {
+			if block.Text != nil && strings.Contains(*block.Text, text) {
+				t.Errorf("mid-conversation content %q was hoisted into top-level system; that collapses the cached prefix", text)
+			}
+		}
+	}
+
+	for i, msg := range result.Messages {
+		if msg.Role == AnthropicMessageRoleSystem {
+			t.Errorf("msg[%d] has role:system — the inline fallback must not emit one", i)
+		}
+	}
+}
+
+func chatRoleSeq(msgs []AnthropicMessage) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, string(m.Role))
+	}
+	return out
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement verifies that a mid-conv
+// system message Anthropic would reject on placement grounds is inlined rather than forwarded.
+//
+// Anthropic enforces two clauses: the turn must FOLLOW a user message and must be last or
+// followed by an assistant turn. This input violates both (it follows an assistant and is
+// followed by a user), so forwarding it returns 400. The converter previously fell back to
+// hoisting into top-level system, which avoided the 400 but collapsed the cached prefix; it now
+// inlines, which avoids the 400 AND keeps the cache anchor inside `messages`.
 func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testing.T) {
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
@@ -1676,7 +1730,7 @@ func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testin
 			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial.")}},
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
 			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
-			// system followed by user — invalid placement, Anthropic returns 400
+			// Follows an assistant AND is followed by a user — violates both clauses.
 			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Bad placement.")}},
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
 		},
@@ -1690,32 +1744,21 @@ func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testin
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Invalid placement: falls back to top-level system accumulation.
+	// The leading system prompt still hoists — only mid-conversation content inlines.
 	if result.System == nil {
-		t.Fatal("expected top-level System to contain both initial and fallback content")
+		t.Fatal("expected the leading system prompt to remain in top-level System")
 	}
-	blocks := result.System.ContentBlocks
-	if len(blocks) != 2 {
-		t.Fatalf("expected 2 system blocks (initial + fallback), got %d", len(blocks))
+	if got := textBlocks(result.System); len(got) != 1 || got[0] != "Initial." {
+		t.Errorf("top-level System = %v, want exactly [\"Initial.\"]", got)
 	}
-	if blocks[0].Text == nil || *blocks[0].Text != "Initial." {
-		t.Errorf("block[0] = %v, want \"Initial.\"", blocks[0].Text)
-	}
-	if blocks[1].Text == nil || *blocks[1].Text != "Bad placement." {
-		t.Errorf("block[1] = %v, want \"Bad placement.\"", blocks[1].Text)
-	}
-	// No role:"system" in messages array.
-	for i, msg := range result.Messages {
-		if msg.Role == AnthropicMessageRoleSystem {
-			t.Errorf("msg[%d] has role:system — invalid placement should have been caught", i)
-		}
-	}
+	assertInlinedReminder(t, result, "Bad placement.")
 }
 
-// TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends verifies that
-// for a non-supporting model/provider the mid-conversation system content is
-// appended to (not overwrites) the top-level system field.
-func TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends(t *testing.T) {
+// TestToAnthropicChatRequest_MidConversationSystem_FallbackInlines verifies the fallback for a
+// provider that cannot carry role:"system" at all. Bedrock, Vertex, and Foundry do not expose
+// mid-conversation system messages regardless of model, so every such message takes the fallback
+// path — which inlines rather than hoisting.
+func TestToAnthropicChatRequest_MidConversationSystem_FallbackInlines(t *testing.T) {
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Bedrock,
 		Model:    "global.anthropic.claude-opus-4-8",
@@ -1736,31 +1779,18 @@ func TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends(t *testing
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Top-level system field must exist and contain BOTH the initial and mid-conv content.
 	if result.System == nil {
-		t.Fatal("expected top-level System to be set")
+		t.Fatal("expected the leading system prompt to remain in top-level System")
 	}
-	if len(result.System.ContentBlocks) != 2 {
-		t.Fatalf("expected 2 system content blocks (initial + mid-conv appended), got %d", len(result.System.ContentBlocks))
+	if got := textBlocks(result.System); len(got) != 1 || got[0] != "Initial system." {
+		t.Errorf("top-level System = %v, want exactly [\"Initial system.\"]", got)
 	}
-	if result.System.ContentBlocks[0].Text == nil || *result.System.ContentBlocks[0].Text != "Initial system." {
-		t.Errorf("block[0] = %v, want 'Initial system.'", result.System.ContentBlocks[0].Text)
-	}
-	if result.System.ContentBlocks[1].Text == nil || *result.System.ContentBlocks[1].Text != "Mid-conv instruction." {
-		t.Errorf("block[1] = %v, want 'Mid-conv instruction.'", result.System.ContentBlocks[1].Text)
-	}
-
-	// No role:"system" entry should appear in the messages array.
-	for i, msg := range result.Messages {
-		if msg.Role == AnthropicMessageRoleSystem {
-			t.Errorf("msg[%d] has role system — should not appear for Bedrock", i)
-		}
-	}
+	assertInlinedReminder(t, result, "Mid-conv instruction.")
 }
 
-// TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47 verifies that
-// mid-conversation system messages are NOT emitted for Opus 4.7 (feature is
-// Opus 4.8+ only).
+// TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47 verifies that a model predating
+// the feature (Opus 4.7; it is Opus 4.8+) takes the inline fallback rather than emitting a
+// role:"system" the API would reject.
 func TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47(t *testing.T) {
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
@@ -1781,29 +1811,7 @@ func TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47(t *testing.T) 
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Mid-conv instruction must be preserved in the top-level System field.
-	if result.System == nil {
-		t.Fatal("expected top-level System to contain fallback mid-conversation instruction")
-	}
-	foundFallback := false
-	if result.System.ContentStr != nil && *result.System.ContentStr == "New instruction." {
-		foundFallback = true
-	}
-	for _, block := range result.System.ContentBlocks {
-		if block.Text != nil && *block.Text == "New instruction." {
-			foundFallback = true
-			break
-		}
-	}
-	if !foundFallback {
-		t.Fatal("expected mid-conversation system content to be preserved in top-level System")
-	}
-
-	for i, msg := range result.Messages {
-		if msg.Role == AnthropicMessageRoleSystem {
-			t.Errorf("msg[%d] has role system — should not appear for Opus 4.7", i)
-		}
-	}
+	assertInlinedReminder(t, result, "New instruction.")
 }
 
 // TestToBifrostChatCompletionStream_NoArgToolFlushesEmptyObject covers the

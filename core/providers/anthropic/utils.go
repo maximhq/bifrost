@@ -950,6 +950,139 @@ func appendToSystemContent(existing *AnthropicContent, newContent AnthropicConte
 	return &AnthropicContent{ContentBlocks: merged}
 }
 
+// AnthropicMaxCacheBreakpoints is the number of blocks carrying cache_control that the Anthropic
+// Messages API accepts in one request. Exceeding it is a hard rejection, not a degradation:
+// verified live on the Anthropic API and on Vertex, both returning
+// "A maximum of 4 blocks with cache_control may be provided. Found 5."
+const AnthropicMaxCacheBreakpoints = 4
+
+// clampAnthropicCacheBreakpoints clears the EARLIEST cache_control markers when a request carries
+// more than the API accepts, and returns how many it cleared.
+//
+// Which end to drop matters. Caching is cumulative up to each breakpoint, so a marker later in
+// render order (tools -> system -> messages) anchors a strictly longer prefix. Dropping the
+// earliest costs an intermediate checkpoint; dropping the latest would surrender the longest
+// cached prefix — the failure inlineMidConversationSystem exists to prevent.
+//
+// Traversal mirrors MarshalJSON's stripCacheControlScope walk (top-level, tools, system, message
+// content blocks) so the two stay consistent. Like that walk, it does not descend into nested
+// tool_result content; a breakpoint there is counted by the API but not by this function, so the
+// clamp is conservative rather than exhaustive.
+func clampAnthropicCacheBreakpoints(req *AnthropicMessageRequest) int {
+	if req == nil {
+		return 0
+	}
+
+	// Pointers to every marker, in render order, so clearing the leading excess is a slice walk.
+	var refs []**schemas.CacheControl
+	for i := range req.Tools {
+		if req.Tools[i].CacheControl != nil {
+			refs = append(refs, &req.Tools[i].CacheControl)
+		}
+	}
+	if req.System != nil {
+		for i := range req.System.ContentBlocks {
+			if req.System.ContentBlocks[i].CacheControl != nil {
+				refs = append(refs, &req.System.ContentBlocks[i].CacheControl)
+			}
+		}
+	}
+	for i := range req.Messages {
+		blocks := req.Messages[i].Content.ContentBlocks
+		for j := range blocks {
+			if blocks[j].CacheControl != nil {
+				refs = append(refs, &blocks[j].CacheControl)
+			}
+		}
+	}
+	// The top-level marker auto-places on the last cacheable block, making it effectively the
+	// final breakpoint — ordered last so it is the one most likely to survive a clamp.
+	if req.CacheControl != nil {
+		refs = append(refs, &req.CacheControl)
+	}
+
+	excess := len(refs) - AnthropicMaxCacheBreakpoints
+	if excess <= 0 {
+		return 0
+	}
+	for i := 0; i < excess; i++ {
+		*refs[i] = nil
+	}
+	return excess
+}
+
+// inlineMidConversationSystem renders a mid-conversation system message as a user turn wrapped in
+// the <system-reminder> envelope, preserving each block's cache_control.
+//
+// This is the fallback for a mid-conversation system message the provider+model cannot carry as
+// role:"system" — either because the model predates the feature (SupportsMidConversationSystem)
+// or because the platform doesn't expose it at all (Bedrock, Vertex, and Foundry do not). The
+// alternative, folding the content into the top-level `system` block, is what this replaces: the
+// system block renders ahead of every message, so growing it mid-conversation invalidates the
+// cached prefix behind it and pins the cacheable region at the system/tools floor. Measured
+// across the provider harness, that collapse costs half the prompt on an otherwise warm
+// conversation — the same economics as dropping the breakpoint outright.
+//
+// Inlining keeps the anchor inside `messages`, where it extends the cached prefix instead of
+// invalidating it, and matches both the documented Anthropic fallback for unsupported models and
+// the Bedrock converter's existing behavior (convertBifrostSystemReminderToBedrockUserMessage).
+// The trade is that a user turn is not the operator channel a role:"system" turn is — the model
+// can no longer distinguish it from user text. The content originates from the caller's own
+// system role, so nothing attacker-controlled is laundered by this, but instruction adherence is
+// weaker than a native mid-conversation system message would be. Callers whose model does support
+// the native form never reach here.
+//
+// Returns nil when the content yields no text, so the caller skips the append.
+func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
+	if content == nil {
+		return nil
+	}
+
+	wrap := func(text string) string {
+		return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+	}
+
+	var blocks []AnthropicContentBlock
+	if content.ContentStr != nil && *content.ContentStr != "" {
+		// The string form has nowhere to hang a per-block cache_control, so no breakpoint was
+		// sent and none may be invented — that would burn a cache checkpoint (max 4) the caller
+		// never asked for.
+		blocks = append(blocks, AnthropicContentBlock{
+			Type: AnthropicContentBlockTypeText,
+			Text: schemas.Ptr(wrap(*content.ContentStr)),
+		})
+	}
+	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter. Within a
+	// single message an intermediate marker buys nothing — one on the final block already closes
+	// over every preceding block, and the message is atomic so no later request can diverge in its
+	// middle — while still consuming one of the four checkpoints the API allows per request.
+	var lastCacheControl *schemas.CacheControl
+	for _, block := range content.ContentBlocks {
+		if block.Text == nil || *block.Text == "" {
+			continue
+		}
+		blocks = append(blocks, AnthropicContentBlock{
+			Type: AnthropicContentBlockTypeText,
+			Text: schemas.Ptr(wrap(*block.Text)),
+		})
+		if block.CacheControl != nil {
+			lastCacheControl = block.CacheControl
+		}
+	}
+
+	if len(blocks) == 0 {
+		return nil
+	}
+	if lastCacheControl != nil {
+		blocks[len(blocks)-1].CacheControl = lastCacheControl
+	}
+
+	return &AnthropicMessage{
+		Role:    AnthropicMessageRoleUser,
+		Content: AnthropicContent{ContentBlocks: blocks},
+	}
+}
+
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
 // system messages). Available on the Anthropic API only — not on Bedrock or
