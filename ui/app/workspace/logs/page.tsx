@@ -20,7 +20,7 @@ import {
 	useGetUserAgentMappingsQuery,
 } from "@/lib/store";
 import { useLazyGetLogByIdQuery, useLazyGetLogsQuery } from "@/lib/store/apis/logsApi";
-import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
+import type { DisplayLogEntry, LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -30,6 +30,10 @@ import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash, Info } fro
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+// A fallback chain is a handful of attempts, so one page covers every realistic
+// chain. Capped at the list endpoint's own maximum.
+const chainChildrenPageLimit = 1000;
 
 export default function LogsPage() {
 	const [error, setError] = useState<string | null>(null);
@@ -103,6 +107,7 @@ export default function LogsPage() {
 			cache_hit_types: parseAsSafeArrayOf.withDefault([]),
 			metadata_filters: parseAsString.withDefault(""),
 			selected_log: parseAsString.withDefault(""),
+			grouped: parseAsBoolean.withDefault(false),
 		},
 		{
 			history: "push",
@@ -114,6 +119,9 @@ export default function LogsPage() {
 	const selectedLogId = urlState.selected_log || null;
 	const activeLogFetchId = useRef<string | null>(null);
 	const polling = urlState.polling;
+	// Grouped view collapses fallback chains under their root. Disabled while a
+	// session filter is active — that view is already scoped to one chain/session.
+	const grouped = urlState.grouped && !urlState.parent_request_id;
 
 	// Convert URL state to filters and pagination for API calls
 	const filters: LogFilters = useMemo(
@@ -302,6 +310,7 @@ export default function LogsPage() {
 		{
 			filters,
 			pagination,
+			rootsOnly: grouped,
 		},
 		{
 			pollingInterval: showEmptyState || polling ? 10000 : 0,
@@ -359,6 +368,66 @@ export default function LogsPage() {
 			});
 		},
 		[filters, setFilters],
+	);
+
+	// --- Grouped view: chain expansion state -------------------------------
+	// Children of an expanded root, keyed by root log id. Loaded lazily through
+	// the list endpoint with the active filters plus parent_request_id, not the
+	// sessions endpoint — the sessions endpoint ignores filters, which would show
+	// rows the filter bar says are excluded. Filtering here keeps the expansion
+	// consistent with child_count, which the server computes under the same
+	// filters: every row is either a root or a child, and always matches.
+	const [expandedChainIds, setExpandedChainIds] = useState<Set<string>>(new Set());
+	const [chainChildren, setChainChildren] = useState<Record<string, LogEntry[]>>({});
+	const [loadingChainIds, setLoadingChainIds] = useState<Set<string>>(new Set());
+	const [triggerGetChainChildren] = useLazyGetLogsQuery();
+
+	// Collapse everything when the page of roots changes — expanded ids from the
+	// previous page are meaningless and cached children may be stale.
+	useEffect(() => {
+		setExpandedChainIds(new Set());
+		setChainChildren({});
+		setLoadingChainIds(new Set());
+	}, [filters, pagination, grouped]);
+
+	const handleToggleChain = useCallback(
+		(log: LogEntry) => {
+			const isExpanded = expandedChainIds.has(log.id);
+			setExpandedChainIds((prev) => {
+				const next = new Set(prev);
+				if (next.has(log.id)) {
+					next.delete(log.id);
+				} else {
+					next.add(log.id);
+				}
+				return next;
+			});
+			if (isExpanded || chainChildren[log.id] || loadingChainIds.has(log.id)) return;
+
+			setLoadingChainIds((prev) => new Set(prev).add(log.id));
+			triggerGetChainChildren({
+				filters: { ...filters, parent_request_id: log.id },
+				pagination: { ...pagination, limit: chainChildrenPageLimit, offset: 0, sort_by: "timestamp", order: "asc" },
+			}).then((result) => {
+				setLoadingChainIds((prev) => {
+					const next = new Set(prev);
+					next.delete(log.id);
+					return next;
+				});
+				if (result.data) {
+					const children = result.data.logs;
+					setChainChildren((prevCache) => ({ ...prevCache, [log.id]: children }));
+				} else if (result.error) {
+					setExpandedChainIds((prev) => {
+						const next = new Set(prev);
+						next.delete(log.id);
+						return next;
+					});
+					setError(getErrorMessage(result.error));
+				}
+			});
+		},
+		[expandedChainIds, chainChildren, loadingChainIds, triggerGetChainChildren, filters, pagination],
 	);
 
 	const handleDelete = useCallback(
@@ -500,8 +569,8 @@ export default function LogsPage() {
 	}, [userAgentMappingsData?.mappings]);
 
 	const columns = useMemo(
-		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons),
-		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys],
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped),
+		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped],
 	);
 
 	const columnIds = useMemo(
@@ -546,12 +615,36 @@ export default function LogsPage() {
 		paramName: "cols",
 		storageKey: "bifrost.logs.cols",
 		defaultHidden: DEFAULT_HIDDEN_COLUMNS,
-		fixedColumns: hasDeleteAccess ? { right: ["actions"] } : undefined,
+		fixedColumns: {
+			...(grouped ? { left: ["expand"] } : {}),
+			...(hasDeleteAccess ? { right: ["actions"] } : {}),
+		},
 	});
 
 	// Navigation for log detail sheet
 	const logs = logsData?.logs ?? [];
 	const totalItems = logsData?.stats?.total_requests ?? 0;
+
+	// Grouped view: splice loaded children in below their expanded root. Children
+	// are marked so the table can indent them; they don't affect pagination.
+	const displayLogs: DisplayLogEntry[] = useMemo(() => {
+		if (!grouped || expandedChainIds.size === 0) return logs;
+		const out: DisplayLogEntry[] = [];
+		for (const log of logs) {
+			out.push(log);
+			if (expandedChainIds.has(log.id)) {
+				for (const child of chainChildren[log.id] ?? []) {
+					out.push({ ...child, __chainChild: true });
+				}
+			}
+		}
+		return out;
+	}, [logs, grouped, expandedChainIds, chainChildren]);
+
+	const tableMeta = useMemo(
+		() => ({ expandedChainIds, loadingChainIds, onToggleChain: handleToggleChain }),
+		[expandedChainIds, loadingChainIds, handleToggleChain],
+	);
 	const selectedLogFromData = useMemo(
 		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
 		[selectedLogId, logs],
@@ -595,6 +688,7 @@ export default function LogsPage() {
 					triggerGetLogs({
 						filters,
 						pagination: { ...pagination, offset: newOffset },
+						rootsOnly: grouped,
 					}).then((result) => {
 						if (result.data?.logs?.length) {
 							const lastLog = result.data.logs[result.data.logs.length - 1];
@@ -620,6 +714,7 @@ export default function LogsPage() {
 					triggerGetLogs({
 						filters,
 						pagination: { ...pagination, offset: newOffset },
+						rootsOnly: grouped,
 					}).then((result) => {
 						if (result.data?.logs?.length) {
 							const firstLog = result.data.logs[0];
@@ -635,7 +730,7 @@ export default function LogsPage() {
 				}
 			}
 		},
-		[selectedLogId, selectedLogIndex, logs, pagination, totalItems, filters, setUrlState, triggerGetLogs],
+		[selectedLogId, selectedLogIndex, logs, pagination, totalItems, filters, grouped, setUrlState, triggerGetLogs],
 	);
 
 	return (
@@ -665,6 +760,8 @@ export default function LogsPage() {
 								loading={logsIsFetching}
 								polling={polling}
 								onPollToggle={handlePollToggle}
+								grouped={grouped}
+								onGroupedToggle={(enabled) => setUrlState({ grouped: enabled, offset: 0 })}
 								period={period}
 								onPeriodChange={handlePeriodChange}
 								totalLogs={totalItems}
@@ -736,7 +833,8 @@ export default function LogsPage() {
 						<div className="min-h-0 flex-1">
 							<LogsDataTable
 								columns={columns}
-								data={logs}
+								data={displayLogs}
+								tableMeta={tableMeta}
 								loading={logsIsFetching}
 								totalItems={totalItems}
 								pagination={pagination}
