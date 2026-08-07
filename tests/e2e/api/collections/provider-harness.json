@@ -49654,6 +49654,144 @@
           }
         }
       ]
+    },
+    {
+      "name": "44. Encrypted Reasoning Fail-Soft (unverifiable payload degrades instead of 400)",
+      "description": "Bifrost's encrypted-reasoning fail-soft (core/encryptedreasoning.go) detects an upstream refusal of a replayed\nreasoning payload, strips encrypted_content from the reasoning items, and retries once on the same key, so the\nturn degrades to a normal answer instead of failing. This fires whenever a conversation changes model family or\ncredential mid-flight (a routing rule or a fallback is enough) and the client replays the earlier provider’s\nreasoning verbatim.\n\nThe detector originally recognised only OpenAI’s wording (invalid_encrypted_content / \"could not be verified\").\nAnthropic refuses with \"messages.N.content.0: Invalid `data` in `redacted_thinking` block\" — HTTP 400 and no error\ncode — which fell through and reached the client as a hard 400.\n\nFIXTURE CONSTRAINT — do not \"normalise\" these bodies: the reasoning item must carry NO \"content\" key at all.\nBifrost’s own Responses output emits \"content\": [], and an empty-but-present array sends\nconvertBifrostReasoningToAnthropicThinking down its content-blocks branch, which emits nothing and silently drops\nencrypted_content. The request then succeeds without the upstream ever validating the payload — a silent false pass.\n\nA synthetic unverifiable blob is used rather than a captured one: the upstream rejects any payload it cannot\nverify identically, and this keeps each case self-contained (no capture chaining, one request each).",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses unverifiable encrypted reasoning degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('unverifiable encrypted reasoning degrades instead of 400ing', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Anthropic rejection reached the client; the encrypted-reasoning fail-soft did not fire').to.not.include('redacted_thinking');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().output, 'no output returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000001\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness01\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"391\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"reasoning\":{\"max_tokens\":1024},\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses streaming unverifiable encrypted reasoning degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('streaming turn degrades instead of erroring on unverifiable reasoning', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Anthropic rejection surfaced in the stream; the fail-soft did not fire').to.not.include('redacted_thinking');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'stream never completed').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000001\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness01\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"391\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"reasoning\":{\"max_tokens\":1024},\"max_output_tokens\":256,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5-mini /openai/v1/responses unverifiable encrypted reasoning degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('OpenAI-side encrypted reasoning fail-soft still heals', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'OpenAI rejection reached the client; the original fail-soft clause regressed').to.not.include('invalid_encrypted_content');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().output, 'no output returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5-mini\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000001\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness01\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"391\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
