@@ -2100,6 +2100,38 @@ func (s *RDBConfigStore) UpdateMCPClientOAuthConfigID(ctx context.Context, clien
 	return nil
 }
 
+// UpdateMCPClientTools persists an MCP client's discovered tools and tool
+// name mapping as a targeted column update — unlike UpdateMCPClientConfig's
+// full-row overwrite, this never touches any other column, so it's safe to
+// call from a periodic background refresh without racing a concurrent config
+// edit. An empty (non-nil) map is a legitimate "server has zero tools"
+// result and is written as-is, same as a populated one.
+func (s *RDBConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
+	toolsJSON, err := json.Marshal(tools)
+	if err != nil {
+		return fmt.Errorf("failed to marshal discovered_tools: %w", err)
+	}
+	mappingJSON, err := json.Marshal(toolNameMapping)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tool_name_mapping: %w", err)
+	}
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableMCPClient{}).
+		Where("client_id = ?", clientID).
+		Updates(map[string]interface{}{
+			"discovered_tools_json":  string(toolsJSON),
+			"tool_name_mapping_json": string(mappingJSON),
+			"updated_at":             time.Now(),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ClearMCPClientPendingOAuthConfig sets pending_oauth_config_json to NULL for
 // the given client. Called once OAuth authorization succeeds so the runtime no
 // longer sees the bootstrap stash and the next reconnect runs the normal
