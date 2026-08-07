@@ -31,16 +31,88 @@ func (b *ComplexityTierBoundaries) Validate() error {
 
 // ComplexityEditableKeywordConfig contains the user-editable keyword lists.
 type ComplexityEditableKeywordConfig struct {
+	SimpleKeywords  []string `json:"simple_keywords"`
+	MediumKeywords  []string `json:"medium_keywords"`
+	ComplexKeywords []string `json:"complex_keywords"`
+}
+
+type legacyComplexityEditableKeywordConfig struct {
 	CodeKeywords      []string `json:"code_keywords"`
 	ReasoningKeywords []string `json:"reasoning_keywords"`
 	TechnicalKeywords []string `json:"technical_keywords"`
 	SimpleKeywords    []string `json:"simple_keywords"`
 }
 
+// UnmarshalJSON accepts the canonical three-list shape and the deprecated
+// four-list shape. Runtime and API callers always receive the canonical shape.
+func (c *ComplexityEditableKeywordConfig) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+
+	allowed := map[string]struct{}{
+		"simple_keywords":    {},
+		"medium_keywords":    {},
+		"complex_keywords":   {},
+		"code_keywords":      {},
+		"reasoning_keywords": {},
+		"technical_keywords": {},
+	}
+	for field := range fields {
+		if _, ok := allowed[field]; !ok {
+			return fmt.Errorf("unknown complexity keyword field %q", field)
+		}
+	}
+
+	hasCanonical := hasAnyComplexityField(fields, "medium_keywords", "complex_keywords")
+	hasLegacy := hasAnyComplexityField(fields, "code_keywords", "reasoning_keywords", "technical_keywords")
+	if hasCanonical && hasLegacy {
+		return fmt.Errorf("complexity keyword config cannot mix canonical and legacy fields")
+	}
+
+	if hasLegacy {
+		var legacy legacyComplexityEditableKeywordConfig
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return err
+		}
+		*c = ComplexityEditableKeywordConfig{
+			SimpleKeywords:  legacy.SimpleKeywords,
+			MediumKeywords:  mergeComplexityKeywordLists(legacy.CodeKeywords, legacy.TechnicalKeywords),
+			ComplexKeywords: legacy.ReasoningKeywords,
+		}
+		return nil
+	}
+
+	type canonicalComplexityEditableKeywordConfig ComplexityEditableKeywordConfig
+	var canonical canonicalComplexityEditableKeywordConfig
+	if err := json.Unmarshal(data, &canonical); err != nil {
+		return err
+	}
+	*c = ComplexityEditableKeywordConfig(canonical)
+	return nil
+}
+
+func hasAnyComplexityField(fields map[string]json.RawMessage, names ...string) bool {
+	for _, name := range names {
+		if _, ok := fields[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // ComplexityAnalyzerConfigHashes tracks the config.json hash for each editable
 // analyzer section. It is persisted with the config row, but not exposed through
 // API responses or config.json.
 type ComplexityAnalyzerConfigHashes struct {
+	TierBoundaries  string `json:"tier_boundaries,omitempty"`
+	SimpleKeywords  string `json:"simple_keywords,omitempty"`
+	MediumKeywords  string `json:"medium_keywords,omitempty"`
+	ComplexKeywords string `json:"complex_keywords,omitempty"`
+}
+
+type legacyComplexityAnalyzerConfigHashes struct {
 	TierBoundaries    string `json:"tier_boundaries,omitempty"`
 	CodeKeywords      string `json:"code_keywords,omitempty"`
 	ReasoningKeywords string `json:"reasoning_keywords,omitempty"`
@@ -48,22 +120,60 @@ type ComplexityAnalyzerConfigHashes struct {
 	SimpleKeywords    string `json:"simple_keywords,omitempty"`
 }
 
+// UnmarshalJSON translates persisted legacy section hashes into the canonical
+// three-list representation without hashing the runtime DB keyword values.
+func (h *ComplexityAnalyzerConfigHashes) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	hasCanonical := hasAnyComplexityField(fields, "medium_keywords", "complex_keywords")
+	hasLegacy := hasAnyComplexityField(fields, "code_keywords", "reasoning_keywords", "technical_keywords")
+	if hasCanonical && hasLegacy {
+		return fmt.Errorf("complexity config hashes cannot mix canonical and legacy fields")
+	}
+
+	if hasLegacy {
+		var legacy legacyComplexityAnalyzerConfigHashes
+		if err := json.Unmarshal(data, &legacy); err != nil {
+			return err
+		}
+		mediumHash, err := legacyMediumKeywordsHashFromSectionHashes(legacy.CodeKeywords, legacy.TechnicalKeywords)
+		if err != nil {
+			return err
+		}
+		*h = ComplexityAnalyzerConfigHashes{
+			TierBoundaries:  legacy.TierBoundaries,
+			SimpleKeywords:  legacy.SimpleKeywords,
+			MediumKeywords:  mediumHash,
+			ComplexKeywords: legacy.ReasoningKeywords,
+		}
+		return nil
+	}
+
+	type canonicalComplexityAnalyzerConfigHashes ComplexityAnalyzerConfigHashes
+	var canonical canonicalComplexityAnalyzerConfigHashes
+	if err := json.Unmarshal(data, &canonical); err != nil {
+		return err
+	}
+	*h = ComplexityAnalyzerConfigHashes(canonical)
+	return nil
+}
+
 // Empty reports whether no file-backed section hashes are present.
 func (h ComplexityAnalyzerConfigHashes) Empty() bool {
 	return h.TierBoundaries == "" &&
-		h.CodeKeywords == "" &&
-		h.ReasoningKeywords == "" &&
-		h.TechnicalKeywords == "" &&
-		h.SimpleKeywords == ""
+		h.SimpleKeywords == "" &&
+		h.MediumKeywords == "" &&
+		h.ComplexKeywords == ""
 }
 
 // Equal reports whether all section hashes match.
 func (h ComplexityAnalyzerConfigHashes) Equal(other ComplexityAnalyzerConfigHashes) bool {
 	return h.TierBoundaries == other.TierBoundaries &&
-		h.CodeKeywords == other.CodeKeywords &&
-		h.ReasoningKeywords == other.ReasoningKeywords &&
-		h.TechnicalKeywords == other.TechnicalKeywords &&
-		h.SimpleKeywords == other.SimpleKeywords
+		h.SimpleKeywords == other.SimpleKeywords &&
+		h.MediumKeywords == other.MediumKeywords &&
+		h.ComplexKeywords == other.ComplexKeywords
 }
 
 // ComplexityAnalyzerConfig is the persisted runtime configuration for the complexity analyzer.
@@ -89,17 +199,14 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	}
 
 	var missing []string
-	if len(c.Keywords.CodeKeywords) == 0 {
-		missing = append(missing, "code_keywords")
-	}
-	if len(c.Keywords.ReasoningKeywords) == 0 {
-		missing = append(missing, "reasoning_keywords")
-	}
-	if len(c.Keywords.TechnicalKeywords) == 0 {
-		missing = append(missing, "technical_keywords")
-	}
 	if len(c.Keywords.SimpleKeywords) == 0 {
 		missing = append(missing, "simple_keywords")
+	}
+	if len(c.Keywords.MediumKeywords) == 0 {
+		missing = append(missing, "medium_keywords")
+	}
+	if len(c.Keywords.ComplexKeywords) == 0 {
+		missing = append(missing, "complex_keywords")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("keyword lists must be non-empty: %s", strings.Join(missing, ", "))
@@ -115,10 +222,9 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 	return ComplexityAnalyzerConfig{
 		TierBoundaries: c.TierBoundaries,
 		Keywords: ComplexityEditableKeywordConfig{
-			CodeKeywords:      normalizeComplexityKeywordList(c.Keywords.CodeKeywords),
-			ReasoningKeywords: normalizeComplexityKeywordList(c.Keywords.ReasoningKeywords),
-			TechnicalKeywords: normalizeComplexityKeywordList(c.Keywords.TechnicalKeywords),
-			SimpleKeywords:    normalizeComplexityKeywordList(c.Keywords.SimpleKeywords),
+			SimpleKeywords:  normalizeComplexityKeywordList(c.Keywords.SimpleKeywords),
+			MediumKeywords:  normalizeComplexityKeywordList(c.Keywords.MediumKeywords),
+			ComplexKeywords: normalizeComplexityKeywordList(c.Keywords.ComplexKeywords),
 		},
 		ConfigHashes: c.ConfigHashes,
 	}
@@ -153,10 +259,9 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 	merged := ComplexityAnalyzerConfig{
 		TierBoundaries: normalizedFile.TierBoundaries,
 		Keywords: ComplexityEditableKeywordConfig{
-			CodeKeywords:      mergeComplexityKeywordLists(normalizedBase.Keywords.CodeKeywords, normalizedFile.Keywords.CodeKeywords),
-			ReasoningKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.ReasoningKeywords, normalizedFile.Keywords.ReasoningKeywords),
-			TechnicalKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.TechnicalKeywords, normalizedFile.Keywords.TechnicalKeywords),
-			SimpleKeywords:    mergeComplexityKeywordLists(normalizedBase.Keywords.SimpleKeywords, normalizedFile.Keywords.SimpleKeywords),
+			SimpleKeywords:  mergeComplexityKeywordLists(normalizedBase.Keywords.SimpleKeywords, normalizedFile.Keywords.SimpleKeywords),
+			MediumKeywords:  mergeComplexityKeywordLists(normalizedBase.Keywords.MediumKeywords, normalizedFile.Keywords.MediumKeywords),
+			ComplexKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords),
 		},
 		ConfigHashes: normalizedFile.ConfigHashes,
 	}
@@ -190,21 +295,17 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 		merged.TierBoundaries = normalizedFile.TierBoundaries
 		merged.ConfigHashes.TierBoundaries = normalizedFile.ConfigHashes.TierBoundaries
 	}
-	if merged.ConfigHashes.CodeKeywords != normalizedFile.ConfigHashes.CodeKeywords {
-		merged.Keywords.CodeKeywords = mergeComplexityKeywordLists(merged.Keywords.CodeKeywords, normalizedFile.Keywords.CodeKeywords)
-		merged.ConfigHashes.CodeKeywords = normalizedFile.ConfigHashes.CodeKeywords
-	}
-	if merged.ConfigHashes.ReasoningKeywords != normalizedFile.ConfigHashes.ReasoningKeywords {
-		merged.Keywords.ReasoningKeywords = mergeComplexityKeywordLists(merged.Keywords.ReasoningKeywords, normalizedFile.Keywords.ReasoningKeywords)
-		merged.ConfigHashes.ReasoningKeywords = normalizedFile.ConfigHashes.ReasoningKeywords
-	}
-	if merged.ConfigHashes.TechnicalKeywords != normalizedFile.ConfigHashes.TechnicalKeywords {
-		merged.Keywords.TechnicalKeywords = mergeComplexityKeywordLists(merged.Keywords.TechnicalKeywords, normalizedFile.Keywords.TechnicalKeywords)
-		merged.ConfigHashes.TechnicalKeywords = normalizedFile.ConfigHashes.TechnicalKeywords
-	}
 	if merged.ConfigHashes.SimpleKeywords != normalizedFile.ConfigHashes.SimpleKeywords {
 		merged.Keywords.SimpleKeywords = mergeComplexityKeywordLists(merged.Keywords.SimpleKeywords, normalizedFile.Keywords.SimpleKeywords)
 		merged.ConfigHashes.SimpleKeywords = normalizedFile.ConfigHashes.SimpleKeywords
+	}
+	if merged.ConfigHashes.MediumKeywords != normalizedFile.ConfigHashes.MediumKeywords {
+		merged.Keywords.MediumKeywords = mergeComplexityKeywordLists(merged.Keywords.MediumKeywords, normalizedFile.Keywords.MediumKeywords)
+		merged.ConfigHashes.MediumKeywords = normalizedFile.ConfigHashes.MediumKeywords
+	}
+	if merged.ConfigHashes.ComplexKeywords != normalizedFile.ConfigHashes.ComplexKeywords {
+		merged.Keywords.ComplexKeywords = mergeComplexityKeywordLists(merged.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords)
+		merged.ConfigHashes.ComplexKeywords = normalizedFile.ConfigHashes.ComplexKeywords
 	}
 	if err := merged.Validate(); err != nil {
 		return nil, err
