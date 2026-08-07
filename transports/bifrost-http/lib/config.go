@@ -6756,6 +6756,11 @@ func (c *Config) GetVectorStoreConfigRedacted(ctx context.Context) (*vectorstore
 		redactedVectorStoreConfig.Config = &redactedWeaviateConfig
 		return &redactedVectorStoreConfig, nil
 	}
+	if vectorStoreConfig.Type == vectorstore.VectorStoreTypeChromem {
+		// Chromem is embedded and its config carries no secrets.
+		redactedVectorStoreConfig := *vectorStoreConfig
+		return &redactedVectorStoreConfig, nil
+	}
 	return nil, nil
 }
 
