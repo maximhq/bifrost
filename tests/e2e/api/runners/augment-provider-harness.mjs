@@ -5,6 +5,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { buildTokenParityMatrix } from "./lib/token-parity-matrix.mjs";
 import { buildPromptCachingHitVerificationItems } from "./lib/prompt-caching-extension.mjs";
+import { buildMidConvSystemCacheParityFolder } from "./lib/midconv-system-cache-parity.mjs";
+import { buildCrossProviderCacheMatrixFolder } from "./lib/crossprovider-cache-matrix.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -327,6 +329,8 @@ const generatedFolders = [
     item: streamingFeatureItems,
   },
   buildTokenParityMatrix(),
+  buildMidConvSystemCacheParityFolder(),
+  buildCrossProviderCacheMatrixFolder(),
 ];
 
 const findFolder = (items, name) => {

@@ -3486,6 +3486,25 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
+	// Lift the mixed server/client tool opt-in onto the typed parameter: the
+	// Gemini declaration-drop gate reads Params.IncludeServerSideToolInvocations,
+	// so leaving it in ExtraParams silently drops function tools when a request
+	// combines them with a server-side tool (issue #5679). Unregistered fields
+	// are captured as json.RawMessage holding the bare true/false token, so a
+	// string comparison is enough.
+	if raw, exists := req.ExtraParams["include_server_side_tool_invocations"]; exists {
+		switch v := raw.(type) {
+		case bool:
+			params.IncludeServerSideToolInvocations = schemas.Ptr(v)
+		case json.RawMessage:
+			switch strings.TrimSpace(string(v)) {
+			case "true":
+				params.IncludeServerSideToolInvocations = schemas.Ptr(true)
+			case "false":
+				params.IncludeServerSideToolInvocations = schemas.Ptr(false)
+			}
+		}
+	}
 	if req.ServiceTier != nil {
 		mapped := MapAnthropicRequestServiceTierToBifrost(*req.ServiceTier)
 		params.ServiceTier = &mapped
@@ -3966,6 +3985,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		anthropicReq.Messages = anthropicMessages
 	}
 
+	// See the same call in ToAnthropicChatRequest: over the cap the provider rejects the request
+	// outright, so trim the earliest markers instead of failing.
+	clampAnthropicCacheBreakpoints(anthropicReq)
+
 	return anthropicReq, nil
 }
 
@@ -4376,6 +4399,13 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// role:"system" in the messages array when the provider+model supports it.
 	seenConversation := false
 	midConvSystemSupported := isRequestMessage && SupportsMidConversationSystem(provider, model)
+	// When the native role:"system" form isn't available, inline the reminder as a user turn
+	// rather than hoisting it into the top-level system block — hoisting preserves the
+	// breakpoint but invalidates the cached prefix behind it, costing roughly half the prompt on
+	// a warm conversation. Gated on the Anthropic model family because these call sites also
+	// serve DeepSeek/Fireworks/SGL over the Anthropic wire shape, and the <system-reminder>
+	// envelope is a Claude convention those models never asked for; they keep hoisting.
+	inlineMidConvSystem := isRequestMessage && schemas.IsAnthropicModelFamily(ctx, model)
 
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
@@ -4400,6 +4430,29 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// previous_response_id pattern without its originating function_call) and must
 	// NOT be emitted as a tool_result, or Anthropic rejects the whole request.
 	knownToolUseIDs := make(map[string]bool)
+
+	// midConvPlacementOK reports whether a mid-conversation system message at input index i can
+	// legally be forwarded as role:"system". Anthropic enforces two clauses and rejects a
+	// violation of either with "messages.N: role 'system' must follow a 'user' message ...":
+	// the turn must FOLLOW a user message (or an assistant message ending in server-tool use),
+	// and it must be either the last entry or be followed by an assistant turn.
+	//
+	// The check is deliberately conservative — it looks at what has actually been emitted rather
+	// than trying to predict how the remaining input items will map to output messages, and it
+	// does not attempt to recognize the assistant-ending-in-server-tool-use exception. A
+	// false negative costs nothing: the caller falls back to inlining, which is cache-preserving
+	// and always accepted. A false positive would be a 400.
+	midConvPlacementOK := func(i int) bool {
+		if len(anthropicMessages) == 0 ||
+			anthropicMessages[len(anthropicMessages)-1].Role != AnthropicMessageRoleUser {
+			return false
+		}
+		if i == len(bifrostMessages)-1 {
+			return true
+		}
+		next := bifrostMessages[i+1]
+		return next.Role != nil && *next.Role == schemas.ResponsesInputMessageRoleAssistant
+	}
 
 	// Helper to emit orphaned tool results (no matching tool_use) as a single user
 	// text message so their content is preserved without violating Anthropic's
@@ -4573,13 +4626,22 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					seenConversation = true
 				}
 				if content := convertBifrostMessageToAnthropicSystemContent(&msg); content != nil {
-					if seenConversation && midConvSystemSupported {
+					switch {
+					case seenConversation && midConvSystemSupported && midConvPlacementOK(i):
 						// Mid-conversation system message — emit as role:"system" in messages array.
 						anthropicMessages = append(anthropicMessages, AnthropicMessage{
 							Role:    AnthropicMessageRoleSystem,
 							Content: *content,
 						})
-					} else {
+					case seenConversation && inlineMidConvSystem:
+						// Native form unavailable (unsupported model, or a placement Anthropic
+						// rejects). Inline in place so the cache anchor stays inside `messages`
+						// instead of collapsing the prefix from the system block.
+						if inlined := inlineMidConversationSystem(content); inlined != nil {
+							anthropicMessages = append(anthropicMessages, *inlined)
+						}
+					default:
+						// Leading system run, or a non-Anthropic model: hoist (historical behavior).
 						systemContent = appendToSystemContent(systemContent, *content)
 					}
 				}
