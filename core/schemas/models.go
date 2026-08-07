@@ -70,6 +70,7 @@ type BifrostListModelsRequest struct {
 
 type BifrostListModelsResponse struct {
 	Data          []Model                    `json:"data"`
+	Message       string                     `json:"message,omitempty"`
 	ExtraFields   BifrostResponseExtraFields `json:"extra_fields"`
 	NextPageToken string                     `json:"next_page_token,omitempty"` // Token to retrieve next page
 

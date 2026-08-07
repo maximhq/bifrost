@@ -834,6 +834,38 @@ func TestFilterProvidersByContext(t *testing.T) {
 	})
 }
 
+func TestGetConfiguredProvidersRespectsListModelsAllowlist(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Anthropic, 1, 1)
+
+	account.configs[schemas.OpenAI].CustomProviderConfig = &schemas.CustomProviderConfig{
+		BaseProviderType: schemas.OpenAI,
+		AllowedRequests:  &schemas.AllowedRequests{ListModels: false},
+	}
+	account.configs[schemas.Anthropic].CustomProviderConfig = &schemas.CustomProviderConfig{
+		BaseProviderType: schemas.Anthropic,
+		AllowedRequests:  &schemas.AllowedRequests{ListModels: true},
+	}
+
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	providers, err := client.GetConfiguredProviders()
+	if err != nil {
+		t.Fatalf("GetConfiguredProviders returned error: %v", err)
+	}
+	if len(providers) != 1 || providers[0] != schemas.Anthropic {
+		t.Fatalf("expected only anthropic provider, got %v", providers)
+	}
+}
+
 func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	account := NewMockAccount()
