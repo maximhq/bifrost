@@ -380,6 +380,27 @@ func (s *Span) SetAttribute(key string, value any) {
 	s.Attributes[key] = value
 }
 
+// SetAttributes merges an already-built attribute map into the span under a
+// single lock. Preferred over a caller-side range + SetAttribute loop (one lock
+// per entry) when the map already exists (e.g. the Populate*Attributes output).
+// Nil values are skipped, matching SetAttribute.
+func (s *Span) SetAttributes(attrs map[string]any) {
+	if s == nil || len(attrs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Attributes == nil {
+		s.Attributes = make(map[string]any, len(attrs))
+	}
+	for k, v := range attrs {
+		if v == nil {
+			continue
+		}
+		s.Attributes[k] = v
+	}
+}
+
 // snapshotForExport returns a copy of the span whose Attributes (and Events)
 // are cloned under the span lock, so observability exporters can read them
 // concurrently while a late writer (streaming finalization, redaction) may still
