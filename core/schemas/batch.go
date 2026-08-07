@@ -48,6 +48,17 @@ type BatchRequestCounts struct {
 	Pending   int `json:"pending,omitempty"`   // Anthropic-specific
 }
 
+// IsZero reports whether no provider request counts are present.
+func (c BatchRequestCounts) IsZero() bool {
+	return c.Total == 0 &&
+		c.Completed == 0 &&
+		c.Failed == 0 &&
+		c.Succeeded == 0 &&
+		c.Expired == 0 &&
+		c.Canceled == 0 &&
+		c.Pending == 0
+}
+
 // BatchErrors represents errors encountered during batch processing.
 type BatchErrors struct {
 	Object string       `json:"object,omitempty"`
@@ -318,6 +329,36 @@ type BatchResultItem struct {
 	Error *BatchResultError `json:"error,omitempty"`
 }
 
+// Failed reports whether the result item represents a failed per-request batch result.
+func (i BatchResultItem) Failed() bool {
+	if i.Error != nil {
+		return true
+	}
+	if i.Response != nil && i.Response.StatusCode >= 400 {
+		return true
+	}
+	if i.Result != nil && i.Result.Type != "" && i.Result.Type != "succeeded" {
+		return true
+	}
+	// An item carrying neither a response nor a result is not a success: the
+	// provider returned no outcome for that request. Gemini's inline path and
+	// Bedrock both emit this shape when a record has no output and no error.
+	return i.Response == nil && i.Result == nil
+}
+
+// BatchRequestCountsFromResults derives aggregate request counts from batch result rows.
+func BatchRequestCountsFromResults(results []BatchResultItem) BatchRequestCounts {
+	counts := BatchRequestCounts{Total: len(results)}
+	for _, item := range results {
+		if item.Failed() {
+			counts.Failed++
+			continue
+		}
+		counts.Completed++
+	}
+	return counts
+}
+
 // BatchResultResponse represents OpenAI-style result response.
 type BatchResultResponse struct {
 	StatusCode int                    `json:"status_code"`
@@ -339,8 +380,9 @@ type BatchResultError struct {
 
 // BifrostBatchResultsResponse represents the response from retrieving batch results.
 type BifrostBatchResultsResponse struct {
-	BatchID string            `json:"batch_id"`
-	Results []BatchResultItem `json:"results"`
+	BatchID  string            `json:"batch_id"`
+	Endpoint BatchEndpoint     `json:"-"` // Internal accounting hint; provider-facing result payloads stay unchanged.
+	Results  []BatchResultItem `json:"results"`
 
 	// For streaming results (Anthropic)
 	HasMore    bool    `json:"has_more,omitempty"`

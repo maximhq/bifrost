@@ -3773,8 +3773,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 		// Direct download succeeded, parse the content
 		results, parseErrors := parseBatchResultsJSONL(fileContentResp.Content, provider)
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID: request.BatchID,
-			Results: results,
+			BatchID:  request.BatchID,
+			Endpoint: schemas.BatchEndpointChatCompletions,
+			Results:  results,
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				Latency: fileContentResp.ExtraFields.Latency,
 			},
@@ -3806,8 +3807,9 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 	}
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: allResults,
+		BatchID:  request.BatchID,
+		Endpoint: schemas.BatchEndpointChatCompletions,
+		Results:  allResults,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: totalLatency,
 		},
