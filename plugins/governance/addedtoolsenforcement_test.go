@@ -37,7 +37,8 @@ func evaluateAddedTools(t *testing.T, p *GovernancePlugin, addedTools []string) 
 
 // An injected tool outside the VK's grant must block the request on the normal path.
 func TestEvaluateGovernanceRequestMCP_AddedTools_UngrantedTool_Blocked(t *testing.T) {
-	p := newPluginForMCPStamping(t, buildVKForMCPStamping([]string{"tool_a"}), false)
+	vk := buildVKForMCPStamping([]string{"tool_a"})
+	p := newPluginForMCPStamping(t, vk, false)
 
 	result, bifrostErr := evaluateAddedTools(t, p, []string{"sentry-tool_b"})
 
@@ -46,7 +47,10 @@ func TestEvaluateGovernanceRequestMCP_AddedTools_UngrantedTool_Blocked(t *testin
 	assert.Equal(t, DecisionMCPToolBlocked, result.Decision)
 	require.NotNil(t, bifrostErr.StatusCode)
 	assert.Equal(t, 403, *bifrostErr.StatusCode)
-	assert.NotNil(t, result.VirtualKey, "blocked result should carry the VK that denied the tool")
+	require.NotNil(t, result.VirtualKey, "blocked result should carry the VK that denied the tool")
+	assert.Equal(t, vk.ID, result.VirtualKey.ID, "blocked result should carry the fixture VK")
+	require.NotNil(t, bifrostErr.Error)
+	assert.Contains(t, bifrostErr.Error.Message, "sentry-tool_b", "rejection should name the blocked tool")
 }
 
 // An injected tool inside the VK's grant passes the added-tools check.
