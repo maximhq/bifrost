@@ -8,6 +8,11 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `traces_enabled` to OTEL config (single-profile and `profiles[*]`). When `false`, no traces are exported and `collector_url` is not required, giving a metrics-only profile. Renders into `traces_enabled`; defaults to `true`.
+- Added `trace_headers` and `metrics_headers` to OTEL config (single-profile and `profiles[*]`). Common `headers` still go to both endpoints; these are overlaid on top for the trace / metrics endpoint respectively (same key wins), e.g. a Databricks table name required only on metrics. Render into `trace_headers` / `metrics_headers`.
+
 ### 2.1.33
 
 - Fixed Helm schema validation failure for multi-profile OTEL configs (`bifrost.plugins.otel.config.profiles`), introduced by the `export_timeout` default in 2.1.32.
