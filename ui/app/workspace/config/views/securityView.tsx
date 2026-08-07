@@ -13,7 +13,7 @@ import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } f
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
-import { validateOrigins } from "@/lib/utils/validation";
+import { isRedacted, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
@@ -29,7 +29,7 @@ const PASSWORD_REQUIREMENTS = [
 ];
 
 const getPasswordPolicyFailures = (password?: string) => {
-	if (!password) return [];
+	if (!password || isRedacted(password)) return [];
 	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
 };
 

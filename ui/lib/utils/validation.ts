@@ -169,7 +169,12 @@ export function isRedacted(value: string): boolean {
 	if (value.startsWith("env.") || value.startsWith("vault.")) {
 		return true;
 	}
-	
+
+	// Check for fixed sentinels returned by backend secret redaction.
+	const normalizedValue = value.toLowerCase();
+	if (normalizedValue === "<redacted>" || normalizedValue === "[redacted]") {
+		return true;
+	}
 
 	// Check for exact redaction pattern: 4 chars + 24 asterisks + 4 chars (total 32)
 	if (value.length === 32) {
