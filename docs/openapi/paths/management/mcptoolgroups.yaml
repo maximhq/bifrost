@@ -3,6 +3,13 @@
 mcp-tool-groups:
   get:
     operationId: listMCPToolGroups
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List MCP Tool Groups
     description: |
       Returns tool groups visible to the caller. When all of `limit`, `offset`, and `search` are omitted, every group is returned in one response.
@@ -36,6 +43,13 @@ mcp-tool-groups:
 
   post:
     operationId: createMCPToolGroup
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create MCP Tool Group
     description: |
       Creates a new tool group along with its attachments in a single transaction.
@@ -66,6 +80,13 @@ mcp-tool-groups:
 mcp-tool-groups-by-id:
   get:
     operationId: getMCPToolGroup
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get MCP Tool Group by ID
     tags:
       - MCP Tool Groups
@@ -91,6 +112,13 @@ mcp-tool-groups-by-id:
 
   put:
     operationId: updateMCPToolGroup
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Update MCP Tool Group
     description: |
       Partial update. Scalar fields preserve the current value when omitted.
@@ -127,6 +155,13 @@ mcp-tool-groups-by-id:
 
   delete:
     operationId: deleteMCPToolGroup
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete MCP Tool Group
     description: Deletes the group; attachments are removed automatically.
     tags:
