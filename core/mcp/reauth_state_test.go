@@ -65,7 +65,7 @@ func TestConnectToMCPClient_OAuth2TokenExpired_SetsNeedsReauth(t *testing.T) {
 
 	// Confirmed precondition: only shared-connection auth types (
 	// RequiresPerCallConnection()==false) ever reach connectToMCPClient in
-	// the first place — AddClient/EnableClient/UpdateClientConnection all
+	// the first place — AddClient/EnableClient/UpdateClientCredentials all
 	// special-case per-call-connection (per-user) auth types before calling
 	// it, and ReconnectClient refuses outright for them. expiredOAuthCredStore
 	// mirrors that: RequiresPerCallConnection returns false.

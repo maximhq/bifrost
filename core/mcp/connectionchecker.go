@@ -205,7 +205,7 @@ func (c *ClientConnectionChecker) performCheck() time.Duration {
 		// attempt for nothing. Keep the timer alive at the relaxed
 		// interval so a stalled reauthorize eventually gets picked up by
 		// something, but do no work — only an explicit reauthorize (or a
-		// direct UpdateClientConnection success) moves this out.
+		// direct UpdateClientCredentials success) moves this out.
 		return c.healthyInterval
 	}
 	if config == nil {
