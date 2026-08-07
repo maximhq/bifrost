@@ -629,6 +629,13 @@ func (m *MCPManager) AddClient(requestCtx context.Context, config *schemas.MCPCl
 				}
 				client.ToolNameMapping = config.DiscoveredToolNameMapping
 				client.State = schemas.MCPConnectionStateHealthy
+				// Seed the change-detection hash from what was just
+				// restored (without firing the callback — restoring
+				// already-known tools is not a change) so a subsequent
+				// rediscovery of the exact same tools correctly no-ops
+				// instead of looking like a change on the first post-boot
+				// tick.
+				client.LastToolsHash = computeToolsHash(config.DiscoveredTools, config.DiscoveredToolNameMapping)
 				m.logger.Debug("%s Per-user (%s) MCP client '%s' restored with %d tools", MCPLogPrefix, config.AuthType, config.Name, len(config.DiscoveredTools))
 			} else {
 				// No dedicated "pending tools" state: Healthy + an empty
@@ -1045,13 +1052,21 @@ func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *sche
 //   - toolNameMapping: mapping from sanitized tool names to original MCP names
 func (m *MCPManager) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	client, exists := m.clientMap[clientID]
+	if !exists {
+		m.mu.Unlock()
+		return
+	}
+	maps.Copy(client.ToolMap, tools)
+	client.ToolNameMapping = toolNameMapping
+	client.State = schemas.MCPConnectionStateHealthy
+	m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
+	fire := m.toolsChangedCallback(client, clientID, tools, toolNameMapping)
+	m.mu.Unlock()
 
-	if client, exists := m.clientMap[clientID]; exists {
-		maps.Copy(client.ToolMap, tools)
-		client.ToolNameMapping = toolNameMapping
-		client.State = schemas.MCPConnectionStateHealthy
-		m.logger.Debug("%s Set %d tools on client '%s'", MCPLogPrefix, len(tools), client.Name)
+	// Fired outside the lock — see toolsChangeCallback's field doc.
+	if fire != nil {
+		fire()
 	}
 }
 
@@ -2211,7 +2226,18 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 
 	// Release lock BEFORE starting monitors to prevent deadlock
 	// (StartMonitoring -> Start() tries to acquire RLock on the same mutex)
+	fire := m.toolsChangedCallback(client, config.ID, tools, toolNameMapping)
 	m.mu.Unlock()
+
+	// Fired outside the lock — see toolsChangeCallback's field doc. Covers
+	// both the initial dial and every reconnect (make-before-break swap):
+	// sticky clients have the same "freshly discovered tools never reach the
+	// DB" gap per-call clients do. Gated on genuine content change — a
+	// reconnect after a network blip almost always rediscovers the exact
+	// same tools.
+	if fire != nil {
+		fire()
+	}
 
 	// Register OnConnectionLost hook for SSE connections to detect idle timeouts
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
