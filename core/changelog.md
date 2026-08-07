@@ -1,0 +1,1 @@
+- fix: default missing image detail to auto on Responses function-call output images (#5649) [@axelray-dev](https://github.com/axelray-dev)
