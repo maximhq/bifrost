@@ -1218,6 +1218,15 @@ func TestResponsesToolMessageActionStruct_EdgeCases(t *testing.T) {
 		}
 	})
 
+	t.Run("non-string non-object tokens - unmarshal should error", func(t *testing.T) {
+		for _, jsonData := range []string{`null`, `42`, `true`, `[]`} {
+			var action schemas.ResponsesToolMessageActionStruct
+			if err := json.Unmarshal([]byte(jsonData), &action); err == nil {
+				t.Errorf("expected error when unmarshaling %s", jsonData)
+			}
+		}
+	})
+
 	t.Run("round trip - computer action", func(t *testing.T) {
 		original := schemas.ResponsesToolMessageActionStruct{
 			ResponsesComputerToolCallAction: &schemas.ResponsesComputerToolCallAction{
