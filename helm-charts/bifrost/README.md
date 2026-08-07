@@ -6,6 +6,10 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 **Latest Version:** 2.1.39
 
+### Upcoming
+
+- Added OTEL log export (GenAI events): `bifrost.plugins.otel.config.logs_enabled`, `logs_endpoint` (required when enabled), and `logs_disable_content_logging`, available on both the flat profile and each entry of `bifrost.plugins.otel.config.profiles[]`. These render into `logs_enabled`, `logs_endpoint`, and `logs_disable_content_logging` on the otel plugin config.
+
 ## Changelog
 
 ### 2.1.39
@@ -51,7 +55,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Documented `endpoints` on the `bedrock` and `bedrock_mantle` key examples (AWS PrivateLink interface VPC endpoint hosts: `runtime`, `control_plane`, `mantle`, `agent_runtime`, `s3`). Passes through into `bedrock_key_config.endpoints` / `bedrock_mantle_key_config.endpoints`.
 - Extended `bifrost.governance.budgets[]` with quarterly resets (`reset_duration: "1Q"`) and `reset_config.quarter_start_month` (1–12, sets the fiscal Q1 month). Passes through into `budgets[].reset_config`.
 - Added `target` (`llm` default, or `mcp`) to `bifrost.governance` guardrail rules to select the rule's execution target. Passes through into the rule's `target`.
-
 
 ### 2.1.34
 
