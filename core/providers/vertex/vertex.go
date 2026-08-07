@@ -115,6 +115,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		MaxConnDuration:        time.Second * time.Duration(schemas.DefaultMaxConnDurationInSeconds),
 		ConnPoolStrategy:       fasthttp.FIFO,
 		DisablePathNormalizing: true,
+		ReadBufferSize:         schemas.DefaultClientReadBufferSize,
 	}
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
