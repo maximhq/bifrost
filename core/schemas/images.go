@@ -203,6 +203,11 @@ type ImageUsage struct {
 	OutputTokens        int                `json:"output_tokens,omitempty"` // Always image tokens unless OutputTokensDetails is not nil
 	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
 	NumInputImages      int                `json:"-"` // Number of input images from the request (populated by Bifrost)
+
+	// CostInUsdTicks is xAI's exact billed cost for this request, in ticks
+	// (1 USD = 10,000,000,000 ticks). Present instead of token-based usage
+	// on xAI image generation responses.
+	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
 }
 
 type ImageTokenDetails struct {
@@ -226,6 +231,10 @@ func (u *ImageUsage) DeepCopy() *ImageUsage {
 	if u.OutputTokensDetails != nil {
 		details := *u.OutputTokensDetails
 		out.OutputTokensDetails = &details
+	}
+	if u.CostInUsdTicks != nil {
+		ticks := *u.CostInUsdTicks
+		out.CostInUsdTicks = &ticks
 	}
 	return &out
 }

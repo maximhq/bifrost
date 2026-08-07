@@ -154,6 +154,13 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return input.usage.Cost.TotalCost
 	}
 
+	// xAI image responses report exact billed cost in ticks (1 USD = 1e10
+	// ticks) instead of token/pixel usage — use it directly rather than
+	// falling through to pricing-table math that has nothing to key off of.
+	if input.imageUsage != nil && input.imageUsage.CostInUsdTicks != nil {
+		return usdTicksToUSD(*input.imageUsage.CostInUsdTicks)
+	}
+
 	// If no usage data at all, nothing to price
 	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
 		return 0
@@ -379,6 +386,11 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		CompletionTokens: u.OutputTokens,
 		TotalTokens:      u.TotalTokens,
 		Cost:             u.Cost,
+	}
+	// xAI reports exact billed cost in ticks (1 USD = 1e10 ticks) instead of
+	// a "cost" object — use it directly when no cost was already supplied.
+	if usage.Cost == nil && u.CostInUsdTicks != nil {
+		usage.Cost = &schemas.BifrostCost{TotalCost: usdTicksToUSD(*u.CostInUsdTicks)}
 	}
 	// Map token details for cache and search query pricing
 	if u.InputTokensDetails != nil {
@@ -666,6 +678,12 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 	}
 
 	return 0
+}
+
+// usdTicksToUSD converts xAI's cost_in_usd_ticks (1 USD = 10,000,000,000 ticks)
+// into a dollar amount.
+func usdTicksToUSD(ticks int64) float64 {
+	return float64(ticks) / 1e10
 }
 
 // computeImageCost handles image generation requests.
