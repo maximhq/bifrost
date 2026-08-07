@@ -436,6 +436,39 @@ func TestIsEncryptedReasoningRejection(t *testing.T) {
 			want: true,
 		},
 		{
+			// Anthropic's refusal of a foreign payload: no code, block named in the message.
+			name: "anthropic redacted_thinking rejection",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("invalid_request_error"),
+					Message: "messages.1.content.0: Invalid `data` in `redacted_thinking` block",
+				},
+			},
+			want: true,
+		},
+		{
+			// Anthropic rejects a thinking signature too, but the strip only clears
+			// encrypted_content, so a retry would resend the same payload.
+			name: "anthropic thinking signature rejection stays unhandled",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr("invalid_request_error"),
+					Message: "messages.1.content.0: Invalid `signature` in `thinking` block",
+				},
+			},
+			want: false,
+		},
+		{
+			name: "unrelated anthropic 400 naming thinking",
+			err: &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error:      &schemas.ErrorField{Message: "Invalid value for `thinking.budget_tokens`: must be >= 1024"},
+			},
+			want: false,
+		},
+		{
 			name: "unrelated 400",
 			err: &schemas.BifrostError{
 				StatusCode: schemas.Ptr(400),
