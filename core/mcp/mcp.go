@@ -79,6 +79,23 @@ type MCPManager struct {
 	// that only reacts to a specific newState value in an idempotent way
 	// (the only kind of consumer this exists for today) is unaffected.
 	stateChangeCallback func(clientID, name string, oldState, newState schemas.MCPConnectionState)
+
+	// toolsChangeCallback, if set, is invoked whenever a client's tool
+	// map/name mapping is freshly (re)discovered — connectToMCPClient's
+	// initial dial or reconnect, SetClientTools (per-call clients' own
+	// discovery, called both internally and by admin-verify HTTP handlers),
+	// and the periodic connection checker's writeBackTools (both the sticky
+	// and per-call variants). Deliberately NOT fired when AddClient restores
+	// an already-known tool set from a config that was just read back out of
+	// the DB (clientmanager.go's per-call restore branch) — nothing changed
+	// in that case, so there is nothing new to persist.
+	//
+	// core/mcp has no DB access of its own; this is the seam a caller (the
+	// transport layer) uses to persist the fresh result, mirroring
+	// stateChangeCallback's own role for state transitions. Fired outside
+	// m.mu for the same reason: a registered callback may do arbitrary work,
+	// including I/O.
+	toolsChangeCallback func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
 }
 
 // SetStateChangeCallback registers cb to be invoked on every reactive
@@ -90,6 +107,41 @@ func (m *MCPManager) SetStateChangeCallback(cb func(clientID, name string, oldSt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stateChangeCallback = cb
+}
+
+// SetToolsChangeCallback registers cb to be invoked whenever a client's tool
+// map is freshly (re)discovered — see the toolsChangeCallback field doc for
+// exactly which paths that covers. Pass nil to clear a previously registered
+// callback. Safe to call at any time; takes effect on the next discovery.
+func (m *MCPManager) SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.toolsChangeCallback = cb
+}
+
+// toolsChangedCallback compares tools/toolNameMapping's content hash against
+// clientState.LastToolsHash — gating the funnel to genuine changes only, so
+// a rediscovery that returns byte-identical tools (the common case on most
+// periodic ticks and reconnects) doesn't re-trigger a registered callback's
+// work (DB persist, external MCP server resync). On a genuine change,
+// updates the stored hash and returns a closure that invokes the callback;
+// returns nil if nothing changed or no callback is registered.
+//
+// Must be called with m.mu (or the checker's c.manager.mu — the same
+// mutex) already held; the returned closure must be invoked AFTER releasing
+// the lock, per toolsChangeCallback's own field doc.
+func (m *MCPManager) toolsChangedCallback(clientState *schemas.MCPClientState, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) func() {
+	hash := computeToolsHash(tools, toolNameMapping)
+	if clientState.LastToolsHash == hash {
+		return nil
+	}
+	clientState.LastToolsHash = hash
+	cb := m.toolsChangeCallback
+	if cb == nil {
+		return nil
+	}
+	name := clientState.Name
+	return func() { cb(clientID, name, tools, toolNameMapping) }
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
