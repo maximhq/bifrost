@@ -874,6 +874,38 @@ func (s *BifrostHTTPServer) ReloadComplexityAnalyzerConfig(ctx context.Context, 
 	return nil
 }
 
+// ValidateComplexityAnalyzerConfig checks runtime semantic dependencies before
+// the governance handler persists a complexity configuration.
+func (s *BifrostHTTPServer) ValidateComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return fmt.Errorf("governance plugin not found: %w", err)
+	}
+	validator, ok := governancePlugin.(interface {
+		ValidateComplexityAnalyzerConfig(*complexity.AnalyzerConfig) error
+	})
+	if !ok {
+		return fmt.Errorf("governance plugin does not support complexity analyzer config validation")
+	}
+	return validator.ValidateComplexityAnalyzerConfig(config)
+}
+
+// GetComplexitySemanticStatus returns the current semantic complexity readiness
+// from the active governance plugin.
+func (s *BifrostHTTPServer) GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return complexity.SemanticStatusInfo{}, fmt.Errorf("governance plugin not found: %w", err)
+	}
+	provider, ok := governancePlugin.(interface {
+		ComplexitySemanticStatus() complexity.SemanticStatusInfo
+	})
+	if !ok {
+		return complexity.SemanticStatusInfo{}, fmt.Errorf("governance plugin does not expose semantic complexity status")
+	}
+	return provider.ComplexitySemanticStatus(), nil
+}
+
 // ReloadRoutingRule reloads a routing rule from the database into the governance store
 func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) error {
 	governancePluginName := governance.PluginName
@@ -1696,6 +1728,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if semanticCachePlugin, ok := plugin.(*semanticcache.Plugin); ok {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
+	if governanceVectorStorePlugin, ok := plugin.(governance.ComplexityVectorStoreSetter); ok {
+		governanceVectorStorePlugin.SetComplexityVectorStore(s.Config.VectorStore)
+	}
 	if governanceEmbeddingPlugin, ok := plugin.(governance.EmbeddingExecutorSetter); ok {
 		governanceEmbeddingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
@@ -2297,6 +2332,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
+	governanceVectorStorePlugin, err := lib.FindPluginAs[governance.ComplexityVectorStoreSetter](s.Config, s.getGovernancePluginName())
+	if err == nil && governanceVectorStorePlugin != nil {
+		governanceVectorStorePlugin.SetComplexityVectorStore(s.Config.VectorStore)
 	}
 	// Add governance plugin embedding request executor if it exists (used for
 	// semantic complexity classification).

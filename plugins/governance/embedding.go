@@ -10,6 +10,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
@@ -34,19 +35,60 @@ type EmbeddingExecutorSetter interface {
 	SetEmbeddingRequestExecutor(EmbeddingRequestExecutor)
 }
 
+// ComplexityVectorStoreSetter is implemented by governance plugins that accept
+// Bifrost's configured VectorStore for semantic complexity routing.
+type ComplexityVectorStoreSetter interface {
+	SetComplexityVectorStore(vectorstore.VectorStore)
+}
+
 // SetEmbeddingRequestExecutor wires up the function used to call out to the
 // embedding provider. Without it, semantic complexity classification publishes
 // no tier. Safe for concurrent use with classification and plugin reloads.
 func (p *GovernancePlugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExecutor) {
 	if executor == nil {
 		p.embeddingRequestExecutor.Store(nil)
+		if p.semanticClassifier != nil {
+			p.semanticClassifier.SetEmbeddingFunctions(nil, nil)
+		}
 		return
 	}
 	p.embeddingRequestExecutor.Store(&executor)
-	// NOTE(task #5): exemplar warmup must be triggered from here (async
-	// goroutine with an in-flight guard), not from Init — this is the first
-	// moment the plugin can reach the embedding endpoint. Until warmup
-	// completes, classification uses the configured fallback.
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.SetEmbeddingFunctions(p.embedComplexityText, p.embedComplexityTexts)
+	}
+}
+
+// SetComplexityVectorStore supplies the configured shared VectorStore. The
+// classifier chooses it only for auto or external mode; embedded mode retains
+// its private Chromem store.
+func (p *GovernancePlugin) SetComplexityVectorStore(store vectorstore.VectorStore) {
+	if p.semanticClassifier != nil {
+		p.semanticClassifier.SetConfiguredStore(store)
+	}
+}
+
+// embedComplexityText adapts Governance's Bifrost-aware embedding path to the
+// classifier's context-based dependency without attributing token usage here.
+func (p *GovernancePlugin) embedComplexityText(ctx context.Context, semantic *complexity.SemanticConfig, text string) ([]float32, error) {
+	embeddingCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	defer embeddingCtx.Cancel()
+	embedding, _, err := p.generateEmbedding(embeddingCtx, semantic, text)
+	if err != nil {
+		return nil, err
+	}
+	return embedding, nil
+}
+
+// embedComplexityTexts adapts the same internal embedding path for bounded
+// warmup batches. It preserves response order by EmbeddingData.Index.
+func (p *GovernancePlugin) embedComplexityTexts(ctx context.Context, semantic *complexity.SemanticConfig, texts []string) ([][]float32, error) {
+	embeddingCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	defer embeddingCtx.Cancel()
+	embeddings, _, err := p.generateEmbeddings(embeddingCtx, semantic, texts)
+	if err != nil {
+		return nil, err
+	}
+	return embeddings, nil
 }
 
 // embeddingExecutor returns the currently wired executor, or nil.
@@ -73,6 +115,20 @@ func (p *GovernancePlugin) CanClassifySemantically(semantic *complexity.Semantic
 // attribution). The call is bounded by the configured semantic timeout: the
 // router hot path must never wait on a slow embedding provider.
 func (p *GovernancePlugin) generateEmbedding(ctx *schemas.BifrostContext, semantic *complexity.SemanticConfig, text string) ([]float32, int, error) {
+	embeddings, inputTokens, err := p.generateEmbeddings(ctx, semantic, []string{text})
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(embeddings) != 1 {
+		return nil, 0, fmt.Errorf("expected one embedding, got %d", len(embeddings))
+	}
+	return embeddings[0], inputTokens, nil
+}
+
+// generateEmbeddings sends one embedding request for an ordered set of texts.
+// A multi-input response must contain exactly one uniquely indexed vector per
+// input; otherwise warmup can safely retry through the single-input adapter.
+func (p *GovernancePlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic *complexity.SemanticConfig, texts []string) ([][]float32, int, error) {
 	executor := p.embeddingExecutor()
 	if executor == nil {
 		return nil, 0, fmt.Errorf("embedding request executor is not configured")
@@ -80,18 +136,26 @@ func (p *GovernancePlugin) generateEmbedding(ctx *schemas.BifrostContext, semant
 	if semantic == nil || semantic.Provider == "" || semantic.EmbeddingModel == "" {
 		return nil, 0, fmt.Errorf("semantic classification is not configured")
 	}
+	if len(texts) == 0 {
+		return nil, 0, fmt.Errorf("embedding input is empty")
+	}
 
 	timeout := semantic.Timeout
 	if timeout <= 0 {
 		timeout = configstore.DefaultComplexitySemanticTimeout
 	}
 
+	input := &schemas.EmbeddingInput{}
+	if len(texts) == 1 {
+		text := texts[0]
+		input.Text = &text
+	} else {
+		input.Texts = append([]string(nil), texts...)
+	}
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: semantic.Provider,
 		Model:    semantic.EmbeddingModel,
-		Input: &schemas.EmbeddingInput{
-			Text: &text,
-		},
+		Input:    input,
 	}
 
 	embeddingCtx := schemas.NewBifrostContext(ctx, time.Now().Add(timeout))
@@ -123,32 +187,72 @@ func (p *GovernancePlugin) generateEmbedding(ctx *schemas.BifrostContext, semant
 	if response == nil || len(response.Data) == 0 {
 		return nil, 0, fmt.Errorf("no embeddings returned from provider")
 	}
-
-	embedding := response.Data[0].Embedding
 	inputTokens := 0
 	if response.Usage != nil {
 		inputTokens = response.Usage.TotalTokens
 	}
 
+	if len(response.Data) != len(texts) {
+		if len(texts) > 1 {
+			return nil, inputTokens, fmt.Errorf(
+				"%w: provider returned %d vectors for %d inputs",
+				complexity.ErrBatchEmbeddingsUnsupported,
+				len(response.Data),
+				len(texts),
+			)
+		}
+		return nil, inputTokens, fmt.Errorf("provider returned %d vectors for one input", len(response.Data))
+	}
+
+	embeddings := make([][]float32, len(texts))
+	seen := make([]bool, len(texts))
+	for responseIndex, data := range response.Data {
+		inputIndex := data.Index
+		if len(texts) == 1 {
+			// Preserve the historical single-input behavior: the sole response
+			// vector is the answer even if a provider omits its index.
+			inputIndex = 0
+		} else if inputIndex < 0 || inputIndex >= len(texts) || seen[inputIndex] {
+			return nil, inputTokens, fmt.Errorf(
+				"%w: invalid or duplicate response index %d at position %d",
+				complexity.ErrBatchEmbeddingsUnsupported,
+				data.Index,
+				responseIndex,
+			)
+		}
+
+		embedding, err := decodeEmbedding(data.Embedding)
+		if err != nil {
+			return nil, inputTokens, fmt.Errorf("decode embedding %d: %w", inputIndex, err)
+		}
+		embeddings[inputIndex] = embedding
+		seen[inputIndex] = true
+	}
+	return embeddings, inputTokens, nil
+}
+
+// decodeEmbedding normalizes the provider-supported embedding encodings into
+// the float32 representation used by VectorStore.
+func decodeEmbedding(embedding schemas.EmbeddingStruct) ([]float32, error) {
 	switch {
 	case embedding.EmbeddingStr != nil:
 		var vals []float32
 		if err := json.Unmarshal([]byte(*embedding.EmbeddingStr), &vals); err != nil {
-			return nil, 0, fmt.Errorf("failed to parse string embedding: %w", err)
+			return nil, fmt.Errorf("failed to parse string embedding: %w", err)
 		}
-		return vals, inputTokens, nil
+		return vals, nil
 	case embedding.EmbeddingArray != nil:
-		return float64ToFloat32Embedding(embedding.EmbeddingArray), inputTokens, nil
+		return float64ToFloat32Embedding(embedding.EmbeddingArray), nil
 	case len(embedding.Embedding2DArray) > 0:
-		return flattenToFloat32Embedding(embedding.Embedding2DArray), inputTokens, nil
+		return flattenToFloat32Embedding(embedding.Embedding2DArray), nil
 	case embedding.EmbeddingInt8Array != nil:
 		// Quantized int8/binary embedding format. Promote to float32 so the
 		// similarity path treats it uniformly.
-		return int8ToFloat32Embedding(embedding.EmbeddingInt8Array), inputTokens, nil
+		return int8ToFloat32Embedding(embedding.EmbeddingInt8Array), nil
 	case embedding.EmbeddingInt32Array != nil:
-		return int32ToFloat32Embedding(embedding.EmbeddingInt32Array), inputTokens, nil
+		return int32ToFloat32Embedding(embedding.EmbeddingInt32Array), nil
 	}
-	return nil, 0, fmt.Errorf("embedding data is not in expected format")
+	return nil, fmt.Errorf("embedding data is not in expected format")
 }
 
 // isEmbeddingTimeout reports whether a failed embedding call ran out of time

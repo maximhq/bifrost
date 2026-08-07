@@ -99,6 +99,19 @@ const analyzerConfigSchema = z.object({
 		medium_keywords: z.array(z.string()).min(1, "Medium keywords cannot be empty"),
 		complex_keywords: z.array(z.string()).min(1, "Complex keywords cannot be empty"),
 	}),
+	// The semantic controls are not exposed in this screen yet, but the schema
+	// must preserve the block returned by the API when lexical lists are edited.
+	semantic: z
+		.object({
+			provider: z.string().min(1),
+			embedding_model: z.string().min(1),
+			dimension: z.number().int().min(2),
+			timeout: z.string().optional(),
+			fallback: z.enum(["lexical", "none"]).optional(),
+			count_toward_budgets: z.boolean().optional(),
+			vector_store: z.enum(["auto", "embedded", "external"]).optional(),
+		})
+		.optional(),
 });
 
 const DEFAULT_FORM_VALUES: AnalyzerConfig = {
