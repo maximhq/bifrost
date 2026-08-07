@@ -173,6 +173,17 @@ type BifrostHTTPServer struct {
 	Server *fasthttp.Server
 	Router *router.Router
 
+	// Branding owns the white-label logo/icon blob. It is exported so the
+	// enterprise build can register its write endpoint against the same
+	// instance that serves the reads.
+	Branding *lib.BrandingService
+
+	// BrandingStore persists that blob. White-labelling is enterprise-only and
+	// the blob lives in a table the enterprise repo owns and migrates, so this
+	// is nil on OSS. The enterprise build assigns it before calling
+	// RegisterAPIRoutes, which is where Branding is constructed from it.
+	BrandingStore lib.BrandingStore
+
 	WebSocketHandler   *handlers.WebSocketHandler
 	MCPServerHandler   *handlers.MCPServerHandler
 	devPprofHandler    *handlers.DevPprofHandler
@@ -1867,6 +1878,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpPerUserHeadersHandler := handlers.NewMCPPerUserHeadersHandler(callbacks, s.Config, s.TempTokens)
 	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
+	// Custom branding is enterprise-only. On OSS BrandingStore is nil (the blob
+	// has no OSS schema) and isEnterpriseBuild is false, so the service is inert
+	// on both counts and every read reports stock Bifrost branding.
+	isEnterpriseBuild, _ := ctx.Value(schemas.BifrostContextKeyIsEnterprise).(bool)
+	s.Branding = lib.NewBrandingService(s.BrandingStore, isEnterpriseBuild)
+	brandingHandler := handlers.NewBrandingHandler(s.Branding)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
 	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore, promptsReloader)
@@ -1888,6 +1905,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpPerUserHeadersHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpSessionsHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
+	// No middleware for the branding read routes, they should be open: the login
+	// screen needs the logo before a session exists, so putting these behind the
+	// auth chain would flash the default Bifrost logo on every login.
+	brandingHandler.RegisterRoutes(s.Router)
 	oauthHandler.RegisterRoutes(s.Router, middlewares...)
 	if pluginsHandler != nil {
 		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1954,7 +1975,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 // RegisterUIRoutes registers the UI handler with the specified router
 func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
 	// WARNING: This UI handler needs to be registered after all the other handlers
-	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
+	handlers.NewUIHandler(s.UIContent, s.Branding).RegisterRoutes(s.Router, middlewares...)
 }
 
 // GetAllRedactedKeys gets all redacted keys from the config store
