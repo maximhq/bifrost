@@ -879,7 +879,10 @@ export const otelConfigSchema = z
 				message: "Please select a trace type",
 			})
 			.default("genai_extension"),
+		// Common headers go to both endpoints; per-signal headers override on collision.
 		headers: z.record(z.string(), secretVarSchema).optional(),
+		trace_headers: z.record(z.string(), secretVarSchema).optional(),
+		metrics_headers: z.record(z.string(), secretVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
 				message: "Please select a protocol",
