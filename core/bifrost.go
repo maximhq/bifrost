@@ -4615,6 +4615,8 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 
@@ -4749,6 +4751,8 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 
@@ -5579,6 +5583,8 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 
