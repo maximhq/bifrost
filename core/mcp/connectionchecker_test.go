@@ -89,21 +89,27 @@ func TestPerformCheck_NilConn_PerUserHeaders_AttemptsAdminDiscovery(t *testing.T
 	require.Equal(t, existingTools, manager.clientMap[config.ID].ToolMap)
 }
 
-// TestPerformCheck_NilConn_SharedAuthType_NeverAttemptsAdminDiscovery is the
-// regression-risk case: a shared-connection client (e.g. "headers" or
-// "none") with Conn==nil is mid-(re)connect, not per-user. performCheck must
-// never route it into admin discovery, which would be meaningless (and would
-// call a credStore method shared resolvers don't meaningfully implement) —
-// this branch instead attempts a direct reconnect, covered separately by
-// TestPerformCheck_NilConn_SharedAuthType_TriggersReconnect below.
-func TestPerformCheck_NilConn_SharedAuthType_NeverAttemptsAdminDiscovery(t *testing.T) {
+// TestPerformCheck_NilConn_SharedAuthType_Sticky_NeverAttemptsAdminDiscovery
+// is the regression-risk case for a genuinely sticky shared client (e.g.
+// "headers" or "none") with Conn==nil because it's mid-(re)connect, not
+// per-call. performCheck must never route it into admin discovery — this
+// branch instead attempts a direct reconnect, covered separately by
+// TestPerformCheck_NilConn_SharedAuthType_TriggersReconnect below. Uses the
+// real credstore.CredStore (not a hardcoded-per-call fake) so the routing
+// decision reflects actual NeedsSessionStickiness semantics: a shared type
+// with needs_session_stickiness=false is legitimately per-call and DOES
+// attempt admin discovery now — see
+// TestPerformCheck_NilConn_SharedAuthType_PerCall_SuccessUpdatesToolMap.
+func TestPerformCheck_NilConn_SharedAuthType_Sticky_NeverAttemptsAdminDiscovery(t *testing.T) {
 	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeNone, schemas.MCPAuthTypeOauth} {
 		t.Run(string(authType), func(t *testing.T) {
-			cred := &fakeAdminCredStore{err: errors.New("must never be called for shared auth types")}
-			manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, cred, &MockLogger{}, nil)
+			manager := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 
 			existingTools := map[string]schemas.ChatTool{"shared-client-existing": {}}
 			state, config := newSyncTestClientState("client-3", "shared-client", authType, existingTools)
+			config.ConnectionType = schemas.MCPConnectionTypeHTTP
+			config.NeedsSessionStickiness = schemas.Ptr(true)
+			config.ConnectionString = schemas.NewSecretVar("http://127.0.0.1:0/mcp") // unreachable — the reconnect attempt fails fast, which is fine
 			manager.mu.Lock()
 			manager.clientMap[config.ID] = state
 			manager.mu.Unlock()
@@ -111,17 +117,50 @@ func TestPerformCheck_NilConn_SharedAuthType_NeverAttemptsAdminDiscovery(t *test
 			checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 			checker.performCheck()
 
-			// performCheck's default branch spawns the actual reconnect in a
-			// background goroutine, which mutates clientMap under manager.mu —
-			// read it back under the same lock rather than racing that goroutine.
+			require.Eventually(t, func() bool {
+				_, inFlightOrDone := manager.reconnectingClients.Load(config.ID)
+				return inFlightOrDone
+			}, 2*time.Second, 10*time.Millisecond, "a sticky client with no live connection must trigger a direct reconnect attempt, not admin discovery")
+
 			manager.mu.RLock()
 			toolMap := manager.clientMap[config.ID].ToolMap
-			_, stillExists := manager.clientMap[config.ID]
 			manager.mu.RUnlock()
-
-			require.Equal(t, 0, cred.callCount(), "shared clients mid-reconnect (Conn==nil) must never be routed into admin discovery")
 			require.Equal(t, existingTools, toolMap, "must leave the existing tool map untouched — only a real reconnect's own tools/list replaces it")
-			require.True(t, stillExists)
+		})
+	}
+}
+
+// TestPerformCheck_NilConn_SharedAuthType_PerCall_SuccessUpdatesToolMap pins
+// the fix for the shared-per-call tool-discovery bug at the full
+// performCheck level (not just performAdminToolDiscovery in isolation): a
+// shared oauth/headers/none client running per-call
+// (needs_session_stickiness nil/false) must have its tool map populated by
+// the periodic checker, exactly like a per_user_oauth client already does
+// (TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap).
+func TestPerformCheck_NilConn_SharedAuthType_PerCall_SuccessUpdatesToolMap(t *testing.T) {
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypeOauth} {
+		t.Run(string(authType), func(t *testing.T) {
+			ts, _ := buildAdminDiscoveryHTTPServer(t)
+
+			cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}}
+			manager := &MCPManager{
+				credStore: cred,
+				logger:    &MockLogger{},
+				clientMap: map[string]*schemas.MCPClientState{},
+			}
+
+			state, config := newSyncTestClientState("client-shared-percall", "shared-client", authType, map[string]schemas.ChatTool{})
+			config.ConnectionType = schemas.MCPConnectionTypeHTTP
+			config.ConnectionString = schemas.NewSecretVar(ts.URL)
+			manager.clientMap[config.ID] = state
+
+			checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
+			checker.performCheck()
+
+			require.Equal(t, 1, cred.callCount())
+			updated := manager.clientMap[config.ID].ToolMap
+			require.Contains(t, updated, "shared-client-echo", "a successful admin-discovery cycle should populate the client's tool map")
+			require.Equal(t, schemas.MCPConnectionStateHealthy, manager.clientMap[config.ID].State)
 		})
 	}
 }
