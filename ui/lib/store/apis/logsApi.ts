@@ -62,6 +62,12 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.stop_reasons && filters.stop_reasons.length > 0) {
 		params.stop_reasons = filters.stop_reasons.join(",");
 	}
+	if (filters.complexity_tiers && filters.complexity_tiers.length > 0) {
+		params.complexity_tiers = filters.complexity_tiers.join(",");
+	}
+	if (filters.complexity_mechanisms && filters.complexity_mechanisms.length > 0) {
+		params.complexity_mechanisms = filters.complexity_mechanisms.join(",");
+	}
 	if (filters.period) {
 		params.period = filters.period;
 	} else {
