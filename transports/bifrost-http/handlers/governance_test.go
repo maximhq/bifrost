@@ -639,6 +639,62 @@ func TestComplexityAnalyzerConfigResetOverwritesLegacyThreeBoundaryRow(t *testin
 // defaults to go back to; the embedding provider, model, and settings
 // do not — resetting them would silently take classification offline and make
 // the operator re-enter settings the button never claimed to touch.
+// TestComplexityAnalyzerConfigResetReturnsNormalizedPhrases pins the reset
+// response to what was actually stored and embedded. The store and the
+// classifier both normalize (lowercase, trim, dedupe, sort), so returning the
+// defaults as authored handed clients phrase text that matched neither — the UI
+// then diffed its form against the stored config and counted every mixed-case
+// default as a phrase needing a fresh embedding.
+func TestComplexityAnalyzerConfigResetReturnsNormalizedPhrases(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockComplexityGovernanceManager{},
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.resetComplexityAnalyzerConfig(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var body complexity.AnalyzerConfig
+	if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+		t.Fatalf("decode reset response: %v", err)
+	}
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("expected a stored config after reset")
+	}
+
+	// The defaults are authored with real capitalization, so this assertion only
+	// means something if at least one of them would fail it unnormalized.
+	authored := complexity.DefaultAnalyzerConfig()
+	authoredMixedCase := 0
+	for _, phrase := range authored.Keywords.SimpleKeywords {
+		if phrase != strings.ToLower(phrase) {
+			authoredMixedCase++
+		}
+	}
+	if authoredMixedCase == 0 {
+		t.Skip("default simple phrases are all lowercase; nothing for normalization to change")
+	}
+
+	for _, phrase := range body.Keywords.SimpleKeywords {
+		if phrase != strings.ToLower(strings.TrimSpace(phrase)) {
+			t.Fatalf("reset response must carry normalized phrases, got %q", phrase)
+		}
+	}
+	if !slices.Equal(body.Keywords.SimpleKeywords, stored.Keywords.SimpleKeywords) {
+		t.Fatalf("reset response must match what was stored\n response: %v\n stored:   %v",
+			body.Keywords.SimpleKeywords, stored.Keywords.SimpleKeywords)
+	}
+}
+
 func TestComplexityAnalyzerConfigResetPreservesSemanticBlock(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)

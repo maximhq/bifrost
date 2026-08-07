@@ -1,7 +1,6 @@
 import { badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Progress } from "@/components/ui/progress";
 import { SEMANTIC_STATUS_LABELS, SemanticStatusInfo } from "@/lib/types/complexityRouter";
 import { cn } from "@/lib/utils";
 import type { VariantProps } from "class-variance-authority";
@@ -85,8 +84,6 @@ export function ClassifierStatusBadge({
 					? "loading"
 					: "disabled";
 
-	const percent = status && status.total > 0 ? Math.round((status.loaded / status.total) * 100) : 0;
-
 	const summary: ReactNode = {
 		"not-configured": hasEmbeddingProviders
 			? "No embedding provider is selected, so requests carry no complexity tier and rules targeting one never match."
@@ -112,25 +109,11 @@ export function ClassifierStatusBadge({
 				>
 					<StateIcon state={state} />
 					<span>{LABELS[state]}</span>
-					{state === "warming" && status && (
-						<span className="font-mono tabular-nums opacity-70">
-							{status.loaded}/{status.total}
-						</span>
-					)}
 				</button>
 			</PopoverTrigger>
 
 			<PopoverContent align="end" className="w-80 space-y-2.5 p-3 text-xs leading-relaxed" data-testid="complexity-router-semantic-status">
 				<p className="text-muted-foreground">{summary}</p>
-
-				{state === "warming" && status && (
-					<div className="space-y-1.5">
-						<Progress value={percent} className="h-1.5" />
-						<p className="text-muted-foreground font-mono text-[11px] tabular-nums">
-							{status.loaded}/{status.total}
-						</p>
-					</div>
-				)}
 
 				{status?.serving_previous && (
 					<p className="text-amber-700 dark:text-amber-400">

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,6 +101,9 @@ func TestComplexitySemanticConfigValidation(t *testing.T) {
 		// misconfiguration rather than a way to disable semantic routing.
 		{name: "min similarity at one", mutate: func(c *ComplexitySemanticConfig) { c.MinSimilarity = 1 }},
 		{name: "min similarity above one", mutate: func(c *ComplexitySemanticConfig) { c.MinSimilarity = 1.5 }},
+		// Every comparison against NaN is false, so a plain range check would
+		// accept it and the floor would silently never apply.
+		{name: "min similarity not a number", mutate: func(c *ComplexitySemanticConfig) { c.MinSimilarity = math.NaN() }},
 		{name: "negative message history count", mutate: func(c *ComplexitySemanticConfig) { c.MessageHistoryCount = -1 }},
 		{
 			name: "message history count above the ceiling",
