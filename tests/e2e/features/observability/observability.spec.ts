@@ -58,6 +58,21 @@ test.describe('Observability', () => {
       expect(hasMetrics).toBe(true)
     })
 
+    test('should reveal logs endpoint when log export is enabled', async ({ observabilityPage }) => {
+      await observabilityPage.selectConnector('otel')
+
+      // The logs endpoint field only exists once "Enable Log Export" is on.
+      expect(await observabilityPage.getLogsEndpointPlaceholder()).toBeNull()
+
+      await observabilityPage.enableLogExport()
+      const placeholder = await observabilityPage.getLogsEndpointPlaceholder()
+      expect(placeholder).not.toBeNull()
+      expect(placeholder).toMatch(/v1\/logs|OTEL_LOGS_ENDPOINT/i)
+
+      // The logs-only content switch appears alongside it.
+      await expect(observabilityPage.page.getByTestId('otel-profile-0-logs-disable-content-toggle')).toBeVisible()
+    })
+
     test('should toggle OTel connector', async ({ observabilityPage }) => {
       await observabilityPage.selectConnector('otel')
 
