@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -17,6 +18,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
 	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -1382,7 +1384,11 @@ func (m *MCPManager) connectToMCPClient(requestCtx context.Context, config *sche
 					// HTTP already has timeout
 					perAttemptCtx = ctx
 				}
-				return externalClient.Start(perAttemptCtx)
+				if startErr := externalClient.Start(perAttemptCtx); startErr != nil {
+					return startErr
+				}
+				drainStderr(externalClient, config)
+				return nil
 			},
 			transportRetryConfig,
 			m.logger,
@@ -1754,6 +1760,31 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 
 	// Return nil for cmd since mark3labs/mcp-go manages the process internally
 	return client.NewClient(stdioTransport), connectionInfo, nil
+}
+
+// drainStderr always reads cli's stderr pipe to completion in a background
+// goroutine, forwarding each line to config.StdioConfig.StderrHandler if one
+// is supplied. Safe to call for any connection type: GetStderr's transport
+// type assertion no-ops for non-stdio clients. Must be called after
+// cli.Start(), when the pipe exists. The pipe is closed by cli.Close(), which
+// ends the goroutine.
+func drainStderr(cli *client.Client, config *schemas.MCPClientConfig) {
+	stderr, ok := client.GetStderr(cli)
+	if !ok {
+		return
+	}
+	var handler func(line string)
+	if config.StdioConfig != nil {
+		handler = config.StdioConfig.StderrHandler
+	}
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			if handler != nil {
+				handler(scanner.Text())
+			}
+		}
+	}()
 }
 
 // createSSEConnection creates a SSE-based MCP client connection without holding locks.
