@@ -2736,6 +2736,7 @@ func closeBodyStream(bodyStream io.Reader, err error) {
 // Read() call on the wrapped reader.
 type idleTimeoutReader struct {
 	ctx           *schemas.BifrostContext
+	streamTiming  *schemas.StreamTiming
 	reader        io.Reader
 	bodyStream    io.Reader // closed via type assertion to io.Closer on timeout
 	timeout       time.Duration
@@ -2767,6 +2768,10 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 	if timeout <= 0 {
 		timeout = DefaultStreamIdleTimeout
 	}
+	streamTiming := schemas.NewStreamTiming(time.Now(), timeout)
+	if ctx != nil {
+		ctx.SetValue(schemas.BifrostContextKeyStreamTiming, streamTiming)
+	}
 	// A body wrapped by DoHTTPRequest times its own reads; unwrap so the
 	// per-chunk timing in Read below isn't counted twice.
 	if tb, ok := reader.(*upstreamTimingBody); ok {
@@ -2776,11 +2781,12 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 		bodyStream = tb.inner
 	}
 	r := &idleTimeoutReader{
-		ctx:        ctx,
-		reader:     reader,
-		bodyStream: bodyStream,
-		timeout:    timeout,
-		timerDone:  make(chan struct{}),
+		ctx:          ctx,
+		streamTiming: streamTiming,
+		reader:       reader,
+		bodyStream:   bodyStream,
+		timeout:      timeout,
+		timerDone:    make(chan struct{}),
 	}
 	r.timer = time.AfterFunc(timeout, func() {
 		defer r.timerDoneOnce.Do(func() { close(r.timerDone) })
@@ -2797,6 +2803,7 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 				}
 			}
 			r.fired.Store(true)
+			streamTiming.MarkIdleTimeout()
 			// closeBodyStream may panic: an orphaned timer can fire after the
 			// stream's connection has already been released to / reused from
 			// the fasthttp pool, so CloseWithError nil-derefs in
@@ -2865,6 +2872,7 @@ func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
 		schemas.AddUpstreamLatency(r.ctx, time.Since(readStart))
 	}
 	if n > 0 {
+		r.streamTiming.RecordUpstreamBytes(time.Now())
 		r.timer.Reset(r.timeout)
 	}
 	if err != nil && err != io.EOF && r.fired.Load() {
@@ -3641,6 +3649,19 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	}
 	if chunkCount > 0 {
 		tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
+	}
+	if streamTiming, ok := ctx.Value(schemas.BifrostContextKeyStreamTiming).(*schemas.StreamTiming); ok {
+		snapshot := streamTiming.Snapshot()
+		if snapshot.FirstByteLatency > 0 {
+			tracer.SetAttribute(handle, schemas.AttrStreamUpstreamFirstByte, snapshot.FirstByteLatency.Seconds())
+		}
+		if snapshot.MaxUpstreamGap > 0 {
+			tracer.SetAttribute(handle, schemas.AttrStreamUpstreamMaxGap, snapshot.MaxUpstreamGap.Seconds())
+		}
+		if snapshot.IdleTimeout > 0 {
+			tracer.SetAttribute(handle, schemas.AttrStreamIdleTimeout, snapshot.IdleTimeout.Seconds())
+		}
+		tracer.SetAttribute(handle, schemas.AttrStreamIdleTimeoutFired, snapshot.IdleTimeoutFired)
 	}
 
 	if accumulatedResp != nil {

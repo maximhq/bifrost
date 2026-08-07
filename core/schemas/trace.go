@@ -548,17 +548,21 @@ const (
 	AttrMessageCount             = "gen_ai.request.message_count"
 
 	// Response Attributes
-	AttrResponseID       = "gen_ai.response.id"
-	AttrResponseModel    = "gen_ai.response.model"
-	AttrFinishReason     = "gen_ai.response.finish_reason"
-	AttrFinishReasons    = "gen_ai.response.finish_reasons"
-	AttrSystemFprint     = "gen_ai.response.system_fingerprint"
-	AttrServiceTier      = "gen_ai.response.service_tier"
-	AttrCreated          = "gen_ai.response.created"
-	AttrObject           = "gen_ai.response.object"
-	AttrTimeToFirstToken = "gen_ai.response.time_to_first_token" // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk (seconds)
-	AttrTimeToFirstChunk = "gen_ai.response.time_to_first_chunk"
-	AttrTotalChunks      = "gen_ai.response.total_chunks"
+	AttrResponseID              = "gen_ai.response.id"
+	AttrResponseModel           = "gen_ai.response.model"
+	AttrFinishReason            = "gen_ai.response.finish_reason"
+	AttrFinishReasons           = "gen_ai.response.finish_reasons"
+	AttrSystemFprint            = "gen_ai.response.system_fingerprint"
+	AttrServiceTier             = "gen_ai.response.service_tier"
+	AttrCreated                 = "gen_ai.response.created"
+	AttrObject                  = "gen_ai.response.object"
+	AttrTimeToFirstToken        = "gen_ai.response.time_to_first_token" // legacy: nanoseconds; replaced by gen_ai.response.time_to_first_chunk (seconds)
+	AttrTimeToFirstChunk        = "gen_ai.response.time_to_first_chunk"
+	AttrTotalChunks             = "gen_ai.response.total_chunks"
+	AttrStreamUpstreamFirstByte = "bifrost.stream.upstream_first_byte"
+	AttrStreamUpstreamMaxGap    = "bifrost.stream.upstream_max_gap"
+	AttrStreamIdleTimeout       = "bifrost.stream.idle_timeout"
+	AttrStreamIdleTimeoutFired  = "bifrost.stream.idle_timeout_fired"
 
 	// Plugin Attributes (for aggregated streaming post-hook spans)
 	AttrPluginInvocations     = "plugin.invocation_count"
