@@ -46,8 +46,19 @@ func (r *sharedOAuthResolver) ForceRefresh(ctx *schemas.BifrostContext, config *
 	return r.provider.ForceRefreshAccessToken(ctx, config)
 }
 
-// AdminConnectionHeaders is not supported for this auth type — there is no
-// separate "admin" credential distinct from the one used for real calls.
+// AdminConnectionHeaders delegates to ConnectionHeaders for a client
+// currently running per-call (needs_session_stickiness nil/false) — there is
+// no separate "admin" credential distinct from the one used for real calls,
+// so the periodic connection checker's per-call discovery cycle
+// (MCPManager.performAdminToolDiscovery) resolves exactly the same shared
+// token a real tool call would. A sticky client should never reach this
+// method at all (it holds a persistent connection instead, discovered via
+// connectToMCPClient) — erroring rather than silently delegating turns a
+// caller-chain bug into an immediate, loud failure instead of a
+// quietly-redundant credential resolution.
 func (r *sharedOAuthResolver) AdminConnectionHeaders(ctx context.Context, config *schemas.MCPClientConfig) (http.Header, error) {
-	return nil, fmt.Errorf("admin connection headers not supported for auth_type %q", "oauth")
+	if !needsSessionStickiness(config) {
+		return r.ConnectionHeaders(schemas.NewBifrostContext(ctx, schemas.NoDeadline), config)
+	}
+	return nil, fmt.Errorf("admin connection headers not supported for auth_type %q on a sticky connection", "oauth")
 }
