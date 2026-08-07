@@ -332,6 +332,25 @@
           },
           "additionalProperties": false
         },
+        "setupToken": {
+          "type": "string",
+          "pattern": "\\S",
+          "description": "Operator-provisioned bootstrap secret required to create the very first admin account when no admin account is configured yet. Identical across every node in a multi-node deployment, so any node can authorize first-admin creation. Never persisted and never logged; when unset, creating the first admin account is rejected. Accepts a literal value, `env.<VAR>`, or `vault.<path>`. Whitespace-only values are rejected."
+        },
+        "setupTokenSecret": {
+          "type": "object",
+          "description": "Reference to an existing Kubernetes secret holding the setup token. Takes precedence over `setupToken` when `name` is set: the chart injects BIFROST_SETUP_TOKEN into the pod, which Bifrost reads at startup.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "default": "setup-token"
+            }
+          },
+          "additionalProperties": false
+        },
         "authConfig": {
           "$ref": "#/$defs/authConfig"
         },
@@ -618,6 +637,13 @@
               "type": "integer",
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
+            },
+            "pluginDownloadPrivateAllowlist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted internal artifact hosts. Deploy-time only - read at startup, never settable via the plugin admin API."
             }
           },
           "additionalProperties": false
@@ -1977,6 +2003,10 @@
                   "virtual_key_id": {
                     "type": "string",
                     "description": "Virtual key ID (required for virtual_key* scopes)"
+                  },
+                  "user_id": {
+                    "type": "string",
+                    "description": "User ID (for user-scoped pricing overrides)"
                   },
                   "provider_id": {
                     "type": "string",
@@ -4158,8 +4188,8 @@
             },
             "matviewRefreshInterval": {
               "type": "string",
-              "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
-              "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+              "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Positive values below 5s are clamped up to 5s. Set 'off' or a zero duration (e.g. '0s') to disable materialized-view maintenance entirely; dashboard queries fall back to the raw tables.",
+              "pattern": "^(off|[0-9]+(ns|us|µs|ms|s|m|h))$"
             },
             "matviewRefreshTimeout": {
               "type": "string",

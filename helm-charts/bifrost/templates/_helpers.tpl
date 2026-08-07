@@ -208,6 +208,11 @@ false
 {{- if .Values.bifrost.encryptionKey }}
 {{- $_ := set $config "encryption_key" .Values.bifrost.encryptionKey }}
 {{- end }}
+{{- if .Values.bifrost.setupTokenSecret.name }}
+{{- $_ := set $config "setup_token" "env.BIFROST_SETUP_TOKEN" }}
+{{- else if .Values.bifrost.setupToken }}
+{{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
+{{- end }}
 {{- if .Values.bifrost.envLabel }}
 {{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
 {{- end }}
@@ -359,6 +364,9 @@ false
 {{- $server := dict }}
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
+{{- end }}
+{{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
+{{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- end }}
 {{- if $server }}
 {{- $_ := set $config "server" $server }}

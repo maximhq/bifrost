@@ -8,6 +8,15 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### Upcoming
+
+- Added `bifrost.guardrails.rules[].target` (`llm` by default or `mcp`) to select whether a guardrail rule applies to LLM traffic or MCP tool calls. Renders into `guardrails_config.guardrail_rules[].target`.
+- **Breaking:** removed `complex_reasoning` from `bifrost.governance.complexityAnalyzerConfig.tier_boundaries` — the COMPLEX and REASONING tiers are merged, so boundaries are now just `simple_medium` (default `0.20`) and `medium_complex` (default `0.40`; scores at or above it are COMPLEX). Values files that still set `complex_reasoning` fail schema validation; delete the field before upgrading. Renders into `governance.complexity_analyzer_config.tier_boundaries`.
+- Added `bifrost.setupToken` (accepts a literal, `env.<VAR>`, or `vault.<path>`) plus `bifrost.setupTokenSecret` (`name`/`key`, injects `BIFROST_SETUP_TOKEN` via secretKeyRef and renders `setup_token: "env.BIFROST_SETUP_TOKEN"`) — the operator-provisioned bootstrap secret required to create the first admin account. Renders into the top-level `setup_token`.
+- Added `bifrost.server.pluginDownloadPrivateAllowlist` (hostnames, IPs, or CIDR ranges) to let custom plugin (`.so`) downloads reach trusted internal artifact hosts that resolve to private/loopback/link-local/CGNAT addresses, which are blocked by default to prevent SSRF. Renders into `server.plugin_download_private_allowlist`.
+- `storage.logsStore.matviewRefreshInterval` now accepts `"off"` or a zero duration (e.g. `"0s"`) to disable materialized-view maintenance entirely (dashboard queries fall back to the raw tables); positive values below `5s` are clamped up to `5s` instead of rejected.
+- Added `user_id` to `bifrost.governance.pricingOverrides[]` for user-scoped pricing overrides. Renders into `governance.pricing_overrides[].user_id`.
+
 ### 2.1.33
 
 - Fixed Helm schema validation failure for multi-profile OTEL configs (`bifrost.plugins.otel.config.profiles`), introduced by the `export_timeout` default in 2.1.32.
