@@ -17542,6 +17542,9 @@ var excludedSchemaFields = map[string]map[string]bool{
 	"governance.virtual_keys.mcp_configs": {
 		"mcp_client_name": true, // Config-file format; captured via custom UnmarshalJSON and resolved to mcp_client_id at startup
 	},
+	"governance.complexity_analyzer_config.tier_boundaries": {
+		"complex_reasoning": true, // Deprecated config.json/Helm compatibility field; ignored by the runtime.
+	},
 	"mcp": {
 		"tool_groups": true, // Enterprise governance feature; not in OSS MCPConfig
 	},

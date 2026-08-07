@@ -390,29 +390,37 @@ bifrost:
 
 ## Complexity Router Configuration
 
-If you use `complexity_tier` in routing rules, you can seed the analyzer thresholds and keyword lists from Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`.
+If you use `complexity_tier` in routing rules, configure the semantic embedding model and seed its reference phrases from Helm. The chart renders this block to `governance.complexity_analyzer_config` in `config.json`.
 
-Omit this block, or leave `complexityAnalyzerConfig: null`, to use the built-in defaults.
+Omit this block, or leave `complexityAnalyzerConfig: null`, to leave semantic complexity classification disabled. The default reference phrases are available once you add the required `semantic` block.
 
 ```yaml
 bifrost:
   governance:
     complexityAnalyzerConfig:
+      semantic:
+        provider: "openai"
+        embedding_model: "text-embedding-3-small"
+        timeout: "1.5s"
+        min_similarity: 0
+        message_history_count: 1
+        count_toward_budgets: false
+        vector_store: "embedded"
       tier_boundaries:
         simple_medium: 0.20
         medium_complex: 0.40
       keywords:
-        simple_keywords: ["hello", "hi", "thanks", "what is", "define"]
-        medium_keywords: ["function", "api", "debug", "architecture", "kubernetes", "latency"]
-        complex_keywords: ["step by step", "explain why", "tradeoffs", "root cause analysis"]
+        simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
+        medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
+        complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
 ```
 
 <Note>
-In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, tier boundaries are replaced from the rendered `config.json`, while keyword lists are merged additively with stored runtime keywords (union with duplicates removed). Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored governance state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
+In the default split mode, runtime UI and API edits are preserved while the matching Helm-rendered section is unchanged. When Helm changes a section, tier boundaries are replaced from the rendered `config.json`, keyword lists are merged additively with stored runtime phrases (union with duplicates removed), and the semantic block is replaced as one unit. Use `bifrost.sourceOfTruth: config.json` only when Helm should replace stored governance state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full startup rules.
 </Note>
 
 <Note>
-Existing releases that still use `code_keywords`, `technical_keywords`, and `reasoning_keywords` remain valid during upgrade. Bifrost reads them as Medium (`code` + `technical`) and Complex (`reasoning`) signals. New configurations should use the three-list shape shown above.
+Existing releases that still use `code_keywords`, `technical_keywords`, and `reasoning_keywords` remain valid during upgrade. Bifrost maps them into the three reference-phrase lists; new configurations should use the three-list shape shown above. `tier_boundaries` remain required for compatibility but do not influence semantic routing.
 </Note>
 
 ---

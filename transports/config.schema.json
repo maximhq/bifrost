@@ -3542,19 +3542,26 @@
     },
     "complexity_tier_boundaries": {
       "type": "object",
-      "description": "Score thresholds used to classify complexity_tier values",
+      "description": "Legacy lexical-classifier score thresholds. Still parsed and validated so older configurations load, but unused by semantic classification.",
       "properties": {
         "simple_medium": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold are SIMPLE"
+          "description": "Legacy score boundary between SIMPLE and MEDIUM tiers (unused by semantic classification)"
         },
         "medium_complex": {
           "type": "number",
           "exclusiveMinimum": 0,
           "exclusiveMaximum": 1,
-          "description": "Scores below this threshold and at or above simple_medium are MEDIUM; scores at or above it are COMPLEX. Must be strictly greater than simple_medium (enforced at config load)"
+          "description": "Legacy score boundary between MEDIUM and COMPLEX tiers (unused by semantic classification). Must be strictly greater than simple_medium (enforced at config load)"
+        },
+        "complex_reasoning": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "deprecated": true,
+          "description": "Retired REASONING-tier boundary. It is ignored during configuration load because REASONING was merged into COMPLEX; accepted only so older configurations continue to load."
         }
       },
       "required": ["simple_medium", "medium_complex"],
@@ -3562,7 +3569,7 @@
     },
     "complexity_analyzer_keywords": {
       "type": "object",
-      "description": "User-editable keyword scoring signals. The legacy four-list shape remains accepted for config.json compatibility.",
+      "description": "Reference phrases for semantic complexity classification. The legacy four-list shape remains accepted for config.json compatibility.",
       "properties": {
         "simple_keywords": {
           "type": "array",
@@ -3628,7 +3635,7 @@
     },
     "complexity_analyzer_config": {
       "type": "object",
-      "description": "Runtime configuration for complexity_tier CEL routing",
+      "description": "Runtime configuration for complexity_tier CEL routing. Semantic (embedding-based) classification is the only mechanism.",
       "properties": {
         "tier_boundaries": {
           "$ref": "#/$defs/complexity_tier_boundaries"
@@ -3645,7 +3652,7 @@
     },
     "complexity_semantic_config": {
       "type": "object",
-      "description": "Embedding-based (semantic) complexity classification settings. Presence of this block enables the semantic classifier. The classifier embeds the analyzer's shared per-tier keyword lists as its exemplars.",
+      "description": "Embedding-based complexity classification settings. Presence of this block enables the classifier, which embeds the per-tier reference phrases.",
       "properties": {
         "provider": {
           "type": "string",
@@ -3669,7 +3676,7 @@
               "exclusiveMinimum": 0
             }
           ],
-          "default": "500ms"
+          "default": "1500ms"
         },
         "min_similarity": {
           "type": "number",
