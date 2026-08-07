@@ -3461,6 +3461,22 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
+	// Lift the mixed server/client tool opt-in onto the typed parameter: the
+	// Gemini declaration-drop gate reads Params.IncludeServerSideToolInvocations,
+	// so leaving it in ExtraParams silently drops function tools when a request
+	// combines them with a server-side tool (issue #5679). Unregistered fields
+	// are captured as json.RawMessage, so decode rather than type-assert.
+	if raw, exists := req.ExtraParams["include_server_side_tool_invocations"]; exists {
+		switch v := raw.(type) {
+		case bool:
+			params.IncludeServerSideToolInvocations = schemas.Ptr(v)
+		case json.RawMessage:
+			var optIn bool
+			if sonic.Unmarshal(v, &optIn) == nil {
+				params.IncludeServerSideToolInvocations = schemas.Ptr(optIn)
+			}
+		}
+	}
 	if req.ServiceTier != nil {
 		mapped := MapAnthropicRequestServiceTierToBifrost(*req.ServiceTier)
 		params.ServiceTier = &mapped
