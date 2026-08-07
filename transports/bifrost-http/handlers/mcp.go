@@ -32,8 +32,8 @@ type MCPManager interface {
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
-	// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
-	UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
+	// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
+	UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
 	ReconnectMCPClient(ctx context.Context, id string) error
 	// CloseAndMarkNeedsReauth closes a shared client's live upstream
 	// connection and flips it to needs_reauth, without attempting a new
@@ -2813,21 +2813,28 @@ func (h *MCPHandler) updateMCPClientWithRetry(ctx context.Context, id string, co
 	return lastErr
 }
 
-// updateMCPClientConnectionWithRetry calls mcpManager.UpdateMCPClientConnection with a short retry loop.
-func (h *MCPHandler) updateMCPClientConnectionWithRetry(ctx context.Context, id string, config *schemas.MCPClientConfig) error {
+// updateMCPClientCredentialsWithRetry calls mcpManager.UpdateMCPClientCredentials with a short retry loop.
+func (h *MCPHandler) updateMCPClientCredentialsWithRetry(ctx context.Context, id string, config *schemas.MCPClientConfig) error {
 	const maxAttempts = 3
 	const retryDelay = 500 * time.Millisecond
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		lastErr = h.mcpManager.UpdateMCPClientConnection(ctx, id, config)
+		lastErr = h.mcpManager.UpdateMCPClientCredentials(ctx, id, config)
 		if lastErr == nil {
 			return nil
+		}
+		// Not applicable (a per-call client — no persistent connection to
+		// update) is never transient: retrying it wouldn't change the
+		// client's connection mode, so return immediately rather than
+		// wasting the retry budget on a client type this can never apply to.
+		if errors.Is(lastErr, schemas.ErrMCPReconnectNotApplicable) {
+			return lastErr
 		}
 		if !strings.Contains(lastErr.Error(), "reconnect") || attempt == maxAttempts {
 			return lastErr
 		}
-		logger.Warn(fmt.Sprintf("[OAuth Complete] UpdateMCPClientConnection attempt %d/%d for client %s blocked by in-flight reconnect; retrying in %s: %v",
+		logger.Warn(fmt.Sprintf("[OAuth Complete] UpdateMCPClientCredentials attempt %d/%d for client %s blocked by in-flight reconnect; retrying in %s: %v",
 			attempt, maxAttempts, id, retryDelay, lastErr))
 		time.Sleep(retryDelay)
 	}
@@ -3072,11 +3079,14 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to load MCP client: %v", err))
 				return
 			}
-			if err := h.updateMCPClientConnectionWithRetry(bifrostCtx, reauthClientConfig.ID, reauthClientConfig); err != nil {
+			if err := h.updateMCPClientCredentialsWithRetry(bifrostCtx, reauthClientConfig.ID, reauthClientConfig); err != nil && !errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
 				logger.Error(fmt.Sprintf("Failed to reconnect MCP client after reauthorization for client %s: %v", reauthClientConfig.ID, err))
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("OAuth credentials refreshed but reconnecting the client failed: %v", err))
 				return
 			}
+			// ErrMCPReconnectNotApplicable (a per-call client — no persistent
+			// connection to reconnect) is not an error here: the fresh
+			// credential is already what the next per-call dial will use.
 			SendJSON(ctx, map[string]any{"status": "success", "message": "MCP client re-authorized and reconnected successfully"})
 			return
 		}
@@ -3282,13 +3292,25 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update MCP config: %v", err))
 			return
 		}
-		if err := h.updateMCPClientConnectionWithRetry(bifrostCtx, mcpClientConfig.ID, mcpClientConfig); err != nil {
-			if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
-				logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+		if err := h.updateMCPClientCredentialsWithRetry(bifrostCtx, mcpClientConfig.ID, mcpClientConfig); err != nil {
+			if errors.Is(err, schemas.ErrMCPReconnectNotApplicable) {
+				// The client is running in per-call mode (no persistent
+				// connection — e.g. a shared client with
+				// needs_session_stickiness nil/false), so there is nothing
+				// to reconnect: the fresh OAuth credential just persisted
+				// above is already what the next per-call dial will use.
+				// Not an error — fall through to the normal success path
+				// below instead of rolling back the DB update that already
+				// succeeded.
+				logger.Debug(fmt.Sprintf("[OAuth Complete] Client %s uses per-call connections; nothing to reconnect after OAuth update", mcpClientConfig.ID))
+			} else {
+				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
+					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
+				}
+				logger.Error(fmt.Sprintf("Failed to reconnect MCP client after OAuth DB update for client %s: %v", mcpClientConfig.ID, err))
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client with updated OAuth credentials: %v", err))
+				return
 			}
-			logger.Error(fmt.Sprintf("Failed to reconnect MCP client after OAuth DB update for client %s: %v", mcpClientConfig.ID, err))
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client with updated OAuth credentials: %v", err))
-			return
 		}
 	} else {
 		if h.store.ConfigStore != nil {
