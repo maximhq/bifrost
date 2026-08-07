@@ -2,6 +2,7 @@ package bedrock_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"strings"
@@ -4550,6 +4551,216 @@ func TestDocumentFormatMapping(t *testing.T) {
 				"File type %q should map to format %q", tt.fileType, tt.expectedFormat)
 		})
 	}
+}
+
+// chatFileBlockDocument converts a single OpenAI-style file content block and
+// returns the resulting Bedrock document.
+func chatFileBlockDocument(t *testing.T, file *schemas.ChatInputFile) *bedrock.BedrockDocumentSource {
+	t.Helper()
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarize this document.")},
+						{Type: schemas.ChatContentBlockTypeFile, File: file},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 1)
+	require.Len(t, result.Messages[0].Content, 2)
+	require.NotNil(t, result.Messages[0].Content[1].Document)
+
+	return result.Messages[0].Content[1].Document
+}
+
+// The standard OpenAI chat `type:"file"` part carries the document's MIME type only
+// inside the file_data data URL - file_type is a Bifrost extension normal clients
+// don't send. Without reading it, every non-PDF document was labeled format "pdf"
+// and Bedrock rejected it with "The PDF specified was not valid".
+func TestDocumentFormatFromDataURL(t *testing.T) {
+	t.Parallel()
+
+	const payload = "UEsDBBQABgAI"
+
+	tests := []struct {
+		name           string
+		mediaType      string
+		filename       string
+		expectedFormat string
+	}{
+		{"XLSX", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "sheet.xlsx", "xlsx"},
+		{"DOCX", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "report.docx", "docx"},
+		{"XLS", "application/vnd.ms-excel", "legacy.xls", "xls"},
+		{"DOC", "application/msword", "legacy.doc", "doc"},
+		{"CSV", "text/csv", "rows.csv", "csv"},
+		{"Markdown", "text/markdown", "notes.md", "md"},
+		{"PDF", "application/pdf", "paper.pdf", "pdf"},
+		{"MediaTypeWithParameter", "text/plain;charset=utf-8", "notes.txt", "txt"},
+		{"UppercaseMediaType", "APPLICATION/PDF", "paper.pdf", "pdf"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+				Filename: schemas.Ptr(tt.filename),
+				FileData: schemas.Ptr("data:" + tt.mediaType + ";base64," + payload),
+			})
+
+			assert.Equal(t, tt.expectedFormat, doc.Format,
+				"data URL media type %q should map to format %q", tt.mediaType, tt.expectedFormat)
+			require.NotNil(t, doc.Source.Bytes)
+			assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+		})
+	}
+}
+
+// Format resolution order: file_type, then the data URL media type, then the
+// filename extension, then the historical "pdf" default.
+func TestDocumentFormatResolutionPrecedence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("FileTypeWinsOverDataURL", func(t *testing.T) {
+		doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+			Filename: schemas.Ptr("sheet.xlsx"),
+			FileType: schemas.Ptr("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+			FileData: schemas.Ptr("data:application/octet-stream;base64,UEsDBBQABgAI"),
+		})
+		assert.Equal(t, "xlsx", doc.Format)
+	})
+
+	t.Run("FilenameExtensionWhenMediaTypeIsOpaque", func(t *testing.T) {
+		doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+			Filename: schemas.Ptr("report.docx"),
+			FileData: schemas.Ptr("data:application/octet-stream;base64,UEsDBBQABgAI"),
+		})
+		assert.Equal(t, "docx", doc.Format)
+	})
+
+	t.Run("UnidentifiableDocumentKeepsPDFDefault", func(t *testing.T) {
+		doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+			Filename: schemas.Ptr("blob"),
+			FileData: schemas.Ptr("data:application/octet-stream;base64,UEsDBBQABgAI"),
+		})
+		assert.Equal(t, "pdf", doc.Format)
+	})
+}
+
+// A non-base64 data URL carries percent-encoded text, not base64 - sending it
+// verbatim as source.bytes shipped the whole "data:..." string to Bedrock.
+func TestDocumentInlineTextDataURL(t *testing.T) {
+	t.Parallel()
+
+	doc := chatFileBlockDocument(t, &schemas.ChatInputFile{
+		Filename: schemas.Ptr("notes.txt"),
+		FileData: schemas.Ptr("data:text/plain,Hello%20World"),
+	})
+
+	assert.Equal(t, "txt", doc.Format)
+	require.NotNil(t, doc.Source.Text)
+	assert.Equal(t, "Hello World", *doc.Source.Text)
+	require.NotNil(t, doc.Source.Bytes)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("Hello World")), *doc.Source.Bytes)
+
+	// A binary format never gets source.text, matching the raw file_data path.
+	doc = chatFileBlockDocument(t, &schemas.ChatInputFile{
+		Filename: schemas.Ptr("paper.pdf"),
+		FileData: schemas.Ptr("data:application/pdf,%25PDF-1.4"),
+	})
+
+	assert.Equal(t, "pdf", doc.Format)
+	assert.Nil(t, doc.Source.Text, "binary documents must not carry source.text")
+	require.NotNil(t, doc.Source.Bytes)
+	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")), *doc.Source.Bytes)
+}
+
+// The Responses path had its own copy of the format mapping with the same defect.
+func TestToBedrockResponsesRequest_DocumentFormatFromDataURL(t *testing.T) {
+	t.Parallel()
+
+	const payload = "UEsDBBQABgAI"
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Summarize this document.")},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+							ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+								Filename: schemas.Ptr("sheet.xlsx"),
+								FileData: schemas.Ptr("data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," + payload),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.Len(t, result.Messages, 1)
+
+	var doc *bedrock.BedrockDocumentSource
+	for _, contentBlock := range result.Messages[0].Content {
+		if contentBlock.Document != nil {
+			doc = contentBlock.Document
+		}
+	}
+	require.NotNil(t, doc)
+	assert.Equal(t, "xlsx", doc.Format)
+	require.NotNil(t, doc.Source.Bytes)
+	assert.Equal(t, payload, *doc.Source.Bytes)
+}
+
+// The Responses path ignored file_url entirely, emitting a document block with an
+// empty source. It now inlines the bytes like the chat path does, so an unreachable
+// URL surfaces as an error instead of silently shipping an empty document.
+func TestToBedrockResponsesRequest_DocumentFileURLIsFetched(t *testing.T) {
+	t.Parallel()
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		Input: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Summarize this document.")},
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+							ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+								Filename: schemas.Ptr("sheet.xlsx"),
+								FileURL:  schemas.Ptr("http://127.0.0.1:1/sheet.xlsx"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, err := bedrock.ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.Error(t, err, "file_url must be fetched, not silently dropped")
 }
 
 func TestBedrockStopReasonMapping(t *testing.T) {
