@@ -35,6 +35,16 @@ func supportsCLIProviderModel(cliID, providerID string, model ModelInfo) bool {
 	if cliID == "codex" && providerID != "openai" {
 		return false
 	}
+	// opencode-responses exists solely to exercise Bifrost's /v1/responses
+	// request conversion for Anthropic-on-Bedrock -- the path a reasoning-replay
+	// conversion defect was reported on, and the one no other cell reaches
+	// (opencode is chat/completions, codex is openai-only). Scoping it to those
+	// cells rather than the whole matrix keeps it from duplicating coverage the
+	// chat/completions variant already provides, at five models rather than
+	// every provider's catalogue.
+	if cliID == "opencode-responses" {
+		return providerID == "bedrock" && isBedrockAnthropicModel(model.ID)
+	}
 	return true
 }
 
@@ -62,71 +72,135 @@ func allScenarios() []scenario {
 		conversationMemoryScenario(),
 		conversationRefinementScenario(),
 		conversationRoleStabilityScenario(),
+		reasoningReplayScenario(),
 		subagentDelegationScenario(),
 		imageQAScenario(),
 		pdfQAScenario(),
 	}
 }
 
-// 01 simple-chat — single-turn smoke test.
+// 01 simple-chat — three-turn smoke test. Turn 1 proves the round trip; turns
+// 2 and 3 prove the CLI's session actually carries state, by asking for
+// transformations of a token that is never repeated in the later prompts. A
+// model that lost the conversation cannot answer them at all, so this catches
+// session-continuity breakage (a dropped resume, a reset context) that a
+// single-turn ping would sail straight through.
 func simpleChatScenario() scenario {
 	return scenario{
 		ID:          "simple-chat",
 		ModelKind:   "chat",
 		Supports:    supportsAnyChat,
-		ErrorIgnore: []string{"OKBIFROST"},
-		Turns: []Turn{{
-			Send:       "This is a harmless connectivity test. Reply with exactly the single token OKBIFROST and nothing else.",
-			AssertText: []string{"OKBIFROST"},
-			Timeout:    90 * time.Second,
-		}},
+		ErrorIgnore: []string{"OKBIFROST", "okbifrost"},
+		Turns: []Turn{
+			{
+				Send:       "This is a harmless connectivity test. Reply with exactly the single token OKBIFROST and nothing else.",
+				AssertText: []string{"OKBIFROST"},
+				Timeout:    90 * time.Second,
+			},
+			{
+				// Case-sensitive on purpose: a fold-insensitive match would be
+				// satisfied by the model simply echoing the uppercase token from
+				// turn 1, which is exactly the non-answer this turn rules out.
+				Send:       "Reply with that same token in all lowercase, and nothing else.",
+				AssertText: []string{"okbifrost"},
+				Timeout:    90 * time.Second,
+			},
+			{
+				Send:       "Reply with the original uppercase token again, followed by a space and the word DONE.",
+				AssertText: []string{"OKBIFROST", "DONE"},
+				Timeout:    90 * time.Second,
+			},
+		},
 	}
 }
 
-// 02 tool-call — model uses its built-in shell tool.
+// 02 tool-call — model uses its built-in shell tool across three turns. A
+// single shell call only proves the tool round-trips once; chaining three
+// proves tool results stay in context, which is the shape that actually breaks
+// (a tool_result block dropped between turns leaves turn 3 unanswerable).
 func toolCallScenario() scenario {
 	const token = "BIFROST_TOOL_EXEC_73129"
+	// len(token) == 23; `printf` writes no trailing newline, so `wc -c`
+	// reports exactly the token length.
+	const tokenLen = "23"
 	return scenario{
 		ID:          "tool-call",
 		ModelKind:   "chat",
 		Supports:    supportsAnyChat,
 		ErrorIgnore: []string{token},
-		Turns: []Turn{{
-			Send: "Use your shell tool to run `printf " + token + "` (no newline) and report the exact " +
-				"output. Do not simulate it. Do not just type the expected token - you must run the shell command. " +
-				"If your shell tool accepts structured input, provide both a command string and a description string.",
-			AssertText: []string{token},
-			AssertNotText: []string{
-				"don't have access to a shell",
-				"cannot run shell",
-				"unable to execute",
-				"can't run commands",
+		Turns: []Turn{
+			{
+				Send: "Use your shell tool to run `printf " + token + "` (no newline) and report the exact " +
+					"output. Do not simulate it. Do not just type the expected token - you must run the shell command. " +
+					"If your shell tool accepts structured input, provide both a command string and a description string.",
+				AssertText: []string{token},
+				AssertNotText: []string{
+					"don't have access to a shell",
+					"cannot run shell",
+					"unable to execute",
+					"can't run commands",
+				},
+				Timeout: 120 * time.Second,
 			},
-			Timeout: 120 * time.Second,
-		}},
+			{
+				Send: "Now use your shell tool to run `printf " + token + " | wc -c` and reply with just " +
+					"the number it prints. Actually run it - do not calculate the answer yourself.",
+				AssertText: []string{tokenLen},
+				Timeout:    120 * time.Second,
+			},
+			{
+				Send: "Without running any further commands, reply on one line with the token from the first " +
+					"command, a space, and the number from the second command.",
+				AssertText: []string{token, tokenLen},
+				Timeout:    120 * time.Second,
+			},
+		},
 	}
 }
 
-// 03 file-read — model uses file tool to read a fixture.
+// 03 file-read — model uses its file tool to read a fixture, then answers a
+// follow-up from context alone, then reads again. The middle turn is the
+// interesting one: it forbids re-reading, so it can only be answered from the
+// turn-1 tool result still being in context.
 func fileReadScenario() scenario {
 	fixture, _ := filepath.Abs("fixtures/sample.txt")
 	return scenario{
 		ID:          "file-read",
 		ModelKind:   "chat",
 		Supports:    supportsAnyChat,
-		ErrorIgnore: []string{"FILEOK"},
-		Turns: []Turn{{
-			Send: "Read the file at " + fixture + " using your file tool. After reading, " +
-				"reply with the single token FILEOK followed by the capital city of France and the hidden verification token from the file.",
-			AssertText:     []string{"FILE_FIXTURE_73129"},
-			AssertTextFold: []string{"FILEOK", "Paris"},
-			AssertNotText: []string{
-				"don't have access to file",
-				"cannot read files",
-				"unable to read",
+		ErrorIgnore: []string{"FILEOK", "FILEDONE"},
+		Turns: []Turn{
+			{
+				Send: "Read the file at " + fixture + " using your file tool. After reading, " +
+					"reply with the single token FILEOK followed by the capital city of France and the hidden verification token from the file.",
+				AssertText:     []string{"FILE_FIXTURE_73129"},
+				AssertTextFold: []string{"FILEOK", "Paris"},
+				AssertNotText: []string{
+					"don't have access to file",
+					"cannot read files",
+					"unable to read",
+				},
+				Timeout: 120 * time.Second,
 			},
-			Timeout: 120 * time.Second,
-		}},
+			{
+				Send: "Without reading the file again, tell me what that file said the square root of 144 is. " +
+					"Reply with just the number.",
+				// Not AssertText: "12" -- that is a raw substring, and "12"
+				// sits inside FILE_FIXTURE_73129, the token the model quoted
+				// in turn 1. The substring form passes on a reply that merely
+				// echoes that token and never answers. validateNumber anchors
+				// on word boundaries, so the digits have to stand alone.
+				Validate: validateNumber(12, "square root of 144"),
+				Timeout:  120 * time.Second,
+			},
+			{
+				Send: "Now read that same file once more with your file tool, and reply with the hidden " +
+					"verification token followed by the token FILEDONE on the same line.",
+				AssertText:     []string{"FILE_FIXTURE_73129"},
+				AssertTextFold: []string{"FILEDONE"},
+				Timeout:        120 * time.Second,
+			},
+		},
 	}
 }
 
@@ -142,30 +216,53 @@ func webSearchScenario() scenario {
 			return supportsCLIProviderModel(cliID, providerID, m) && m.WebSearch
 		},
 		ErrorIgnore: []string{"SEARCHOK"},
-		Turns: []Turn{{
-			Send: "Use your web search tool to find the current temperature in Reykjavik right now. " +
-				"You MUST actually search the web - do not say you can't or refuse. Reply with the temperature " +
-				"in Celsius (a number followed by °C or 'degrees Celsius') and a source URL beginning with http. " +
-				"After your answer, append the single token SEARCHOK on its own line.",
-			AssertText: []string{"SEARCHOK", "http"},
-			// One of: a number followed by °C / C / degrees / Celsius. Loose
-			// because models phrase temperature differently across providers.
-			AssertTextAny: []string{"°C", "Celsius", "celsius", " C ", " C\n", " C."},
-			AssertNotText: []string{
-				"don't have access",
-				"do not have access",
-				"can't access",
-				"cannot access",
-				"unable to access",
-				"no web search",
-				"no access to web",
-				"can't browse",
-				"cannot browse",
-				"only Bash",
-				"only Read",
+		Turns: []Turn{
+			{
+				Send: "Use your web search tool to find the current temperature in Reykjavik right now. " +
+					"You MUST actually search the web - do not say you can't or refuse. Reply with the temperature " +
+					"in Celsius (a number followed by °C or 'degrees Celsius') and a source URL beginning with http. " +
+					"After your answer, append the single token SEARCHOK on its own line.",
+				AssertText: []string{"SEARCHOK", "http"},
+				// One of: a number followed by °C / C / degrees / Celsius. Loose
+				// because models phrase temperature differently across providers.
+				AssertTextAny: []string{"°C", "Celsius", "celsius", " C ", " C\n", " C."},
+				AssertNotText: []string{
+					"don't have access",
+					"do not have access",
+					"can't access",
+					"cannot access",
+					"unable to access",
+					"no web search",
+					"no access to web",
+					"can't browse",
+					"cannot browse",
+					"only Bash",
+					"only Read",
+				},
+				Timeout: 180 * time.Second,
 			},
-			Timeout: 180 * time.Second,
-		}},
+			// Turns 2 and 3 deliberately require no further searching: they work
+			// off the turn-1 search result already in context. That keeps the
+			// scenario multi-turn without tripling its search-tool cost, and it
+			// isolates conversation carry-over from search capability -- a
+			// failure here is a context problem, not a search problem.
+			{
+				Send:       "Repeat the exact source URL you cited, and nothing else.",
+				AssertText: []string{"http"},
+				Timeout:    120 * time.Second,
+			},
+			{
+				Send: "Convert the Reykjavik temperature you found into degrees Fahrenheit. Reply with the " +
+					"number followed by F, then the token SEARCHOK on its own line.",
+				AssertText: []string{"SEARCHOK"},
+				// A bare substring check can't express this: matching "F"
+				// case-insensitively hits every "f" in the reply, and matching
+				// "Fahrenheit" rejects the equally correct "38 F". Require a
+				// number actually adjacent to an F/°F/Fahrenheit unit instead.
+				Validate: validateFahrenheitReading,
+				Timeout:  120 * time.Second,
+			},
+		},
 	}
 }
 
@@ -180,13 +277,31 @@ func reasoningScenario() scenario {
 			return supportsCLIProviderModel(cliID, providerID, m) && (m.ExtendedThinking || m.AdaptiveThinking)
 		},
 		ErrorIgnore: []string{"REASONOK", "144"},
-		Turns: []Turn{{
-			Send: "A train leaves station A at 9:00 AM going 60 km/h east. Another leaves station B at " +
-				"10:00 AM going 40 km/h west. Stations A and B are 280 km apart. At what time do they meet? " +
-				"Answer the meeting time.",
-			Validate: validateReasoningMeetingTime,
-			Timeout:  240 * time.Second,
-		}},
+		// Three turns over one shared setup. Turns 2 and 3 never restate the
+		// premises, so they only work if the problem statement survived in
+		// context -- and each needs a fresh derivation from it rather than a
+		// recall of turn 1's answer.
+		Turns: []Turn{
+			{
+				Send: "A train leaves station A at 9:00 AM going 60 km/h east. Another leaves station B at " +
+					"10:00 AM going 40 km/h west. Stations A and B are 280 km apart. At what time do they meet? " +
+					"Answer the meeting time.",
+				Validate: validateReasoningMeetingTime,
+				Timeout:  240 * time.Second,
+			},
+			{
+				Send: "How many kilometres from station A is that meeting point? Reply with just the number " +
+					"of kilometres.",
+				Validate: validateReasoningDistanceFromA,
+				Timeout:  240 * time.Second,
+			},
+			{
+				Send: "Now suppose the second train had also left at 9:00 AM instead of 10:00 AM, with " +
+					"everything else unchanged. At what time would they meet?",
+				Validate: validateReasoningSimultaneousDeparture,
+				Timeout:  240 * time.Second,
+			},
+		},
 	}
 }
 
@@ -254,6 +369,40 @@ func validateReasoningMeetingTime(output string) error {
 	return fmt.Errorf("expected answer to identify 12:12 PM meeting time, got tail:\n%s", tailStr(output, 600))
 }
 
+// Train A runs 60 km/h from 9:00 to the 12:12 meeting: 3.2 h × 60 = 192 km.
+// Accept a bare 192 as well as "192 km"/"192km" phrasings.
+func validateReasoningDistanceFromA(output string) error {
+	if regexp.MustCompile(`\b192\b`).MatchString(output) {
+		return nil
+	}
+	return fmt.Errorf("expected answer to identify 192 km from station A, got tail:\n%s", tailStr(output, 600))
+}
+
+// Departing together, the trains close 280 km at a combined 100 km/h: 2.8 h
+// after 9:00, i.e. 11:48.
+func validateReasoningSimultaneousDeparture(output string) error {
+	if regexp.MustCompile(`(?i)\b11[:.]48\b`).MatchString(output) {
+		return nil
+	}
+	return fmt.Errorf("expected answer to identify an 11:48 AM meeting time, got tail:\n%s", tailStr(output, 600))
+}
+
+// validateFahrenheitReading requires a number immediately followed by a
+// Fahrenheit unit, so the model has to actually report a converted reading
+// rather than merely mention the word.
+func validateFahrenheitReading(output string) error {
+	// The bare-F branch is `F\b`, not `\bF\b`: with `\s*` matching zero
+	// characters there is no word boundary between the digit and the F, so a
+	// leading \b would reject the unspaced "38F" that models commonly emit.
+	// The trailing \b still does the work that matters, keeping "38 files" and
+	// "1080p FHD" from counting as readings.
+	if regexp.MustCompile(`(?i)-?\d+(?:\.\d+)?\s*(?:°\s*F\b|º\s*F\b|F\b|degrees?\s+F(?:ahrenheit)?\b|\bFahrenheit\b)`).MatchString(output) {
+		return nil
+	}
+	return fmt.Errorf("expected a Fahrenheit temperature reading (a number followed by F/°F/Fahrenheit), got tail:\n%s",
+		tailStr(output, 600))
+}
+
 func validateOceanDesertPoem(output string) error {
 	var nonEmpty int
 	for _, line := range strings.Split(output, "\n") {
@@ -313,7 +462,160 @@ func conversationRoleStabilityScenario() scenario {
 	}
 }
 
-// 09 subagent-delegation — the CLI's own subagent-delegation tool (Claude
+// 09 reasoning-replay — five chained derivations on a thinking-capable model.
+//
+// This is the one scenario whose *depth* is the point. Every turn requires real
+// multi-step arithmetic, so the model emits reasoning; every turn depends on the
+// previous answer and never restates it, so the client must replay the whole
+// accumulated history - including prior reasoning blocks - on each request.
+//
+// That replay is what a request-conversion defect lives in. A Bedrock Responses
+// defect of exactly this shape was reported against a build this harness passed:
+// reasoning items replayed to Anthropic-on-Bedrock produced upstream 400s, one
+// validation error per prior assistant turn. A single-turn reasoning probe
+// cannot see it - there is no history to replay on turn 1 - and the existing
+// multi-turn scenarios (conversation-memory and friends) run on chat models that
+// emit no reasoning to replay. Five turns is chosen for the same reason the
+// report's reproduction swept 1/3/10: the failure scales 1:1 with turn count, so
+// depth is the variable, and turn 5 additionally forces a recall of every prior
+// result.
+//
+// The numbers below are fully determined, so a wrong answer is a wrong answer
+// rather than a judgement call:
+//
+//	A=24, B=A/2=12, C=B+8=20            -> 56 boxes
+//	56 boxes x 12 items                 -> 672 items
+//	672 items / 250 per trip            -> 2 full trips, 172 left over
+//	3 trips (2 full + 1 remainder) x $40 -> $120
+func reasoningReplayScenario() scenario {
+	return scenario{
+		ID:        "reasoning-replay",
+		ModelKind: "reasoning",
+		Supports:  supportsReasoningReplay,
+		// The intermediate results recur throughout the transcript; none of them
+		// are error markers, but 400/500-looking numbers would be, so the
+		// sentinels are whitelisted for the same reason the reasoning scenario
+		// whitelists 144.
+		ErrorIgnore: []string{"56", "672", "172", "120", "250"},
+		Turns: []Turn{
+			{
+				Send: "A warehouse has three shelves. Shelf A holds 24 boxes. Shelf B holds half as many " +
+					"as shelf A. Shelf C holds 8 more than shelf B. How many boxes are there in total? " +
+					"Reply with just the number.",
+				Validate: validateNumber(56, "total boxes"),
+				Timeout:  180 * time.Second,
+			},
+			{
+				Send: "Each of those boxes holds 12 items. How many items are in the warehouse? " +
+					"Reply with just the number.",
+				Validate: validateNumber(672, "total items"),
+				Timeout:  180 * time.Second,
+			},
+			{
+				Send: "A truck carries 250 items per trip. How many completely full trips can it make, " +
+					"and how many items are left over? Reply with both numbers.",
+				Validate: validateTripSplit,
+				Timeout:  180 * time.Second,
+			},
+			{
+				Send: "Each trip costs $40, and the leftover items need one more trip. What is the total " +
+					"cost in dollars? Reply with just the number.",
+				Validate: validateNumber(120, "total cost"),
+				Timeout:  180 * time.Second,
+			},
+			{
+				// The recall turn. Answering it requires the full chain to still
+				// be in context, which is exactly the state that makes the
+				// request carry every prior reasoning block.
+				Send: "Without recalculating anything, list in order the four results you worked out: " +
+					"total boxes, total items, leftover items, and total cost in dollars.",
+				Validate: validateReplayRecall,
+				Timeout:  180 * time.Second,
+			},
+		},
+	}
+}
+
+// supportsReasoningReplay gates to models that actually emit reasoning - there
+// is nothing to replay otherwise - on top of the usual cell gate. It is
+// deliberately NOT restricted to opencode-responses: the Anthropic Messages path
+// was reported unaffected by the Bedrock defect, and running the same scenario
+// there is what turns that claim into a checked assertion rather than a
+// footnote.
+func supportsReasoningReplay(cliID, providerID string, m ModelInfo) bool {
+	if !supportsCLIProviderModel(cliID, providerID, m) {
+		return false
+	}
+	return m.ExtendedThinking || m.AdaptiveThinking
+}
+
+// validateNumber builds a validator for a single expected integer, tolerating
+// thousands separators and surrounding prose.
+func validateNumber(want int, label string) func(string) error {
+	pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(withCommas(want)) + `\b|\b` + fmt.Sprint(want) + `\b`)
+	return func(output string) error {
+		if pattern.MatchString(output) {
+			return nil
+		}
+		return fmt.Errorf("expected %s = %d, got tail:\n%s", label, want, tailStr(output, 600))
+	}
+}
+
+// withCommas renders 1234 as "1,234" so a validator matches either grouping.
+func withCommas(n int) string {
+	s := fmt.Sprint(n)
+	if len(s) <= 3 {
+		return s
+	}
+	var out []byte
+	for i, c := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, c)
+	}
+	return string(out)
+}
+
+// 672 items at 250 per trip is 2 full trips with 172 left over. Both numbers
+// must appear -- "2" alone would also match a model that answered only half the
+// question.
+func validateTripSplit(output string) error {
+	// The 2 has to sit next to the word it quantifies. A bare \b2\b is
+	// satisfied by any standalone 2 in the transcript - an elapsed second, a
+	// token count, a turn index - so the check could pass while the model
+	// answered something else entirely. Matching either order keeps "2 trips"
+	// and "trips: 2" both valid; staying inside [^.\n] keeps the pairing
+	// within one sentence rather than spanning the whole reply.
+	if !regexp.MustCompile(`(?i)\b2\b[^.\n]{0,40}\btrips?\b|\btrips?\b[^.\n]{0,40}\b2\b`).MatchString(output) {
+		return fmt.Errorf("expected 2 full trips, got tail:\n%s", tailStr(output, 600))
+	}
+	if !regexp.MustCompile(`\b172\b`).MatchString(output) {
+		return fmt.Errorf("expected 172 leftover items, got tail:\n%s", tailStr(output, 600))
+	}
+	return nil
+}
+
+// validateReplayRecall requires every result from the chain, which is only
+// answerable if the whole conversation survived the round trip.
+func validateReplayRecall(output string) error {
+	for _, want := range []struct {
+		n     int
+		label string
+	}{
+		{56, "total boxes"},
+		{672, "total items"},
+		{172, "leftover items"},
+		{120, "total cost"},
+	} {
+		if err := validateNumber(want.n, want.label)(output); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// 10 subagent-delegation — the CLI's own subagent-delegation tool (Claude
 // Code's Agent/Task tool, or Codex's spawn_agent collab-tool) spawns a
 // nested subagent that makes its own separate LLM call. Proves that traffic
 // shape (a completion whose tool call triggers an additional completion with
@@ -377,7 +679,7 @@ func supportsSubagentDelegation(cliID, providerID string, model ModelInfo) bool 
 	return ok && model.ID == prov.chatModel().ID
 }
 
-// 10 image-qa — the model receives a genuine image attachment (not just a
+// 11 image-qa — the model receives a genuine image attachment (not just a
 // file path) and must answer questions requiring real visual/OCR
 // understanding: a token rendered as text, a fact written in the image, and
 // the color of a drawn shape. Claude has no CLI-level image-attach flag --
@@ -423,7 +725,7 @@ func supportsImageQA(cliID, providerID string, m ModelInfo) bool {
 	return supportsCLIProviderModel(cliID, providerID, m)
 }
 
-// 11 pdf-qa — the model reads a real PDF document (not a .txt file) and
+// 12 pdf-qa — the model reads a real PDF document (not a .txt file) and
 // must answer questions from its content, exercising genuine document
 // parsing rather than plain-text file reading. Claude only: PDF attachment
 // has no CLI flag on either CLI, and Claude's Read tool natively handles

@@ -42,17 +42,21 @@ func TestMain(m *testing.M) {
 		interrupted.Store(true)
 		_, _ = fmt.Fprintf(os.Stderr, "\n\033[1;31m[harness] received %s, killing %d active subprocesses\033[0m\n",
 			s, countActive())
-		activeCommands.Range(func(k, _ any) bool {
-			if cmd, ok := k.(*exec.Cmd); ok && cmd.Process != nil {
-				// Record before killing: the cell reads this to prove the kill
-				// was ours rather than a coincident genuine failure.
-				markKilled(cmd)
-				_ = cmd.Process.Kill()
+		activeCommands.Range(func(k, v any) bool {
+			cmd, ok := k.(*exec.Cmd)
+			if !ok {
+				return true
 			}
+			tc, _ := v.(*trackedCmd)
+			killIfLive(cmd, tc)
 			return true
 		})
 		time.Sleep(200 * time.Millisecond)
 		reportHTMLBestEffort()
+		// os.Exit below bypasses t.Cleanup, so the ticker's own final table
+		// never prints. Emit one here for the same reason the HTML report is
+		// rebuilt above: an interrupted sweep should still say how far it got.
+		printProgress()
 		os.Exit(130)
 	}()
 	os.Exit(m.Run())
@@ -79,6 +83,10 @@ func TestCLIs(t *testing.T) {
 		t.Skip("BIFROST_E2E_CLIS=skip")
 	}
 	t.Cleanup(reportHTMLBestEffort)
+	// The stop function prints one final table. Parallel subtests are all
+	// joined before the parent's cleanups run, so by then every cell that was
+	// going to finish has recorded itself.
+	t.Cleanup(startProgressTicker())
 
 	baseURL := envDefault("BIFROST_BASE_URL", "http://localhost:8080")
 	apiKey := envDefault("BIFROST_API_KEY", "dummy")
@@ -129,6 +137,7 @@ func TestCLIs(t *testing.T) {
 									// adaptive thinking, so skipping here would silently
 									// drop them on non-adaptive models.
 									if len(sc.Efforts) == 0 || !model.AdaptiveThinking || cli.EffortArgs == nil {
+										progress.register(cli.ID)
 										t.Parallel()
 										runCell(t, cli, prov, model, sc, "", baseURL, apiKey)
 										return
@@ -136,6 +145,7 @@ func TestCLIs(t *testing.T) {
 									for _, effort := range sc.Efforts {
 										effort := effort
 										t.Run(effort, func(t *testing.T) {
+											progress.register(cli.ID)
 											t.Parallel()
 											runCell(t, cli, prov, model, sc, effort, baseURL, apiKey)
 										})
@@ -175,6 +185,25 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 	if effort != "" && len(sc.Turns) > 1 {
 		t.Fatalf("scenario %q: effort-level testing is only wired for single-turn scenarios", sc.ID)
 	}
+
+	// Every registered cell must also record an outcome, or the progress table
+	// would show a permanent gap between TOTAL and DONE that looks identical to
+	// a hung cell. The paths below that leave via t.Fatalf/t.Skipf never reach
+	// the explicit record after writeReport, so catch them here -- t.Fatalf and
+	// t.Skipf both unwind through runtime.Goexit, which runs deferred calls.
+	recorded := false
+	defer func() {
+		if recorded {
+			return
+		}
+		switch {
+		case t.Skipped():
+			progress.record(cli.ID, "skip")
+		default:
+			progress.record(cli.ID, "fail")
+		}
+	}()
+
 	scenarioLabel := sc.ID
 	if effort != "" {
 		scenarioLabel = sc.ID + "@" + effort
@@ -212,15 +241,46 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 		)
 	}
 
+	logCellStart(cli.ID, modelRef, scenarioLabel, len(sc.Turns))
+
 	started := time.Now()
 	transcripts := make([]string, 0, len(sc.Turns))
+	// conversation is the structured record the HTML report renders: what was
+	// sent and what came back, per turn. The raw transcript is kept alongside it
+	// (writeReport still writes the .transcript.log), but raw stream-JSON is not
+	// something anyone can read a conversation out of.
+	conversation := make([]turnRecord, 0, len(sc.Turns))
 	var runErr error
 	var assertionErr error
 
+	// recordTurn captures one exchange. out is the CLI's raw output for the
+	// turn; the rendered response is the assistant text extracted from it, which
+	// for the JSON-event CLIs is the only part that is prose.
+	recordTurn := func(i int, turn Turn, out string, turnStart time.Time, turnErr error) {
+		rec := turnRecord{
+			Index:      i + 1,
+			Prompt:     turn.Send,
+			Response:   strings.TrimSpace(assertionOutput(cli.ID, out)),
+			DurationMs: time.Since(turnStart).Milliseconds(),
+		}
+		if turn.AttachImage != "" {
+			rec.Attachment = turn.AttachImage
+		}
+		if turnErr != nil {
+			rec.Error = summarizeFailure(turnErr.Error())
+		}
+		conversation = append(conversation, rec)
+	}
+
 	// One overall budget per cell; individual turns still enforce their own
-	// timeouts inside the runner. 15 minutes is enough for a 3-turn reasoning
-	// scenario on a slow provider; less than the Make recipe's 30m default.
-	cellCtx, cellCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	// timeouts inside the runner.
+	//
+	// Scaled to the scenario rather than fixed. A flat 15 minutes was fine for
+	// three turns, but reasoning-replay's five 180s turns sum to exactly 15
+	// minutes -- so the cell budget would fire first and report a deadline
+	// instead of whichever turn actually stalled, turning a diagnosable turn
+	// timeout into an opaque one.
+	cellCtx, cellCancel := context.WithTimeout(context.Background(), cellBudget(sc))
 	defer cellCancel()
 
 	if len(sc.Turns) <= 1 {
@@ -229,6 +289,7 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 		if len(sc.Turns) == 1 {
 			turn = sc.Turns[0]
 		}
+		turnStart := time.Now()
 		out, err := runSingleTurnWithRetry(cellCtx, t, cli, modelRef, turn, env, mirror, effort)
 		transcripts = append(transcripts, out)
 		runErr = err
@@ -238,6 +299,7 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 				runErr = err
 			}
 		}
+		recordTurn(0, turn, out, turnStart, runErr)
 	} else {
 		// Pattern C (Claude) or Pattern B (Codex): multi-turn driver.
 		if cli.MultiTurnDriver == nil {
@@ -253,18 +315,22 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 			}
 		})
 		for i, turn := range sc.Turns {
+			turnStart := time.Now()
 			out, nextDriver, err := sendMultiTurnWithRetry(cellCtx, t, cli, modelRef, env, mirror, driver, sc.Turns, i)
 			driver = nextDriver
 			transcripts = append(transcripts, out)
 			if err != nil {
 				runErr = fmt.Errorf("turn %d: %w", i+1, err)
+				recordTurn(i, turn, out, turnStart, runErr)
 				break
 			}
 			if err := assertTurn(turn, assertionOutput(cli.ID, out)); err != nil {
 				assertionErr = fmt.Errorf("turn %d: %w", i+1, err)
 				runErr = assertionErr
+				recordTurn(i, turn, out, turnStart, runErr)
 				break
 			}
+			recordTurn(i, turn, out, turnStart, nil)
 		}
 	}
 
@@ -290,8 +356,10 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 	case runErr != nil:
 		status = "fail"
 	}
-	writeReport(t, cli.ID, prov.ID, safeName(model.ID), scenarioLabel, modelRef, status, runErr, softReason, dur, combined)
-	logCellResult(cli.ID, prov.ID, modelRef, scenarioLabel, status, dur, runErr, softReason)
+	writeReport(t, cli.ID, prov.ID, safeName(model.ID), scenarioLabel, modelRef, status, runErr, softReason, dur, combined, conversation)
+	logCellResult(cli.ID, modelRef, scenarioLabel, status, len(sc.Turns), dur, runErr, softReason)
+	progress.record(cli.ID, status)
+	recorded = true
 
 	if mirror != nil {
 		_, _ = fmt.Fprintf(os.Stdout, "\033[0m\n\033[1;36m<<< %s × %s × %s  (%s)\033[0m\n",
@@ -301,6 +369,35 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 	if runErr != nil {
 		t.Fatal(runErr)
 	}
+}
+
+// cellBudget is the overall deadline for one cell: the sum of its turns' own
+// timeouts plus headroom for process startup, with a 15 minute floor so short
+// scenarios keep the budget they have always had.
+//
+// The headroom matters as much as the sum. Each turn of a resume-driver CLI
+// (codex, opencode) spawns a fresh process that re-reads its config and, for
+// opencode, rebuilds an empty SQLite store and re-fetches the models.dev
+// catalogue -- seconds per turn that belong to no turn's own timeout.
+func cellBudget(sc scenario) time.Duration {
+	const (
+		floor          = 15 * time.Minute
+		perTurnStartup = 45 * time.Second
+		defaultTurn    = 120 * time.Second // runner's fallback when Timeout is 0
+	)
+	total := time.Duration(0)
+	for _, turn := range sc.Turns {
+		if turn.Timeout > 0 {
+			total += turn.Timeout
+		} else {
+			total += defaultTurn
+		}
+		total += perTurnStartup
+	}
+	if total < floor {
+		return floor
+	}
+	return total
 }
 
 const maxRateLimitRetries = 3
@@ -424,19 +521,49 @@ func sleepForRateLimit(ctx context.Context, t *testing.T, cliID, modelRef string
 	}
 }
 
-func logCellResult(cliID, providerID, model, scenarioID, status string, dur time.Duration, runErr error, softReason string) {
+// logCellResult prints one line per finished cell: the scenario and how it
+// went, first, since that is what a reader is scanning for. The cell's identity
+// and duration follow, and a failure reason is appended when there is one.
+//
+// Deliberately one line: cells finish concurrently, so anything multi-line
+// would interleave into nonsense. Nothing parses this format - it exists to be
+// read by a human and to be the record in CI's artifact log.
+// logCellStart announces a cell as it begins. Cells run in parallel and a
+// single cell can take minutes, so without this the console sits silent with no
+// indication of what is in flight - which reads as a hang.
+func logCellStart(cliID, model, scenarioID string, turns int) {
+	_, _ = fmt.Fprintf(os.Stdout, "%-11s %-28s %-8s %-9s %-28s\n",
+		"RUNNING", scenarioID, turnsLabel(turns), cliID, model)
+}
+
+// turnsLabel renders a scenario's conversation length for the console. Turn
+// count is the difference between a one-shot probe and a multi-turn
+// conversation, which is most of what these scenarios are actually testing, so
+// it belongs next to the scenario name rather than only in the report.
+func turnsLabel(turns int) string {
+	if turns == 1 {
+		return "1 turn"
+	}
+	return fmt.Sprintf("%d turns", turns)
+}
+
+// model is the provider-prefixed ref ("openai/gpt-5.5"), so the provider needs
+// no column of its own.
+func logCellResult(cliID, model, scenarioID, status string, turns int, dur time.Duration, runErr error, softReason string) {
 	reason := ""
 	if runErr != nil {
-		reason = " reason=" + tableCell(summarizeFailure(runErr.Error()), 90)
+		reason = "  " + tableCell(summarizeFailure(runErr.Error()), 120)
 	} else if softReason != "" {
-		reason = " reason=" + tableCell(softReason, 90)
+		reason = "  " + tableCell(softReason, 120)
 	}
-	_, _ = fmt.Fprintf(os.Stdout, "harness cli=%s provider=%s model=%s scenario=%s status=%s duration=%s%s\n",
-		cliID,
-		providerID,
-		model,
+	// Widths fit the longest of each: "conversation-role-stability" (27) and
+	// the status labels ("interrupted", 11).
+	_, _ = fmt.Fprintf(os.Stdout, "%-11s %-28s %-8s %-9s %-28s %8s%s\n",
+		strings.ToUpper(status),
 		scenarioID,
-		status,
+		turnsLabel(turns),
+		cliID,
+		model,
 		dur.Round(time.Millisecond),
 		reason,
 	)
@@ -519,7 +646,7 @@ func containsFold(haystack, needle string) bool {
 
 func assertionOutput(cliID, raw string) string {
 	switch cliID {
-	case "codex", "opencode":
+	case "codex", "opencode", "opencode-responses":
 		text, sawJSON := extractJSONAssistantText(raw)
 		if sawJSON {
 			return text
@@ -528,12 +655,26 @@ func assertionOutput(cliID, raw string) string {
 	return raw
 }
 
-// mirrorWriter returns os.Stdout when live output is requested, nil otherwise.
+// mirrorWriter returns os.Stdout when the live mirror is requested, nil
+// otherwise.
+//
+// Off by default, deliberately. The mirror streams each CLI subprocess's raw
+// stdout, which for a JSON-event CLI (OpenCode, Codex) is thousands of lines
+// per turn - and with cells running in parallel, several interleaved streams at
+// once. That buries the per-cell result lines and the progress table, i.e. the
+// output people actually read, so it is opt-in for the case it was built for:
+// debugging one specific cell's wire traffic.
+//
+// BIFROST_E2E_CLIS_QUIET is still honoured, and still wins, so existing
+// invocations (and CI) keep working unchanged.
 func mirrorWriter() io.Writer {
 	if os.Getenv("BIFROST_E2E_CLIS_QUIET") != "" {
 		return nil
 	}
-	return os.Stdout
+	if os.Getenv("BIFROST_E2E_CLIS_MIRROR") != "" {
+		return os.Stdout
+	}
+	return nil
 }
 
 func tailStr(s string, n int) string {
@@ -545,6 +686,19 @@ func tailStr(s string, n int) string {
 
 var reportMu sync.Mutex
 
+// turnRecord is one user→assistant exchange, as the report renders it. It is
+// deliberately the *extracted* conversation rather than the raw stream: the raw
+// transcript is kept in the sibling .transcript.log for debugging, but nobody
+// can read a conversation out of thousands of stream-JSON events.
+type turnRecord struct {
+	Index      int    `json:"index"`
+	Prompt     string `json:"prompt"`
+	Response   string `json:"response"`
+	Attachment string `json:"attachment,omitempty"`
+	DurationMs int64  `json:"durationMs"`
+	Error      string `json:"error,omitempty"`
+}
+
 type cellResult struct {
 	CLI            string
 	Provider       string
@@ -554,6 +708,7 @@ type cellResult struct {
 	Status         string
 	Reason         string
 	DurationMs     int64
+	Turns          []turnRecord
 	TranscriptPath string
 	MetaPath       string
 }
@@ -572,7 +727,7 @@ func reportsDir() string {
 	return "reports"
 }
 
-func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, status string, runErr error, softReason string, dur time.Duration, transcript string) {
+func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, status string, runErr error, softReason string, dur time.Duration, transcript string, turns []turnRecord) {
 	t.Helper()
 	reportMu.Lock()
 	defer reportMu.Unlock()
@@ -601,6 +756,7 @@ func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, stat
 		"status":     status,
 		"error":      errStr,
 		"durationMs": dur.Milliseconds(),
+		"turns":      turns,
 	}
 	b, _ := json.MarshalIndent(meta, "", "  ")
 	_ = os.WriteFile(metaPath, b, 0o644)
@@ -649,13 +805,14 @@ func loadReportResults(dir string) ([]cellResult, error) {
 			continue
 		}
 		var meta struct {
-			CLI        string `json:"cli"`
-			Provider   string `json:"provider"`
-			Scenario   string `json:"scenario"`
-			Model      string `json:"model"`
-			Status     string `json:"status"`
-			Error      string `json:"error"`
-			DurationMs int64  `json:"durationMs"`
+			CLI        string       `json:"cli"`
+			Provider   string       `json:"provider"`
+			Scenario   string       `json:"scenario"`
+			Model      string       `json:"model"`
+			Status     string       `json:"status"`
+			Error      string       `json:"error"`
+			DurationMs int64        `json:"durationMs"`
+			Turns      []turnRecord `json:"turns"`
 		}
 		if err := json.Unmarshal(b, &meta); err != nil {
 			continue
@@ -679,6 +836,7 @@ func loadReportResults(dir string) ([]cellResult, error) {
 			Status:         meta.Status,
 			Reason:         reason,
 			DurationMs:     meta.DurationMs,
+			Turns:          meta.Turns,
 			TranscriptPath: strings.TrimSuffix(metaPath, ".json") + ".transcript.log",
 			MetaPath:       metaPath,
 		})
@@ -716,43 +874,26 @@ func writeHTMLReport() error {
 	}
 
 	var body strings.Builder
-	body.WriteString(`<!doctype html><html><head><meta charset="utf-8"><title>Bifrost CLI Harness Report</title><style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;background:#f7f8fa;color:#151922}
-h1{margin:0 0 8px;font-size:24px}.muted{color:#667085}.summary{display:flex;gap:12px;margin:18px 0;flex-wrap:wrap}
-.pill{border-radius:999px;padding:6px 12px;background:white;border:1px solid #d0d5dd;font-weight:600}
-.pass{color:#067647}.soft_pass{color:#b54708}.fail{color:#b42318}.skip{color:#475467}.interrupted{color:#475467}
-table{width:100%;border-collapse:collapse;background:white;border:1px solid #d0d5dd}
-th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top;font-size:13px}
-th{position:sticky;top:0;background:#f2f4f7;z-index:1}.model{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-details{max-width:720px}summary{cursor:pointer;color:#344054}pre{white-space:pre-wrap;background:#101828;color:#f9fafb;border-radius:6px;padding:12px;max-height:360px;overflow:auto;font-size:12px}
-a{color:#175cd3;text-decoration:none}a:hover{text-decoration:underline}
-</style></head><body>`)
-	body.WriteString("<h1>Bifrost CLI Harness Report</h1>")
-	body.WriteString(`<div class="muted">Generated ` + html.EscapeString(time.Now().Format(time.RFC3339)) + `</div>`)
+	body.WriteString(reportHead)
+	body.WriteString(`<header><div><h1>Bifrost CLI Harness Report</h1>` +
+		`<span class="meta">Generated ` + html.EscapeString(time.Now().Format(time.RFC3339)) + `</span></div></header>`)
+
 	body.WriteString(`<div class="summary">`)
+	fmt.Fprintf(&body, `<span class="pill total">cells: %d</span>`, len(results))
 	for _, status := range []string{"pass", "soft_pass", "fail", "interrupted"} {
 		// pass/fail always render (a zero there is itself information);
 		// the qualified states only render when they actually occurred.
 		if counts[status] == 0 && status != "pass" && status != "fail" {
 			continue
 		}
-		fmt.Fprintf(&body, `<span class="pill %s">%s: %d</span>`, status, html.EscapeString(status), counts[status])
+		fmt.Fprintf(&body, `<span class="pill %s">%s: %d</span>`, pillClass(status), html.EscapeString(status), counts[status])
 	}
-	body.WriteString(`</div><table><thead><tr><th>Status</th><th>CLI</th><th>Provider</th><th>Model</th><th>Scenario</th><th>Effort</th><th>Duration</th><th>Reason</th><th>Logs</th></tr></thead><tbody>`)
+	fmt.Fprintf(&body, `<span class="pill total">turns: %d</span>`, totalTurns(results))
+	body.WriteString(`</div><main>`)
 	for _, result := range results {
-		body.WriteString("<tr>")
-		fmt.Fprintf(&body, `<td class="%s">%s</td>`, html.EscapeString(result.Status), html.EscapeString(result.Status))
-		body.WriteString("<td>" + html.EscapeString(result.CLI) + "</td>")
-		body.WriteString("<td>" + html.EscapeString(result.Provider) + "</td>")
-		body.WriteString(`<td class="model">` + html.EscapeString(result.Model) + "</td>")
-		body.WriteString("<td>" + html.EscapeString(result.Scenario) + "</td>")
-		body.WriteString("<td>" + html.EscapeString(result.Effort) + "</td>")
-		body.WriteString("<td>" + html.EscapeString((time.Duration(result.DurationMs) * time.Millisecond).Round(time.Millisecond).String()) + "</td>")
-		body.WriteString("<td>" + html.EscapeString(result.Reason) + "</td>")
-		body.WriteString("<td>" + transcriptDetails(result) + "</td>")
-		body.WriteString("</tr>")
+		body.WriteString(renderCellCard(result))
 	}
-	body.WriteString("</tbody></table></body></html>")
+	body.WriteString(`</main></body></html>`)
 
 	path := filepath.Join(dir, "index.html")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -774,15 +915,194 @@ func reportHTMLBestEffort() {
 	}
 }
 
+// reportHead is the report's document head. The palette, spacing and card
+// layout deliberately mirror the provider harness's viewer
+// (tests/e2e/api/runners/harness-viewer.mjs) so the two harnesses' reports read
+// as one family rather than two unrelated tools.
+//
+// Unlike that viewer, this report is a static file with no JavaScript: it is
+// uploaded as a CI artifact and published to R2, where it has to work as a
+// plain file open from disk. Expansion is therefore native <details>/<summary>
+// with the disclosure marker suppressed, not a click handler.
+const reportHead = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bifrost CLI Harness Report</title><style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#0d1117;color:#e6edf3}
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;border-bottom:1px solid #30363d;background:#161b22;position:sticky;top:0;z-index:10}
+header h1{font-size:16px;margin:0;font-weight:600;display:inline}
+header .meta{font-size:12px;color:#8b949e;margin-left:12px}
+.summary{padding:12px 24px;display:flex;gap:12px;font-size:13px;border-bottom:1px solid #30363d;flex-wrap:wrap}
+.pill{padding:4px 10px;border-radius:999px}
+.pill.pass{background:#1a4731;color:#4ade80}
+.pill.fail{background:#5b1a1a;color:#f87171}
+.pill.warn{background:#3a3a1a;color:#facc15}
+.pill.total{background:#1f2933;color:#93c5fd}
+main{padding:16px 24px 64px}
+.cell{border:1px solid #30363d;border-radius:8px;margin-bottom:12px;overflow:hidden}
+.cell-head{padding:10px 14px;display:grid;grid-template-columns:92px 1fr auto auto auto;gap:12px;align-items:center;cursor:pointer;list-style:none}
+.cell-head::-webkit-details-marker{display:none}
+.cell-head:hover{background:#161b22}
+.cell.failed .cell-head{background:#2d0f12}
+.cell.failed .cell-head:hover{background:#3a1418}
+.status{font-family:ui-monospace,monospace;font-weight:700;font-size:11px;padding:3px 8px;border-radius:4px;text-align:center}
+.status.ok{background:#0d3a2a;color:#4ade80}
+.status.err{background:#5b1a1a;color:#f87171}
+.status.warn{background:#3a3a1a;color:#facc15}
+.name{font-weight:600;font-size:14px}
+.name .folder{font-weight:400;color:#8b949e;font-size:12px;margin-left:8px;font-family:ui-monospace,monospace}
+.badge{font-family:ui-monospace,monospace;font-size:11px;color:#93c5fd;background:#1f2933;padding:3px 8px;border-radius:4px;white-space:nowrap}
+.dur{font-family:ui-monospace,monospace;font-size:12px;color:#8b949e;min-width:64px;text-align:right}
+.cell-body{padding:14px;border-top:1px solid #30363d;background:#0d1117}
+.panel{margin-bottom:14px}
+.panel h3{font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin:0 0 6px}
+pre{background:#161b22;border:1px solid #30363d;padding:10px;border-radius:6px;overflow-x:auto;font-size:12px;line-height:1.5;max-height:420px;white-space:pre-wrap;word-break:break-word;margin:0}
+a{color:#79c0ff;text-decoration:none}a:hover{text-decoration:underline}
+.reason{color:#f87171;font-size:13px}
+pre.convo{max-height:none;font-family:ui-monospace,monospace}
+/* The role marker is the only styled element in the transcript: colour is what
+   keeps it findable when a long multi-line message runs past it. */
+.role{font-weight:700}
+.role.user{color:#79c0ff}
+.role.assistant{color:#4ade80}
+.role.attachment{color:#8b949e}
+.role.error{color:#f87171}
+details.raw summary{cursor:pointer;color:#8b949e;font-size:12px;padding:4px 0}
+</style></head><body>`
+
+func pillClass(status string) string {
+	switch status {
+	case "pass":
+		return "pass"
+	case "fail":
+		return "fail"
+	default:
+		return "warn"
+	}
+}
+
+// statusClass maps a cell status onto the viewer's badge colours: green for a
+// clean pass, red for a regression, amber for the qualified states that are
+// neither.
+func statusClass(status string) string {
+	switch status {
+	case "pass":
+		return "ok"
+	case "fail":
+		return "err"
+	default:
+		return "warn"
+	}
+}
+
+func totalTurns(results []cellResult) int {
+	n := 0
+	for _, result := range results {
+		n += len(result.Turns)
+	}
+	return n
+}
+
+// renderCellCard renders one cell as an expandable card. Anything that did not
+// cleanly pass is expanded on load - the conversation is the first thing wanted
+// on a failure, and making someone click every red row to find it defeats the
+// purpose of recording it.
+func renderCellCard(result cellResult) string {
+	var b strings.Builder
+	cls := "cell"
+	open := ""
+	if result.Status != "pass" {
+		cls += " failed"
+		open = " open"
+	}
+	fmt.Fprintf(&b, `<details class="%s"%s><summary class="cell-head">`, cls, open)
+	fmt.Fprintf(&b, `<span class="status %s">%s</span>`,
+		statusClass(result.Status), html.EscapeString(strings.ToUpper(result.Status)))
+
+	scenario := result.Scenario
+	if result.Effort != "" {
+		scenario += " @" + result.Effort
+	}
+	fmt.Fprintf(&b, `<span class="name">%s<span class="folder">%s · %s</span></span>`,
+		html.EscapeString(scenario), html.EscapeString(result.CLI), html.EscapeString(result.Model))
+	fmt.Fprintf(&b, `<span class="badge">%s</span>`, html.EscapeString(turnsLabel(len(result.Turns))))
+	fmt.Fprintf(&b, `<span class="badge">%s</span>`, html.EscapeString(result.Provider))
+	fmt.Fprintf(&b, `<span class="dur">%s</span>`,
+		html.EscapeString((time.Duration(result.DurationMs)*time.Millisecond).Round(time.Millisecond).String()))
+	b.WriteString(`</summary><div class="cell-body">`)
+
+	if result.Reason != "" {
+		fmt.Fprintf(&b, `<div class="panel"><h3>reason</h3><div class="reason">%s</div></div>`,
+			html.EscapeString(result.Reason))
+	}
+	b.WriteString(conversationDetails(result))
+	b.WriteString(transcriptDetails(result))
+	b.WriteString(`</div></details>`)
+	return b.String()
+}
+
 func transcriptDetails(result cellResult) string {
 	transcript, _ := os.ReadFile(result.TranscriptPath)
 	relTranscript := html.EscapeString(filepath.Base(result.TranscriptPath))
 	relMeta := html.EscapeString(filepath.Base(result.MetaPath))
-	return fmt.Sprintf(`<a href="%s">json</a> · <a href="%s">transcript</a><details><summary>inline log</summary><pre>%s</pre></details>`,
-		relMeta,
-		relTranscript,
-		html.EscapeString(string(transcript)),
-	)
+
+	var b strings.Builder
+	b.WriteString(`<div class="panel"><h3>artifacts</h3>`)
+	fmt.Fprintf(&b, `<a href="%s">summary json</a> · <a href="%s">transcript</a>`, relMeta, relTranscript)
+	// The raw stream stays available but stays collapsed even on a failure: it
+	// is the debugging artefact, whereas the conversation above is the record
+	// anyone reads first.
+	fmt.Fprintf(&b, `<details class="raw"><summary>raw stream (%d bytes)</summary><pre>%s</pre></details>`,
+		len(transcript), html.EscapeString(string(transcript)))
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+// conversationDetails renders the cell's turns as a plain transcript - one
+// `<role>: <content>` line per message, in order, in a single block.
+//
+// Deliberately unstyled beyond role colouring: a conversation is a linear
+// thing, and wrapping each message in its own card makes a three-turn exchange
+// scroll like a dashboard. This is the same shape you would read in a chat log.
+// It is always expanded, since the enclosing cell card is what collapses.
+func conversationDetails(result cellResult) string {
+	if len(result.Turns) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, `<div class="panel"><h3>conversation · %s</h3><pre class="convo">`,
+		html.EscapeString(turnsLabel(len(result.Turns))))
+	for i, turn := range result.Turns {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		writeConvoLine(&b, "user", turn.Prompt)
+		if turn.Attachment != "" {
+			writeConvoLine(&b, "attachment", turn.Attachment)
+		}
+		response := turn.Response
+		if strings.TrimSpace(response) == "" {
+			// An empty response is itself the finding on a failed turn -- say so
+			// rather than emitting a blank line that reads as a rendering bug.
+			response = "(no assistant text extracted from this turn)"
+		}
+		writeConvoLine(&b, "assistant", response)
+		if turn.Error != "" {
+			writeConvoLine(&b, "error", turn.Error)
+		}
+	}
+	b.WriteString(`</pre></div>`)
+	return b.String()
+}
+
+// writeConvoLine emits one `role: content` line. The role is wrapped in a span
+// so it can be coloured, which is the only concession to styling - it keeps a
+// long multi-line message from visually swallowing the next role marker.
+func writeConvoLine(b *strings.Builder, role, content string) {
+	fmt.Fprintf(b, `<span class="role %s">%s:</span> %s`+"\n",
+		role, role, html.EscapeString(strings.TrimRight(content, "\n")))
 }
 
 func summarizeFailure(errStr string) string {
@@ -822,6 +1142,19 @@ func envDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envValue looks up key in a "K=V" slice of the kind runCell builds. It scans
+// backwards because os/exec resolves duplicate keys to the last occurrence, so
+// the last entry is the one the child process will actually see.
+func envValue(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			return strings.TrimPrefix(env[i], prefix), true
+		}
+	}
+	return "", false
 }
 
 func sortedKeys[V any](m map[string]V) []string {

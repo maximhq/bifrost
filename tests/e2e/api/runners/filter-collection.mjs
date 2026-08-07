@@ -14,6 +14,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
+import { walkRequests, buildProducerIndex, bodyDependencies } from "./lib/chained-vars.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -226,21 +227,59 @@ const passes = (item, ancestorNames) => {
     itemMatchesRerunFailed(item);
 };
 
-const filterTree = (items, ancestorNames = []) => {
+const filterTree = (items, keep) => {
   const out = [];
   for (const item of items) {
     if (Array.isArray(item.item)) {
-      const kids = filterTree(item.item, [...ancestorNames, item.name || ""]);
+      const kids = filterTree(item.item, keep);
       if (kids.length > 0) out.push({ ...item, item: kids });
-    } else if (passes(item, ancestorNames)) {
+    } else if (keep.has(item)) {
       out.push(item);
     }
   }
   return out;
 };
 
+// Chained requests: a body that drops in {{var}} is only valid if the request whose test script
+// sets that variable ran EARLIER IN THE SAME newman process - collection variables do not survive
+// across invocations. Every filter here can otherwise select a consumer without its producer:
+// --rerun-failed most obviously (a failed round 2 is rerun alone, and fails again with 400
+// "Invalid JSON" for a reason that has nothing to do with the defect being rerun), but also
+// --provider/--feature slicing whenever the two ends of a chain match differently. So after the
+// user's predicates decide the initial set, pull in each selected item's producers transitively.
+// Collection order is untouched, and producers already precede consumers there.
+const expandWithProducers = (selected, entries) => {
+  const producerIndex = buildProducerIndex(entries);
+
+  const keep = new Set(selected);
+  const queue = [...selected];
+  const pulled = [];
+  while (queue.length) {
+    const item = queue.pop();
+    // producerItem, not a by-name lookup: request names repeat throughout this
+    // collection, so resolving through the name can hand back a same-named
+    // request that sets nothing while the actual producer is never pulled in -
+    // leaving the consumer to fail on an unsubstituted {{var}}, which is the
+    // failure this whole function exists to prevent.
+    for (const { producer, producerItem: dep, variable } of bodyDependencies(item, producerIndex)) {
+      if (!dep || keep.has(dep)) continue;
+      keep.add(dep);
+      queue.push(dep);
+      pulled.push(`${item.name} <- ${variable} <- ${producer}`);
+    }
+  }
+  if (pulled.length) {
+    console.error(`[filter-collection] pulled in ${pulled.length} prerequisite request(s) for chained bodies:`);
+    for (const line of pulled) console.error(`  ${line}`);
+  }
+  return keep;
+};
+
 const collection = JSON.parse(readFileSync(SOURCE, "utf8"));
-const filtered = { ...collection, item: filterTree(collection.item || []) };
+const entries = walkRequests(collection.item || []);
+const selected = entries.filter(({ item, ancestors }) => passes(item, ancestors)).map(({ item }) => item);
+const keep = expandWithProducers(selected, entries);
+const filtered = { ...collection, item: filterTree(collection.item || [], keep) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;
 writeFileSync(OUT, JSON.stringify(filtered, null, 2));
 console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, rerun-failed=${RERUN_FAILED})`);

@@ -218,7 +218,17 @@ providers:
   
   nebius:
     image_generation: "black-forest-labs/flux-schnell"
-  
+
+  deepseek:
+    chat: "deepseek-v4-flash"
+    tools: "deepseek-v4-flash"
+    streaming: "deepseek-v4-flash"
+    thinking: "deepseek-v4-pro"
+    text_completion: "deepseek-v4-flash"
+    count_tokens: "deepseek-v4-flash"
+    alternatives:
+      - "deepseek-v4-pro"
+
   replicate:
     video: "openai/sora-2-pro"
 
@@ -242,6 +252,7 @@ provider_api_keys:
   azure: "AZURE_API_KEY"
   replicate: "REPLICATE_API_KEY"
   runway: "RUNWAY_API_KEY"
+  deepseek: "DEEPSEEK_API_KEY"
 
 # Provider test scenarios - which tests each provider supports
 provider_scenarios:
@@ -587,6 +598,45 @@ provider_scenarios:
   
   runway:
     video_generation: false # disabled for now because of long running operations
+
+  deepseek:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false  # DeepSeek models are text-only
+    image_base64: false
+    file_input: false
+    multiple_images: false
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: false  # provider returns unsupported-operation
+    thinking: true
+    prompt_caching: true  # DeepSeek context caching is automatic
+    list_models: true
+    responses: true  # routed through /chat/completions by default; DeepSeek's Anthropic-compatible endpoint only when use_anthropic_endpoints is set
+    responses_image: false
+    text_completion: true  # FIM completion (beta)
+    langchain_structured_output: true
+    pydantic_structured_output: true
+    pydanticai_streaming: true
+    batch_file_upload: false
+    batch_create: false
+    batch_list: false
+    batch_retrieve: false
+    batch_cancel: false
+    batch_inline: false  # DeepSeek does not support batch API
+    file_upload: false  # DeepSeek does not support Files API
+    file_list: false
+    file_retrieve: false
+    file_delete: false
+    file_content: false
+    count_tokens: true
 
 # Scenario to capability mapping
 # Maps test scenario names to their corresponding capability types

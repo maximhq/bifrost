@@ -53,12 +53,39 @@ const sanitizeTo = (src, dest) => {
   renameSync(partial, dest);
 };
 
+// A request skipped by pm.execution.skipRequest() produces NO entry in run.executions - newman
+// only records it under run.failures. That is how the chained-body guard stops a request whose
+// body variable never resolved (see lib/chained-vars.mjs), and every reader here keys off
+// run.executions, so without this the guarded item would vanish from the viewer, from
+// analyze-failures, and from --rerun-failed's failed set - a real failure reading as "not run".
+// Newman's own stats already count it (assertions.failed, requests.failed), so this only
+// restores it to the per-item views: a synthetic execution with no response, which every reader
+// already treats as a failure.
+const synthesizeSkippedExecutions = (report) => {
+  const run = report?.run;
+  if (!run) return report;
+  const seen = new Set((run.executions || []).map((e) => e.item?.name).filter(Boolean));
+  for (const failure of run.failures || []) {
+    const name = failure.source?.name;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    (run.executions ||= []).push({
+      item: { id: failure.source?.id, name },
+      request: failure.source?.request,
+      response: null,
+      assertions: [{ assertion: failure.error?.test || name, error: { message: failure.error?.message, name: failure.error?.name } }],
+      skipped: true,
+    });
+  }
+  return report;
+};
+
 // readReport parses a newman JSON report, transparently slimming it first if it exceeds
 // what Node can hold in a string. Throws with an actionable message rather than letting
 // an ERR_STRING_TOO_LONG stack trace escape.
 export const readReport = (path) => {
   const size = statSync(path).size;
-  if (size <= MAX_STRING) return JSON.parse(readFileSync(path, "utf8"));
+  if (size <= MAX_STRING) return synthesizeSkippedExecutions(JSON.parse(readFileSync(path, "utf8")));
 
   // Dot-prefixed on purpose: the Makefile merges per-provider reports with the glob
   // tmp/newman-report-*.json, and a sidecar named newman-report-slim.json would be swept
@@ -75,7 +102,7 @@ export const readReport = (path) => {
       try {
         const parsed = JSON.parse(readFileSync(slim, "utf8"));
         console.error(`[read-report] ${path} is ${mb(size)} (over Node's ~512MB string limit) - reusing ${slim}`);
-        return parsed;
+        return synthesizeSkippedExecutions(parsed);
       } catch {
         console.error(`[read-report] ${slim} is unreadable (truncated or mid-write) - regenerating`);
       }
@@ -100,5 +127,5 @@ export const readReport = (path) => {
     );
   }
   console.error(`[read-report] slimmed ${mb(size)} -> ${mb(slimSize)}`);
-  return JSON.parse(readFileSync(slim, "utf8"));
+  return synthesizeSkippedExecutions(JSON.parse(readFileSync(slim, "utf8")));
 };
