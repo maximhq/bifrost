@@ -56,6 +56,12 @@ type Tracer interface {
 	// The context should be used for subsequent operations to maintain span hierarchy.
 	StartSpan(ctx context.Context, name string, kind SpanKind) (context.Context, SpanHandle)
 
+	// StartSpanID is like StartSpan but returns the new span's ID instead of a
+	// context wrapped in a valueCtx. Callers that only mirror the ID into a
+	// *BifrostContext (via SetValue) use this to avoid a per-span context alloc.
+	// Returns ("", nil) when no trace is present or span creation fails.
+	StartSpanID(ctx context.Context, name string, kind SpanKind) (string, SpanHandle)
+
 	// EndSpan completes a span with status and optional message.
 	// Should be called when the operation represented by the span is complete.
 	EndSpan(handle SpanHandle, status SpanStatus, statusMsg string)
@@ -63,6 +69,12 @@ type Tracer interface {
 	// SetAttribute sets an attribute on the span.
 	// Attributes provide additional context about the operation.
 	SetAttribute(handle SpanHandle, key string, value any)
+
+	// SpanFromHandle resolves the *Span for a handle once, so a caller writing many
+	// attributes (e.g. the per-request LLM-call block) can call span.SetAttribute
+	// directly instead of paying a trace+span lookup on every attribute. Returns
+	// nil if the handle does not resolve; span.SetAttribute is nil-safe.
+	SpanFromHandle(handle SpanHandle) *Span
 
 	// GetSpanHandleByID retrieves a span handle for the given trace and span ID.
 	// If spanID is nil, returns a handle for the trace's root span.
@@ -202,11 +214,18 @@ func (n *NoOpTracer) StartSpan(ctx context.Context, _ string, _ SpanKind) (conte
 	return ctx, nil
 }
 
+// StartSpanID does nothing.
+func (n *NoOpTracer) StartSpanID(_ context.Context, _ string, _ SpanKind) (string, SpanHandle) {
+	return "", nil
+}
+
 // EndSpan does nothing.
 func (n *NoOpTracer) EndSpan(_ SpanHandle, _ SpanStatus, _ string) {}
 
 // SetAttribute does nothing.
 func (n *NoOpTracer) SetAttribute(_ SpanHandle, _ string, _ any) {}
+
+func (n *NoOpTracer) SpanFromHandle(_ SpanHandle) *Span { return nil }
 
 // GetSpanHandleByID returns nil.
 func (n *NoOpTracer) GetSpanHandleByID(_ string, _ *string) SpanHandle { return nil }
