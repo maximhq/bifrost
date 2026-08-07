@@ -471,7 +471,14 @@ func (s *Span) Reset() {
 	s.EndTime = time.Time{}
 	s.Status = SpanStatusUnset
 	s.StatusMsg = ""
-	s.Attributes = nil
+	// Reuse the attribute map across pool cycles: tracing/store.go clears and
+	// refills it, so nil-ing here forced a fresh map alloc per pooled span every
+	// request. Drop only an outlier-sized map so one huge request can't pin it.
+	if len(s.Attributes) > 64 {
+		s.Attributes = nil
+	} else {
+		clear(s.Attributes)
+	}
 	s.Events = s.Events[:0]
 }
 
