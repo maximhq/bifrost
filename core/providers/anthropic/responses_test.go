@@ -392,3 +392,34 @@ func TestToAnthropicResponsesRequest_ContextManagement_UnsupportedProviderExtraP
 		t.Errorf("expected context_management to be removed from the outgoing request's ExtraParams even though the feature gate is closed")
 	}
 }
+
+// TestAnthropicIngressLiftsServerSideToolOptIn covers issue #5679: the
+// include_server_side_tool_invocations opt-in arrives as an unregistered
+// Anthropic field (captured into ExtraParams) but the Gemini declaration-drop
+// gate reads the typed Params.IncludeServerSideToolInvocations, so the ingress
+// conversion must lift it. Without the lift, combining a server-side tool with
+// a function tool on /anthropic/v1/messages routed to Gemini silently drops
+// the function declarations.
+func TestAnthropicIngressLiftsServerSideToolOptIn(t *testing.T) {
+	body := []byte(`{
+		"model": "gemini-3-pro",
+		"max_tokens": 512,
+		"messages": [{"role": "user", "content": "search and compute"}],
+		"include_server_side_tool_invocations": true
+	}`)
+
+	var req AnthropicMessageRequest
+	if err := req.UnmarshalJSON(body); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	bifrostReq := req.ToBifrostResponsesRequest(nil)
+	if bifrostReq == nil || bifrostReq.Params == nil {
+		t.Fatal("converted request or params is nil")
+	}
+	if bifrostReq.Params.IncludeServerSideToolInvocations == nil ||
+		!*bifrostReq.Params.IncludeServerSideToolInvocations {
+		t.Fatalf("include_server_side_tool_invocations not lifted to typed param: %v",
+			bifrostReq.Params.IncludeServerSideToolInvocations)
+	}
+}

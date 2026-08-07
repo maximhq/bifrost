@@ -117,8 +117,48 @@ func TestRoundTrip_A_TopLevelSystemOnly(t *testing.T) {
 	}
 }
 
-// --- B: top-level system + mid-conv, supported ------------------------------
+// inlinedText renders the <system-reminder> envelope a mid-conversation system message takes when
+// it is inlined into a user turn (see inlineMidConversationSystem).
+func inlinedText(text string) string {
+	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+}
 
+// assertInlined asserts `text` reached the messages array wrapped in a user turn and did NOT get
+// hoisted into the top-level system block.
+func assertInlined(t *testing.T, outMsgs []AnthropicMessage, outSystem *AnthropicContent, text string) {
+	t.Helper()
+	want := inlinedText(text)
+	var found bool
+	for _, m := range outMsgs {
+		if m.Role != AnthropicMessageRoleUser {
+			continue
+		}
+		for _, got := range textBlocks(&m.Content) {
+			if got == want {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected %q inlined as a <system-reminder> user turn; roles = %q", text, roleSeq(outMsgs))
+	}
+	for _, got := range textBlocks(outSystem) {
+		if strings.Contains(got, text) {
+			t.Errorf("%q was hoisted into top-level system; that collapses the cached prefix", text)
+		}
+	}
+}
+
+// --- B: top-level system + mid-conv, supported model, ILLEGAL placement -----
+
+// The [user, assistant, system, user] shape here is Claude Code's real traffic shape, and it
+// violates both of Anthropic's placement clauses: the system turn follows an assistant rather
+// than a user, and is followed by a user rather than an assistant. The API rejects it with
+// "messages.2: role 'system' must follow a 'user' message". This test previously asserted the
+// converter forwards it as role:"system" — i.e. it certified a request the endpoint 400s on,
+// because the converter never checked placement and the round-trip never touched the API. The
+// converter now falls back to inlining, which is accepted and keeps the cache anchor in
+// `messages`. See TestRoundTrip_B2 for the legal placement that still forwards natively.
 func TestRoundTrip_B_TopLevelAndMidConv_Supported(t *testing.T) {
 	messages := []AnthropicMessage{
 		anthMsg(AnthropicMessageRoleUser, "Hello"),
@@ -130,23 +170,37 @@ func TestRoundTrip_B_TopLevelAndMidConv_Supported(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Anthropic, "claude-opus-4-8")
 
-	// Top-level system is unchanged.
-	got := textBlocks(outSystem)
-	if len(got) != 1 || got[0] != "You are a helpful assistant." {
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "You are a helpful assistant." {
 		t.Errorf("system = %v, want [\"You are a helpful assistant.\"]", got)
 	}
-	// Role sequence: user,assistant,system,user — mid-conv system preserved in array.
-	want := "user,assistant,system,user"
-	if roleSeq(outMsgs) != want {
+	if want := "user,assistant,user,user"; roleSeq(outMsgs) != want {
 		t.Errorf("role seq = %q, want %q", roleSeq(outMsgs), want)
 	}
-	// Mid-conv system carries the right text.
-	if outMsgs[2].Role != AnthropicMessageRoleSystem {
-		t.Fatalf("msg[2].role = %q, want system", outMsgs[2].Role)
+	assertInlined(t, outMsgs, outSystem, "From now on, be concise.")
+}
+
+// --- B2: top-level system + mid-conv, supported model, LEGAL placement ------
+
+// The native forwarding path: the system turn follows a user message and is followed by an
+// assistant turn, satisfying both clauses, so it is emitted as role:"system" unchanged.
+func TestRoundTrip_B2_MidConvLegalPlacement_Supported(t *testing.T) {
+	messages := []AnthropicMessage{
+		anthMsg(AnthropicMessageRoleUser, "Hello"),
+		anthMsg(AnthropicMessageRoleSystem, "From now on, be concise."),
+		anthMsg(AnthropicMessageRoleAssistant, "Understood."),
 	}
-	midText := textBlocks(&outMsgs[2].Content)
-	if len(midText) == 0 || midText[0] != "From now on, be concise." {
-		t.Errorf("mid-conv system text = %v, want [\"From now on, be concise.\"]", midText)
+	system := systemStr("You are a helpful assistant.")
+
+	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Anthropic, "claude-opus-4-8")
+
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "You are a helpful assistant." {
+		t.Errorf("system = %v, want [\"You are a helpful assistant.\"]", got)
+	}
+	if want := "user,system,assistant"; roleSeq(outMsgs) != want {
+		t.Fatalf("role seq = %q, want %q", roleSeq(outMsgs), want)
+	}
+	if got := textBlocks(&outMsgs[1].Content); len(got) == 0 || got[0] != "From now on, be concise." {
+		t.Errorf("mid-conv system text = %v, want [\"From now on, be concise.\"]", got)
 	}
 }
 
@@ -163,27 +217,21 @@ func TestRoundTrip_C_TopLevelAndMidConv_Bedrock(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Bedrock, "global.anthropic.claude-opus-4-8")
 
-	// System must contain BOTH initial and mid-conv text (appended, not overwritten).
-	got := textBlocks(outSystem)
-	if len(got) != 2 {
-		t.Fatalf("system blocks = %v (len=%d), want 2", got, len(got))
+	// Only the leading system prompt stays in the top-level block. Appending the mid-conversation
+	// text here (the previous behavior) renders it ahead of every message and invalidates the
+	// cached prefix behind it.
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "You are a helpful assistant." {
+		t.Errorf("system = %v, want exactly [\"You are a helpful assistant.\"]", got)
 	}
-	if got[0] != "You are a helpful assistant." {
-		t.Errorf("system[0] = %q, want \"You are a helpful assistant.\"", got[0])
-	}
-	if got[1] != "Be concise." {
-		t.Errorf("system[1] = %q, want \"Be concise.\"", got[1])
-	}
-	// No role:"system" in messages array.
 	for i, m := range outMsgs {
 		if m.Role == AnthropicMessageRoleSystem {
 			t.Errorf("msg[%d] has role:system — must not appear for Bedrock", i)
 		}
 	}
-	// Mid-conv system removed from message sequence.
-	if want := "user,assistant,user"; roleSeq(outMsgs) != want {
+	if want := "user,assistant,user,user"; roleSeq(outMsgs) != want {
 		t.Errorf("role seq = %q, want %q", roleSeq(outMsgs), want)
 	}
+	assertInlined(t, outMsgs, outSystem, "Be concise.")
 }
 
 // --- D: top-level system + mid-conv, unsupported model (Opus 4.7) -----------
@@ -199,26 +247,18 @@ func TestRoundTrip_D_TopLevelAndMidConv_Opus47(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Anthropic, "claude-opus-4-7")
 
-	// Initial system preserved; mid-conv appended.
-	got := textBlocks(outSystem)
-	if len(got) != 2 {
-		t.Fatalf("system blocks = %v (len=%d), want 2", got, len(got))
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "Initial instruction." {
+		t.Errorf("system = %v, want exactly [\"Initial instruction.\"]", got)
 	}
-	if got[0] != "Initial instruction." {
-		t.Errorf("system[0] = %q, want \"Initial instruction.\"", got[0])
-	}
-	if got[1] != "Be concise." {
-		t.Errorf("system[1] = %q, want \"Be concise.\"", got[1])
-	}
-	// No system role in messages.
 	for i, m := range outMsgs {
 		if m.Role == AnthropicMessageRoleSystem {
 			t.Errorf("msg[%d] has role:system for Opus 4.7", i)
 		}
 	}
-	if want := "user,assistant,user"; roleSeq(outMsgs) != want {
+	if want := "user,assistant,user,user"; roleSeq(outMsgs) != want {
 		t.Errorf("role seq = %q, want %q", roleSeq(outMsgs), want)
 	}
+	assertInlined(t, outMsgs, outSystem, "Be concise.")
 }
 
 // --- E: no top-level system, mid-conv only, supported -----------------------
@@ -233,18 +273,15 @@ func TestRoundTrip_E_NoTopLevelSystem_MidConvOnly_Supported(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, nil, schemas.Anthropic, "claude-opus-4-8")
 
-	// No top-level system expected.
+	// Nothing is promoted into the top-level system block: inlining leaves it empty, which is
+	// what keeps the (absent) prefix from being invalidated.
 	if outSystem != nil {
 		t.Errorf("system = %v, want nil (no initial system was set)", textBlocks(outSystem))
 	}
-	// Mid-conv system preserved at correct position.
-	if want := "user,assistant,system,user"; roleSeq(outMsgs) != want {
+	if want := "user,assistant,user,user"; roleSeq(outMsgs) != want {
 		t.Errorf("role seq = %q, want %q", roleSeq(outMsgs), want)
 	}
-	midText := textBlocks(&outMsgs[2].Content)
-	if len(midText) == 0 || midText[0] != "Only mid-conv instruction." {
-		t.Errorf("mid-conv text = %v, want [\"Only mid-conv instruction.\"]", midText)
-	}
+	assertInlined(t, outMsgs, outSystem, "Only mid-conv instruction.")
 }
 
 // --- F: no top-level system, mid-conv only, unsupported ---------------------
@@ -259,27 +296,25 @@ func TestRoundTrip_F_NoTopLevelSystem_MidConvOnly_Bedrock(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, nil, schemas.Bedrock, "global.anthropic.claude-opus-4-8")
 
-	// Mid-conv gets promoted to top-level system (no initial to append to).
-	got := textBlocks(outSystem)
-	if len(got) != 1 {
-		t.Fatalf("system blocks = %v (len=%d), want exactly 1 promoted block", got, len(got))
+	if outSystem != nil {
+		t.Errorf("system = %v, want nil — mid-conv content inlines rather than being promoted", textBlocks(outSystem))
 	}
-	if got[0] != "Mid-conv instruction." {
-		t.Errorf("system[0] = %q, want \"Mid-conv instruction.\"", got[0])
-	}
-	// No system role in messages.
 	for i, m := range outMsgs {
 		if m.Role == AnthropicMessageRoleSystem {
 			t.Errorf("msg[%d] has role:system for Bedrock", i)
 		}
 	}
-	if want := "user,assistant,user"; roleSeq(outMsgs) != want {
+	if want := "user,assistant,user,user"; roleSeq(outMsgs) != want {
 		t.Errorf("role seq = %q, want %q", roleSeq(outMsgs), want)
 	}
+	assertInlined(t, outMsgs, outSystem, "Mid-conv instruction.")
 }
 
 // --- G: multiple mid-conv system messages, supported -----------------------
 
+// Mixed placement in one request: Mid1 follows a user and is followed by an assistant (legal, so
+// it forwards natively), while Mid2 follows an assistant (illegal, so it inlines). The two are
+// decided independently — one bad placement does not force the whole request down the fallback.
 func TestRoundTrip_G_MultipleMidConv_Supported(t *testing.T) {
 	messages := []AnthropicMessage{
 		anthMsg(AnthropicMessageRoleUser, "Q1"),
@@ -292,23 +327,16 @@ func TestRoundTrip_G_MultipleMidConv_Supported(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Anthropic, "claude-opus-4-8")
 
-	// Top-level system untouched.
-	got := textBlocks(outSystem)
-	if len(got) != 1 || got[0] != "Initial." {
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "Initial." {
 		t.Errorf("system = %v, want [\"Initial.\"]", got)
 	}
-	// Both mid-conv system messages preserved in position.
-	if want := "user,system,assistant,system,user"; roleSeq(outMsgs) != want {
-		t.Errorf("role seq = %q, want %q", roleSeq(outMsgs), want)
+	if want := "user,system,assistant,user,user"; roleSeq(outMsgs) != want {
+		t.Fatalf("role seq = %q, want %q", roleSeq(outMsgs), want)
 	}
-	mid1 := textBlocks(&outMsgs[1].Content)
-	if len(mid1) == 0 || mid1[0] != "Mid1." {
-		t.Errorf("mid1 text = %v, want [\"Mid1.\"]", mid1)
+	if got := textBlocks(&outMsgs[1].Content); len(got) == 0 || got[0] != "Mid1." {
+		t.Errorf("mid1 (legal placement, forwarded) = %v, want [\"Mid1.\"]", got)
 	}
-	mid2 := textBlocks(&outMsgs[3].Content)
-	if len(mid2) == 0 || mid2[0] != "Mid2." {
-		t.Errorf("mid2 text = %v, want [\"Mid2.\"]", mid2)
-	}
+	assertInlined(t, outMsgs, outSystem, "Mid2.")
 }
 
 // --- H: multiple mid-conv system messages, unsupported ----------------------
@@ -325,29 +353,27 @@ func TestRoundTrip_H_MultipleMidConv_Bedrock(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Bedrock, "global.anthropic.claude-opus-4-8")
 
-	// All three system texts land in the top-level field in order.
-	got := textBlocks(outSystem)
-	if len(got) != 3 {
-		t.Fatalf("system blocks = %v (len=%d), want 3 (Initial+Mid1+Mid2)", got, len(got))
+	// Only the leading prompt stays hoisted; both reminders inline. Previously all three texts
+	// were concatenated into `system`, which is what pinned the cacheable prefix at the floor.
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != "Initial." {
+		t.Errorf("system = %v, want exactly [\"Initial.\"]", got)
 	}
-	for i, want := range []string{"Initial.", "Mid1.", "Mid2."} {
-		if got[i] != want {
-			t.Errorf("system[%d] = %q, want %q", i, got[i], want)
-		}
-	}
-	// No system role remains in the messages array.
 	for i, m := range outMsgs {
 		if m.Role == AnthropicMessageRoleSystem {
 			t.Errorf("msg[%d] has role:system — must not appear for Bedrock", i)
 		}
 	}
-	if want := "user,assistant,user"; roleSeq(outMsgs) != want {
+	if want := "user,user,assistant,user,user"; roleSeq(outMsgs) != want {
 		t.Errorf("role seq = %q, want %q", roleSeq(outMsgs), want)
 	}
+	assertInlined(t, outMsgs, outSystem, "Mid1.")
+	assertInlined(t, outMsgs, outSystem, "Mid2.")
 }
 
 // --- content-blocks variant: system sent as ContentBlocks not ContentStr ---
 
+// Placement here satisfies the follows-a-user clause but not the trailing clause (a user follows),
+// so even on a supporting model it takes the inline fallback rather than a 400.
 func TestRoundTrip_ContentBlocks_Supported(t *testing.T) {
 	initialText := "Initial (blocks)."
 	midText := "Mid (blocks)."
@@ -371,19 +397,13 @@ func TestRoundTrip_ContentBlocks_Supported(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Anthropic, "claude-opus-4-8")
 
-	// Top-level system preserved.
-	got := textBlocks(outSystem)
-	if len(got) != 1 || got[0] != initialText {
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != initialText {
 		t.Errorf("system = %v, want [%q]", got, initialText)
 	}
-	// Mid-conv system preserved in position.
-	if want := "user,system,user"; roleSeq(outMsgs) != want {
+	if want := "user,user,user"; roleSeq(outMsgs) != want {
 		t.Errorf("role seq = %q, want %q", roleSeq(outMsgs), want)
 	}
-	mid := textBlocks(&outMsgs[1].Content)
-	if len(mid) == 0 || mid[0] != midText {
-		t.Errorf("mid-conv text = %v, want [%q]", mid, midText)
-	}
+	assertInlined(t, outMsgs, outSystem, midText)
 }
 
 func TestRoundTrip_ContentBlocks_Bedrock(t *testing.T) {
@@ -409,22 +429,15 @@ func TestRoundTrip_ContentBlocks_Bedrock(t *testing.T) {
 
 	outMsgs, outSystem := roundTrip(t, messages, system, schemas.Bedrock, "global.anthropic.claude-opus-4-8")
 
-	// Both blocks merged into top-level system.
-	got := textBlocks(outSystem)
-	if len(got) != 2 {
-		t.Fatalf("system blocks = %v (len=%d), want 2", got, len(got))
-	}
-	if got[0] != initialText {
-		t.Errorf("system[0] = %q, want %q", got[0], initialText)
-	}
-	if got[1] != midText {
-		t.Errorf("system[1] = %q, want %q", got[1], midText)
+	if got := textBlocks(outSystem); len(got) != 1 || got[0] != initialText {
+		t.Errorf("system = %v, want exactly [%q]", got, initialText)
 	}
 	for i, m := range outMsgs {
 		if m.Role == AnthropicMessageRoleSystem {
 			t.Errorf("msg[%d] has role:system for Bedrock", i)
 		}
 	}
+	assertInlined(t, outMsgs, outSystem, midText)
 }
 
 // --- container_upload -------------------------------------------------------
