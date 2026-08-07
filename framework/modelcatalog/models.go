@@ -150,11 +150,63 @@ func (mc *ModelCatalog) GetDistinctBaseModelNames() []string {
 	return mc.datasheet.DistinctBaseModelNames()
 }
 
+// providerMemoEntry is a memoized GetProvidersForModel result and the
+// catalogGeneration it was computed under.
+type providerMemoEntry struct {
+	gen uint64
+	val []schemas.ModelProvider
+}
+
+// providerMemoMaxEntries bounds the memo; model strings are client-controlled
+// and would otherwise grow it without limit. On overflow the map is flushed
+// and hot entries repopulate on demand.
+const providerMemoMaxEntries = 4096
+
+// catalogGeneration sums the three stores' write counters. Every write bumps
+// exactly one counter by one, so the sum strictly increases and no two
+// catalog states share a value.
+func (mc *ModelCatalog) catalogGeneration() uint64 {
+	return mc.datasheet.WriteGen() + mc.keyconf.WriteGen() + mc.live.WriteGen()
+}
+
 // GetProvidersForModel returns every provider that can serve the model.
-// Composes across stores and applies the cross-provider special cases
-// (openrouter / vertex / groq-gpt / bedrock-claude) preserved verbatim from
-// the pre-refactor implementation.
+// Memoized per model (bounded, empty results uncached); any store write
+// invalidates (see catalogGeneration). Returns a fresh clone the caller
+// may mutate.
 func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvider {
+	gen := mc.catalogGeneration()
+
+	mc.providerMemoMu.RLock()
+	entry, ok := mc.providerMemo[model]
+	mc.providerMemoMu.RUnlock()
+	if ok && entry.gen == gen {
+		return slices.Clone(entry.val)
+	}
+
+	val := mc.computeProvidersForModel(model)
+	// Unknown models resolve to nothing; skipping memoising
+	if len(val) == 0 {
+		return val
+	}
+
+	// Stamp with the generation read before compute: a write during compute
+	// leaves the entry stale and the next call recomputes.
+	mc.providerMemoMu.Lock()
+	if mc.providerMemo == nil {
+		mc.providerMemo = make(map[string]providerMemoEntry)
+	}
+	if _, exists := mc.providerMemo[model]; !exists && len(mc.providerMemo) >= providerMemoMaxEntries {
+		mc.providerMemo = make(map[string]providerMemoEntry)
+	}
+	mc.providerMemo[model] = providerMemoEntry{gen: gen, val: val}
+	mc.providerMemoMu.Unlock()
+
+	return slices.Clone(val)
+}
+
+// computeProvidersForModel composes the uncached answer across stores,
+// including the openrouter / vertex / groq-gpt / bedrock-claude special cases.
+func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelProvider {
 	baseModel := mc.datasheet.BaseModelName(model)
 
 	providers := make([]schemas.ModelProvider, 0)
@@ -265,17 +317,25 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		return false
 	}
 
+	// Bare-name match needs no catalog access and covers most allowlists.
+	if slices.Contains(allowedModels, model) {
+		return true
+	}
+
+	// Only provider-prefixed entries ("openai/gpt-4o") need the provider
+	// catalog; build it once, and only when one exists.
+	if !slices.ContainsFunc(allowedModels, func(m string) bool { return strings.Contains(m, "/") }) {
+		return false
+	}
 	providerCatalogModels := mc.GetModelsForProvider(provider)
 	for _, allowedModel := range allowedModels {
-		if allowedModel == model {
-			return true
+		if !strings.Contains(allowedModel, "/") {
+			continue
 		}
-		if strings.Contains(allowedModel, "/") {
-			if slices.Contains(providerCatalogModels, allowedModel) {
-				_, modelPart := schemas.ParseModelString(allowedModel, "")
-				if modelPart == model {
-					return true
-				}
+		if slices.Contains(providerCatalogModels, allowedModel) {
+			_, modelPart := schemas.ParseModelString(allowedModel, "")
+			if modelPart == model {
+				return true
 			}
 		}
 	}

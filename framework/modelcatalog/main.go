@@ -34,6 +34,12 @@ type ModelCatalog struct {
 	live      *live.Store
 	keyconf   *keyconfig.Store
 
+	// providerMemo caches GetProvidersForModel per model, stamped with
+	// catalogGeneration() at compute time; any store write invalidates every
+	// entry. Capped at providerMemoMaxEntries, flushed on overflow.
+	providerMemoMu sync.RWMutex
+	providerMemo   map[string]providerMemoEntry
+
 	// MCP library sync configuration (protected by syncMu)
 	mcpLibraryURL          string
 	mcpLibrarySyncInterval time.Duration
@@ -89,9 +95,10 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 			ModelParametersURL: modelParametersURL,
 			SyncInterval:       syncInterval,
 		}),
-		live:    live.New(logger),
-		keyconf: keyconfig.New(logger),
-		done:    make(chan struct{}),
+		live:         live.New(logger),
+		keyconf:      keyconfig.New(logger),
+		providerMemo: make(map[string]providerMemoEntry),
+		done:         make(chan struct{}),
 	}
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 
