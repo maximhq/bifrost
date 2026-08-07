@@ -21,6 +21,7 @@ func TestToolResultNestedSmithyTypeStaysText(t *testing.T) {
 	}{
 		{"nested __type", `{"q": {"__type": 1}}`, false},
 		{"nested __type with escaped underscore", `{"q": {"\u005f_type": 1}}`, false},
+		{"nested __type with escaped letter", `{"q": {"__\u0074ype": 1}}`, false},
 		{"array wraps to nested __type", `[{"__type": 1}]`, false},
 		{"deeply nested __type", `{"a": {"b": [{"c": {"__type": "x"}}]}}`, false},
 		{"top-level __type only", `{"__type": 1}`, true},

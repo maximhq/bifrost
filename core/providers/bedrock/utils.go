@@ -2399,11 +2399,12 @@ func decodeBedrockToolResultEnvelope(s string) ([]BedrockContentBlock, bool) {
 // as a typed union and rejects the request with a non-retryable
 // ValidationException (issue #5762). Top-level "__type" is accepted, verified
 // live against Bedrock. The byte scan short-circuits the decode for the
-// overwhelmingly common case of documents without the key; the \u005 check
-// keeps unicode-escaped underscores ("__type") from slipping past it,
-// since Bedrock validates the decoded key either way.
+// overwhelmingly common case of documents without the key. Any \u escape also
+// triggers the full check: json.Compact preserves escapes verbatim, so every
+// character of "__type" can arrive escaped (e.g. "__\u0074ype") and only the
+// decoded walk sees the real key, which is what Bedrock validates against.
 func containsNestedSmithyType(compacted []byte) bool {
-	if !bytes.Contains(compacted, []byte(`"__type"`)) && !bytes.Contains(compacted, []byte(`\u005`)) {
+	if !bytes.Contains(compacted, []byte(`"__type"`)) && !bytes.Contains(compacted, []byte(`\u`)) {
 		return false
 	}
 	var doc interface{}
