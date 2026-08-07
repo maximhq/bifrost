@@ -733,6 +733,19 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	return nil
 }
 
+func (m *MockConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) error {
+	if m.mcpConfig != nil {
+		for _, cfg := range m.mcpConfig.ClientConfigs {
+			if cfg.ID == clientID {
+				cfg.DiscoveredTools = tools
+				cfg.DiscoveredToolNameMapping = toolNameMapping
+				return nil
+			}
+		}
+	}
+	return configstore.ErrNotFound
+}
+
 func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params configstore.MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
 	return nil, 0, nil
 }
