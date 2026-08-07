@@ -296,6 +296,11 @@ export interface VideoCreateError {
 	message?: string;
 }
 
+export interface ContentFilterInfo {
+	filtered_count?: number;
+	reasons?: string[];
+}
+
 export interface VideoObject {
 	id: string;
 	object: string;
@@ -307,7 +312,7 @@ export interface VideoObject {
 	progress?: number;
 	prompt: string;
 	remixed_from_video_id?: string;
-	seconds: number;
+	seconds?: string;
 	size: string;
 	error?: VideoCreateError;
 	url?: string;
@@ -331,9 +336,10 @@ export interface BifrostVideoGenerationOutput {
 	progress?: number;
 	prompt?: string;
 	remixed_from_video_id?: string;
-	seconds?: number;
+	seconds?: string;
 	size?: string;
 	status?: string;
+	content_filter?: ContentFilterInfo;
 }
 
 export interface BifrostVideoDownloadOutput {
