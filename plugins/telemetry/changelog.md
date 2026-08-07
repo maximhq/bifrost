@@ -1,4 +1,0 @@
-- feat: add service instance id to the exported telemetry attributes (#5849)
-- feat: add team / customer / business-unit ids and names to exported metrics (#5848)
-- fix: normalize and whitespace-trim attribute values when exporting metrics (#5847)
-- chore: upgraded core to v1.7.7 and framework to v1.5.7
