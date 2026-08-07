@@ -111,7 +111,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 		for _, sn := range availableServers {
 			errorMsg += fmt.Sprintf("  - %s\n", sn)
 		}
-		return createToolResponseMessage(toolCall, errorMsg), nil
+		return createToolResponseMessage(toolCall, errorMsg, true), nil
 	}
 
 	// Handle tool not found
@@ -127,13 +127,13 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 		for _, t := range availableTools {
 			errorMsg += fmt.Sprintf("  - %s\n", t)
 		}
-		return createToolResponseMessage(toolCall, errorMsg), nil
+		return createToolResponseMessage(toolCall, errorMsg, true), nil
 	}
 
 	// Generate detailed documentation using generateTypeDefinitions
 	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true)
 
-	return createToolResponseMessage(toolCall, docContent), nil
+	return createToolResponseMessage(toolCall, docContent, false), nil
 }
 
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.

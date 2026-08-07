@@ -16,6 +16,16 @@ type scenario struct {
 	Supports    func(cliID, providerID string, model ModelInfo) bool // matrix gate (per cell)
 	ErrorIgnore []string                                             // sentinels to whitelist before error scan
 	Turns       []Turn
+
+	// Efforts, if non-empty, runs this scenario once per effort level as a
+	// nested t.Run subtest (TestCLIs/<cli>/<provider>/<model>/<scenario>/<effort>),
+	// for cells with model.AdaptiveThinking and cli.EffortArgs != nil. Cells
+	// without an effort surface still run the scenario once at the CLI's
+	// default effort -- this sweep multiplies runs, it never gates them.
+	// Only wired for single-turn scenarios (len(Turns) == 1) -- runCell
+	// t.Fatalf's if a multi-turn scenario sets this, since effort isn't
+	// threaded through the multi-turn drivers.
+	Efforts []string
 }
 
 func supportsCLIProviderModel(cliID, providerID string, model ModelInfo) bool {
@@ -52,6 +62,9 @@ func allScenarios() []scenario {
 		conversationMemoryScenario(),
 		conversationRefinementScenario(),
 		conversationRoleStabilityScenario(),
+		subagentDelegationScenario(),
+		imageQAScenario(),
+		pdfQAScenario(),
 	}
 }
 
@@ -298,4 +311,155 @@ func conversationRoleStabilityScenario() scenario {
 			},
 		},
 	}
+}
+
+// 09 subagent-delegation — the CLI's own subagent-delegation tool (Claude
+// Code's Agent/Task tool, or Codex's spawn_agent collab-tool) spawns a
+// nested subagent that makes its own separate LLM call. Proves that traffic
+// shape (a completion whose tool call triggers an additional completion with
+// a different system prompt/tool schema, multiplexed into one streamed
+// response) round-trips correctly through Bifrost. claude + codex only: see
+// README "Known limitations" for why OpenCode is deferred.
+func subagentDelegationScenario() scenario {
+	const subagentToken = "OKSUBAGENT_73129"
+	return scenario{
+		ID:          "subagent-delegation",
+		ModelKind:   "chat",
+		Supports:    supportsSubagentDelegation,
+		ErrorIgnore: []string{subagentToken, "SUBAGENT_RELAY", agentToolUseMarker},
+		Turns: []Turn{
+			// Turn 1 asserts only that delegation was actually attempted (via
+			// the tool-use marker), NOT that the result came back. The parent
+			// agent does not reliably block on the subagent -- observed in
+			// practice: "The subagent is still running. I'll relay its exact
+			// response when it completes." Asserting the relay here would make
+			// the scenario flaky for a behavior that isn't the thing under test.
+			{
+				Send: "Delegate this task to a subagent right now: spawn a subagent and give it exactly " +
+					"this task - \"Reply with exactly the token " + subagentToken + " and nothing else.\" " +
+					"Do not answer this yourself, do not simulate the subagent, and do not just type the " +
+					"expected output - you must actually delegate this to a real subagent.",
+				AssertText: []string{agentToolUseMarker},
+				AssertNotText: []string{
+					"don't have subagents", "no subagent", "cannot spawn", "can't spawn",
+					"can't delegate", "unable to delegate",
+				},
+				Timeout: 180 * time.Second,
+			},
+			// Turn 2 is where the round trip is actually proven: the subagent's
+			// own separate completion has to have come back through Bifrost and
+			// landed in the parent's context for the token to be reportable.
+			{
+				Send: "What exact token did that subagent reply with? Wait for it to finish if it is " +
+					"still running. Do not spawn another subagent. Reply with the token on its own line " +
+					"prefixed with 'SUBAGENT_RELAY: '.",
+				AssertText: []string{"SUBAGENT_RELAY:", subagentToken},
+				Timeout:    180 * time.Second,
+			},
+		},
+	}
+}
+
+// supportsSubagentDelegation gates the subagent-delegation scenario to
+// claude and codex (both have a confirmed, cited subagent-delegation tool;
+// OpenCode's `task` tool's event visibility in `opencode run --format json`
+// is unconfirmed, see README), and to a single ("chat" default) model per
+// provider -- this scenario is inherently >=2 LLM calls per turn (top-level
+// + subagent), so the full model sweep isn't worth the extra cost.
+func supportsSubagentDelegation(cliID, providerID string, model ModelInfo) bool {
+	if cliID != "claude" && cliID != "codex" {
+		return false
+	}
+	if !supportsCLIProviderModel(cliID, providerID, model) {
+		return false
+	}
+	prov, ok := providers[providerID]
+	return ok && model.ID == prov.chatModel().ID
+}
+
+// 10 image-qa — the model receives a genuine image attachment (not just a
+// file path) and must answer questions requiring real visual/OCR
+// understanding: a token rendered as text, a fact written in the image, and
+// the color of a drawn shape. Claude has no CLI-level image-attach flag --
+// its multimodal path is the Read tool, triggered by a path in the prompt
+// (confirmed via https://code.claude.com/docs/en/tools-reference: "Images:
+// PNG, JPG, and other image formats are returned as visual content that
+// Claude can see"). Codex attaches via -i/--image (confirmed via
+// `codex exec --help` and
+// https://learn.chatgpt.com/docs/developer-commands?surface=cli). Both
+// mechanisms are exercised: AttachImage drives Codex's flag, and the Send
+// prompt separately mentions the path so Claude's Read tool can open it.
+// Runs at low and high effort (see Efforts) for models that support it.
+func imageQAScenario() scenario {
+	fixture, _ := filepath.Abs("fixtures/sample.png")
+	return scenario{
+		ID:          "image-qa",
+		ModelKind:   "chat",
+		Supports:    supportsImageQA,
+		ErrorIgnore: []string{"IMAGE_FIXTURE_58204"},
+		Efforts:     []string{"low", "high"},
+		Turns: []Turn{{
+			Send: "Look at the attached image and answer three things: (1) the hidden verification " +
+				"token rendered as text in the image, (2) the name of the metal mentioned in the " +
+				"image's text, (3) the color of the square shown in the image. If the image was not " +
+				"attached directly and you need to open it yourself, its absolute path is " + fixture +
+				" - use your image/file viewing tool to open it. Do not guess - actually look at the image.",
+			AttachImage:    fixture,
+			AssertText:     []string{"IMAGE_FIXTURE_58204"},
+			AssertTextFold: []string{"gold", "red"},
+			AssertNotText: []string{
+				"don't have access to images", "cannot view images", "unable to view",
+				"can't see images", "no image was attached", "don't have the ability to view",
+			},
+			Timeout: 120 * time.Second,
+		}},
+	}
+}
+
+func supportsImageQA(cliID, providerID string, m ModelInfo) bool {
+	if cliID != "claude" && cliID != "codex" {
+		return false
+	}
+	return supportsCLIProviderModel(cliID, providerID, m)
+}
+
+// 11 pdf-qa — the model reads a real PDF document (not a .txt file) and
+// must answer questions from its content, exercising genuine document
+// parsing rather than plain-text file reading. Claude only: PDF attachment
+// has no CLI flag on either CLI, and Claude's Read tool natively handles
+// PDFs (whole-file for short documents, paged for >10 pages, per
+// https://code.claude.com/docs/en/tools-reference), while Codex's only
+// attachment mechanism (-i/--image) is confirmed image-only -- the
+// UserInput wire-protocol enum (codex-rs/protocol/src/user_input.rs,
+// rust-v0.145.0) has no document/PDF variant, and no PDF-related flag
+// exists anywhere in `codex exec --help`. Runs at low and high effort (see
+// Efforts) for models that support it.
+func pdfQAScenario() scenario {
+	fixture, _ := filepath.Abs("fixtures/sample.pdf")
+	return scenario{
+		ID:          "pdf-qa",
+		ModelKind:   "chat",
+		Supports:    supportsPDFQA,
+		ErrorIgnore: []string{"PDF_FIXTURE_29104"},
+		Efforts:     []string{"low", "high"},
+		Turns: []Turn{{
+			Send: "Read the PDF at " + fixture + " using your file tool. After reading it, reply with: " +
+				"(1) the hidden verification token in the document, (2) the name of the river mentioned " +
+				"in the document.",
+			AssertText:     []string{"PDF_FIXTURE_29104"},
+			AssertTextFold: []string{"Nile"},
+			AssertNotText: []string{
+				"don't have access to file", "cannot read files", "unable to read",
+				"can't open pdf", "cannot open pdf", "unable to open pdf",
+			},
+			Timeout: 120 * time.Second,
+		}},
+	}
+}
+
+func supportsPDFQA(cliID, providerID string, m ModelInfo) bool {
+	if cliID != "claude" {
+		return false
+	}
+	return supportsCLIProviderModel(cliID, providerID, m)
 }

@@ -768,6 +768,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					toolResult := AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeToolResult,
 						ToolUseID: &sanitizedToolUseID,
+						IsError:   toolMsg.ChatToolMessage.IsError,
 					}
 
 					// Convert tool result content
@@ -1765,17 +1766,29 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 			streamMessage := &AnthropicMessageResponse{
 				ID:    bifrostResp.ID,
 				Type:  "message",
-				Role:  string(choice.ChatNonStreamResponseChoice.Message.Role),
+				Role:  string(schemas.ChatMessageRoleAssistant),
 				Model: bifrostResp.Model,
+				// usage is required by strict Anthropic clients on message_start
+				// (@ai-sdk/anthropic's schema marks usage.input_tokens non-optional), and
+				// the real counts only land on the terminal message_delta — see the same
+				// reasoning on the Responses converter in responses.go.
+				Usage: &AnthropicUsage{},
 			}
 
-			// Convert content
-			var content []AnthropicContentBlock
-			if choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil {
-				content = append(content, AnthropicContentBlock{
-					Type: AnthropicContentBlockTypeText,
-					Text: choice.ChatNonStreamResponseChoice.Message.Content.ContentStr,
-				})
+			// Convert content. Always an array, never null: the message_start schema
+			// types content as a list, so a nil slice is rejected outright.
+			content := []AnthropicContentBlock{}
+			message := choice.ChatNonStreamResponseChoice.Message
+			if message != nil {
+				if message.Role != "" {
+					streamMessage.Role = string(message.Role)
+				}
+				if message.Content != nil && message.Content.ContentStr != nil {
+					content = append(content, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: message.Content.ContentStr,
+					})
+				}
 			}
 
 			streamMessage.Content = content
@@ -1789,12 +1802,19 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 
 	// Handle usage information
 	if bifrostResp.Usage != nil {
-		if streamResp.Type == "" {
-			streamResp.Type = "message_delta"
-		}
-		streamResp.Usage = &AnthropicUsage{
+		usage := &AnthropicUsage{
 			InputTokens:  bifrostResp.Usage.PromptTokens,
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
+		}
+		// On message_start usage is nested under message.usage; only message_delta
+		// carries it at the top level.
+		if streamResp.Type == AnthropicStreamEventTypeMessageStart && streamResp.Message != nil {
+			streamResp.Message.Usage = usage
+		} else {
+			if streamResp.Type == "" {
+				streamResp.Type = "message_delta"
+			}
+			streamResp.Usage = usage
 		}
 	}
 
@@ -1802,10 +1822,10 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 	if bifrostResp.ID != "" {
 		streamResp.ID = &bifrostResp.ID
 	}
-	if bifrostResp.Model != "" {
-		if streamResp.Message == nil {
-			streamResp.Message = &AnthropicMessageResponse{}
-		}
+	// message_start is the only Anthropic event carrying a message object; attaching a
+	// stub one to a delta frame emits an object with empty id/type/role and null content
+	// that strict clients reject.
+	if bifrostResp.Model != "" && streamResp.Message != nil {
 		streamResp.Message.Model = bifrostResp.Model
 	}
 

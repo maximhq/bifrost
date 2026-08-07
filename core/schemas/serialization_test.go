@@ -1223,6 +1223,26 @@ func TestNormalizeResponsesToolType(t *testing.T) {
 		// memory versioned aliases
 		{"memory_20250818", ResponsesToolTypeMemory},
 
+		// tool_search variants (issue #5279) — both variants, dated and undated.
+		// The dated forms used to fall through to the default branch, which is
+		// what made Anthropic treat the server-side meta-tool as a client tool.
+		{ResponsesToolTypeToolSearch, ResponsesToolTypeToolSearch},
+		{"tool_search_tool_regex_20251119", ResponsesToolTypeToolSearch},
+		{"tool_search_tool_bm25_20251119", ResponsesToolTypeToolSearch},
+		{"tool_search_tool_regex", ResponsesToolTypeToolSearch},
+		{"tool_search_tool_bm25", ResponsesToolTypeToolSearch},
+
+		// Types that merely share the tool_search prefix are NOT tool-search
+		// variants and must reach unknown-tool handling rather than being
+		// collapsed onto the canonical type. Anthropic documents exactly two
+		// variants -- tool_search_tool_{regex,bm25}_20251119 -- so anything
+		// else under this prefix is a type Bifrost does not yet understand.
+		// Cite: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+		{"tool_search_preview", "tool_search_preview"},
+		{"tool_search_tool_semantic_20260101", "tool_search_tool_semantic_20260101"},
+		// "regex"/"bm25" appearing anywhere in the string is not enough either.
+		{"custom_regex_search", "custom_regex_search"},
+
 		// Unrecognized types pass through unchanged
 		{"totally_unknown", "totally_unknown"},
 		{"mcp", ResponsesToolTypeMCP},
@@ -1248,6 +1268,7 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		wantComputer   bool
 		wantCodeInterp bool
 		wantAdvisor    bool
+		wantToolSearch bool
 		wantModel      string
 	}{
 		// web_search variants
@@ -1279,6 +1300,11 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 		{name: "advisor canonical", input: `{"type":"advisor","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
 		{name: "advisor_20260301", input: `{"type":"advisor_20260301","name":"advisor","model":"claude-opus-4-8"}`, wantType: ResponsesToolTypeAdvisor, wantAdvisor: true, wantModel: "claude-opus-4-8"},
 
+		// tool_search variants → tool_search (issue #5279)
+		{name: "tool_search canonical", input: `{"type":"tool_search"}`, wantType: ResponsesToolTypeToolSearch, wantToolSearch: true},
+		{name: "tool_search_tool_regex_20251119", input: `{"type":"tool_search_tool_regex_20251119","name":"tool_search_tool_regex"}`, wantType: ResponsesToolTypeToolSearch, wantToolSearch: true},
+		{name: "tool_search_tool_bm25_20251119", input: `{"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}`, wantType: ResponsesToolTypeToolSearch, wantToolSearch: true},
+
 		// unrecognized types pass through unchanged
 		{name: "function unchanged", input: `{"type":"function","name":"foo","strict":true}`, wantType: ResponsesToolTypeFunction},
 		{name: "custom unchanged", input: `{"type":"custom","name":"bar"}`, wantType: ResponsesToolTypeCustom},
@@ -1306,6 +1332,9 @@ func TestResponsesTool_UnmarshalJSON_NormalizesVersionedToolTypes(t *testing.T) 
 			if tt.wantAdvisor {
 				require.NotNil(t, tool.ResponsesToolAdvisor, "ResponsesToolAdvisor should be populated")
 				assert.Equal(t, tt.wantModel, tool.ResponsesToolAdvisor.Model)
+			}
+			if tt.wantToolSearch {
+				assert.NotNil(t, tool.ResponsesToolToolSearch, "ResponsesToolToolSearch should be populated")
 			}
 		})
 	}

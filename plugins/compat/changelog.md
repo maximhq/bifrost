@@ -1,1 +1,3 @@
+- fix: scope the compat plugin's dropped-parameter list to the request that produced it - the list was held on the process-wide plugin struct, so concurrent requests raced on it and `extra_fields.dropped_compat_plugin_params` could report another request's dropped params (#5902)
+- feat: log parameters scrubbed by `should_drop_params` at Debug, and a dropped `service_tier` at Warn - a silently stripped `service_tier` downgrades the request to the provider's default tier with no upstream error, which was previously untraceable (#5902)
 - chore: upgraded core to v1.7.6 and framework to v1.5.6

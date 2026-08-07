@@ -4599,6 +4599,15 @@ func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.
 			}
 			return err
 		}
+		// Same ownership boundary as UpdateBudget: the four counters are advanced
+		// by the governance dump path and UpdateRateLimitUsage, never by a
+		// configuration write, which is why GenerateRateLimitHash excludes them.
+		// The existing row is already read under the same lock that guards the
+		// Save below, so this adds no new race window.
+		rateLimit.TokenCurrentUsage = existing.TokenCurrentUsage
+		rateLimit.TokenLastReset = existing.TokenLastReset
+		rateLimit.RequestCurrentUsage = existing.RequestCurrentUsage
+		rateLimit.RequestLastReset = existing.RequestLastReset
 	}
 	if err := txDB.WithContext(ctx).Save(rateLimit).Error; err != nil {
 		return s.parseGormError(err)
@@ -4746,6 +4755,18 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 			}
 			return err
 		}
+		// Usage accounting is runtime-owned, never authored by a configuration
+		// write: it is advanced by the governance dump path and UpdateBudgetUsage,
+		// which is why GenerateBudgetHash excludes both columns. Carrying them
+		// forward is what stops a source_of_truth=config.json startup force-sync
+		// from replaying the file row's zero values over live accounting — the
+		// file declares max_limit and reset_duration, so a whole-row Save of it
+		// would otherwise write current_usage=0 and a zero last_reset.
+		//
+		// Consequence: current_usage / last_reset in config.json are seed values
+		// applied by CreateBudget on first import, and inert thereafter.
+		budget.CurrentUsage = existing.CurrentUsage
+		budget.LastReset = existing.LastReset
 		// Overrides are managed by the dedicated override path, not UpdateBudget;
 		// carry them forward so partial updates can't wipe an active override.
 		// The grant columns must travel with the derived remaining count: dropping

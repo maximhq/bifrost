@@ -144,7 +144,7 @@ func TestConvertBifrostReasoning_BothSummaryAndEncryptedContentEmitBothBlocks(t 
 		},
 	}
 
-	blocks := convertBifrostReasoningToAnthropicThinking(msg, schemas.OpenAI, "gpt-5")
+	blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.OpenAI, "gpt-5")
 
 	var sawThinking, sawRedacted bool
 	for _, b := range blocks {
@@ -202,7 +202,7 @@ func TestBifrostAnthropicToOpenAI_RedactedThinkingReplayPreservesID(t *testing.T
 	}
 
 	// 2. Egress: convert to the Anthropic block Claude Code receives.
-	blocks := convertBifrostReasoningToAnthropicThinking(original, schemas.OpenAI, "gpt-5")
+	blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), original, schemas.OpenAI, "gpt-5")
 	if len(blocks) != 1 || blocks[0].Type != AnthropicContentBlockTypeRedactedThinking {
 		t.Fatalf("expected 1 redacted_thinking block, got %+v", blocks)
 	}

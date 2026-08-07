@@ -39,8 +39,12 @@ func (p *testRealtimeObservabilityPlugin) Inject(_ context.Context, trace *schem
 		p.injected <- nil
 		return nil
 	}
-	traceCopy := *trace
-	p.injected <- &traceCopy
+	// SnapshotForExport, not `*trace`: Trace carries a sync.Mutex, so a struct
+	// copy duplicates the lock (go vet: "assignment copies lock value") and
+	// still shares the Spans slice and attribute maps with the original. The
+	// helper takes the lock and deep-copies spans and maps, which is what a
+	// snapshot handed across a channel actually needs.
+	p.injected <- trace.SnapshotForExport()
 	return nil
 }
 

@@ -1460,6 +1460,11 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 		if model == "" {
 			model = resp.ExtraFields.OriginalModelRequested
 		}
+		// message_start.usage is always emitted, even though Converse has no counts this
+		// early: Anthropic populates it on every real stream and strict clients treat it as
+		// required (@ai-sdk/anthropic's schema marks usage.input_tokens non-optional), so a
+		// missing key aborts the stream before the first token — see #5885. Zeros are the
+		// placeholder; the authoritative figures land on message_delta below.
 		msgStart := map[string]interface{}{
 			"type": "message_start",
 			"message": map[string]interface{}{
@@ -1468,6 +1473,10 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 				"role":    "assistant",
 				"content": []interface{}{},
 				"model":   model,
+				"usage": map[string]interface{}{
+					"input_tokens":  0,
+					"output_tokens": 0,
+				},
 			},
 		}
 		if resp.Response != nil {
@@ -1476,6 +1485,20 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			}
 			if resp.Response.ID != nil {
 				msgStart["message"].(map[string]interface{})["id"] = *resp.Response.ID
+			}
+			if resp.Response.Usage != nil {
+				usage := buildBedrockTokenUsage(resp.Response.Usage)
+				usageMap := map[string]interface{}{
+					"input_tokens":  usage.InputTokens,
+					"output_tokens": usage.OutputTokens,
+				}
+				if usage.CacheReadInputTokens > 0 {
+					usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+				}
+				if usage.CacheWriteInputTokens > 0 {
+					usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+				}
+				msgStart["message"].(map[string]interface{})["usage"] = usageMap
 			}
 		}
 		event = msgStart
