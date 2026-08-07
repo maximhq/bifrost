@@ -488,6 +488,119 @@ func TestTracesEnabledStorageRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMergedResolvedHeaders verifies per-signal headers overlay the common ones (same key
+// wins), env refs resolve, and the inputs are not mutated.
+func TestMergedResolvedHeaders(t *testing.T) {
+	t.Setenv("OTEL_TOKEN", "resolved")
+	common := map[string]string{"Authorization": "env.OTEL_TOKEN", "X-Shared": "base"}
+	overlay := map[string]string{"X-Shared": "override", "X-Table": "my_table"}
+
+	merged, err := mergedResolvedHeaders(common, overlay)
+	if err != nil {
+		t.Fatalf("mergedResolvedHeaders: %v", err)
+	}
+	if merged["Authorization"] != "resolved" {
+		t.Errorf("Authorization = %q, want resolved", merged["Authorization"])
+	}
+	if merged["X-Shared"] != "override" {
+		t.Errorf("X-Shared = %q, want override (overlay wins)", merged["X-Shared"])
+	}
+	if merged["X-Table"] != "my_table" {
+		t.Errorf("X-Table = %q, want my_table", merged["X-Table"])
+	}
+	// Inputs untouched.
+	if common["Authorization"] != "env.OTEL_TOKEN" || common["X-Shared"] != "base" {
+		t.Errorf("common map was mutated: %v", common)
+	}
+	if overlay["X-Shared"] != "override" {
+		t.Errorf("overlay map was mutated: %v", overlay)
+	}
+}
+
+// TestPerSignalHeadersStorageRoundTrip verifies trace_headers and metrics_headers survive
+// storage marshalling and redaction.
+func TestPerSignalHeadersStorageRoundTrip(t *testing.T) {
+	raw := `{"profiles": [
+		{
+			"collector_url": "a:4317", "trace_type": "genai_extension", "protocol": "grpc",
+			"headers": {"Authorization": "env.OTEL_TOKEN"},
+			"trace_headers": {"X-Trace": "t"},
+			"metrics_enabled": true, "metrics_endpoint": "a:4318",
+			"metrics_headers": {"X-Databricks-Table": "my_table"}
+		}
+	]}`
+	var cfg Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	stored, err := cfg.MarshalForStorage()
+	if err != nil {
+		t.Fatalf("MarshalForStorage: %v", err)
+	}
+	var back Config
+	if err := json.Unmarshal(stored, &back); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	p := back.Profiles[0]
+	if p.TraceHeaders["X-Trace"] != "t" {
+		t.Errorf("trace_headers lost: %v", p.TraceHeaders)
+	}
+	if p.MetricsHeaders["X-Databricks-Table"] != "my_table" {
+		t.Errorf("metrics_headers lost: %v", p.MetricsHeaders)
+	}
+
+	// Redaction preserves env refs and masks literals across all three maps.
+	red := cfg.Redacted().Profiles[0]
+	if red.Headers["Authorization"] != "env.OTEL_TOKEN" {
+		t.Errorf("common env header not preserved: %q", red.Headers["Authorization"])
+	}
+	if red.MetricsHeaders["X-Databricks-Table"] == "my_table" {
+		t.Errorf("metrics literal header was not masked")
+	}
+}
+
+// TestInitMetricsOnlyIgnoresTraceHeaderEnv verifies a metrics-only profile does not
+// resolve trace_headers, so an unset env reference there does not fail Init.
+func TestInitMetricsOnlyIgnoresTraceHeaderEnv(t *testing.T) {
+	raw := `{"profiles": [
+		{
+			"traces_enabled": false, "protocol": "http",
+			"trace_headers": {"X-Trace": "env.OTEL_UNSET_TRACE_XYZ"},
+			"metrics_enabled": true, "metrics_endpoint": "localhost:4318"
+		}
+	]}`
+	var cfg Config
+	if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	plugin, err := Init(context.Background(), &cfg, testLogger{}, nil, "")
+	if err != nil {
+		t.Fatalf("Init metrics-only with unset trace_headers env: %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+}
+
+// TestInitTracesOnlyIgnoresMetricsHeaderEnv verifies a traces-only profile does not
+// resolve metrics_headers, so an unset env reference there does not fail Init.
+func TestInitTracesOnlyIgnoresMetricsHeaderEnv(t *testing.T) {
+	raw := `{"profiles": [
+		{
+			"collector_url": "localhost:4317", "trace_type": "genai_extension", "protocol": "grpc",
+			"metrics_enabled": false,
+			"metrics_headers": {"X-Table": "env.OTEL_UNSET_METRICS_XYZ"}
+		}
+	]}`
+	var cfg Config
+	if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	plugin, err := Init(context.Background(), &cfg, testLogger{}, nil, "")
+	if err != nil {
+		t.Fatalf("Init traces-only with unset metrics_headers env: %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+}
+
 type testLogger struct{}
 
 func (testLogger) Debug(string, ...any)                   {}

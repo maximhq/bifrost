@@ -86,19 +86,21 @@ type Profile struct {
 	// Enabled gates whether this profile exports anything. The plugin itself is always on;
 	// a disabled profile builds no trace client or metrics exporter, so no traces/metrics
 	// are sent for it. Defaults to true when omitted.
-	Enabled      bool               `json:"enabled"`
+	Enabled bool `json:"enabled"`
 
 	// TracesEnabled gates trace export. When false, no trace client is built and
 	// CollectorURL is not required: a metrics-only profile. Defaults to true when omitted.
 	TracesEnabled bool `json:"traces_enabled"`
 
-	ServiceName  string             `json:"service_name"`
-	CollectorURL *schemas.SecretVar `json:"collector_url"`
-	Headers      map[string]string  `json:"headers,omitempty"`
-	TraceType    TraceType          `json:"trace_type"`
-	Protocol     Protocol           `json:"protocol"`
-	TLSCACert    string             `json:"tls_ca_cert,omitempty"`
-	Insecure     bool               `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
+	ServiceName    string             `json:"service_name"`
+	CollectorURL   *schemas.SecretVar `json:"collector_url"`
+	Headers        map[string]string  `json:"headers,omitempty"`         // Shared between traces and metrics endpoints
+	TraceHeaders   map[string]string  `json:"trace_headers,omitempty"`   // Traces only headers
+	MetricsHeaders map[string]string  `json:"metrics_headers,omitempty"` // Metrics only headers
+	TraceType      TraceType          `json:"trace_type"`
+	Protocol       Protocol           `json:"protocol"`
+	TLSCACert      string             `json:"tls_ca_cert,omitempty"`
+	Insecure       bool               `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set. Defaults to true when omitted.
 
 	// ExportTimeout bounds a single trace export, in seconds (default 5, max 60).
 	// This is the only deadline on the export: the caller passes context.Background(),
@@ -254,6 +256,8 @@ type profileForStorage struct {
 	ServiceName            string            `json:"service_name"`
 	CollectorURL           string            `json:"collector_url"`
 	Headers                map[string]string `json:"headers,omitempty"`
+	TraceHeaders           map[string]string `json:"trace_headers,omitempty"`
+	MetricsHeaders         map[string]string `json:"metrics_headers,omitempty"`
 	TraceType              TraceType         `json:"trace_type"`
 	Protocol               Protocol          `json:"protocol"`
 	TLSCACert              string            `json:"tls_ca_cert,omitempty"`
@@ -293,6 +297,8 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			ServiceName:            p.ServiceName,
 			CollectorURL:           schemas.SecretVarAsString(p.CollectorURL),
 			Headers:                p.Headers,
+			TraceHeaders:           p.TraceHeaders,
+			MetricsHeaders:         p.MetricsHeaders,
 			TraceType:              p.TraceType,
 			Protocol:               p.Protocol,
 			TLSCACert:              p.TLSCACert,
@@ -331,12 +337,9 @@ func (c *Config) Redacted() *Config {
 			rp := *p
 			rp.CollectorURL = hideResolvedEnvValue(p.CollectorURL)
 			rp.MetricsEndpoint = hideResolvedEnvValue(p.MetricsEndpoint)
-			if p.Headers != nil {
-				rp.Headers = make(map[string]string, len(p.Headers))
-				for k, v := range p.Headers {
-					rp.Headers[k] = redactHeaderValue(v)
-				}
-			}
+			rp.Headers = redactHeaderMap(p.Headers)
+			rp.TraceHeaders = redactHeaderMap(p.TraceHeaders)
+			rp.MetricsHeaders = redactHeaderMap(p.MetricsHeaders)
 			redacted.Profiles = append(redacted.Profiles, &rp)
 		}
 	}
@@ -351,6 +354,18 @@ func redactHeaderValue(v string) string {
 		return v
 	}
 	return schemas.SecretVarAsString(schemas.NewSecretVar(v).Redacted())
+}
+
+// redactHeaderMap redacts every value in a copy of h, returning nil for nil h.
+func redactHeaderMap(h map[string]string) map[string]string {
+	if h == nil {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		out[k] = redactHeaderValue(v)
+	}
+	return out
 }
 
 // hideResolvedEnvValue returns v unchanged for literal values (URLs are not secrets).
@@ -539,12 +554,23 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		}
 	}
 
-	// Copy headers before resolving so the stored config is never mutated, then resolve
-	// any "env." references against the environment (errors if a referenced var is unset).
-	headers := make(map[string]string, len(profile.Headers))
-	maps.Copy(headers, profile.Headers)
-	if err := injectEnvToHeaders(headers); err != nil {
-		return nil, fmt.Errorf("profile %d: %w", index, err)
+	// Common headers go to both endpoints; per-signal headers override on collision.
+	var (
+		traceHeaders   map[string]string
+		metricsHeaders map[string]string
+		err            error
+	)
+	if profile.TracesEnabled {
+		traceHeaders, err = mergedResolvedHeaders(profile.Headers, profile.TraceHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
+	}
+	if profile.MetricsEnabled {
+		metricsHeaders, err = mergedResolvedHeaders(profile.Headers, profile.MetricsHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
 	}
 
 	exportTimeout, err := resolveExportTimeout(profile.ExportTimeout)
@@ -573,9 +599,9 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		case ProtocolGRPC:
 			// gRPC has no client-side timeout of its own; the per-export context deadline
 			// applied in Inject is what bounds it.
-			target.client, err = NewOtelClientGRPC(url, headers, profile.TLSCACert, profile.Insecure)
+			target.client, err = NewOtelClientGRPC(url, traceHeaders, profile.TLSCACert, profile.Insecure)
 		case ProtocolHTTP:
-			target.client, err = NewOtelClientHTTP(url, headers, profile.TLSCACert, profile.Insecure, exportTimeout)
+			target.client, err = NewOtelClientHTTP(url, traceHeaders, profile.TLSCACert, profile.Insecure, exportTimeout)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("profile %d: %w", index, err)
@@ -602,7 +628,7 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		metricsConfig := &MetricsConfig{
 			ServiceName:  serviceName,
 			Endpoint:     profile.MetricsEndpoint.GetValue(),
-			Headers:      headers,
+			Headers:      metricsHeaders,
 			Protocol:     profile.Protocol,
 			TLSCACert:    profile.TLSCACert,
 			Insecure:     profile.Insecure,
@@ -620,6 +646,18 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	return target, nil
+}
+
+// mergedResolvedHeaders overlays overlay onto common (overlay wins) and resolves "env."
+// references. Inputs are not mutated.
+func mergedResolvedHeaders(common, overlay map[string]string) (map[string]string, error) {
+	merged := make(map[string]string, len(common)+len(overlay))
+	maps.Copy(merged, common)
+	maps.Copy(merged, overlay)
+	if err := injectEnvToHeaders(merged); err != nil {
+		return nil, err
+	}
+	return merged, nil
 }
 
 // resolveExportTimeout validates a configured export_timeout (in seconds) and returns
