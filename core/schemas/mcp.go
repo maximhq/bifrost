@@ -808,6 +808,7 @@ type MCPClientState struct {
 	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
 	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
 	ConnGeneration  uint64                   `json:"-"` // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastToolsHash   string                   `json:"-"` // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
