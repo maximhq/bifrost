@@ -1702,6 +1702,10 @@ type BifrostResponseExtraFields struct {
 	// consumers should read from RoutingInfo.
 	ResolvedModelUsed string `json:"resolved_model_used,omitempty"`
 	Latency           int64  `json:"latency"` // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	// Cost is the model-catalog-calculated request cost in US dollars. It is set
+	// on completed responses after routing and fallbacks resolve. Streaming
+	// responses include it only on the final chunk.
+	Cost *float64 `json:"cost,omitempty"`
 	// UpstreamLatency is the total time spent blocked on upstream sockets across
 	// every attempt, in milliseconds. Unlike Latency it survives retries and
 	// fallbacks, so total-UpstreamLatency is Bifrost's own cost. Nil when the

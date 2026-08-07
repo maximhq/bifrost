@@ -834,15 +834,17 @@ func TestFilterProvidersByContext(t *testing.T) {
 	})
 }
 
-func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
+func TestRunStreamPreHooks_FinalChunkFlushesTraceAndAddsCost(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	account := NewMockAccount()
 	tracer := &countingTracer{}
+	catalog := &probeCatalog{cost: 0.25, costAvailable: true}
 
 	client, err := Init(ctx, schemas.BifrostConfig{
-		Account: account,
-		Tracer:  tracer,
-		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		Account:      account,
+		Tracer:       tracer,
+		Logger:       NewDefaultLogger(schemas.LogLevelError),
+		ModelCatalog: catalog,
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)
@@ -862,7 +864,7 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	defer hooks.Cleanup()
 
 	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-	_, bifrostErr = hooks.PostHookRunner(ctx, &schemas.BifrostResponse{
+	resp, bifrostErr := hooks.PostHookRunner(ctx, &schemas.BifrostResponse{
 		ResponsesResponse: &schemas.BifrostResponsesResponse{
 			Object:    "response",
 			CreatedAt: int(time.Now().Unix()),
@@ -871,6 +873,9 @@ func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	}, nil)
 	if bifrostErr != nil {
 		t.Fatalf("PostHookRunner returned error: %v", bifrostErr)
+	}
+	if resp.GetExtraFields().Cost == nil || *resp.GetExtraFields().Cost != 0.25 {
+		t.Fatalf("response cost = %v, want 0.25", resp.GetExtraFields().Cost)
 	}
 
 	if tracer.flushed.Load() != 1 {

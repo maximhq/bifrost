@@ -154,6 +154,20 @@ func (mc *ModelCatalog) CalculateRequestCost(ctx *schemas.BifrostContext, resp *
 	return mc.CalculateCost(resp, PricingLookupScopesFromContext(ctx, string(provider)))
 }
 
+// CalculateRequestCostIfAvailable is the availability-aware counterpart used
+// when a caller must distinguish unresolved pricing from a calculated zero.
+func (mc *ModelCatalog) CalculateRequestCostIfAvailable(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *float64 {
+	if mc == nil || resp == nil {
+		return nil
+	}
+	extraFields := resp.GetExtraFields()
+	provider := extraFields.RoutingInfo.Provider
+	if provider == "" {
+		provider = extraFields.Provider
+	}
+	return mc.CalculateCostIfAvailable(resp, PricingLookupScopesFromContext(ctx, string(provider)))
+}
+
 // formatCost renders a per-unit rate the way the models API reports it. Fixed
 // 10-decimal notation rather than %g so sub-cent token rates never surface in
 // scientific notation, which clients parsing these as decimals choke on.

@@ -754,3 +754,16 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamWithDefaultsPreservesCost(t *testing.T) {
+	cost := 0.25
+	src := &BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeCompleted,
+		ExtraFields: BifrostResponseExtraFields{Cost: &cost},
+	}
+
+	out := src.WithDefaults()
+	if out.ExtraFields.Cost == nil || *out.ExtraFields.Cost != cost {
+		t.Fatalf("cost = %v, want %v", out.ExtraFields.Cost, cost)
+	}
+}

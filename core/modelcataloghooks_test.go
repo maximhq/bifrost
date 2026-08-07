@@ -12,8 +12,9 @@ import (
 // reading a real one proves the handle reached it rather than that some other
 // lookup happened to succeed.
 type probeCatalog struct {
-	info *schemas.Model
-	cost float64
+	info          *schemas.Model
+	cost          float64
+	costAvailable bool
 
 	gotProvider schemas.ModelProvider
 	gotModel    string
@@ -31,6 +32,14 @@ func (p *probeCatalog) GetModelInfo(provider schemas.ModelProvider, model string
 func (p *probeCatalog) CalculateRequestCost(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) float64 {
 	p.costCalls++
 	return p.cost
+}
+
+func (p *probeCatalog) CalculateRequestCostIfAvailable(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) *float64 {
+	p.costCalls++
+	if !p.costAvailable {
+		return nil
+	}
+	return &p.cost
 }
 
 // catalogProbePlugin reads ctx.GetModelInfo / ctx.CalculateCost from each hook
@@ -126,14 +135,15 @@ func chatProbeRequest() *schemas.BifrostChatRequest {
 // in a third-party plugin.
 func TestModelCatalogReachesPluginHooksOnRealRequest(t *testing.T) {
 	want := &schemas.Model{ID: "gpt-4o", ContextLength: new(128000)}
-	catalog := &probeCatalog{info: want, cost: 0.25}
+	catalog := &probeCatalog{info: want, cost: 0.25, costAvailable: true}
 	plugin := &catalogProbePlugin{}
 	client := newCatalogProbeClient(t, catalog, plugin)
 
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
 	defer ctx.Cancel()
 
-	if _, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest()); bfErr != nil {
+	resp, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest())
+	if bfErr != nil {
 		t.Fatalf("ChatCompletionRequest failed: %v", bfErr)
 	}
 
@@ -155,14 +165,17 @@ func TestModelCatalogReachesPluginHooksOnRealRequest(t *testing.T) {
 	if plugin.postCost != 0.25 {
 		t.Errorf("PostLLMHook CalculateCost = %v, want 0.25", plugin.postCost)
 	}
+	if resp.ExtraFields.Cost == nil || *resp.ExtraFields.Cost != 0.25 {
+		t.Errorf("response cost = %v, want 0.25", resp.ExtraFields.Cost)
+	}
 
 	// The arguments must arrive unchanged; a mangled provider would silently
 	// return nil for every real model.
 	if catalog.gotProvider != schemas.OpenAI || catalog.gotModel != "gpt-4o" {
 		t.Errorf("catalog saw (%q, %q), want (openai, gpt-4o)", catalog.gotProvider, catalog.gotModel)
 	}
-	if catalog.costCalls != 1 {
-		t.Errorf("CalculateRequestCost called %d times, want 1", catalog.costCalls)
+	if catalog.costCalls != 2 {
+		t.Errorf("CalculateRequestCost called %d times, want 2", catalog.costCalls)
 	}
 }
 
@@ -176,7 +189,8 @@ func TestModelCatalogAbsentLeavesHooksInert(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
 	defer ctx.Cancel()
 
-	if _, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest()); bfErr != nil {
+	resp, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest())
+	if bfErr != nil {
 		t.Fatalf("ChatCompletionRequest failed: %v", bfErr)
 	}
 
@@ -192,5 +206,85 @@ func TestModelCatalogAbsentLeavesHooksInert(t *testing.T) {
 	}
 	if plugin.postCost != 0 {
 		t.Errorf("CalculateCost = %v with no catalog wired, want 0", plugin.postCost)
+	}
+	if resp.ExtraFields.Cost != nil {
+		t.Errorf("response cost = %v with no catalog wired, want nil", resp.ExtraFields.Cost)
+	}
+}
+
+func TestModelCatalogCalculatedZeroCostIsRetained(t *testing.T) {
+	catalog := &probeCatalog{costAvailable: true}
+	client := newCatalogProbeClient(t, catalog, &catalogProbePlugin{})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest())
+	if bfErr != nil {
+		t.Fatalf("ChatCompletionRequest failed: %v", bfErr)
+	}
+	if resp.ExtraFields.Cost == nil || *resp.ExtraFields.Cost != 0 {
+		t.Errorf("response cost = %v, want pointer to zero", resp.ExtraFields.Cost)
+	}
+}
+
+func TestModelCatalogUnavailableCostIsOmitted(t *testing.T) {
+	catalog := &probeCatalog{cost: 0.25}
+	client := newCatalogProbeClient(t, catalog, &catalogProbePlugin{})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ChatCompletionRequest(ctx, chatProbeRequest())
+	if bfErr != nil {
+		t.Fatalf("ChatCompletionRequest failed: %v", bfErr)
+	}
+	if resp.ExtraFields.Cost != nil {
+		t.Errorf("response cost = %v, want nil", resp.ExtraFields.Cost)
+	}
+}
+
+func TestPopulateFinalStreamCost(t *testing.T) {
+	tests := []struct {
+		name          string
+		final         bool
+		cost          float64
+		costAvailable bool
+		wantCost      *float64
+	}{
+		{name: "final chunk", final: true, cost: 0.25, costAvailable: true, wantCost: schemas.Ptr(0.25)},
+		{name: "known zero", final: true, costAvailable: true, wantCost: schemas.Ptr(0.0)},
+		{name: "unavailable", final: true, cost: 0.25},
+		{name: "non-final chunk", cost: 0.25, costAvailable: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := &probeCatalog{cost: tt.cost, costAvailable: tt.costAvailable}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, tt.final)
+
+			resp := &schemas.BifrostResponse{
+				ChatResponse: &schemas.BifrostChatResponse{
+					Model: "gpt-4o",
+					Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 10, TotalTokens: 15},
+				},
+			}
+			resp.PopulateExtraFields(schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-4o", "gpt-4o")
+
+			populateFinalStreamCost(ctx, resp)
+
+			got := resp.GetExtraFields().Cost
+			if tt.wantCost == nil {
+				if got != nil {
+					t.Fatalf("cost = %v, want nil", *got)
+				}
+				return
+			}
+			if got == nil || *got != *tt.wantCost {
+				t.Fatalf("cost = %v, want %v", got, *tt.wantCost)
+			}
+		})
 	}
 }

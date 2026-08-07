@@ -3557,6 +3557,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.Message = resp.Message
 	result.Param = resp.Param
 	result.LogProbs = resp.LogProbs
+	result.ExtraFields.Cost = resp.ExtraFields.Cost
 
 	// Apply event-specific defaults
 	switch resp.Type {
