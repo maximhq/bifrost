@@ -46,11 +46,14 @@ The plugin supports multiple trace formats to match your observability platform:
 | `group_traces_by_session` | `boolean` | ❌ No | Group requests sharing the same `x-bf-session-id` into one trace (default: `false`). See [Grouping Traces by Session](#grouping-traces-by-session) |
 | `disable_content_logging` | `boolean` | ❌ No | Drop message content from exported spans (default: `false`). See [Controlling Exported Content](#controlling-exported-content) |
 | `disable_root_span_content` | `boolean` | ❌ No | Drop content from the **root span only**, keeping it on child spans (default: `false`). Overridden by `disable_content_logging`, which drops content from every span. See [Controlling Exported Content](#controlling-exported-content) |
+| `logs_enabled` | `boolean` | ❌ No | Export GenAI events as OTLP log records, one per LLM call (default: `false`). See [Log Export (GenAI Events)](#log-export-genai-events) |
+| `logs_endpoint` | `string \| EnvVar` | ✅ Yes (if `logs_enabled`) | OTLP logs endpoint URL — supports `env.VAR_NAME` |
+| `logs_disable_content_logging` | `boolean` | ❌ No | Drop message content from exported **log records** only (default: `false`). Independent of `disable_content_logging`, which gates spans. See [Controlling Exported Content](#controlling-exported-content) |
 | `request_headers` | `string[]` | ❌ No | Request-header name patterns whose values are attached to the root span as `http.request.header.*` attributes. Supports exact names and wildcards (`x-custom-*`, `*`) |
 
 ### Environment Variable Substitution
 
-`collector_url`, `metrics_endpoint`, and individual values in `headers`, `trace_headers`, and `metrics_headers` all support the `env.` prefix to read from environment variables at runtime. This keeps sensitive URLs and credentials out of stored configuration.
+`collector_url`, `metrics_endpoint`, `logs_endpoint`, and individual values in `headers`, `trace_headers`, and `metrics_headers` all support the `env.` prefix to read from environment variables at runtime. This keeps sensitive URLs and credentials out of stored configuration.
 
 ```json
 {
@@ -777,12 +780,22 @@ When Enterprise guardrail redaction is enabled, Bifrost applies trace redaction 
 
 ### Controlling Exported Content
 
-Two profile-level flags control how much message content leaves Bifrost:
+Three profile-level flags control how much message content leaves Bifrost:
 
 | Flag | Effect |
 |------|--------|
 | `disable_content_logging` | Drops input/output message content, prompt and instructions, model reasoning, tool definitions, and tool call arguments/results from **every** exported span. Metadata is still exported, including model, provider, tokens, cost, latency, status, and governance attribution. |
 | `disable_root_span_content` | When used alone, drops content from the **root span only**. Bifrost duplicates input/output onto the root span for trace-level display; this removes that duplication while child spans keep full content. Useful when your backend indexes root-span attributes and you want to limit the blast radius without losing detail. `disable_content_logging` takes precedence: when it is enabled, child spans lose their content too. |
+| `logs_disable_content_logging` | Drops the same content from exported **log records** (GenAI events) only. The events are still emitted, carrying metadata alone. Applies only when `logs_enabled` is set. |
+
+`disable_content_logging` gates **traces**; `logs_disable_content_logging` gates **logs**. Because the two are independent, all four capture modes are available:
+
+| `disable_content_logging` | `logs_disable_content_logging` | Result |
+|---|---|---|
+| `false` | `false` | Content on spans **and** events (default) |
+| `true` | `false` | Content on events only — keeps payloads in the log pipeline, with its own retention and access control |
+| `false` | `true` | Content on spans only |
+| `true` | `true` | No content on either signal |
 
 ```json
 {
@@ -1116,6 +1129,98 @@ service:
 | Cluster aggregation | Query-side `sum()` | Collector handles it |
 
 For **single-node deployments**, pull-based `/metrics` scraping works well. For **multi-node clusters**, push-based metrics ensures all nodes are captured.
+
+---
+
+## Log Export (GenAI Events)
+
+<Note>
+**Development stability**: GenAI events follow the OpenTelemetry [GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai), which are still marked Development. Attribute names may change with future semconv releases.
+</Note>
+
+Beyond traces and metrics, a profile can export **GenAI events** as OTLP log records. Each event is a `gen_ai.client.inference.operation.details` log record describing one call to one model: the chat history, system instructions, tool definitions, request parameters, and usage. Retries and fallbacks each produce their own event, matching their own `llm.call` span.
+
+This is the signal to enable when your backend ingests logs rather than spans (Loki, OpenSearch, a SIEM), or when you want prompt/response payloads to live in a log pipeline with its own retention and access control instead of on your traces.
+
+### Correlation
+
+Every log record carries the `trace_id` and `span_id` of the `llm.call` span it describes, so log-to-trace navigation works out of the box in Grafana, Datadog, and anything else that reads OTLP correlation fields. Records also carry `session.id`, `bifrost.request.id`, instance attributes, and any captured request headers, so a log-only backend can filter by tenant without joining back to the trace.
+
+Records are emitted at `INFO` severity, or `ERROR` when the call failed (the event then carries `error.type`).
+
+### Configuration
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `logs_enabled` | `boolean` | ❌ No | Enable GenAI event export (default: `false`) |
+| `logs_endpoint` | `string \| EnvVar` | ✅ Yes (if enabled) | OTLP logs endpoint URL — supports `env.VAR_NAME` |
+| `logs_disable_content_logging` | `boolean` | ❌ No | Drop message content from exported log records (default: `false`) |
+
+Logs reuse the profile's `protocol`, `headers`, `tls_ca_cert`, `insecure`, and `export_timeout`, but dial their own endpoint. For `protocol: http` give the full OTLP logs URL (`http://collector:4318/v1/logs`); for `grpc` give `host:port`.
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "http://otel-collector:4318/v1/traces",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "logs_enabled": true,
+        "logs_endpoint": "http://otel-collector:4318/v1/logs"
+      }
+    }
+  ]
+}
+```
+
+Log export is its own failure domain: it has a separate client and circuit breaker, so an unreachable logs endpoint never suppresses trace or metrics export (and vice versa).
+
+### Event Content
+
+Content attributes are recorded in **structured form** (nested attribute values, not JSON strings), following the semconv message schemas:
+
+| Attribute | Contents |
+|-----------|----------|
+| `gen_ai.input.messages` | `[{role, parts}]` — `text`, `tool_call` (with parsed arguments), `tool_call_response`, `reasoning`, and `refusal` parts |
+| `gen_ai.output.messages` | The same shape, plus `finish_reason` per message |
+| `gen_ai.system_instructions` | `[{type: "text", content}]` |
+| `gen_ai.tool.definitions` | `[{type, name, description}]` — tool names and descriptions only, per semconv guidance against expanding parameter schemas |
+
+Alongside these, each event carries the request/response metadata from its span: `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, request parameters, `gen_ai.response.finish_reasons`, token usage, cost, and Bifrost governance attributes.
+
+<Warning>
+Unlike the semantic conventions — which recommend capturing content only on explicit opt-in — Bifrost exports content by default once log export is enabled, matching the existing span behavior. Set `logs_disable_content_logging: true` to emit metadata-only events.
+</Warning>
+
+### Collector Configuration
+
+Add a `logs` pipeline to the collector receiving the export:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  debug:
+    verbosity: detailed
+  # loki, opensearch, datadog, ... whichever backend consumes the events
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+```
 
 ---
 
