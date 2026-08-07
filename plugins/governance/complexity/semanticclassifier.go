@@ -247,10 +247,41 @@ func (c *SemanticClassifier) IsConfigured() bool {
 	return c.config != nil && c.config.Semantic != nil
 }
 
-// Classify embeds text once and returns the tier from the global nearest
-// exemplar in the last completely warmed generation. A newer desired
-// generation can warm or fail without disrupting this serving snapshot.
-func (c *SemanticClassifier) Classify(ctx context.Context, text string) (*SemanticResult, error) {
+// SemanticInputText joins the most recent messageHistoryCount user turns into
+// the single text that gets embedded, oldest first so the latest message reads
+// last. Blank turns are skipped, and a request with fewer turns than requested
+// contributes what it has. Only user text is included: system prompts steer
+// every request in a deployment alike and would pull all of them toward the
+// same exemplar.
+func SemanticInputText(input ComplexityInput, messageHistoryCount int) string {
+	if messageHistoryCount < 1 {
+		messageHistoryCount = 1
+	}
+	texts := make([]string, 0, messageHistoryCount)
+	if priorCount := messageHistoryCount - 1; priorCount > 0 && len(input.PriorUserTexts) > 0 {
+		// Walk backwards so blank turns are skipped before the window is counted:
+		// slicing first would let blanks eat into the requested history count.
+		prior := make([]string, 0, priorCount)
+		for i := len(input.PriorUserTexts) - 1; i >= 0 && len(prior) < priorCount; i-- {
+			if strings.TrimSpace(input.PriorUserTexts[i]) != "" {
+				prior = append(prior, input.PriorUserTexts[i])
+			}
+		}
+		for i := len(prior) - 1; i >= 0; i-- {
+			texts = append(texts, prior[i])
+		}
+	}
+	if strings.TrimSpace(input.LastUserText) != "" {
+		texts = append(texts, input.LastUserText)
+	}
+	return strings.Join(texts, "\n")
+}
+
+// Classify embeds the configured slice of the request once and returns the tier
+// from the global nearest exemplar in the last completely warmed generation. A
+// newer desired generation can warm or fail without disrupting this serving
+// snapshot.
+func (c *SemanticClassifier) Classify(ctx context.Context, input ComplexityInput) (*SemanticResult, error) {
 	c.mu.Lock()
 	if c.config == nil || c.config.Semantic == nil || c.active == nil || c.active.embed == nil {
 		c.mu.Unlock()
@@ -275,6 +306,7 @@ func (c *SemanticClassifier) Classify(ctx context.Context, text string) (*Semant
 		defer c.releaseGeneration(generation)
 	}
 
+	text := SemanticInputText(input, semantic.MessageHistoryCount)
 	if strings.TrimSpace(text) == "" {
 		return nil, nil
 	}

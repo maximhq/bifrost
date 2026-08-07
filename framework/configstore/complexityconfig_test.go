@@ -101,6 +101,13 @@ func TestComplexitySemanticConfigValidation(t *testing.T) {
 		// misconfiguration rather than a way to disable semantic routing.
 		{name: "min similarity at one", mutate: func(c *ComplexitySemanticConfig) { c.MinSimilarity = 1 }},
 		{name: "min similarity above one", mutate: func(c *ComplexitySemanticConfig) { c.MinSimilarity = 1.5 }},
+		{name: "negative message history count", mutate: func(c *ComplexitySemanticConfig) { c.MessageHistoryCount = -1 }},
+		{
+			name: "message history count above the ceiling",
+			mutate: func(c *ComplexitySemanticConfig) {
+				c.MessageHistoryCount = MaxComplexitySemanticMessageHistoryCount + 1
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,6 +115,22 @@ func TestComplexitySemanticConfigValidation(t *testing.T) {
 			tt.mutate(cfg)
 			require.Error(t, cfg.normalized().Validate())
 		})
+	}
+}
+
+// TestComplexitySemanticConfigMessageHistoryCountDefaults keeps an omitted
+// window meaning "embed the latest message only", the pre-existing behavior.
+func TestComplexitySemanticConfigMessageHistoryCountDefaults(t *testing.T) {
+	normalized := testSemanticConfig().normalized()
+	assert.Equal(t, DefaultComplexitySemanticMessageHistoryCount, normalized.MessageHistoryCount)
+	require.NoError(t, normalized.Validate())
+
+	for _, count := range []int{1, 5, MaxComplexitySemanticMessageHistoryCount} {
+		cfg := testSemanticConfig()
+		cfg.MessageHistoryCount = count
+		resolved := cfg.normalized()
+		require.NoError(t, resolved.Validate())
+		assert.Equal(t, count, resolved.MessageHistoryCount)
 	}
 }
 
