@@ -4016,6 +4016,18 @@ func (bifrost *Bifrost) SetMCPStateChangeCallback(cb func(clientID, name string,
 	bifrost.MCPManager.SetStateChangeCallback(cb)
 }
 
+// SetMCPToolsChangeCallback registers cb to be invoked whenever an MCP
+// client's tool map is freshly (re)discovered — connect/reconnect, per-call
+// discovery, and the periodic checker's own refresh. core/mcp has no DB
+// access; this is the seam the transport layer persists through. Pass nil to
+// clear a previously registered callback. A no-op if MCP is not configured.
+func (bifrost *Bifrost) SetMCPToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+	if bifrost.MCPManager == nil {
+		return
+	}
+	bifrost.MCPManager.SetToolsChangeCallback(cb)
+}
+
 // GetMCPClients returns all MCP clients managed by the Bifrost instance.
 //
 // Returns:
