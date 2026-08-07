@@ -65,6 +65,34 @@ func cellWasInterrupted(runErr error) bool {
 // a time today, but the sync.Map keeps us future-proof.
 var activeCommands sync.Map // *exec.Cmd -> struct{}
 
+// cmdWaitDelay bounds how long cmd.Wait may keep blocking after the process is
+// gone or its context has been cancelled.
+//
+// Without it a cell can hang unboundedly, and the timeouts already in this file
+// are powerless to stop it. The drivers hand exec an ordinary io.Writer for
+// Stdout/Stderr rather than an *os.File, so exec allocates an os.Pipe and a
+// copying goroutine, and Wait blocks until that goroutine sees EOF -- which
+// needs *every* holder of the write end to close it. A CLI that spawned a
+// server child (opencode always does) leaves that grandchild holding the fd, so
+// killing the direct child on deadline achieves nothing: Wait never returns,
+// the cell never records a result, and because the model subtest is serial
+// while only its scenarios are parallel, the entire remaining matrix stalls
+// behind it. isolateProcessGroup removes the usual cause; WaitDelay is the
+// backstop for whatever the group kill misses, converting a wedged suite into
+// an ordinary reported failure.
+//
+// 15s is generous relative to pipe drain (milliseconds) and short relative to
+// any turn timeout, so it never truncates a healthy cell.
+const cmdWaitDelay = 15 * time.Second
+
+// prepareCmd applies the two guards every CLI subprocess in this harness needs.
+// Call it between exec.CommandContext and cmd.Start.
+func prepareCmd(cmd *exec.Cmd) *exec.Cmd {
+	cmd.WaitDelay = cmdWaitDelay
+	isolateProcessGroup(cmd)
+	return cmd
+}
+
 // Turn is one user→model exchange in a scenario.
 //
 //	AssertText:        every substring must appear in the response (case-sensitive)
@@ -130,7 +158,7 @@ func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, tur
 	}
 
 	args := cli.SingleTurnArgs(model, turn.Send, extra)
-	cmd := exec.CommandContext(cctx, cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, cli.Binary, args...))
 	cmd.Env = append(os.Environ(), env...)
 
 	var combined bytes.Buffer
@@ -194,7 +222,7 @@ func (d *claudeStreamJSON) Start(ctx context.Context, t *testing.T, cli CLI, mod
 		args = append(args, "--model", model)
 	}
 
-	cmd := exec.CommandContext(cctx, cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, cli.Binary, args...))
 	cmd.Env = append(os.Environ(), env...)
 
 	stdinPipe, err := cmd.StdinPipe()
@@ -506,15 +534,26 @@ func codexResumeDriver() multiTurnDriver { return &codexResume{} }
 
 func (d *codexResume) Start(ctx context.Context, t *testing.T, cli CLI, model string, env []string, mirror io.Writer) error {
 	t.Helper()
-	tempHome, err := os.MkdirTemp("", "bifrost-clis-codex-home-*")
-	if err != nil {
-		return fmt.Errorf("create temp codex home: %w", err)
+	// codexPreLaunch already minted a per-cell CODEX_HOME and wrote the Bifrost
+	// provider config into it; reuse that directory so `resume --last` reads the
+	// same config and session store. Minting a second one here would shadow the
+	// config (os/exec keeps the last occurrence of a duplicated env key), sending
+	// codex back to api.openai.com. The fallback branch only runs if a caller
+	// wires this driver up without the prelaunch.
+	tempHome, ok := envValue(env, "CODEX_HOME")
+	if !ok {
+		var err error
+		tempHome, err = os.MkdirTemp("", "bifrost-clis-codex-home-*")
+		if err != nil {
+			return fmt.Errorf("create temp codex home: %w", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(tempHome) })
+		env = append(env, "CODEX_HOME="+tempHome)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(tempHome) })
 
 	d.cli = cli
 	d.model = model
-	d.envBase = append(env, "CODEX_HOME="+tempHome)
+	d.envBase = env
 	d.mirror = mirror
 	d.tempHome = tempHome
 	d.ctx = ctx
@@ -541,7 +580,7 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 	}
 	d.turnIndex++
 
-	cmd := exec.CommandContext(cctx, d.cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, d.cli.Binary, args...))
 	cmd.Env = append(os.Environ(), d.envBase...)
 
 	var stdout bytes.Buffer
@@ -563,7 +602,8 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 }
 
 func (d *codexResume) Close() {
-	// CODEX_HOME cleanup is registered via t.Cleanup in Start.
+	// CODEX_HOME cleanup belongs to whoever created the directory: codexPreLaunch
+	// (via runCell's t.Cleanup) normally, or Start's fallback branch otherwise.
 }
 
 // ---- OpenCode: chained `run` + `run --continue` ----
@@ -609,7 +649,9 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 	cctx, cancel := context.WithTimeout(d.ctx, timeout)
 	defer cancel()
 
-	args := []string{"run", "--dangerously-skip-permissions", "--format", "json"}
+	// See the SingleTurnArgs comment in matrix_test.go for why no
+	// permission-bypass flag is passed here.
+	args := []string{"run", "--format", "json"}
 	if d.turnIndex > 0 {
 		args = append(args, "--continue")
 	}
@@ -619,7 +661,7 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 	args = append(args, prompt)
 	d.turnIndex++
 
-	cmd := exec.CommandContext(cctx, d.cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, d.cli.Binary, args...))
 	cmd.Env = append(os.Environ(), d.envBase...)
 
 	var stdout bytes.Buffer
