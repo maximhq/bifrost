@@ -307,6 +307,51 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			req.OutputConfig = nil
 		}
 	}
+	// thinking.type — model-gated. Adaptive-only models (Opus 4.7+, Sonnet 5+,
+	// Fable/Mythos) removed extended thinking and reject the legacy shape with:
+	//
+	//	"thinking.type.enabled" is not supported for this model. Use
+	//	"thinking.type.adaptive" and "output_config.effort" to control thinking behavior.
+	//
+	// The converted path already emits "adaptive" for these models (chat.go);
+	// this is the passthrough equivalent, so a caller sending a native Anthropic
+	// body does not 400. Rewrite rather than delete: Opus 4.7/4.8 default
+	// thinking to Off, so dropping the field would silently turn thinking off
+	// for a caller who explicitly asked for it.
+	//
+	// Source: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+	//
+	// budget_tokens is dropped for any request that ends up adaptive, not just
+	// the ones rewritten here: it is the extended-thinking lever and is inert
+	// under adaptive thinking (effort is the knob), but it still participates in
+	// the cached prompt prefix, so leaving it on an already-adaptive request
+	// would cache-miss against the rewritten one for the same conversation.
+	if req.Thinking != nil && IsAdaptiveOnlyThinkingModel(model) {
+		// Gated on RejectsEnabledThinking, not the enclosing predicate: Mythos
+		// Preview supports extended thinking, so its "enabled" is forwarded as
+		// the caller sent it rather than switched to adaptive behind their back.
+		if req.Thinking.Type == "enabled" && RejectsEnabledThinking(model) {
+			req.Thinking.Type = "adaptive"
+		}
+		if req.Thinking.Type == "adaptive" {
+			req.Thinking.BudgetTokens = nil
+		}
+	}
+	// thinking.type:"disabled" — rejected on always-on models, and on Opus 5+
+	// above effort "high". Rewritten to "adaptive" (what omitting the parameter
+	// resolves to on these models) rather than deleted, so a sibling
+	// thinking.display survives; Type has no omitempty, so a display-only block
+	// would serialize as {"type":""}.
+	if req.Thinking != nil && req.Thinking.Type == "disabled" {
+		var effort *string
+		if req.OutputConfig != nil {
+			effort = req.OutputConfig.Effort
+		}
+		if RejectsDisabledThinking(model, effort) {
+			req.Thinking.Type = "adaptive"
+			req.Thinking.BudgetTokens = nil
+		}
+	}
 	if req.InferenceGeo != nil && !features.InferenceGeo {
 		req.InferenceGeo = nil
 	}
@@ -638,6 +683,54 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		}
 	}
 
+	// thinking.type — model-gated. Mirrors the typed path in
+	// stripUnsupportedAnthropicFields; see there for why the legacy
+	// {"type":"enabled","budget_tokens":N} shape is rewritten to "adaptive"
+	// rather than deleted.
+	if IsAdaptiveOnlyThinkingModel(model) {
+		// See the typed path for why this is gated on RejectsEnabledThinking
+		// rather than the enclosing predicate (Mythos Preview keeps "enabled").
+		if RejectsEnabledThinking(model) &&
+			providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "enabled" {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "adaptive")
+			if err != nil {
+				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
+			}
+		}
+		// Covers both the request just rewritten above and one that arrived
+		// adaptive already, so the same conversation serializes identically
+		// either way; see the typed path for why the shapes must converge.
+		if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "adaptive" &&
+			providerUtils.JSONFieldExists(jsonBody, "thinking.budget_tokens") {
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.budget_tokens")
+			if err != nil {
+				return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
+			}
+		}
+	}
+
+	// thinking.type:"disabled" — mirrors the typed path in
+	// stripUnsupportedAnthropicFields; see there for why it is rewritten to
+	// "adaptive" rather than deleted.
+	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "disabled" {
+		var effort *string
+		if e := providerUtils.GetJSONField(jsonBody, "output_config.effort"); e.Exists() {
+			effort = new(e.String())
+		}
+		if RejectsDisabledThinking(model, effort) {
+			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "adaptive")
+			if err != nil {
+				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
+			}
+			if providerUtils.JSONFieldExists(jsonBody, "thinking.budget_tokens") {
+				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.budget_tokens")
+				if err != nil {
+					return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
+				}
+			}
+		}
+	}
+
 	// top-level cache_control.scope
 	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "cache_control.scope")
@@ -858,6 +951,66 @@ func IsOpus5Plus(model string) bool {
 func IsFableFamily(model string) bool {
 	m := strings.ToLower(model)
 	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
+}
+
+// IsMythosPreview returns true for Claude Mythos Preview, the one member of the
+// Fable/Mythos family that still supports extended thinking
+// (thinking:{type:"enabled",budget_tokens:N}) alongside adaptive. Fable 5 and
+// Mythos 5 reject "enabled" with a 400; Mythos Preview accepts it and rejects
+// only "disabled".
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+// ("Configurations each model rejects": Claude Mythos Preview | Adaptive,
+// extended | Always on | rejected: "disabled".)
+func IsMythosPreview(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "mythos") && strings.Contains(m, "preview")
+}
+
+// RejectsEnabledThinking reports whether the model 400s on
+// thinking:{type:"enabled"}:
+//
+//	"thinking.type.enabled" is not supported for this model. Use
+//	"thinking.type.adaptive" and "output_config.effort" to control thinking behavior.
+//
+// This is intentionally narrower than IsAdaptiveOnlyThinkingModel, which also
+// gates the temperature/top_p/top_k strip (chat.go:296-320). Mythos Preview
+// belongs in that broader set but accepts "enabled", so only the thinking gate
+// carves it out - nothing documents it accepting the sampling parameters.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+func RejectsEnabledThinking(model string) bool {
+	return IsAdaptiveOnlyThinkingModel(model) && !IsMythosPreview(model)
+}
+
+// RejectsDisabledThinking reports whether the model 400s on
+// thinking:{type:"disabled"} at the given effort:
+//
+//	"thinking.type.disabled" is not supported for this model. Thinking defaults
+//	to adaptive mode when not specified; use "thinking.type.enabled" with
+//	"budget_tokens" for extended thinking.
+//
+// Fable 5, Mythos 5 and Mythos Preview are always-on and reject it outright.
+// Opus 5 (and later) accept it only at effort "high" or below - pairing it with
+// "xhigh" or "max" is rejected, and that is enforced per request, which is why
+// effort has to be passed in rather than inferred from the model alone. Opus
+// 4.7/4.8 and Sonnet 5 accept "disabled" at any effort.
+//
+// effort is nil when the caller did not set output_config.effort; the default
+// sits below "xhigh", so "disabled" is accepted.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+func RejectsDisabledThinking(model string, effort *string) bool {
+	if IsFableFamily(model) {
+		return true
+	}
+	if IsOpus5Plus(model) && effort != nil {
+		switch strings.ToLower(*effort) {
+		case "xhigh", "max":
+			return true
+		}
+	}
+	return false
 }
 
 // IsSonnet5Plus returns true for Claude Sonnet 5 (and later Sonnet 5.x). Sonnet 5

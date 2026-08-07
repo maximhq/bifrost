@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -557,14 +558,28 @@ type cellResult struct {
 	MetaPath       string
 }
 
+// reportsDirEnv lets one `go test` invocation write its cells into its own
+// directory. The CI runner uses it to give each CLI filter an isolated
+// subdirectory; see .github/workflows/scripts/test-cli-harness.sh.
+const reportsDirEnv = "BIFROST_E2E_CLIS_REPORTS_DIR"
+
+// reportsDir is where this invocation writes per-cell summaries. It defaults to
+// "reports" so every local run and the standalone renderer behave as before.
+func reportsDir() string {
+	if dir := strings.TrimSpace(os.Getenv(reportsDirEnv)); dir != "" {
+		return dir
+	}
+	return "reports"
+}
+
 func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, status string, runErr error, softReason string, dur time.Duration, transcript string) {
 	t.Helper()
 	reportMu.Lock()
 	defer reportMu.Unlock()
 
-	dir := "reports"
+	dir := reportsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Logf("mkdir reports: %v", err)
+		t.Logf("mkdir %s: %v", dir, err)
 		return
 	}
 	stem := fmt.Sprintf("%s__%s__%s__%s", cli, provider, modelStem, scenarioID)
@@ -600,8 +615,28 @@ func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, stat
 // runs from a completely separate `go test` invocation -- not just cells
 // this process happened to run. That's what makes both the SIGINT-handler
 // report write and the standalone TestRenderReport (see below) correct.
+// The walk is recursive, not a one-level glob: the CI runner gives each CLI
+// filter its own subdirectory (see reportsDirEnv) so an empty one proves that
+// filter matched no cells, and the aggregate report still has to span all of
+// them. Summaries written straight into the root -- every local run, and the
+// SIGINT handler -- are found at depth 0 exactly as before.
 func loadReportResults(dir string) ([]cellResult, error) {
-	metaPaths, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	var metaPaths []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// A missing reports dir is a normal "nothing ran yet" state, and an
+			// unreadable subdirectory should not sink the whole report.
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		metaPaths = append(metaPaths, path)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -664,8 +699,9 @@ func loadReportResults(dir string) ([]cellResult, error) {
 // from the report (loadReportResults skips unparseable files by design, so the
 // loss leaves no trace).
 func writeHTMLReport() error {
+	dir := reportsDir()
 	reportMu.Lock()
-	results, err := loadReportResults("reports")
+	results, err := loadReportResults(dir)
 	reportMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("load harness reports: %w", err)
@@ -718,8 +754,8 @@ a{color:#175cd3;text-decoration:none}a:hover{text-decoration:underline}
 	}
 	body.WriteString("</tbody></table></body></html>")
 
-	path := filepath.Join("reports", "index.html")
-	if err := os.MkdirAll("reports", 0o755); err != nil {
+	path := filepath.Join(dir, "index.html")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create reports dir: %w", err)
 	}
 	if err := os.WriteFile(path, []byte(body.String()), 0o644); err != nil {

@@ -1826,9 +1826,14 @@ cli-harness-report: ## Regenerate tests/e2e/clis/reports/index.html from existin
 	@$(ECHO) "$(GREEN)Rendering CLI harness report from existing reports/*.json...$(NC)"
 	@cd tests/e2e/clis && GOWORK=off go test -run "^TestRenderReport$$" -v ./...
 
-install-newman: ## Install newman + htmlextra reporter if not already installed
-	@$(USE_NODE); which newman > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman...$(NC)" && npm install -g newman)
-	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra...$(NC)" && npm install -g newman-reporter-htmlextra)
+# Versions pinned to match the CI installs in .github/workflows/release-pipeline.yml
+# (test-core, test-api-integrations, test-docker-image-*). Keep them in sync.
+NEWMAN_VERSION ?= 6.2.1
+NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
+
+install-newman: ## Install newman + htmlextra reporter if not already installed (pinned via NEWMAN_VERSION / NEWMAN_HTMLEXTRA_VERSION)
+	@$(USE_NODE); which newman > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman@$(NEWMAN_VERSION)...$(NC)" && npm install -g newman@$(NEWMAN_VERSION))
+	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)" && npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
 	@$(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
 run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
@@ -2115,7 +2120,19 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(ECHO) "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
 			exit 1; \
 		fi; \
-		if [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ]; then \
+		MONITOR_CI=0; \
+		if [ -n "$$CI" ] || [ -n "$(CI)" ]; then \
+			MONITOR_CI=1; \
+			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
+				--mode parallel \
+				--providers "$$PROVIDERS" \
+				--tmp-dir tmp \
+				--status-file tmp/parallel-status \
+				--launched $$LAUNCHED \
+				--ci --ci-interval "$(or $(MONITOR_INTERVAL),30)" \
+				< /dev/null & \
+			echo $$! > tmp/harness-monitor.pid; \
+		elif [ -t 1 ]; then \
 			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
 				--mode parallel \
 				--providers "$$PROVIDERS" \
@@ -2131,13 +2148,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			p="$${pidp#*:}"; \
 			if wait "$$pid"; then \
 				echo "$$p:pass" >> tmp/parallel-status; \
-				if [ ! -f tmp/harness-monitor.pid ]; then $(ECHO) "$(GREEN)[$$p] passed$(NC)"; fi; \
+				if [ ! -f tmp/harness-monitor.pid ] || [ "$$MONITOR_CI" = "1" ]; then $(ECHO) "$(GREEN)[$$p] passed$(NC)"; fi; \
 			else \
 				echo "$$p:fail" >> tmp/parallel-status; \
-				if [ ! -f tmp/harness-monitor.pid ]; then $(ECHO) "$(RED)[$$p] failed$(NC)"; fi; \
+				if [ ! -f tmp/harness-monitor.pid ] || [ "$$MONITOR_CI" = "1" ]; then $(ECHO) "$(RED)[$$p] failed$(NC)"; fi; \
 				PFAILED=$$((PFAILED+1)); \
 			fi; \
-			if [ ! -f tmp/harness-monitor.pid ]; then tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; fi; \
+			if [ ! -f tmp/harness-monitor.pid ] || [ "$$MONITOR_CI" = "1" ]; then tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; fi; \
 		done < tmp/parallel-pids; \
 		if [ -f tmp/harness-monitor.pid ]; then \
 			MPID=$$(cat tmp/harness-monitor.pid); \
