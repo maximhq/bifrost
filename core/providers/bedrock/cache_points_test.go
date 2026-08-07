@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -313,4 +314,204 @@ func TestBuildBedrockTokenUsage_StreamMatchesNonStream(t *testing.T) {
 		t.Errorf("cache tokens: want read=2000 write=647, got read=%d write=%d",
 			streamEvent.Usage.CacheReadInputTokens, streamEvent.Usage.CacheWriteInputTokens)
 	}
+}
+
+// --------------------------------------------------------------------------
+// Inlined mid-conversation system reminders keep their cache breakpoint.
+//
+// role:"system" inside the messages array is a real Anthropic API feature
+// (mid-conversation system messages, Opus 4.8+) that Claude Code uses for
+// <system-reminder> turns. Bedrock has no message-level system role, so
+// ConvertBifrostMessagesToBedrockMessages inlines those turns as user messages.
+// That inlining must carry the block's CacheControl across: it is the client's
+// conversation-level cache anchor, and dropping it pins the cacheable prefix at
+// the system/tools floor, leaving the whole conversation body uncached.
+// --------------------------------------------------------------------------
+
+func ephemeral() *schemas.CacheControl {
+	return &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+}
+
+func responsesMessage(role schemas.ResponsesMessageRoleType, blocks ...schemas.ResponsesMessageContentBlock) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Role:    schemas.Ptr(role),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks},
+	}
+}
+
+func responsesTextBlock(text string, cacheControl *schemas.CacheControl) schemas.ResponsesMessageContentBlock {
+	return schemas.ResponsesMessageContentBlock{
+		Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+		Text:         schemas.Ptr(text),
+		CacheControl: cacheControl,
+	}
+}
+
+func countMessageCachePoints(messages []BedrockMessage) int {
+	total := 0
+	for _, msg := range messages {
+		for _, block := range msg.Content {
+			if block.CachePoint != nil {
+				total++
+			}
+		}
+	}
+	return total
+}
+
+func countSystemCachePoints(systemMessages []BedrockSystemMessage) int {
+	total := 0
+	for _, msg := range systemMessages {
+		if msg.CachePoint != nil {
+			total++
+		}
+	}
+	return total
+}
+
+// claudeCodeShape mirrors what Claude Code sends: two breakpoints in the leading
+// system run, then a mid-conversation reminder carrying the third,
+// conversation-level breakpoint.
+func claudeCodeShape(reminderRole schemas.ResponsesMessageRoleType) []schemas.ResponsesMessage {
+	return []schemas.ResponsesMessage{
+		responsesMessage(schemas.ResponsesInputMessageRoleSystem,
+			responsesTextBlock("You are Claude Code.", ephemeral()),
+			responsesTextBlock("Extra instructions.", ephemeral())),
+		responsesMessage(schemas.ResponsesInputMessageRoleUser, responsesTextBlock("Analyze this.", nil)),
+		responsesMessage(schemas.ResponsesInputMessageRoleAssistant, responsesTextBlock("Understood.", nil)),
+		responsesMessage(reminderRole, responsesTextBlock("Keep going.", ephemeral())),
+	}
+}
+
+// TestInlinedSystemReminder_KeepsCachePoint — the client sends 3 cache_control
+// breakpoints, so 3 cachePoints must reach Bedrock: 2 hoisted into system, and 1
+// on the inlined reminder.
+func TestInlinedSystemReminder_KeepsCachePoint(t *testing.T) {
+	messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(
+		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
+	if err != nil {
+		t.Fatalf("conversion error: %v", err)
+	}
+
+	if got := countSystemCachePoints(systemMessages); got != 2 {
+		t.Errorf("system cachePoints: want 2 (hoisted leading run), got %d", got)
+	}
+	if got := countMessageCachePoints(messages); got != 1 {
+		t.Errorf("message cachePoints: want 1 (the inlined reminder's anchor), got %d", got)
+	}
+	if got := countSystemCachePoints(systemMessages) + countMessageCachePoints(messages); got != 3 {
+		t.Errorf("total cachePoints: want 3 to match the 3 client breakpoints, got %d", got)
+	}
+}
+
+// TestInlinedSystemReminder_CachePointFollowsText — a cachePoint terminates the
+// cacheable prefix, so it must come after the text it closes over.
+func TestInlinedSystemReminder_CachePointFollowsText(t *testing.T) {
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(
+		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleSystem), true)
+	if err != nil {
+		t.Fatalf("conversion error: %v", err)
+	}
+
+	for _, msg := range messages {
+		for i, block := range msg.Content {
+			if block.CachePoint == nil {
+				continue
+			}
+			if i == 0 {
+				t.Fatal("cachePoint is the first block in its message; it must follow the text it terminates")
+			}
+			if msg.Content[i-1].Text == nil {
+				t.Errorf("block before cachePoint has no text; cachePoint must terminate a text block")
+			}
+		}
+	}
+}
+
+// TestInlinedSystemReminder_UserRoleTailUnchanged — the equivalent user-role tail
+// is the control: it already worked and must keep working identically.
+func TestInlinedSystemReminder_UserRoleTailUnchanged(t *testing.T) {
+	messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(
+		context.Background(), claudeCodeShape(schemas.ResponsesInputMessageRoleUser), true)
+	if err != nil {
+		t.Fatalf("conversion error: %v", err)
+	}
+
+	if got := countSystemCachePoints(systemMessages) + countMessageCachePoints(messages); got != 3 {
+		t.Errorf("total cachePoints: want 3 for the control shape, got %d", got)
+	}
+}
+
+// TestInlinedSystemReminder_MultipleBreakpointsEmitOne — only the last breakpoint
+// in a single reminder is emitted, so a pathological input cannot exceed
+// Bedrock's per-request checkpoint budget.
+func TestInlinedSystemReminder_MultipleBreakpointsEmitOne(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		responsesMessage(schemas.ResponsesInputMessageRoleSystem, responsesTextBlock("You are Claude Code.", ephemeral())),
+		responsesMessage(schemas.ResponsesInputMessageRoleUser, responsesTextBlock("Analyze this.", nil)),
+		responsesMessage(schemas.ResponsesInputMessageRoleSystem,
+			responsesTextBlock("reminder one", ephemeral()),
+			responsesTextBlock("reminder two", ephemeral()),
+			responsesTextBlock("reminder three", ephemeral())),
+	}
+
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	if err != nil {
+		t.Fatalf("conversion error: %v", err)
+	}
+
+	if got := countMessageCachePoints(messages); got != 1 {
+		t.Errorf("message cachePoints: want 1 (last breakpoint only), got %d", got)
+	}
+}
+
+// TestInlinedSystemReminder_NoCacheControlNoCachePoint — a reminder carrying no
+// cache_control must not gain an invented cachePoint.
+func TestInlinedSystemReminder_NoCacheControlNoCachePoint(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		responsesMessage(schemas.ResponsesInputMessageRoleSystem, responsesTextBlock("You are Claude Code.", nil)),
+		responsesMessage(schemas.ResponsesInputMessageRoleUser, responsesTextBlock("Analyze this.", nil)),
+		responsesMessage(schemas.ResponsesInputMessageRoleSystem, responsesTextBlock("plain reminder", nil)),
+	}
+
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	if err != nil {
+		t.Fatalf("conversion error: %v", err)
+	}
+
+	if got := countMessageCachePoints(messages); got != 0 {
+		t.Errorf("message cachePoints: want 0 when the client sent no cache_control, got %d", got)
+	}
+}
+
+// TestInlinedSystemReminder_PreservesOneHourTTL — a 1h breakpoint must not be
+// silently downgraded to the 5m default.
+func TestInlinedSystemReminder_PreservesOneHourTTL(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		responsesMessage(schemas.ResponsesInputMessageRoleSystem, responsesTextBlock("You are Claude Code.", nil)),
+		responsesMessage(schemas.ResponsesInputMessageRoleUser, responsesTextBlock("Analyze this.", nil)),
+		responsesMessage(schemas.ResponsesInputMessageRoleSystem,
+			responsesTextBlock("reminder", &schemas.CacheControl{
+				Type: schemas.CacheControlTypeEphemeral,
+				TTL:  schemas.Ptr("1h"),
+			})),
+	}
+
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	if err != nil {
+		t.Fatalf("conversion error: %v", err)
+	}
+
+	for _, msg := range messages {
+		for _, block := range msg.Content {
+			if block.CachePoint == nil {
+				continue
+			}
+			if block.CachePoint.TTL == nil || *block.CachePoint.TTL != "1h" {
+				t.Errorf("cachePoint TTL: want \"1h\", got %v", block.CachePoint.TTL)
+			}
+			return
+		}
+	}
+	t.Fatal("no cachePoint emitted inside messages")
 }

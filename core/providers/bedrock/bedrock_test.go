@@ -6690,11 +6690,22 @@ func TestSystemReminderBetweenToolCallAndResult(t *testing.T) {
 	assert.True(t, hasResult, "user message after tool_use must contain the matching tool_result")
 }
 
-// TestSystemReminderDoesNotCarryCachePoint pins the deliberate omission flagged in review: an
-// inlined mid-conversation reminder must NOT emit a CachePoint, even if its block carries
-// CacheControl. A breakpoint at the moving conversation tail would shift every turn and defeat
-// the prefix caching this whole change exists to preserve.
-func TestSystemReminderDoesNotCarryCachePoint(t *testing.T) {
+// TestSystemReminderCarriesCachePoint reverses the omission previously pinned here. The old
+// behavior — dropping CacheControl when inlining a mid-conversation reminder — was chosen on the
+// grounds that a breakpoint at the moving conversation tail shifts every turn and defeats prefix
+// caching. Measured against Bedrock, the opposite holds: that breakpoint is the client's
+// conversation-level anchor, and dropping it pins the cacheable prefix at the system/tools floor so
+// the entire conversation body is re-read uncached every turn.
+//
+// claude-opus-5, identical warm prefix, third breakpoint on the tail:
+//
+//	tail on role:user    uncached=2      read=36,115  -> 100.0% hit
+//	tail on role:system  uncached=18,116 read=18,018  ->  49.9% hit
+//
+// A breakpoint that advances each turn is how incremental conversation caching is meant to work: it
+// extends the cached prefix by one turn for the cost of one write. See the
+// TestInlinedSystemReminder_* cases in cache_points_test.go for the full contract.
+func TestSystemReminderCarriesCachePoint(t *testing.T) {
 	reminder := systemReminderTextMsg("Reminder that happens to carry a breakpoint.")
 	reminder.Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
 
@@ -6707,11 +6718,19 @@ func TestSystemReminderDoesNotCarryCachePoint(t *testing.T) {
 	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
 	require.NoError(t, err)
 
+	var cachePoints int
 	for _, m := range messages {
-		for _, b := range m.Content {
-			assert.Nil(t, b.CachePoint, "inlined reminder must not introduce a CachePoint block")
+		for i, b := range m.Content {
+			if b.CachePoint == nil {
+				continue
+			}
+			cachePoints++
+			// A cachePoint terminates the cacheable prefix, so it must follow the text it closes over.
+			require.Greater(t, i, 0, "cachePoint must not be the first block in its message")
+			assert.NotNil(t, m.Content[i-1].Text, "cachePoint must follow a text block")
 		}
 	}
+	assert.Equal(t, 1, cachePoints, "inlined reminder must carry the client's breakpoint through")
 }
 
 // TestToolCacheControlBecomesCachePointWithTTL is the positive counterpart to

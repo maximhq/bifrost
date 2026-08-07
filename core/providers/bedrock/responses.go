@@ -3912,21 +3912,34 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
 
-	// Text-only by design: reminders never carry images, and we deliberately attach no cache point
-	// here — a breakpoint on this moving-tail message would shift every turn and defeat the prefix
-	// caching this inlining exists for.
+	// Text-only by design: reminders never carry images. The breakpoint below does move as the
+	// conversation grows, but it is the client's conversation-level cache anchor — dropping it pins
+	// the cacheable prefix at the system/tools floor and leaves the whole conversation body uncached,
+	// which is the collapse this inlining exists to avoid.
+	var lastCacheControl *schemas.CacheControl
 	if msg.Content.ContentStr != nil {
 		wrap(*msg.Content.ContentStr)
 	} else if msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Text != nil {
 				wrap(*block.Text)
+				if block.CacheControl != nil {
+					lastCacheControl = block.CacheControl
+				}
 			}
 		}
 	}
 
 	if len(contentBlocks) == 0 {
 		return nil
+	}
+
+	// A cachePoint terminates the cacheable prefix, so it follows the text it closes over. Only the
+	// last breakpoint in the message is emitted, to stay inside Bedrock's per-request checkpoint budget.
+	if lastCacheControl != nil {
+		contentBlocks = append(contentBlocks, BedrockContentBlock{
+			CachePoint: newBedrockCachePoint(lastCacheControl.TTL),
+		})
 	}
 
 	return &BedrockMessage{
