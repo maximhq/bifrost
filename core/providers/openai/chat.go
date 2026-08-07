@@ -67,9 +67,17 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(capModel)
 		return openaiReq
-	case schemas.Cerebras, schemas.DeepSeek, schemas.Wafer:
+	case schemas.Cerebras, schemas.Wafer:
 		openaiReq.filterOpenAISpecificParameters(capModel)
 		openaiReq.stripReasoningDetails()
+		return openaiReq
+	case schemas.DeepSeek:
+		openaiReq.filterOpenAISpecificParameters(capModel)
+		// DeepSeek is asymmetric: it rejects reasoning_content on ordinary assistant
+		// turns, but *requires* it to be replayed on assistant tool_call turns and 400s
+		// without it. Stripping both (as Cerebras/Wafer do) forced thinking off for every
+		// tool-calling conversation — see issue #5887.
+		openaiReq.stripReasoningDetailsExceptToolCalls()
 		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters(capModel)
@@ -203,6 +211,24 @@ func (req *OpenAIChatRequest) stripReasoningDetails() {
 	for i := range req.Messages {
 		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
 		if assistantMessage == nil {
+			continue
+		}
+		assistantMessage.Reasoning = nil
+	}
+}
+
+// stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that
+// carry no tool calls, and preserves it on assistant tool_call turns. This is DeepSeek's
+// contract: reasoning_content "must be passed back to the API in all subsequent user
+// interaction turns" for tool calls, while an ordinary assistant turn's reasoning_content
+// "does not need to participate in the context concatenation".
+//
+// Mutating in place is safe here — ConvertBifrostMessagesToOpenAIMessages allocates a fresh
+// OpenAIChatAssistantMessage per message, so the caller's input is never touched.
+func (req *OpenAIChatRequest) stripReasoningDetailsExceptToolCalls() {
+	for i := range req.Messages {
+		assistantMessage := req.Messages[i].OpenAIChatAssistantMessage
+		if assistantMessage == nil || len(assistantMessage.ToolCalls) > 0 {
 			continue
 		}
 		assistantMessage.Reasoning = nil

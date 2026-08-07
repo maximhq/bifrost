@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -23,24 +25,45 @@ import (
 // TestMain installs a signal handler that kills every running CLI subprocess
 // on Ctrl-C / SIGTERM, then exits. Without it, killing `go test` would orphan
 // any spawned `claude` / `codex` processes.
+//
+// os.Exit() in the signal handler bypasses Go's normal t.Cleanup mechanism,
+// so an interrupted run would otherwise lose its HTML report even though
+// every completed cell already wrote its own reports/*.json summary to disk.
+// writeHTMLReport rebuilds reports/index.html from those files (see
+// loadReportResults), so calling it here before exiting is enough to recover
+// the report for everything that finished before the interrupt.
 func TestMain(m *testing.M) {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		s := <-sigs
-		fmt.Fprintf(os.Stderr, "\n\033[1;31m[harness] received %s, killing %d active subprocesses\033[0m\n",
+		// Set this BEFORE killing so any cell that reaches writeReport in the
+		// grace window below records itself as interrupted rather than failed.
+		interrupted.Store(true)
+		_, _ = fmt.Fprintf(os.Stderr, "\n\033[1;31m[harness] received %s, killing %d active subprocesses\033[0m\n",
 			s, countActive())
 		activeCommands.Range(func(k, _ any) bool {
 			if cmd, ok := k.(*exec.Cmd); ok && cmd.Process != nil {
+				// Record before killing: the cell reads this to prove the kill
+				// was ours rather than a coincident genuine failure.
+				markKilled(cmd)
 				_ = cmd.Process.Kill()
 			}
 			return true
 		})
 		time.Sleep(200 * time.Millisecond)
+		reportHTMLBestEffort()
 		os.Exit(130)
 	}()
 	os.Exit(m.Run())
 }
+
+// interrupted is set once a SIGINT/SIGTERM has been received. Cells whose
+// subprocess we deliberately killed would otherwise be recorded as genuine
+// failures ("claude exit: signal: killed"), which is misleading: an
+// interrupted sweep produced a report showing 4 red cells that had simply
+// been in flight at Ctrl-C, indistinguishable from real regressions.
+var interrupted atomic.Bool
 
 func countActive() int {
 	n := 0
@@ -55,8 +78,7 @@ func TestCLIs(t *testing.T) {
 	if os.Getenv("BIFROST_E2E_CLIS") == "skip" {
 		t.Skip("BIFROST_E2E_CLIS=skip")
 	}
-	resetRunResults()
-	t.Cleanup(writeHTMLReport)
+	t.Cleanup(reportHTMLBestEffort)
 
 	baseURL := envDefault("BIFROST_BASE_URL", "http://localhost:8080")
 	apiKey := envDefault("BIFROST_API_KEY", "dummy")
@@ -99,8 +121,25 @@ func TestCLIs(t *testing.T) {
 									if !sc.Supports(cli.ID, prov.ID, model) {
 										t.Skipf("scenario %q unsupported for %s/%s/%s", sc.ID, cli.ID, prov.ID, model.ID)
 									}
-									t.Parallel()
-									runCell(t, cli, prov, model, sc, baseURL, apiKey)
+									// No effort sweep declared, or no effort surface on
+									// this cell: run the scenario once at the CLI's
+									// default effort. The Efforts sweep multiplies a
+									// scenario's runs, it never gates whether it runs --
+									// image-qa/pdf-qa are gated on the CLI, not on
+									// adaptive thinking, so skipping here would silently
+									// drop them on non-adaptive models.
+									if len(sc.Efforts) == 0 || !model.AdaptiveThinking || cli.EffortArgs == nil {
+										t.Parallel()
+										runCell(t, cli, prov, model, sc, "", baseURL, apiKey)
+										return
+									}
+									for _, effort := range sc.Efforts {
+										effort := effort
+										t.Run(effort, func(t *testing.T) {
+											t.Parallel()
+											runCell(t, cli, prov, model, sc, effort, baseURL, apiKey)
+										})
+									}
 								})
 							}
 						})
@@ -111,6 +150,20 @@ func TestCLIs(t *testing.T) {
 	}
 }
 
+// TestRenderReport regenerates reports/index.html from whatever
+// reports/*.json summaries already exist on disk, without driving any CLI
+// or hitting Bifrost/a real provider -- free and instant. Useful after an
+// interrupted TestCLIs run (which now also writes the report itself via
+// TestMain's signal handler, but this is a safety net / manual re-render),
+// or any time you just want to view the current state of local results:
+//
+//	go test -run TestRenderReport -v ./...
+func TestRenderReport(t *testing.T) {
+	if err := writeHTMLReport(); err != nil {
+		t.Fatalf("render harness report: %v", err)
+	}
+}
+
 // safeName converts a model ID into something usable as a t.Run subtest name.
 // Go's test runner splits on `/` for filtering, so any slashes in model IDs
 // (none today, but bedrock-style IDs sometimes have them) get replaced.
@@ -118,7 +171,15 @@ func safeName(id string) string {
 	return strings.NewReplacer("/", "_", " ", "_").Replace(id)
 }
 
-func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario, baseURL, apiKey string) {
+func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario, effort string, baseURL, apiKey string) {
+	if effort != "" && len(sc.Turns) > 1 {
+		t.Fatalf("scenario %q: effort-level testing is only wired for single-turn scenarios", sc.ID)
+	}
+	scenarioLabel := sc.ID
+	if effort != "" {
+		scenarioLabel = sc.ID + "@" + effort
+	}
+
 	modelRef := bifrostModelRef(prov.ID, model.ID)
 	cliBaseURL := baseURL + cli.BasePath
 
@@ -145,9 +206,9 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 
 	mirror := mirrorWriter()
 	if mirror != nil {
-		fmt.Fprintf(os.Stdout,
+		_, _ = fmt.Fprintf(os.Stdout,
 			"\n\033[1;36m>>> %s × %s × %s  (model=%s, turns=%d)\033[0m\n",
-			cli.ID, prov.ID, sc.ID, modelRef, len(sc.Turns),
+			cli.ID, prov.ID, scenarioLabel, modelRef, len(sc.Turns),
 		)
 	}
 
@@ -168,7 +229,7 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 		if len(sc.Turns) == 1 {
 			turn = sc.Turns[0]
 		}
-		out, err := runSingleTurnWithRetry(cellCtx, t, cli, modelRef, turn, env, mirror)
+		out, err := runSingleTurnWithRetry(cellCtx, t, cli, modelRef, turn, env, mirror, effort)
 		transcripts = append(transcripts, out)
 		runErr = err
 		if err == nil {
@@ -214,19 +275,27 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 	}
 	status := "pass"
 	softReason := ""
-	if runErr != nil && assertionErr != nil && isSoftPassCandidate(combined, cli.ID) {
+	switch {
+	case cellWasInterrupted(runErr):
+		// We killed this cell's subprocess ourselves on Ctrl-C. Report it as
+		// interrupted so it's visibly distinct from a real regression, and
+		// don't fail the test for it.
+		status = "interrupted"
+		softReason = summarizeFailure(runErr.Error())
+		runErr = nil
+	case runErr != nil && assertionErr != nil && isSoftPassCandidate(combined, cli.ID):
 		status = "soft_pass"
 		softReason = summarizeFailure(assertionErr.Error())
 		runErr = nil
-	} else if runErr != nil {
+	case runErr != nil:
 		status = "fail"
 	}
-	writeReport(t, cli.ID, prov.ID, safeName(model.ID), sc.ID, modelRef, status, runErr, softReason, dur, combined)
-	logCellResult(cli.ID, prov.ID, modelRef, sc.ID, status, dur, runErr, softReason)
+	writeReport(t, cli.ID, prov.ID, safeName(model.ID), scenarioLabel, modelRef, status, runErr, softReason, dur, combined)
+	logCellResult(cli.ID, prov.ID, modelRef, scenarioLabel, status, dur, runErr, softReason)
 
 	if mirror != nil {
-		fmt.Fprintf(os.Stdout, "\033[0m\n\033[1;36m<<< %s × %s × %s  (%s)\033[0m\n",
-			cli.ID, prov.ID, sc.ID, dur.Round(time.Millisecond))
+		_, _ = fmt.Fprintf(os.Stdout, "\033[0m\n\033[1;36m<<< %s × %s × %s  (%s)\033[0m\n",
+			cli.ID, prov.ID, scenarioLabel, dur.Round(time.Millisecond))
 	}
 
 	if runErr != nil {
@@ -239,11 +308,11 @@ const maxRateLimitRetries = 3
 var rateLimitWaitRE = regexp.MustCompile(`(?i)(?:please\s+wait|try\s+again\s+in|retry\s+after)\s+(\d+)\s*(?:seconds?|secs?|s)\b`)
 var rateLimitSignalRE = regexp.MustCompile(`(?i)\brate[_ -]?limit\b|\b429\b|too many requests`)
 
-func runSingleTurnWithRetry(ctx context.Context, t *testing.T, cli CLI, modelRef string, turn Turn, env []string, mirror io.Writer) (string, error) {
+func runSingleTurnWithRetry(ctx context.Context, t *testing.T, cli CLI, modelRef string, turn Turn, env []string, mirror io.Writer, effort string) (string, error) {
 	t.Helper()
 	var lastOut string
 	for attempt := 0; attempt <= maxRateLimitRetries; attempt++ {
-		out, err := runSingleTurn(ctx, t, cli, modelRef, turn, env, mirror)
+		out, err := runSingleTurn(ctx, t, cli, modelRef, turn, env, mirror, effort)
 		lastOut = out
 		if wait, ok := rateLimitDelay(out, err); ok {
 			if err := sleepForRateLimit(ctx, t, cli.ID, modelRef, wait, attempt+1); err != nil {
@@ -343,7 +412,7 @@ func isSoftPassCandidate(transcript, cliID string) bool {
 
 func sleepForRateLimit(ctx context.Context, t *testing.T, cliID, modelRef string, wait time.Duration, attempt int) error {
 	t.Helper()
-	fmt.Fprintf(os.Stdout, "harness cli=%s model=%s status=rate-limit-retry attempt=%d wait=%s\n",
+	_, _ = fmt.Fprintf(os.Stdout, "harness cli=%s model=%s status=rate-limit-retry attempt=%d wait=%s\n",
 		cliID, modelRef, attempt, wait.Round(time.Second))
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
@@ -362,7 +431,7 @@ func logCellResult(cliID, providerID, model, scenarioID, status string, dur time
 	} else if softReason != "" {
 		reason = " reason=" + tableCell(softReason, 90)
 	}
-	fmt.Fprintf(os.Stdout, "harness cli=%s provider=%s model=%s scenario=%s status=%s duration=%s%s\n",
+	_, _ = fmt.Fprintf(os.Stdout, "harness cli=%s provider=%s model=%s scenario=%s status=%s duration=%s%s\n",
 		cliID,
 		providerID,
 		model,
@@ -475,13 +544,13 @@ func tailStr(s string, n int) string {
 }
 
 var reportMu sync.Mutex
-var runResults []cellResult
 
 type cellResult struct {
 	CLI            string
 	Provider       string
 	Model          string
 	Scenario       string
+	Effort         string
 	Status         string
 	Reason         string
 	DurationMs     int64
@@ -489,10 +558,18 @@ type cellResult struct {
 	MetaPath       string
 }
 
-func resetRunResults() {
-	reportMu.Lock()
-	defer reportMu.Unlock()
-	runResults = nil
+// reportsDirEnv lets one `go test` invocation write its cells into its own
+// directory. The CI runner uses it to give each CLI filter an isolated
+// subdirectory; see .github/workflows/scripts/test-cli-harness.sh.
+const reportsDirEnv = "BIFROST_E2E_CLIS_REPORTS_DIR"
+
+// reportsDir is where this invocation writes per-cell summaries. It defaults to
+// "reports" so every local run and the standalone renderer behave as before.
+func reportsDir() string {
+	if dir := strings.TrimSpace(os.Getenv(reportsDirEnv)); dir != "" {
+		return dir
+	}
+	return "reports"
 }
 
 func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, status string, runErr error, softReason string, dur time.Duration, transcript string) {
@@ -500,9 +577,9 @@ func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, stat
 	reportMu.Lock()
 	defer reportMu.Unlock()
 
-	dir := "reports"
+	dir := reportsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Logf("mkdir reports: %v", err)
+		t.Logf("mkdir %s: %v", dir, err)
 		return
 	}
 	stem := fmt.Sprintf("%s__%s__%s__%s", cli, provider, modelStem, scenarioID)
@@ -516,17 +593,6 @@ func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, stat
 	} else if softReason != "" {
 		errStr = softReason
 	}
-	runResults = append(runResults, cellResult{
-		CLI:            cli,
-		Provider:       provider,
-		Model:          model,
-		Scenario:       scenarioID,
-		Status:         status,
-		Reason:         summarizeFailure(errStr),
-		DurationMs:     dur.Milliseconds(),
-		TranscriptPath: transcriptPath,
-		MetaPath:       metaPath,
-	})
 	meta := map[string]any{
 		"cli":        cli,
 		"provider":   provider,
@@ -541,13 +607,107 @@ func writeReport(t *testing.T, cli, provider, modelStem, scenarioID, model, stat
 	_ = os.WriteFile(transcriptPath, []byte(transcript), 0o644)
 }
 
-func writeHTMLReport() {
-	reportMu.Lock()
-	results := append([]cellResult(nil), runResults...)
-	reportMu.Unlock()
+// loadReportResults rebuilds the report table from every reports/*.json
+// summary on disk, rather than from this process's in-memory state. Each
+// summary is written synchronously by writeReport before the owning test
+// even asserts pass/fail, so this reflects every cell that has EVER
+// completed locally -- including ones from an earlier, interrupted run, or
+// runs from a completely separate `go test` invocation -- not just cells
+// this process happened to run. That's what makes both the SIGINT-handler
+// report write and the standalone TestRenderReport (see below) correct.
+// The walk is recursive, not a one-level glob: the CI runner gives each CLI
+// filter its own subdirectory (see reportsDirEnv) so an empty one proves that
+// filter matched no cells, and the aggregate report still has to span all of
+// them. Summaries written straight into the root -- every local run, and the
+// SIGINT handler -- are found at depth 0 exactly as before.
+func loadReportResults(dir string) ([]cellResult, error) {
+	var metaPaths []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// A missing reports dir is a normal "nothing ran yet" state, and an
+			// unreadable subdirectory should not sink the whole report.
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		metaPaths = append(metaPaths, path)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(metaPaths)
 
+	results := make([]cellResult, 0, len(metaPaths))
+	for _, metaPath := range metaPaths {
+		b, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			CLI        string `json:"cli"`
+			Provider   string `json:"provider"`
+			Scenario   string `json:"scenario"`
+			Model      string `json:"model"`
+			Status     string `json:"status"`
+			Error      string `json:"error"`
+			DurationMs int64  `json:"durationMs"`
+		}
+		if err := json.Unmarshal(b, &meta); err != nil {
+			continue
+		}
+
+		scenario, effort := meta.Scenario, ""
+		if i := strings.LastIndex(meta.Scenario, "@"); i >= 0 {
+			scenario, effort = meta.Scenario[:i], meta.Scenario[i+1:]
+		}
+		reason := ""
+		if meta.Error != "" {
+			reason = summarizeFailure(meta.Error)
+		}
+
+		results = append(results, cellResult{
+			CLI:            meta.CLI,
+			Provider:       meta.Provider,
+			Model:          meta.Model,
+			Scenario:       scenario,
+			Effort:         effort,
+			Status:         meta.Status,
+			Reason:         reason,
+			DurationMs:     meta.DurationMs,
+			TranscriptPath: strings.TrimSuffix(metaPath, ".json") + ".transcript.log",
+			MetaPath:       metaPath,
+		})
+	}
+	return results, nil
+}
+
+// writeHTMLReport renders reports/index.html from the per-cell summaries on
+// disk. It returns the first error that prevented a report from being written
+// so TestRenderReport (and `make cli-harness-report`) fail loudly instead of
+// exiting 0 with a missing or stale report. Best-effort callers -- t.Cleanup
+// and the signal handler -- log the error and carry on, since neither can fail
+// a test.
+//
+// Loading runs under reportMu, the same lock writeReport holds. Without it the
+// signal handler could render while parallel cells were mid-write, read a
+// partially written summary, fail to unmarshal it, and silently drop that cell
+// from the report (loadReportResults skips unparseable files by design, so the
+// loss leaves no trace).
+func writeHTMLReport() error {
+	dir := reportsDir()
+	reportMu.Lock()
+	results, err := loadReportResults(dir)
+	reportMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("load harness reports: %w", err)
+	}
 	if len(results) == 0 {
-		return
+		return nil
 	}
 
 	counts := map[string]int{}
@@ -560,7 +720,7 @@ func writeHTMLReport() {
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;background:#f7f8fa;color:#151922}
 h1{margin:0 0 8px;font-size:24px}.muted{color:#667085}.summary{display:flex;gap:12px;margin:18px 0;flex-wrap:wrap}
 .pill{border-radius:999px;padding:6px 12px;background:white;border:1px solid #d0d5dd;font-weight:600}
-.pass{color:#067647}.soft_pass{color:#b54708}.fail{color:#b42318}.skip{color:#475467}
+.pass{color:#067647}.soft_pass{color:#b54708}.fail{color:#b42318}.skip{color:#475467}.interrupted{color:#475467}
 table{width:100%;border-collapse:collapse;background:white;border:1px solid #d0d5dd}
 th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top;font-size:13px}
 th{position:sticky;top:0;background:#f2f4f7;z-index:1}.model{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
@@ -570,17 +730,23 @@ a{color:#175cd3;text-decoration:none}a:hover{text-decoration:underline}
 	body.WriteString("<h1>Bifrost CLI Harness Report</h1>")
 	body.WriteString(`<div class="muted">Generated ` + html.EscapeString(time.Now().Format(time.RFC3339)) + `</div>`)
 	body.WriteString(`<div class="summary">`)
-	for _, status := range []string{"pass", "soft_pass", "fail"} {
-		body.WriteString(fmt.Sprintf(`<span class="pill %s">%s: %d</span>`, status, html.EscapeString(status), counts[status]))
+	for _, status := range []string{"pass", "soft_pass", "fail", "interrupted"} {
+		// pass/fail always render (a zero there is itself information);
+		// the qualified states only render when they actually occurred.
+		if counts[status] == 0 && status != "pass" && status != "fail" {
+			continue
+		}
+		fmt.Fprintf(&body, `<span class="pill %s">%s: %d</span>`, status, html.EscapeString(status), counts[status])
 	}
-	body.WriteString(`</div><table><thead><tr><th>Status</th><th>CLI</th><th>Provider</th><th>Model</th><th>Scenario</th><th>Duration</th><th>Reason</th><th>Logs</th></tr></thead><tbody>`)
+	body.WriteString(`</div><table><thead><tr><th>Status</th><th>CLI</th><th>Provider</th><th>Model</th><th>Scenario</th><th>Effort</th><th>Duration</th><th>Reason</th><th>Logs</th></tr></thead><tbody>`)
 	for _, result := range results {
 		body.WriteString("<tr>")
-		body.WriteString(fmt.Sprintf(`<td class="%s">%s</td>`, html.EscapeString(result.Status), html.EscapeString(result.Status)))
+		fmt.Fprintf(&body, `<td class="%s">%s</td>`, html.EscapeString(result.Status), html.EscapeString(result.Status))
 		body.WriteString("<td>" + html.EscapeString(result.CLI) + "</td>")
 		body.WriteString("<td>" + html.EscapeString(result.Provider) + "</td>")
 		body.WriteString(`<td class="model">` + html.EscapeString(result.Model) + "</td>")
 		body.WriteString("<td>" + html.EscapeString(result.Scenario) + "</td>")
+		body.WriteString("<td>" + html.EscapeString(result.Effort) + "</td>")
 		body.WriteString("<td>" + html.EscapeString((time.Duration(result.DurationMs) * time.Millisecond).Round(time.Millisecond).String()) + "</td>")
 		body.WriteString("<td>" + html.EscapeString(result.Reason) + "</td>")
 		body.WriteString("<td>" + transcriptDetails(result) + "</td>")
@@ -588,17 +754,24 @@ a{color:#175cd3;text-decoration:none}a:hover{text-decoration:underline}
 	}
 	body.WriteString("</tbody></table></body></html>")
 
-	path := filepath.Join("reports", "index.html")
-	if err := os.MkdirAll("reports", 0o755); err != nil {
-		fmt.Fprintf(os.Stdout, "harness report error: %v\n", err)
-		return
+	path := filepath.Join(dir, "index.html")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create reports dir: %w", err)
 	}
 	if err := os.WriteFile(path, []byte(body.String()), 0o644); err != nil {
-		fmt.Fprintf(os.Stdout, "harness report error: %v\n", err)
-		return
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	abs, _ := filepath.Abs(path)
-	fmt.Fprintf(os.Stdout, "\nCLI harness HTML report: %s\n", abs)
+	_, _ = fmt.Fprintf(os.Stdout, "\nCLI harness HTML report: %s\n", abs)
+	return nil
+}
+
+// reportHTMLBestEffort renders the report for callers that cannot fail a test --
+// t.Cleanup and the SIGINT handler -- logging any error rather than dropping it.
+func reportHTMLBestEffort() {
+	if err := writeHTMLReport(); err != nil {
+		_, _ = fmt.Fprintf(os.Stdout, "harness report error: %v\n", err)
+	}
 }
 
 func transcriptDetails(result cellResult) string {

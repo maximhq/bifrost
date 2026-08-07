@@ -493,13 +493,13 @@
               },
               "current_usage": {
                 "type": "number",
-                "description": "Current usage in dollars",
+                "description": "Seed value only: current usage in dollars, applied when the budget is first created. Runtime-owned thereafter - the value here is ignored on every subsequent sync so a config.json reload cannot overwrite live accounting.",
                 "default": 0
               },
               "last_reset": {
                 "type": "string",
                 "format": "date-time",
-                "description": "Last time budget was reset"
+                "description": "Seed value only: last time the budget was reset, applied when the budget is first created. Runtime-owned thereafter, like current_usage."
               },
               "virtual_key_id": {
                 "type": "string",
@@ -624,13 +624,13 @@
               },
               "token_current_usage": {
                 "type": "integer",
-                "description": "Current token usage",
+                "description": "Seed value only: current token usage, applied when the rate limit is first created. Runtime-owned thereafter - the value here is ignored on every subsequent sync so a config.json reload cannot overwrite live counters.",
                 "default": 0
               },
               "token_last_reset": {
                 "type": "string",
                 "format": "date-time",
-                "description": "Last time token counter was reset"
+                "description": "Seed value only: last time the token counter was reset, applied when the rate limit is first created. Runtime-owned thereafter, like token_current_usage."
               },
               "request_max_limit": {
                 "type": "integer",
@@ -642,13 +642,13 @@
               },
               "request_current_usage": {
                 "type": "integer",
-                "description": "Current request usage",
+                "description": "Seed value only: current request usage, applied when the rate limit is first created. Runtime-owned thereafter - the value here is ignored on every subsequent sync so a config.json reload cannot overwrite live counters.",
                 "default": 0
               },
               "request_last_reset": {
                 "type": "string",
                 "format": "date-time",
-                "description": "Last time request counter was reset"
+                "description": "Seed value only: last time the request counter was reset, applied when the rate limit is first created. Runtime-owned thereafter, like request_current_usage."
               },
               "calendar_aligned": {
                 "type": "boolean",

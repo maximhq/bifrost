@@ -81,33 +81,60 @@ func TestExtractReasoningItemID_UnmarkedPayloadFallsThrough(t *testing.T) {
 // (Llama/Mistral/DeepSeek on Azure, Claude on Bedrock Mantle, Gemini/Claude on Vertex) --
 // so those three must additionally check the resolved model, while plain OpenAI (which by
 // definition only ever serves OpenAI models) and every other provider stay unconditional.
+//
+// The baseProvider cases cover custom providers, which report their own key rather than the
+// built-in provider they wrap: without resolving through the base type Bifrost records on the
+// context, OpenAI models served via an openai-based custom provider fall to the default arm
+// and lose the id.
 func TestShouldEmbedReasoningItemID(t *testing.T) {
 	cases := []struct {
-		name     string
-		provider schemas.ModelProvider
-		model    string
-		want     bool
+		name         string
+		provider     schemas.ModelProvider
+		model        string
+		baseProvider schemas.ModelProvider // set on the context when non-empty
+		want         bool
 	}{
-		{"OpenAI is always true regardless of model", schemas.OpenAI, "gpt-5", true},
-		{"OpenAI is true even for an unusual model string", schemas.OpenAI, "some-future-model", true},
-		{"Azure with an OpenAI model", schemas.Azure, "o3", true},
-		{"Azure with a non-OpenAI Foundry model", schemas.Azure, "Meta-Llama-3.1-70B-Instruct", false},
-		{"Azure with Mistral", schemas.Azure, "mistral-large", false},
-		{"Bedrock Mantle with an OpenAI model", schemas.BedrockMantle, "openai.gpt-oss-120b", true},
-		{"Bedrock Mantle with a Claude model", schemas.BedrockMantle, "anthropic.claude-opus-4-8", false},
-		{"Vertex with an OpenAI model", schemas.Vertex, "openai/gpt-oss-120b", true},
-		{"Vertex with Gemini", schemas.Vertex, "gemini-2.5-pro", false},
-		{"Vertex with Claude", schemas.Vertex, "claude-sonnet-4-6", false},
-		{"DeepSeek is never true", schemas.DeepSeek, "deepseek-chat", false},
-		{"Anthropic is never true", schemas.Anthropic, "claude-sonnet-4-6", false},
-		{"Bedrock is never true", schemas.Bedrock, "anthropic.claude-opus-4-8", false},
+		{"OpenAI is always true regardless of model", schemas.OpenAI, "gpt-5", "", true},
+		{"OpenAI is true even for an unusual model string", schemas.OpenAI, "some-future-model", "", true},
+		{"Azure with an OpenAI model", schemas.Azure, "o3", "", true},
+		{"Azure with a non-OpenAI Foundry model", schemas.Azure, "Meta-Llama-3.1-70B-Instruct", "", false},
+		{"Azure with Mistral", schemas.Azure, "mistral-large", "", false},
+		{"Bedrock Mantle with an OpenAI model", schemas.BedrockMantle, "openai.gpt-oss-120b", "", true},
+		{"Bedrock Mantle with a Claude model", schemas.BedrockMantle, "anthropic.claude-opus-4-8", "", false},
+		{"Vertex with an OpenAI model", schemas.Vertex, "openai/gpt-oss-120b", "", true},
+		{"Vertex with Gemini", schemas.Vertex, "gemini-2.5-pro", "", false},
+		{"Vertex with Claude", schemas.Vertex, "claude-sonnet-4-6", "", false},
+		{"DeepSeek is never true", schemas.DeepSeek, "deepseek-chat", "", false},
+		{"Anthropic is never true", schemas.Anthropic, "claude-sonnet-4-6", "", false},
+		{"Bedrock is never true", schemas.Bedrock, "anthropic.claude-opus-4-8", "", false},
+		{"custom provider on base OpenAI, deployment-style model", "my-openai", "my-gpt-deployment", schemas.OpenAI, true},
+		{"custom provider on base OpenAI, OpenAI model", "my-openai", "gpt-5", schemas.OpenAI, true},
+		{"custom provider on base Anthropic", "my-claude", "claude-sonnet-4-6", schemas.Anthropic, false},
+		{"custom provider with no base type on the context", "my-openai", "gpt-5", "", false},
+		{"base type overrides a standard-looking provider key", schemas.Vertex, "gemini-2.5-pro", schemas.OpenAI, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ShouldEmbedReasoningItemID(tc.provider, tc.model); got != tc.want {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			if tc.baseProvider != "" {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.baseProvider)
+			}
+			if got := ShouldEmbedReasoningItemID(ctx, tc.provider, tc.model); got != tc.want {
 				t.Errorf("ShouldEmbedReasoningItemID(%q, %q) = %v, want %v", tc.provider, tc.model, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestShouldEmbedReasoningItemID_NilContext pins the fallback: converters called
+// outside a request (and tests) pass no context, so the provider key must still
+// be matched directly rather than panicking or resolving to empty.
+func TestShouldEmbedReasoningItemID_NilContext(t *testing.T) {
+	if !ShouldEmbedReasoningItemID(nil, schemas.OpenAI, "gpt-5") {
+		t.Error("ShouldEmbedReasoningItemID(nil, OpenAI, gpt-5) = false, want true")
+	}
+	if ShouldEmbedReasoningItemID(nil, schemas.Anthropic, "claude-sonnet-4-6") {
+		t.Error("ShouldEmbedReasoningItemID(nil, Anthropic, claude-sonnet-4-6) = true, want false")
 	}
 }
 

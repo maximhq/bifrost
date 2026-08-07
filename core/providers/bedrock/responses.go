@@ -1791,8 +1791,12 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		// Message stop - always set stopReason
 		stopReason := "end_turn"
-		if bifrostResp.Response != nil && bifrostResp.Response.IncompleteDetails != nil {
-			stopReason = bifrostResp.Response.IncompleteDetails.Reason
+		if bifrostResp.Response != nil {
+			if bifrostResp.Response.StopReason != nil {
+				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
+			} else if bifrostResp.Response.IncompleteDetails != nil {
+				stopReason = bifrostResp.Response.IncompleteDetails.Reason
+			}
 		}
 		event.StopReason = &stopReason
 
@@ -2665,8 +2669,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	if !schemas.BedrockModelSupportsCachePoints(capModel) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
-	} else if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
-		downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+	} else {
+		if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+		}
+		// Bedrock rejects a request carrying more than BedrockMaxCachePoints markers outright,
+		// so trim the earliest rather than let the whole call fail. Runs last, after every
+		// converter branch has contributed its markers.
+		clampBedrockCachePoints(bedrockReq)
 	}
 
 	return bedrockReq, nil
@@ -3911,22 +3921,58 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
+	// Only the LAST breakpoint in a reminder is emitted. Within a single message an intermediate
+	// cachePoint buys nothing — a marker at the end already closes over every preceding block, and
+	// the message is atomic so no later request can diverge in its middle — while still consuming
+	// one of the four checkpoints Bedrock allows per request. Collapsing to one keeps a
+	// pathological reminder from crowding out the system and tool-result anchors.
+	var lastCacheControl *schemas.CacheControl
 
-	// Text-only by design: reminders never carry images, and we deliberately attach no cache point
-	// here — a breakpoint on this moving-tail message would shift every turn and defeat the prefix
-	// caching this inlining exists for.
+	// Text-only by design: reminders never carry images.
+	//
+	// The breakpoint, by contrast, has to survive the inlining. A mid-conversation reminder
+	// frequently carries the conversation-level cache anchor — Claude Code's third breakpoint,
+	// after the two on the leading system prompt — and dropping it leaves both survivors inside
+	// the `system` block, pinning the cacheable prefix at the system/tools floor so the entire
+	// conversation body is re-read uncached on every turn. That is the exact collapse the
+	// surrounding inlining exists to prevent.
+	//
+	// A breakpoint on this moving tail is not a wasted breakpoint: Bedrock matches the longest
+	// cached prefix at or before each breakpoint, so one that advances a turn at a time extends
+	// the cached prefix and costs a single write, which is how incremental conversation caching
+	// is meant to work. Measured end to end in the harness — 49.8% → 99.9% hit rate on a warm
+	// ~19K prompt. See tests/e2e/api/runners/lib/midconv-system-cache-parity.mjs and
+	// midconvcachepoint_test.go.
+	//
+	// Models that don't support prompt caching are unaffected: stripCachePointsFromBedrockRequest
+	// runs later in ToBedrockResponsesRequest and drops cachePoint-only content blocks outright.
 	if msg.Content.ContentStr != nil {
+		// The string form has nowhere to hang a per-block cache_control, so no breakpoint was
+		// sent and none may be invented — that would burn a cache checkpoint the client never
+		// asked for, against a cap Bedrock sets at 4 for Claude.
 		wrap(*msg.Content.ContentStr)
 	} else if msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Text != nil {
 				wrap(*block.Text)
+				if block.CacheControl != nil {
+					lastCacheControl = block.CacheControl
+				}
 			}
 		}
 	}
 
 	if len(contentBlocks) == 0 {
 		return nil
+	}
+
+	// Per Converse semantics a cachePoint element terminates the cacheable prefix rather than
+	// opening one, so it follows the text it closes over — the same ordering every sibling call
+	// site in this file already uses for tool_use and tool_result blocks.
+	if lastCacheControl != nil {
+		contentBlocks = append(contentBlocks, BedrockContentBlock{
+			CachePoint: newBedrockCachePoint(lastCacheControl.TTL),
+		})
 	}
 
 	return &BedrockMessage{
