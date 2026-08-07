@@ -66,6 +66,13 @@ type MCPManagerInterface interface {
 	// NeedsReauth. Pass nil to clear a previously registered callback.
 	SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState))
 
+	// SetToolsChangeCallback registers cb to be invoked whenever a client's
+	// tool map is freshly (re)discovered — connect/reconnect, per-call
+	// discovery, and the periodic checker's own refresh. core/mcp has no DB
+	// access; this is the seam the transport layer persists through. Pass
+	// nil to clear a previously registered callback.
+	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string))
+
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
 

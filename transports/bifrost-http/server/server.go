@@ -337,7 +337,39 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	return nil
 }
 
-// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
+// PersistMCPClientTools writes a freshly (re)discovered tool set to the DB
+// via ConfigStore's targeted column update. core/mcp has no DB access of its
+// own; this is registered as the MCP manager's tools-change callback so
+// every discovery path — connect/reconnect, per-call discovery, and the
+// periodic checker's own refresh — persists uniformly. Best-effort: a
+// failure here is logged, not propagated, since this runs from a callback
+// with no caller to return an error to — the next discovery event (or the
+// periodic checker's own retry) tries again.
+func (s *BifrostHTTPServer) PersistMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return
+	}
+	if err := s.Config.ConfigStore.UpdateMCPClientTools(ctx, clientID, tools, toolNameMapping); err != nil {
+		logger.Error(fmt.Sprintf("Failed to persist discovered tools for MCP client %s: %v", clientID, err))
+	}
+}
+
+// SyncMCPServersAfterToolsChange re-syncs Bifrost's own hosted MCP server(s)
+// so a freshly (re)discovered tool list is immediately visible via /mcp.
+// SetClientTools (below) already does this for handler-driven updates
+// (verify-headers, complete-oauth, admin-repair) — this is the same resync,
+// reachable from the tools-change callback so periodic-checker refreshes and
+// sticky reconnects get it too, not just one-time admin actions. Best-effort,
+// same reasoning as PersistMCPClientTools.
+func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, clientID string) {
+	if s.MCPServerHandler == nil {
+		return
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to sync MCP servers after tools change for client %s: %v", clientID, err))
+	}
+}
+
 func (s *BifrostHTTPServer) UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
 	if err := s.Config.UpdateMCPClientCredentials(ctx, id, newConfig); err != nil {
 		return err
@@ -2569,6 +2601,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
+	// Registered before ConnectConfiguredMCPClients so even the very first
+	// boot dial's discovered tools get persisted, not just later reconnects.
+	s.Client.SetMCPToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+		go s.PersistMCPClientTools(s.Ctx, clientID, tools, toolNameMapping)
+		go s.SyncMCPServersAfterToolsChange(s.Ctx, clientID)
+	})
 	// Dial configured MCP clients now that every plugin is registered in the core.
 	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
 	// each client's PreMCPConnectionHook runs against the full plugin set rather than

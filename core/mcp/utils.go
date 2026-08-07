@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,28 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// computeToolsHash returns a stable content hash of a tool map + name
+// mapping, used to gate the tools-change funnel (SetClientTools,
+// connectToMCPClient, writeBackTools) to genuine changes only — a
+// rediscovery that returns byte-identical tools (the common case on most
+// periodic ticks and reconnects) must not re-trigger a registered
+// callback's work (DB persist, external MCP server resync). json.Marshal
+// sorts map string keys, so this is deterministic regardless of the maps'
+// iteration order; errors are treated as "never matches" (marshal failure
+// on these plain data types isn't expected, but must never panic or block
+// a genuine discovery result from being recorded).
+func computeToolsHash(tools map[string]schemas.ChatTool, toolNameMapping map[string]string) string {
+	h := sha256.New()
+	if data, err := json.Marshal(tools); err == nil {
+		h.Write(data)
+	}
+	h.Write([]byte{0}) // separator so {"a":"b"} tools + {} mapping can't collide with {} tools + {"a":"b"} mapping
+	if data, err := json.Marshal(toolNameMapping); err == nil {
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 // RetryConfig defines the retry behavior with exponential backoff
 type RetryConfig struct {
