@@ -153,6 +153,10 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
 		return input.usage.Cost.TotalCost
 	}
+	// Image responses carry usage on imageUsage, never on input.usage.
+	if input.imageUsage != nil && input.imageUsage.Cost != nil && input.imageUsage.Cost.TotalCost > 0 {
+		return input.imageUsage.Cost.TotalCost
+	}
 
 	// If no usage data at all, nothing to price
 	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {

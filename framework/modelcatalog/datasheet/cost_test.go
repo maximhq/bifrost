@@ -1739,6 +1739,44 @@ func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
 	assert.Equal(t, 0.99, cost)
 }
 
+// Image usage hangs off imageUsage, never input.usage, so it needs its own
+// provider-cost short circuit. xAI reports cost_in_usd_ticks, normalized into
+// Cost by the provider before billing sees it.
+func TestCalculateCost_ImageProviderComputedCostPassthrough(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("grok-imagine-image-quality", "xai", "image_generation"): {
+			Model: "grok-imagine-image-quality", Provider: "xai", Mode: "image_generation",
+			OutputCostPerImage: bifrost.Ptr(0.5), // deliberately unlike the reported cost
+		},
+	})
+
+	usage := &schemas.ImageUsage{CostInUsdTicks: bifrost.Ptr(int64(200000000))}
+	usage.NormalizeProviderCost()
+
+	resp := makeImageResponse(schemas.XAI, "grok-imagine-image-quality", usage)
+	resp.ImageGenerationResponse.Data = []schemas.ImageData{{URL: "https://imgen.x.ai/x.jpeg"}}
+
+	assert.Equal(t, 0.02, s.CalculateCost(resp, nil))
+}
+
+// Without a reported cost the datasheet still prices the request.
+func TestCalculateCost_ImageFallsBackToDatasheetWithoutReportedCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("grok-imagine-image-quality", "xai", "image_generation"): {
+			Model: "grok-imagine-image-quality", Provider: "xai", Mode: "image_generation",
+			OutputCostPerImage: bifrost.Ptr(0.5),
+		},
+	})
+
+	usage := &schemas.ImageUsage{}
+	usage.NormalizeProviderCost()
+
+	resp := makeImageResponse(schemas.XAI, "grok-imagine-image-quality", usage)
+	resp.ImageGenerationResponse.Data = []schemas.ImageData{{URL: "https://imgen.x.ai/x.jpeg"}}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
 func TestCalculateCost_NoUsageData(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),
