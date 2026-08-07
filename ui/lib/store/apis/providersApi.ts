@@ -237,6 +237,7 @@ export const providersApi = baseApi.injectEndpoints({
 									provider_id: "",
 									models: newKey.models ?? [],
 									provider: provider as ModelProviderName,
+									enabled: newKey.enabled,
 								});
 							}
 						}),
@@ -267,7 +268,16 @@ export const providersApi = baseApi.injectEndpoints({
 						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
 							const index = draft.findIndex((k) => k.key_id === keyId);
 							if (index !== -1) {
-								draft[index] = { ...draft[index], name: updatedKey.name, models: updatedKey.models ?? [] };
+								// `enabled` has to ride along: callers filter providers on it
+								// (the complexity router only offers providers with a serving
+								// key), so dropping it leaves a toggled key looking unchanged
+								// here until the next full refetch.
+								draft[index] = {
+									...draft[index],
+									name: updatedKey.name,
+									models: updatedKey.models ?? [],
+									enabled: updatedKey.enabled,
+								};
 							}
 						}),
 					);

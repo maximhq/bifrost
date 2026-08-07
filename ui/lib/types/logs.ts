@@ -543,8 +543,8 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("lexical", "semantic", "skipped")
-	complexity_score?: number; // Classifier score: lexical score or semantic cosine similarity
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
@@ -611,7 +611,7 @@ export interface LogFilters {
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity classification mechanism (lexical, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity classification mechanism (semantic, skipped)
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format

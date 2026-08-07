@@ -16,7 +16,11 @@ import (
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
-func TestPreRequestHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
+// TestPreRequestHook_ComplexitySkippedWithoutEmbeddingModel pins the contract
+// that semantic classification is the only mechanism. A deployment with phrase
+// lists but no embedding model publishes no tier at all rather than quietly
+// scoring those phrases as literal keywords.
+func TestPreRequestHook_ComplexitySkippedWithoutEmbeddingModel(t *testing.T) {
 	logger := NewMockLogger()
 	provider := "openai"
 	model := "gpt-4o-mini"
@@ -67,28 +71,30 @@ func TestPreRequestHook_ComplexityAnalyzerFeedsCELVariable(t *testing.T) {
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	require.NoError(t, plugin.PreRequestHook(bfCtx, req))
 
-	engines, ok := bfCtx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
-	require.True(t, ok, "routing engines used should be tracked")
-	require.Contains(t, engines, schemas.RoutingEngineRoutingRule)
+	// No embedding model is configured, so there is no mechanism left to
+	// classify with: the rule's complexity_tier reference cannot match, the
+	// routing-rule engine never fires, and the request keeps the model it
+	// arrived with.
+	engines, _ := bfCtx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
+	require.NotContains(t, engines, schemas.RoutingEngineRoutingRule)
 
 	providerOut, modelOut, _ := req.GetRequestFields()
 	require.Equal(t, schemas.OpenAI, providerOut)
-	require.Equal(t, "gpt-4o-mini", modelOut)
+	require.Equal(t, "gpt-4o", modelOut)
 
-	tier, ok := bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier).(string)
-	require.True(t, ok, "complexity tier should be recorded in context")
-	require.Contains(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, tier)
+	_, ok := bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier).(string)
+	require.False(t, ok, "no complexity tier should be published without an embedding model")
 	mechanism, ok := bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism).(string)
 	require.True(t, ok, "routing mechanism should be recorded in context")
-	require.Equal(t, complexity.MechanismLexical, mechanism)
+	require.Equal(t, complexity.MechanismSkipped, mechanism)
 	_, ok = bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
-	require.True(t, ok, "complexity score should be recorded in context")
+	require.False(t, ok, "no complexity score should be published without an embedding model")
 }
 
-// TestPreRequestHook_SemanticComplexityUsesLastMessageAndFallsBack verifies
-// that semantic routing reaches a Governance rule, embeds only the latest user
-// turn, and returns to the shared lexical lists when semantic is unavailable.
-func TestPreRequestHook_SemanticComplexityUsesLastMessageAndFallsBack(t *testing.T) {
+// TestPreRequestHook_SemanticComplexityUsesLastMessageAndSkipsWhenUnavailable
+// verifies that semantic routing reaches a Governance rule, embeds only the
+// latest user turn, and publishes no tier at all once semantic is unavailable.
+func TestPreRequestHook_SemanticComplexityUsesLastMessageAndSkipsWhenUnavailable(t *testing.T) {
 	logger := NewMockLogger()
 	provider := "openai"
 	routeModel := "gpt-4o-mini"
@@ -218,8 +224,11 @@ func TestPreRequestHook_SemanticComplexityUsesLastMessageAndFallsBack(t *testing
 	}
 	require.Contains(t, strings.Join(semanticLogMessages, "\n"), `matched="papaya amber"`)
 
+	// Taking the embedding executor away makes semantic classification
+	// unavailable. The identical phrase that just routed as SIMPLE now publishes
+	// no tier: there is no lexical scorer behind it to catch the request.
 	plugin.SetEmbeddingRequestExecutor(nil)
-	lexicalRequest := &schemas.BifrostRequest{
+	unavailableRequest := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{
 			Provider: schemas.OpenAI,
@@ -229,14 +238,14 @@ func TestPreRequestHook_SemanticComplexityUsesLastMessageAndFallsBack(t *testing
 			},
 		},
 	}
-	lexicalCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	require.NoError(t, plugin.PreRequestHook(lexicalCtx, lexicalRequest))
+	unavailableCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NoError(t, plugin.PreRequestHook(unavailableCtx, unavailableRequest))
 
-	providerOut, modelOut, _ = lexicalRequest.GetRequestFields()
+	providerOut, modelOut, _ = unavailableRequest.GetRequestFields()
 	require.Equal(t, schemas.OpenAI, providerOut)
-	require.Equal(t, routeModel, modelOut)
-	require.Equal(t, complexity.TierSimple, lexicalCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
-	require.Equal(t, complexity.MechanismLexical, lexicalCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	require.Equal(t, "gpt-4o", modelOut)
+	require.Nil(t, unavailableCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	require.Equal(t, complexity.MechanismSkipped, unavailableCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 }
 
 // TestPreRequestHook_SemanticComplexityTimeoutIsNamedInRoutingLog keeps an
@@ -363,11 +372,12 @@ func TestPreRequestHook_SemanticComplexityTimeoutIsNamedInRoutingLog(t *testing.
 	require.Contains(t, joined, "timed out after "+semanticTimeout.String())
 	require.NotContains(t, joined, "classification unavailable", "a timeout must not be reported as a generic failure")
 
-	// The fallback still has to route: naming the timeout changes the log, not
-	// the routing behavior.
-	require.Equal(t, complexity.MechanismLexical, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	// Naming the timeout changes the log, not the outcome: a timed-out
+	// classification publishes no tier, so the rule cannot match.
+	require.Equal(t, complexity.MechanismSkipped, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	require.Nil(t, bfCtx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
 	_, modelOut, _ := req.GetRequestFields()
-	require.Equal(t, routeModel, modelOut)
+	require.Equal(t, "gpt-4o", modelOut)
 }
 
 func TestPreRequestHook_ComplexitySkippedWhenNoRulesReferenceIt(t *testing.T) {

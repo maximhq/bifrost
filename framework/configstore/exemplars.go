@@ -28,8 +28,8 @@ package configstore
 // content that arrives with the request is fine ("summarize these notes"), but
 // a phrase whose work lives in an earlier turn ("yes, go with option 2") has no
 // defensible tier: option 2 could be a rename or a migration. Labelling one
-// SIMPLE would also contradict the lexical analyzer, which deliberately ignores
-// a contentless follow-up and inherits the conversation's score instead.
+// SIMPLE teaches the classifier to route every contentless follow-up to the
+// cheapest model, whatever the conversation was actually about.
 
 var defaultSimpleExemplars = []string{
 	// Coding and software engineering (14).

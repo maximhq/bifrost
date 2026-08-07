@@ -8,7 +8,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 )
 
-func TestDefaultEditableKeywordConfigIncludesSemanticExemplars(t *testing.T) {
+func TestDefaultEditableKeywordConfigIsExemplarsOnly(t *testing.T) {
 	cfg := DefaultEditableKeywordConfig()
 	exemplars := configstore.DefaultComplexityExemplars()
 	tiers := []struct {
@@ -23,15 +23,16 @@ func TestDefaultEditableKeywordConfigIncludesSemanticExemplars(t *testing.T) {
 	}
 
 	for _, tier := range tiers {
-		if len(tier.values) != len(tier.keywords)+len(tier.exemplars) {
-			t.Fatalf("%s shared defaults have %d entries, want %d keywords + %d exemplars",
-				tier.name, len(tier.values), len(tier.keywords), len(tier.exemplars))
+		// The editable lists are the administrator-facing reference phrases, so
+		// they hold the exemplars in review order and nothing else. The lexical
+		// matcher's own keyword vocabulary must not leak in.
+		if !slices.Equal(tier.values, tier.exemplars) {
+			t.Fatalf("%s defaults are not exactly the semantic exemplars in review order", tier.name)
 		}
-		if !slices.Equal(tier.values[:len(tier.keywords)], tier.keywords) {
-			t.Fatalf("%s shared defaults do not preserve lexical keyword order", tier.name)
-		}
-		if !slices.Equal(tier.values[len(tier.keywords):], tier.exemplars) {
-			t.Fatalf("%s shared defaults do not append semantic exemplars in review order", tier.name)
+		for _, keyword := range tier.keywords {
+			if slices.Contains(tier.values, keyword) {
+				t.Fatalf("%s defaults contain lexical keyword %q", tier.name, keyword)
+			}
 		}
 	}
 }
