@@ -124,17 +124,17 @@ clients:
         in: query
         description: |
           Comma-separated runtime connection states to include (OR semantics),
-          resolved against live engine state. Only `connected` and
-          `disconnected` are meaningful filter values: `connected` matches
-          clients the engine currently reports as connected; `disconnected`
+          resolved against live engine state. Only `healthy` and
+          `unstable` are meaningful filter values: `healthy` matches
+          clients the engine currently reports as healthy; `unstable`
           matches everything else (error, pending states, needs_reauth,
           disabled, not present in the engine). Selecting both, or neither,
           applies no state filter. Note the response-only needs_reauth
           projection on per-user clients happens after filtering, so such
-          clients still match `connected`.
+          clients still match `healthy`.
         schema:
           type: string
-          example: connected
+          example: healthy
       - name: all_virtual_keys
         in: query
         description: When true, include clients that are open to all virtual keys (allow_on_all_virtual_keys). ORs with virtual_keys.
@@ -333,7 +333,14 @@ client-complete-oauth:
 
       Replays are rejected with 409: hitting the endpoint again after the flow
       already completed (no pending configuration and no freshly-written
-      token) returns "OAuth flow has already been completed".
+      token) returns "OAuth flow has already been completed". A shared
+      "oauth" reauthorize is also rejected with 409 if its flow never
+      actually resolved via a real callback — e.g. the upstream authorization
+      server rejected the request outright before ever redirecting back —
+      returning "Authorization has not completed yet". This is detected via
+      the flow's own row rather than the client's overall OAuth status,
+      which never regresses once a client has been authorized once and so
+      can't distinguish a stale prior authorization from a fresh one.
     tags:
       - MCP
       - OAuth
@@ -363,7 +370,12 @@ client-complete-oauth:
         description: OAuth config not found, or no MCP client is linked to this OAuth flow
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '409':
-        description: OAuth flow has already been completed for this MCP client (replay)
+        description: |
+          Either "OAuth flow has already been completed for this MCP client"
+          (replay), or "Authorization has not completed yet: the browser
+          flow may still be open, or the upstream provider rejected it
+          before redirecting back" (a shared "oauth" reauthorize whose flow
+          never actually resolved via a callback).
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
