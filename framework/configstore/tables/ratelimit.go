@@ -70,6 +70,8 @@ func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
 		if rl.Metric == ModelRateLimitMetricRequests && (rl.RequestMaxLimit == nil || rl.RequestResetDuration == nil) {
 			return fmt.Errorf("request model rate limit requires request_max_limit and request_reset_duration")
 		}
+	} else if rl.Metric != "" {
+		return fmt.Errorf("model rate limit metric requires model_config_id")
 	}
 	// Validate token reset duration if provided
 	if rl.TokenResetDuration != nil {

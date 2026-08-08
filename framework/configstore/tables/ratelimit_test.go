@@ -84,6 +84,16 @@ func TestTableRateLimitBeforeSaveValidatesModelRuleShape(t *testing.T) {
 				RequestResetDuration: &duration,
 			},
 		},
+		{
+			name: "metric without model owner",
+			rule: TableRateLimit{
+				ID:                   "unowned-metric",
+				Metric:               ModelRateLimitMetricRequests,
+				RequestMaxLimit:      &max,
+				RequestResetDuration: &duration,
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
