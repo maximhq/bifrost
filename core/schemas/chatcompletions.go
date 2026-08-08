@@ -1617,8 +1617,8 @@ type ChatAssistantMessageToolCall struct {
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.
 type ChatAssistantMessageToolCallFunction struct {
-	Name      *string `json:"name"`
-	Arguments string  `json:"arguments"` // stringified json as retured by OpenAI, might not be a valid JSON always
+	Name      *string `json:"name,omitempty"` // omitted on streaming continuation deltas; strict clients reject an explicit null (issue #5900)
+	Arguments string  `json:"arguments"`      // stringified json as retured by OpenAI, might not be a valid JSON always
 }
 
 // ChatAudioMessageAudio represents audio data in a message.
