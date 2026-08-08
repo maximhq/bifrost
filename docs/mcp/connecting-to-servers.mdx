@@ -262,7 +262,7 @@ Response:
       {"name": "write_file", "description": "Write contents to a file"},
       {"name": "list_directory", "description": "List directory contents"}
     ],
-    "state": "connected"
+    "state": "healthy"
   }
 ]
 ```
@@ -758,11 +758,15 @@ response, err := client.ChatCompletionRequest(bifrostCtx, request)
 
 | State | Description |
 |-------|-------------|
-| `connected` | Client is active and tools are available |
-| `connecting` | Client is establishing connection |
-| `disconnected` | Client lost connection but can be reconnected |
+| `healthy` | Client is active and tools are available |
+| `unstable` | The last periodic health check failed transiently — self-heals, tool calls still attempted normally |
+| `needs_reauth` | The connection credential died and needs an admin to reauthorize (server-level), or the retained admin discovery credential needs repair (per-user) |
 | `pending_verification` | Declared (typically via config.json) with an auth type that needs a one-time admin step — complete it via the UI's Authorize/Verify button, `POST /api/mcp/client/{id}/initiate-verification` (OAuth types), or `POST /api/mcp/client/{id}/verify-headers` (per-user headers) |
-| `error` | Client configuration or connection failed |
+| `disabled` | An admin intentionally turned the client off |
+| `error` | A data-consistency fallback — the client is registered but missing from the runtime manager |
+| `degraded` | Cluster-only: instances currently disagree on this client's state |
+
+See [Connections, States & Lifecycles](./connections) for the full picture — connection mode, self-healing behavior, and per-auth-type lifecycles.
 
 ### Managing Clients at Runtime
 
@@ -906,10 +910,9 @@ err := client.EditMCPClient(context.Background(), schemas.MCPClientConfig{
 
 ### Health Check Behavior
 
-When a client disconnects:
-1. State changes to `disconnected`
-2. Tools from that client become unavailable
-3. You can reconnect via API or UI
+When a client's periodic health check fails:
+1. State changes to `unstable` — purely informational, tool calls are still attempted normally against it
+2. You can also reconnect manually via API or UI, though `unstable` self-heals on its own once the next check succeeds
 
 **Note:** Changing `is_ping_available` takes effect immediately without requiring a client reconnection.
 
@@ -979,11 +982,10 @@ Bifrost applies retry logic to these critical operations:
 
 When a client reaches 5 consecutive health check failures:
 
-1. Client state changes to `disconnected`
+1. Client state changes to `unstable`
 2. Bifrost automatically attempts reconnection **in the background**
 3. Reconnection uses the same exponential backoff retry logic
-4. Once reconnected, health checks resume normal operation
-5. Tools become available again without manual intervention
+4. Once reconnected, health checks resume normal operation and state returns to `healthy`
 
 This automatic reconnection happens asynchronously and doesn't block other operations.
 
