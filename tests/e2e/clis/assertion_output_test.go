@@ -211,6 +211,38 @@ func TestRateLimitDelayParsesEscapedCLIError(t *testing.T) {
 	}
 }
 
+// A throttle has to be recognised whichever side of the phrase the failure word
+// lands on. "API Error: rate limit" is standard CLI wording and puts the error
+// marker first, where the reverse-order branch was only looking for
+// exceeded/hit/reached/throttled - so the cell failed outright instead of
+// retrying a transient throttle.
+//
+// The negative cases are the reason the pattern demands a failure word at all:
+// a model that has read this repo will happily quote "rate-limit" out of the
+// architecture docs, and that must not be mistaken for being rate limited.
+func TestRateLimitDelayDetectsErrorFirstWording(t *testing.T) {
+	for _, throttled := range []string{
+		"API Error: rate limit",
+		"API Error: rate limit reached for this model",
+		"Error: rate_limit_error",
+		"Rate limit exceeded. Please wait 12 seconds before retrying.",
+		"429 Too Many Requests",
+	} {
+		if _, ok := rateLimitDelay(throttled, nil); !ok {
+			t.Errorf("genuine throttle not detected: %q", throttled)
+		}
+	}
+
+	for _, prose := range []string{
+		"PreLLMHook Pipeline (auth, rate-limit, cache check - registration order)",
+		"The gateway supports rate limiting per virtual key.",
+	} {
+		if _, ok := rateLimitDelay(prose, nil); ok {
+			t.Errorf("model prose about rate limits mistaken for a throttle: %q", prose)
+		}
+	}
+}
+
 func TestSoftPassCandidateRequiresNonErrorAssistantText(t *testing.T) {
 	okTranscript := `{"type":"text","part":{"type":"text","text":"Waves crash on grey stone, tide pulls secrets."}}`
 	if !isSoftPassCandidate(okTranscript, "opencode") {
@@ -225,5 +257,38 @@ func TestSoftPassCandidateRequiresNonErrorAssistantText(t *testing.T) {
 	emptyTranscript := `{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}`
 	if isSoftPassCandidate(emptyTranscript, "opencode") {
 		t.Fatal("expected empty assistant text to be ineligible for soft pass")
+	}
+}
+
+// The regression: a model that READ Bifrost's own docs and quoted them made a
+// cell wait 3 x 60s and then fail. Discussing rate limits is not being rate
+// limited.
+func TestRateLimitSignalRequiresFailureContext(t *testing.T) {
+	quoted := `{"type":"assistant","message":{"content":[{"type":"text","text":` +
+		`"The pipeline is: TransportPreHook -> PreLLMHook Pipeline (auth, rate-limit, cache check - registration order) -> Provider Queue"}]}}`
+
+	if _, ok := rateLimitDelay(quoted, nil); ok {
+		t.Error("assistant prose merely mentioning rate-limit must not trigger a retry")
+	}
+	if pattern, _, ok := detectError(quoted, nil); ok {
+		t.Errorf("assistant prose merely mentioning rate-limit must not be an error marker (matched %q)", pattern)
+	}
+
+	// Genuine throttling must still be caught, on both the plain-stdout channel
+	// (CLIs print this without a non-zero exit) and the structured one.
+	for _, genuine := range []string{
+		"API Error: 429 rate limit exceeded. Please wait 30 seconds before retrying.",
+		`{"type":"error","message":"rate_limit_error: too many requests, try again in 5 seconds"}`,
+		"Rate limit reached for this model. Please wait 12 seconds before retrying.",
+	} {
+		if _, ok := rateLimitDelay(genuine, nil); !ok {
+			t.Errorf("genuine rate limit not detected: %q", genuine)
+		}
+	}
+
+	// And the wait is still parsed out of it.
+	wait, ok := rateLimitDelay("API Error: 429 rate limit exceeded. Please wait 30 seconds before retrying.", nil)
+	if !ok || wait.Seconds() != 31 {
+		t.Errorf("expected a 31s wait (30 + buffer), got %s ok=%v", wait, ok)
 	}
 }

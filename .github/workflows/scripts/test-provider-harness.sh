@@ -179,6 +179,48 @@ while [ "$HARNESS_EXIT" -ne 0 ] && [ "$attempt" -le "$RERUN_ATTEMPTS" ]; do
   attempt=$((attempt + 1))
 done
 
+# Render the browsable HTML report.
+#
+# newman's own htmlextra reporter only emits one in sequential mode, and this
+# runs PARALLEL=1 (one fork per provider, no way to merge N HTML documents) - so
+# without this, the provider harness ships no HTML at all while the CLI harness
+# does. harness-viewer.mjs already renders exactly this JSON for local use, so
+# --static reuses its markup rather than growing a second renderer that can
+# drift from it.
+#
+# Best-effort: a rendering failure must not fail a passing test run.
+echo ""
+echo "📊 Rendering provider harness HTML report..."
+if node "$REPO_ROOT/tests/e2e/api/runners/harness-viewer.mjs" \
+     --report "$REPO_ROOT/tmp/newman-report.json" \
+     --failures-md "$REPO_ROOT/tmp/harness-failures.md" \
+     --token-parity-md "$REPO_ROOT/tmp/harness-token-parity.md" \
+     --static "$REPO_ROOT/tmp/provider-harness-report.html"; then
+  :
+else
+  echo "⚠️  HTML report rendering failed; the JSON and markdown artifacts are still intact"
+  # Rendering is best effort, but the LINK to it is not: the release changelog
+  # points at provider-harness/index.html unconditionally, and the upload step
+  # publishes whatever is in this directory. Without a file here that link 404s
+  # in public release notes. A stub that points at the markdown siblings keeps
+  # the notes honest about what happened and still reaches the real data.
+  cat > "$REPO_ROOT/tmp/provider-harness-report.html" <<'FALLBACK_HTML'
+<!doctype html>
+<meta charset="utf-8">
+<title>Bifrost Provider Harness Report</title>
+<style>body{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:48px;line-height:1.6}
+a{color:#58a6ff}code{background:#161b22;padding:2px 6px;border-radius:4px}</style>
+<h1>Provider harness report unavailable</h1>
+<p>The harness ran and its results were collected, but rendering this HTML view
+failed. The underlying data is unaffected and published alongside this page:</p>
+<ul>
+  <li><a href="harness-failures.md">harness-failures.md</a> - the failure breakdown and coverage matrices</li>
+  <li><a href="harness-token-parity.md">harness-token-parity.md</a> - the direct-provider vs Bifrost token parity matrix</li>
+</ul>
+<p>The full <code>newman-report.json</code> is attached to the release workflow run as an artifact.</p>
+FALLBACK_HTML
+fi
+
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$REPO_ROOT/tmp/harness-failures.md" ]; then
   {
     echo "## Provider harness failure breakdown"

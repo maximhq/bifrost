@@ -103,6 +103,22 @@ OPENCODE_CASES="${OPENCODE_CASES:-TestCLIs/opencode/(openai|azure)/gpt-5\.5/(sim
 # suite that costs Bedrock quota.
 OPENCODE_RESPONSES_CASES="${OPENCODE_RESPONSES_CASES:-TestCLIs/opencode-responses/bedrock/global\.anthropic\.claude-sonnet-5/(simple-chat|reasoning-replay)}"
 
+# opencode-anthropic covers the THIRD wire format: /anthropic/v1/messages.
+#
+# It is the only client here that replays reasoning, and that is a protocol
+# constraint rather than a client preference -- the Anthropic API requires an
+# assistant turn's thinking blocks to be sent back verbatim when that turn
+# contains tool_use. The Responses SDK is free to rebuild history as prose and
+# does exactly that, which is why no amount of turns or tools makes the
+# opencode-responses suite exercise reasoning replay.
+#
+# reasoning-tool-replay is therefore the case that matters: it is the only cell
+# in the whole harness that reproduces the reported Bedrock 400
+# ("messages.2 ... reasoningContent.reasoningText.text ... Member must not be
+# null"). simple-chat is its control, and running both providers gives the
+# Anthropic wire coverage on the native path as well as the Bedrock one.
+OPENCODE_ANTHROPIC_CASES="${OPENCODE_ANTHROPIC_CASES:-TestCLIs/opencode-anthropic/(anthropic|bedrock)/(claude-sonnet-5|global\.anthropic\.claude-sonnet-5)/(simple-chat|reasoning-tool-replay)}"
+
 # Retries per suite, re-running ONLY the cells that failed. Mirrors test-core's
 # RERUN_FAILED policy (see test-provider-harness.sh): this suite is a required
 # release gate, so a flaky cell must not sink a release on its own, while a real
@@ -350,12 +366,14 @@ CLAUDE_RC=0
 CODEX_RC=0
 OPENCODE_RC=0
 OPENCODE_RESPONSES_RC=0
-# All four run even if an earlier one fails, so one broken CLI does not mask
+OPENCODE_ANTHROPIC_RC=0
+# All five run even if an earlier one fails, so one broken CLI does not mask
 # the others.
 run_cases "claude" "$CLAUDE_CASES" || CLAUDE_RC=$?
 run_cases "codex" "$CODEX_CASES" || CODEX_RC=$?
 run_cases "opencode" "$OPENCODE_CASES" || OPENCODE_RC=$?
 run_cases "opencode-responses" "$OPENCODE_RESPONSES_CASES" || OPENCODE_RESPONSES_RC=$?
+run_cases "opencode-anthropic" "$OPENCODE_ANTHROPIC_CASES" || OPENCODE_ANTHROPIC_RC=$?
 
 # Renders tests/e2e/clis/reports/index.html from the reports/*.json just written.
 # Free and instant - no test re-execution.
@@ -379,6 +397,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "| codex | \`$CODEX_VERSION\` | \`$CODEX_CASES\` | $(attempts_for codex) | $([ "$CODEX_RC" -eq 0 ] && echo "✅ pass" || echo "❌ fail") |"
     echo "| opencode | \`$OPENCODE_VERSION\` | \`$OPENCODE_CASES\` | $(attempts_for opencode) | $([ "$OPENCODE_RC" -eq 0 ] && echo "✅ pass" || echo "❌ fail") |"
     echo "| opencode-responses | \`$OPENCODE_VERSION\` | \`$OPENCODE_RESPONSES_CASES\` | $(attempts_for opencode-responses) | $([ "$OPENCODE_RESPONSES_RC" -eq 0 ] && echo "✅ pass" || echo "❌ fail") |"
+    echo "| opencode-anthropic | \`$OPENCODE_VERSION\` | \`$OPENCODE_ANTHROPIC_CASES\` | $(attempts_for opencode-anthropic) | $([ "$OPENCODE_ANTHROPIC_RC" -eq 0 ] && echo "✅ pass" || echo "❌ fail") |"
     echo ""
     echo "Attempts > 1 means failed cells were re-run; only cells with status \`fail\` are retried."
     echo "Full per-cell results are in the \`cli-harness-reports${CLI_VERSION_LABEL:+-$CLI_VERSION_LABEL}\` artifact (\`index.html\`),"
@@ -391,8 +410,8 @@ if [ ! -d "$REPORTS_DIR" ]; then
   echo "⚠️  No reports directory at $REPORTS_DIR - the harness may not have run any cells"
 fi
 
-if [ "$CLAUDE_RC" -ne 0 ] || [ "$CODEX_RC" -ne 0 ] || [ "$OPENCODE_RC" -ne 0 ] || [ "$OPENCODE_RESPONSES_RC" -ne 0 ]; then
-  echo "❌ CLI harness failed (claude=$CLAUDE_RC, codex=$CODEX_RC, opencode=$OPENCODE_RC, opencode-responses=$OPENCODE_RESPONSES_RC)"
+if [ "$CLAUDE_RC" -ne 0 ] || [ "$CODEX_RC" -ne 0 ] || [ "$OPENCODE_RC" -ne 0 ] || [ "$OPENCODE_RESPONSES_RC" -ne 0 ] || [ "$OPENCODE_ANTHROPIC_RC" -ne 0 ]; then
+  echo "❌ CLI harness failed (claude=$CLAUDE_RC, codex=$CODEX_RC, opencode=$OPENCODE_RC, opencode-responses=$OPENCODE_RESPONSES_RC, opencode-anthropic=$OPENCODE_ANTHROPIC_RC)"
   exit 1
 fi
 

@@ -9,7 +9,9 @@ package clis
 import (
 	"bytes"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -169,6 +171,35 @@ func TestLiveCommandIsSignalled(t *testing.T) {
 		t.Error("expected the killed command to report a signal exit")
 	}
 	untrackCmd(cmd)
+}
+
+// A cleanup that could not read the tree must say so. Swallowing the traversal
+// error leaves the previous run's reports/*.json in place while the caller logs
+// success, and the next run then renders a report over stale cells - the one
+// outcome clearing the directory exists to prevent.
+//
+// Unix-only: it needs a directory the process genuinely cannot read, and
+// chmod 000 does not stop root, so this is skipped when running as root.
+func TestClearReportsDirReportsTraversalFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: chmod 000 does not deny traversal")
+	}
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "blocked")
+	if err := os.Mkdir(blocked, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "cell.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chmod(blocked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+
+	if err := clearReportsDir(dir); err == nil {
+		t.Error("an unreadable reports directory was reported as successfully cleared")
+	}
 }
 
 // An ordinary failure carries no ErrWaitDelay and must pass through untouched.

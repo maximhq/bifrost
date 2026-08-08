@@ -692,6 +692,10 @@ type BedrockInvokeMessagesResponse struct {
 }
 
 // BedrockInvokeMessagesContentBlock represents a content block in an Anthropic Messages response.
+//
+// One struct serves every block type, so each field carries omitempty to keep a
+// text block from advertising empty tool fields and vice versa. See MarshalJSON
+// for the one case where that default is wrong.
 type BedrockInvokeMessagesContentBlock struct {
 	Type      string      `json:"type"`
 	Text      string      `json:"text,omitempty"`
@@ -700,6 +704,28 @@ type BedrockInvokeMessagesContentBlock struct {
 	Input     interface{} `json:"input,omitempty"`
 	Thinking  string      `json:"thinking,omitempty"`
 	Signature string      `json:"signature,omitempty"`
+}
+
+// MarshalJSON forces the thinking key to be present on thinking blocks.
+//
+// A thinking block whose text is empty is a real state: a client replaying a
+// streamed assistant turn has the reasoning signature but not the prose it
+// signs. omitempty then deletes the key entirely, producing
+// {"type":"thinking","signature":"..."} -- which Bifrost's own re-ingest treats
+// as malformed and drops on the floor (invoke.go's decoder returns nil when
+// thinking is absent), silently losing the replay token the next turn needs.
+//
+// omitempty stays on the field so text and tool_use blocks are unaffected; only
+// thinking blocks are special-cased here.
+func (b BedrockInvokeMessagesContentBlock) MarshalJSON() ([]byte, error) {
+	type alias BedrockInvokeMessagesContentBlock
+	if b.Type != "thinking" || b.Thinking != "" {
+		return sonic.Marshal(alias(b))
+	}
+	return sonic.Marshal(struct {
+		alias
+		Thinking string `json:"thinking"`
+	}{alias: alias(b), Thinking: b.Thinking})
 }
 
 // BedrockInvokeMessagesUsage represents token usage in an Anthropic Messages response.

@@ -923,10 +923,26 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
+				// Text must never reach Bedrock as nil. It is
+				// `*string json:"text,omitempty"`, so a nil pointer drops the key
+				// from the request rather than sending an explicit null, and
+				// Converse rejects that with "reasoningContent.reasoningText.text
+				// ... Member must not be null".
+				//
+				// This is reachable from Bifrost's own output: the streaming
+				// ingress emits a reasoning detail carrying only a Signature on a
+				// signature delta, and a client replaying that assistant turn
+				// sends it straight back. Same defect as the Responses converter
+				// (convertBifrostReasoningToBedrockReasoning), different entry
+				// point.
+				text := detail.Text
+				if text == nil {
+					text = schemas.Ptr("")
+				}
 				contentBlocks = append(contentBlocks, BedrockContentBlock{
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
-							Text:      detail.Text,
+							Text:      text,
 							Signature: reasoningSignatureForBedrock(detail.Signature),
 						},
 					},

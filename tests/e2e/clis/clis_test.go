@@ -102,6 +102,12 @@ func TestCLIs(t *testing.T) {
 		t.Fatalf("list providers: %v", err)
 	}
 
+	// Deliberately after the health check and provider discovery: an
+	// unreachable gateway skips out above without destroying the previous run's
+	// report. Deliberately before the CLI loop: every cell calls t.Parallel()
+	// before runCell, so parked subtests cannot write until this returns.
+	maybeClearReportsDir(t)
+
 	scenarios := allScenarios()
 	modelFilter := os.Getenv("MODEL") // optional substring/exact filter on model ID
 
@@ -403,7 +409,28 @@ func cellBudget(sc scenario) time.Duration {
 const maxRateLimitRetries = 3
 
 var rateLimitWaitRE = regexp.MustCompile(`(?i)(?:please\s+wait|try\s+again\s+in|retry\s+after)\s+(\d+)\s*(?:seconds?|secs?|s)\b`)
-var rateLimitSignalRE = regexp.MustCompile(`(?i)\brate[_ -]?limit\b|\b429\b|too many requests`)
+// rateLimitSignalRE requires a failure word alongside the phrase, not the phrase
+// alone.
+//
+// The bare form matched the model's own writing. A cell burned three 60-second
+// retries and then failed outright because the assistant had read Bifrost's
+// architecture docs and quoted back "PreLLMHook Pipeline (auth, rate-limit,
+// cache check - registration order)". Discussing rate limits is not being rate
+// limited, and any scenario where a model reads this repo can quote any marker,
+// so widening ErrorIgnore per scenario would be endless whack-a-mole.
+//
+// 429 and "too many requests" stay unqualified: they are unambiguous on their
+// own, and both are what a CLI prints when it really is throttled.
+var rateLimitSignalRE = regexp.MustCompile(
+	`(?i)\brate[ _-]?limits?\b[^\n]{0,40}\b(?:exceed|reach|hit|error|throttl|retry|wait)` +
+		// "error" belongs in the reverse-order branch too: "API Error: rate
+		// limit" is standard CLI wording, and it puts the failure word ahead of
+		// the phrase where the forward branch cannot see it. Without it a real
+		// throttle skipped the retry path and failed the cell outright.
+		`|(?i)\b(?:exceeded|hit|reached|throttled|error)\b[^\n]{0,40}\brate[ _-]?limit` +
+		`|\b429\b` +
+		`|(?i)too many requests` +
+		`|(?i)rate_limit_error`)
 
 func runSingleTurnWithRetry(ctx context.Context, t *testing.T, cli CLI, modelRef string, turn Turn, env []string, mirror io.Writer, effort string) (string, error) {
 	t.Helper()
@@ -646,7 +673,7 @@ func containsFold(haystack, needle string) bool {
 
 func assertionOutput(cliID, raw string) string {
 	switch cliID {
-	case "codex", "opencode", "opencode-responses":
+	case "codex", "opencode", "opencode-responses", "opencode-anthropic":
 		text, sawJSON := extractJSONAssistantText(raw)
 		if sawJSON {
 			return text
@@ -717,6 +744,77 @@ type cellResult struct {
 // directory. The CI runner uses it to give each CLI filter an isolated
 // subdirectory; see .github/workflows/scripts/test-cli-harness.sh.
 const reportsDirEnv = "BIFROST_E2E_CLIS_REPORTS_DIR"
+
+// keepReportsEnv preserves the reports directory across a run. See
+// maybeClearReportsDir.
+const keepReportsEnv = "BIFROST_E2E_CLIS_KEEP_REPORTS"
+
+var clearReportsOnce sync.Once
+
+// maybeClearReportsDir empties the reports directory once per run, so
+// index.html shows THIS run rather than every cell ever executed locally
+// (the aggregate had grown past 300 stale summaries, with no timestamp to tell
+// runs apart).
+//
+// Two cases must NOT clear, and both are load-bearing:
+//
+//   - BIFROST_E2E_CLIS_REPORTS_DIR set. CI owns the directory lifecycle there:
+//     test-cli-harness.sh rm -rf's each per-label dir up front, and then its
+//     retry loop re-invokes `go test` against that SAME dir to re-run only the
+//     failed cells. Clearing on that second invocation would delete the passing
+//     cells' summaries, breaking count_failed_cells, the aggregate report and
+//     the "cells produced: 0" guard.
+//   - BIFROST_E2E_CLIS_KEEP_REPORTS set, for accumulating across several
+//     filtered local runs on purpose.
+//
+// TestRenderReport / `make cli-harness-report` never reach this: they re-render
+// what is already on disk, which is the whole point of them.
+func maybeClearReportsDir(t *testing.T) {
+	t.Helper()
+	if os.Getenv(reportsDirEnv) != "" || os.Getenv(keepReportsEnv) != "" {
+		return
+	}
+	clearReportsOnce.Do(func() {
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		if err := clearReportsDir(reportsDir()); err != nil {
+			t.Logf("could not clear reports dir: %v", err)
+		}
+	})
+}
+
+// clearReportsDir removes previous results from dir, recursively so stale
+// per-label subdirectories go too (loadReportResults walks the same tree).
+//
+// Only the harness's own artefacts are deleted, rather than os.RemoveAll on the
+// directory: anything else a developer has parked in reports/ survives, and a
+// caller who points reportsDir somewhere unwise cannot lose unrelated data. A
+// missing directory is success, not an error.
+func clearReportsDir(dir string) error {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		// Surface traversal failures rather than skipping them. A directory
+		// that cannot be read still holds the previous run's reports, and
+		// swallowing the error here would let maybeClearReportsDir report a
+		// successful clear - after which the run renders its report over stale
+		// cells from an earlier invocation.
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if filepath.Ext(name) == ".json" || strings.HasSuffix(name, ".transcript.log") || name == "index.html" {
+			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+				return rmErr
+			}
+		}
+		return nil
+	})
+}
 
 // reportsDir is where this invocation writes per-cell summaries. It defaults to
 // "reports" so every local run and the standalone renderer behave as before.

@@ -89,6 +89,15 @@ func isBedrockNovaModel(modelID string) bool {
 	return strings.Contains(modelID, "amazon.nova")
 }
 
+// isAnthropicFamilyModel reports whether a model can be served over the
+// Anthropic Messages wire, regardless of which cloud fronts it. Every catalog in
+// this file spells Claude models with a "claude" substring -- native
+// (claude-opus-5), Bedrock (global.anthropic.claude-opus-5), Azure and Vertex
+// (claude-opus-5, claude-haiku-4-5@20251001) -- so one check covers all four.
+func isAnthropicFamilyModel(modelID string) bool {
+	return strings.Contains(modelID, "claude")
+}
+
 // Provider describes a Bifrost-configured provider and its model catalog.
 //
 // Models lists the top chat-capable model IDs we want the harness to exercise.
@@ -239,6 +248,43 @@ var clis = map[string]CLI{
 			return args
 		},
 		PreLaunch:       opencodeResponsesPreLaunch,
+		MultiTurnDriver: opencodeResumeDriver,
+	},
+	// Third wire format for the same binary: the Anthropic Messages API, via
+	// @ai-sdk/anthropic against Bifrost's /anthropic path, with a Bedrock model.
+	//
+	// This is the shape reported from the field ("Anthropic native" in OpenCode's
+	// own status line, custom endpoint on /anthropic), and it is the only one of
+	// the three that replays reasoning at all. That is a protocol constraint, not
+	// a client preference: the Anthropic API REQUIRES an assistant turn's thinking
+	// blocks to be sent back verbatim when that turn contains tool_use. The
+	// OpenAI-Responses SDK is free to rebuild history as plain prose and, as the
+	// gateway logs confirm, does exactly that - which is why opencode-responses
+	// passes even with tool calls, and why this variant exists.
+	//
+	// Anthropic wire in, Bedrock model out, is precisely the conversion that
+	// fails: Bifrost lowers the replayed thinking block into a Responses
+	// reasoning item, then into a Bedrock reasoning block with no text.
+	"opencode-anthropic": {
+		ID:         "opencode-anthropic",
+		Binary:     "opencode",
+		InstallPkg: "opencode-ai",
+		BasePath:   "/anthropic",
+		BaseURLEnv: "ANTHROPIC_BASE_URL",
+		APIKeyEnv:  "ANTHROPIC_API_KEY",
+		ExtraEnv: map[string]string{
+			"OPENCODE_DISABLE_AUTOUPDATE": "1",
+		},
+		SingleTurnArgs: func(model, prompt string, extra []string) []string {
+			args := []string{"run", "--format", "json"}
+			if model != "" {
+				args = append(args, "--model", opencodeModelRef(model))
+			}
+			args = append(args, extra...)
+			args = append(args, prompt)
+			return args
+		},
+		PreLaunch:       opencodeAnthropicPreLaunch,
 		MultiTurnDriver: opencodeResumeDriver,
 	},
 }
@@ -511,6 +557,19 @@ func opencodeResponsesPreLaunch(baseURL, apiKey, model string) ([]string, func()
 	return opencodeWriteConfig(
 		strings.TrimSuffix(strings.TrimSpace(baseURL), "/")+"/v1",
 		apiKey, model, "@ai-sdk/openai",
+	)
+}
+
+// opencodeAnthropicPreLaunch wires OpenCode to Bifrost over /anthropic/v1/messages.
+//
+// baseURL gets "/v1" appended for the same reason the Responses variant does:
+// @ai-sdk/anthropic posts to <baseURL>/messages, and Anthropic's own default
+// baseURL ends in /v1 - so without it the request lands on /anthropic/messages
+// instead of Bifrost's canonical /anthropic/v1/messages route.
+func opencodeAnthropicPreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
+	return opencodeWriteConfig(
+		strings.TrimSuffix(strings.TrimSpace(baseURL), "/")+"/v1",
+		apiKey, model, "@ai-sdk/anthropic",
 	)
 }
 

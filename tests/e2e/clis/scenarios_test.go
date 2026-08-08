@@ -42,8 +42,12 @@ func supportsCLIProviderModel(cliID, providerID string, model ModelInfo) bool {
 	// cells rather than the whole matrix keeps it from duplicating coverage the
 	// chat/completions variant already provides, at five models rather than
 	// every provider's catalogue.
-	if cliID == "opencode-responses" {
-		return providerID == "bedrock" && isBedrockAnthropicModel(model.ID)
+	// The Anthropic Messages wire can only carry Anthropic-family models, whoever
+	// serves them -- native, Bedrock, Azure or Vertex. Gating on the model family
+	// rather than on the provider is what gives /anthropic coverage across every
+	// cloud that fronts Claude, instead of only the one a defect was reported on.
+	if cliID == "opencode-anthropic" {
+		return isAnthropicFamilyModel(model.ID)
 	}
 	return true
 }
@@ -73,6 +77,7 @@ func allScenarios() []scenario {
 		conversationRefinementScenario(),
 		conversationRoleStabilityScenario(),
 		reasoningReplayScenario(),
+		reasoningToolReplayScenario(),
 		subagentDelegationScenario(),
 		imageQAScenario(),
 		pdfQAScenario(),
@@ -615,7 +620,72 @@ func validateReplayRecall(output string) error {
 	return nil
 }
 
-// 10 subagent-delegation — the CLI's own subagent-delegation tool (Claude
+// 10 reasoning-tool-replay — a thinking model that also calls tools, then has
+// to answer from the resulting history.
+//
+// This is the shape reported from the field, and it is deliberately distinct
+// from reasoning-replay above. The difference is tool calls, and it turns out to
+// be the whole difference:
+//
+//   - reasoning-replay is five turns of pure arithmetic. It passes.
+//   - This is the same models over the same wire path, but each assistant turn
+//     carries reasoning AND a tool call. Reported failing at `messages.2` — the
+//     FIRST assistant turn, from a one-word prompt.
+//
+// Why tools change it: a client can paraphrase a plain assistant answer, but a
+// turn containing a tool call has to be replayed verbatim to keep the
+// tool_use/tool_result pairing intact. That verbatim replay is what puts the
+// reasoning item back on the wire, and on the Bedrock Responses path a reasoning
+// item that arrives with an empty summary and only encrypted_content converts to
+// a block with no `text` — which Bedrock rejects.
+//
+// It also explains the reported error's index pattern (14, 16, then 24, then 30,
+// 32, ...): the gaps are the assistant turns that made no tool call, so carried
+// no replayable reasoning. A scenario without tools reproduces nothing, which is
+// exactly what reasoning-replay demonstrated.
+//
+// Turn 2 is the one under test: it forbids re-reading, so the model can only
+// answer from a history that includes turn 1's reasoning + tool call.
+func reasoningToolReplayScenario() scenario {
+	fixture, _ := filepath.Abs("fixtures/sample.txt")
+	return scenario{
+		ID:          "reasoning-tool-replay",
+		ModelKind:   "reasoning",
+		Supports:    supportsReasoningReplay,
+		ErrorIgnore: []string{"FILE_FIXTURE_73129", "TOOLREPLAY"},
+		Turns: []Turn{
+			{
+				Send: "Think carefully about this before answering, then use your file tool to read " +
+					fixture + ". Report the hidden verification token it contains.",
+				AssertText: []string{"FILE_FIXTURE_73129"},
+				AssertNotText: []string{
+					"don't have access to file", "cannot read files", "unable to read",
+				},
+				Timeout: 180 * time.Second,
+			},
+			{
+				// The replay turn. No re-read allowed, so the answer must come from
+				// the turn-1 history - which the client can only send back by
+				// replaying the assistant turn (reasoning + tool call) verbatim.
+				Send: "Without reading the file again, which capital city did that file name, and what " +
+					"did it say the square root of 144 is?",
+				AssertTextFold: []string{"Paris"},
+				AssertText:     []string{"12"},
+				Timeout:        180 * time.Second,
+			},
+			{
+				// A second tool call on top of an already-replayed history, so the
+				// reasoning items accumulate the way they do in a real session.
+				Send: "Now use your shell tool to run `printf TOOLREPLAY` and reply with its exact " +
+					"output followed by the verification token from the first step.",
+				AssertText: []string{"TOOLREPLAY", "FILE_FIXTURE_73129"},
+				Timeout:    180 * time.Second,
+			},
+		},
+	}
+}
+
+// 11 subagent-delegation — the CLI's own subagent-delegation tool (Claude
 // Code's Agent/Task tool, or Codex's spawn_agent collab-tool) spawns a
 // nested subagent that makes its own separate LLM call. Proves that traffic
 // shape (a completion whose tool call triggers an additional completion with
@@ -679,7 +749,7 @@ func supportsSubagentDelegation(cliID, providerID string, model ModelInfo) bool 
 	return ok && model.ID == prov.chatModel().ID
 }
 
-// 11 image-qa — the model receives a genuine image attachment (not just a
+// 12 image-qa — the model receives a genuine image attachment (not just a
 // file path) and must answer questions requiring real visual/OCR
 // understanding: a token rendered as text, a fact written in the image, and
 // the color of a drawn shape. Claude has no CLI-level image-attach flag --
@@ -725,7 +795,7 @@ func supportsImageQA(cliID, providerID string, m ModelInfo) bool {
 	return supportsCLIProviderModel(cliID, providerID, m)
 }
 
-// 12 pdf-qa — the model reads a real PDF document (not a .txt file) and
+// 13 pdf-qa — the model reads a real PDF document (not a .txt file) and
 // must answer questions from its content, exercising genuine document
 // parsing rather than plain-text file reading. Claude only: PDF attachment
 // has no CLI flag on either CLI, and Claude's Read tool natively handles

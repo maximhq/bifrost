@@ -32,27 +32,57 @@ func TestEnvNamesOmitsValues(t *testing.T) {
 // way that silently stops happening, leaving a scenario that runs, passes, and
 // verifies nothing.
 
-// opencode-responses is the only cell on Bifrost's /v1/responses path for
-// Anthropic-on-Bedrock. If this gate widens, it duplicates coverage; if it
-// narrows to nothing, the defect class goes untested with no failing test to
-// say so.
-func TestOpenCodeResponsesIsScopedToBedrockAnthropic(t *testing.T) {
+// Bifrost converts requests separately per wire format, so a wire format with
+// no cell behind it ships unexercised - which is how the Bedrock reasoning-replay
+// defect reached production while this harness was green. These gates are what
+// guarantee all three wires are reachable; if one narrows to nothing, the defect
+// class it covers goes untested with no failing test to say so.
+func TestOpenCodeVariantsCoverBothEndpoints(t *testing.T) {
 	anthropicOnBedrock := ModelInfo{ID: "global.anthropic.claude-opus-5", AdaptiveThinking: true}
 	novaOnBedrock := ModelInfo{ID: "us.amazon.nova-2-lite-v1:0"}
+	claudeNative := ModelInfo{ID: "claude-sonnet-5", AdaptiveThinking: true}
+	claudeOnVertex := ModelInfo{ID: "claude-haiku-4-5@20251001", ExtendedThinking: true}
 	gpt := ModelInfo{ID: "gpt-5.5", AdaptiveThinking: true}
 
-	if !supportsCLIProviderModel("opencode-responses", "bedrock", anthropicOnBedrock) {
-		t.Error("opencode-responses must run against Anthropic-on-Bedrock - that is the reported defect's path")
-	}
-	if supportsCLIProviderModel("opencode-responses", "bedrock", novaOnBedrock) {
-		t.Error("opencode-responses should not run against non-Anthropic Bedrock models")
-	}
-	for _, provider := range []string{"openai", "anthropic", "azure", "gemini", "vertex"} {
-		if supportsCLIProviderModel("opencode-responses", provider, gpt) {
-			t.Errorf("opencode-responses should be scoped to bedrock, but %s was allowed", provider)
+	// /openai/v1/responses -- unrestricted, mirroring the chat/completions
+	// variant, so the Responses conversion is covered on every provider rather
+	// than only the one a defect happened to be reported on.
+	for _, provider := range []string{"openai", "azure", "bedrock", "anthropic"} {
+		model := gpt
+		if provider == "bedrock" {
+			model = anthropicOnBedrock
+		}
+		if !supportsCLIProviderModel("opencode-responses", provider, model) {
+			t.Errorf("opencode-responses must reach %s to cover the /openai responses wire there", provider)
 		}
 	}
-	// The chat/completions variant must be untouched by that scoping.
+
+	// /anthropic/v1/messages -- gated on the model family, not the provider,
+	// because the Anthropic wire can only carry Claude models but every cloud
+	// fronting Claude should be covered.
+	for _, tc := range []struct {
+		provider string
+		model    ModelInfo
+	}{
+		{"anthropic", claudeNative},
+		{"bedrock", anthropicOnBedrock},
+		{"azure", claudeNative},
+		{"vertex", claudeOnVertex},
+	} {
+		if !supportsCLIProviderModel("opencode-anthropic", tc.provider, tc.model) {
+			t.Errorf("opencode-anthropic must reach %s/%s to cover the /anthropic wire there", tc.provider, tc.model.ID)
+		}
+	}
+	// Non-Claude models cannot be served over the Anthropic Messages wire.
+	if supportsCLIProviderModel("opencode-anthropic", "bedrock", novaOnBedrock) {
+		t.Error("opencode-anthropic must not run against a non-Anthropic model")
+	}
+	if supportsCLIProviderModel("opencode-anthropic", "openai", gpt) {
+		t.Error("opencode-anthropic must not run against a GPT model")
+	}
+
+	// /openai/v1/chat/completions -- the default variant is untouched by any of
+	// the above scoping.
 	if !supportsCLIProviderModel("opencode", "openai", gpt) {
 		t.Error("the chat/completions opencode variant must still run against openai")
 	}
