@@ -1349,6 +1349,10 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			}
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
+			// Also expose the W3C trace ID (the value in the x-bifrost-trace-id
+			// response header) so plugins that forward correlation IDs to external
+			// services advertise what Tempo indexes, not the internal store handle.
+			ctx.SetUserValue(schemas.BifrostContextKeyExportTraceID, headerTraceID)
 			// Extract parent span ID from W3C traceparent header (if present)
 			// This is the 16-char span ID from the upstream service that should be
 			// set as the ParentID of our root span for proper trace linking in Datadog/etc.
