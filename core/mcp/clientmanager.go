@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"os"
@@ -1762,12 +1763,24 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 	return client.NewClient(stdioTransport), connectionInfo, nil
 }
 
+// maxStderrLineBytes bounds a single line forwarded to StderrHandler. A
+// subprocess line that never emits a newline within this many bytes is
+// truncated; the remainder of that write is still read (so the writer never
+// blocks) but dropped instead of buffered without limit.
+const maxStderrLineBytes = 64 * 1024
+
+// stderrQueueSize bounds the backlog of lines awaiting delivery to
+// StderrHandler. If the handler is slow or blocked and the queue fills,
+// further lines are dropped so handler latency can never stall pipe
+// draining.
+const stderrQueueSize = 256
+
 // drainStderr always reads cli's stderr pipe to completion in a background
 // goroutine, forwarding each line to config.StdioConfig.StderrHandler if one
 // is supplied. Safe to call for any connection type: GetStderr's transport
 // type assertion no-ops for non-stdio clients. Must be called after
 // cli.Start(), when the pipe exists. The pipe is closed by cli.Close(), which
-// ends the goroutine.
+// ends the goroutines.
 func drainStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 	stderr, ok := client.GetStderr(cli)
 	if !ok {
@@ -1777,14 +1790,54 @@ func drainStderr(cli *client.Client, config *schemas.MCPClientConfig) {
 	if config.StdioConfig != nil {
 		handler = config.StdioConfig.StderrHandler
 	}
+	if handler == nil {
+		go func() { _, _ = io.Copy(io.Discard, stderr) }()
+		return
+	}
+
+	lines := make(chan string, stderrQueueSize)
 	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			if handler != nil {
-				handler(scanner.Text())
+		for line := range lines {
+			handler(line)
+		}
+	}()
+	go func() {
+		defer close(lines)
+		r := bufio.NewReaderSize(stderr, maxStderrLineBytes)
+		for {
+			line, err := readStderrLine(r)
+			if line != "" {
+				select {
+				case lines <- line:
+				default: // queue full: drop rather than block the reader
+				}
+			}
+			if err != nil {
+				return
 			}
 		}
 	}()
+}
+
+// readStderrLine reads one newline-terminated line from r, truncating at
+// maxStderrLineBytes. Bytes beyond the limit are still consumed from r (so
+// an unbroken write larger than the limit can't stall the writer) but are
+// not included in the returned line.
+func readStderrLine(r *bufio.Reader) (string, error) {
+	var buf []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if n := maxStderrLineBytes - len(buf); n > 0 {
+			if n > len(chunk) {
+				n = len(chunk)
+			}
+			buf = append(buf, chunk[:n]...)
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return strings.TrimRight(string(buf), "\r\n"), err
+	}
 }
 
 // createSSEConnection creates a SSE-based MCP client connection without holding locks.

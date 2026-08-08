@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +96,35 @@ func startedStdioClient(t *testing.T, command string, args ...string) *client.Cl
 	return cli
 }
 
+// requireSentinel polls until path exists, failing with msg if it never
+// does. Used to detect whether a subprocess finished writing stderr (i.e.
+// wasn't left blocked on a full pipe).
+func requireSentinel(t *testing.T, path, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond, msg)
+}
+
+// lineCollector is a concurrency-safe StderrHandler sink for assertions.
+type lineCollector struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (c *lineCollector) handle(line string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lines = append(c.lines, line)
+}
+
+func (c *lineCollector) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.lines)
+}
+
 func TestDrainStderrPreventsBlockingOnFullPipeBuffer(t *testing.T) {
 	t.Parallel()
 
@@ -130,11 +160,7 @@ func TestDrainStderrPreventsBlockingOnFullPipeBuffer(t *testing.T) {
 			ConnectionType: schemas.MCPConnectionTypeSTDIO,
 			StdioConfig:    &schemas.MCPStdioConfig{}})
 
-		require.Eventually(t, func() bool {
-			_, err := os.Stat(sentinel)
-			return err == nil
-		}, 5*time.Second, 10*time.Millisecond,
-			"subprocess did not finish writing stderr; pipe likely not drained")
+		requireSentinel(t, sentinel, "subprocess did not finish writing stderr; pipe likely not drained")
 	})
 }
 
@@ -143,31 +169,18 @@ func TestDrainStderrForwardsLinesToHandler(t *testing.T) {
 
 	cli := startedStdioClient(t, "sh", "-c", `echo first >&2; echo second >&2`)
 
-	var (
-		mu    sync.Mutex
-		lines []string
-	)
+	var collector lineCollector
 	config := &schemas.MCPClientConfig{
 		ConnectionType: schemas.MCPConnectionTypeSTDIO,
-		StdioConfig: &schemas.MCPStdioConfig{
-			StderrHandler: func(line string) {
-				mu.Lock()
-				defer mu.Unlock()
-				lines = append(lines, line)
-			},
-		},
+		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
 	}
 	drainStderr(cli, config)
 
 	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(lines) == 2
+		return len(collector.snapshot()) == 2
 	}, 5*time.Second, 10*time.Millisecond)
 
-	mu.Lock()
-	defer mu.Unlock()
-	require.Equal(t, []string{"first", "second"}, lines)
+	require.Equal(t, []string{"first", "second"}, collector.snapshot())
 }
 
 func TestDrainStderrIgnoresNonSTDIOConfig(t *testing.T) {
@@ -179,4 +192,55 @@ func TestDrainStderrIgnoresNonSTDIOConfig(t *testing.T) {
 	// panic despite the stdio transport actually being present here.
 	config := &schemas.MCPClientConfig{ConnectionType: schemas.MCPConnectionTypeHTTP}
 	require.NotPanics(t, func() { drainStderr(cli, config) })
+}
+
+func TestDrainStderrTruncatesOversizedLine(t *testing.T) {
+	t.Parallel()
+	sentinel := filepath.Join(t.TempDir(), "done")
+
+	// One unbroken 200KB write with no newline, well past maxStderrLineBytes,
+	// followed by a trailing newline and a normal line.
+	cmd := fmt.Sprintf(`head -c 200000 /dev/zero | tr '\0' 'a' >&2; echo >&2; echo second >&2; touch %q`, sentinel)
+	cli := startedStdioClient(t, "sh", "-c", cmd)
+
+	var collector lineCollector
+	config := &schemas.MCPClientConfig{
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig:    &schemas.MCPStdioConfig{StderrHandler: collector.handle},
+	}
+	drainStderr(cli, config)
+
+	requireSentinel(t, sentinel, "subprocess did not finish writing stderr; oversized line likely blocked the reader")
+
+	require.Eventually(t, func() bool {
+		return len(collector.snapshot()) == 2
+	}, 5*time.Second, 10*time.Millisecond)
+
+	lines := collector.snapshot()
+	require.Len(t, lines[0], maxStderrLineBytes, "oversized line should be truncated to maxStderrLineBytes")
+	require.Equal(t, "second", lines[1])
+}
+
+func TestDrainStderrHandlerBlockDoesNotStallReading(t *testing.T) {
+	t.Parallel()
+	sentinel := filepath.Join(t.TempDir(), "done")
+
+	// Enough lines to overflow stderrQueueSize even though the handler is
+	// stuck on the first one; the subprocess must still finish writing.
+	cmd := fmt.Sprintf(`for i in $(seq 1 %d); do echo "line-$i" >&2; done; touch %q`, stderrQueueSize*4, sentinel)
+	cli := startedStdioClient(t, "sh", "-c", cmd)
+
+	block := make(chan struct{})
+	config := &schemas.MCPClientConfig{
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig: &schemas.MCPStdioConfig{
+			StderrHandler: func(line string) {
+				<-block // blocks on every call, including the first
+			},
+		},
+	}
+	drainStderr(cli, config)
+	t.Cleanup(func() { close(block) })
+
+	requireSentinel(t, sentinel, "subprocess did not finish writing stderr; blocked handler stalled the reader")
 }
