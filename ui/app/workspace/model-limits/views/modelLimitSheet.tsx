@@ -437,9 +437,6 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									lines={(form.watch("rateLimits") ?? []) as ModelRateLimitLine[]}
 									onChange={(lines) => form.setValue("rateLimits", lines, { shouldDirty: true, shouldValidate: true })}
 								/>
-								{form.formState.errors.rateLimits?.message && (
-									<p className="text-destructive text-sm">{form.formState.errors.rateLimits.message}</p>
-								)}
 								{form.formState.errors.root && <p className="text-destructive text-sm">{form.formState.errors.root.message}</p>}
 							</div>
 

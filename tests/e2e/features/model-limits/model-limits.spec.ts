@@ -58,14 +58,13 @@ test.describe('Model Limits', () => {
       budget: { maxLimit: 20 },
       rateLimits: [
         { metric: 'requests', maxLimit: 15, resetDuration: '1m' },
-        { metric: 'requests', maxLimit: 1500, resetDuration: '1d' },
         { metric: 'tokens', maxLimit: 2000, resetDuration: '1m' },
-        { metric: 'tokens', maxLimit: 10000, resetDuration: '1d' },
       ],
     })
 
     const exists = await modelLimitsPage.modelLimitExists(modelName, limitData.provider)
     expect(exists).toBe(true)
+    expect(await modelLimitsPage.modelRateLimitRuleCount(modelName, limitData.provider)).toBe(2)
   })
 
   test('should delete a model limit', async ({ modelLimitsPage }) => {

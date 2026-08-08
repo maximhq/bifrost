@@ -3403,15 +3403,16 @@ func deleteModelConfigRateLimitIfUnreferenced(tx *gorm.DB, rateLimitID string) e
 	var references int64
 	if err := tx.Raw(`
 		SELECT COUNT(*) FROM (
-			SELECT rate_limit_id FROM governance_model_configs WHERE rate_limit_id IS NOT NULL
+			SELECT rate_limit_id AS referenced_id FROM governance_model_configs WHERE rate_limit_id IS NOT NULL
 			UNION ALL SELECT rate_limit_id FROM config_providers WHERE rate_limit_id IS NOT NULL
 			UNION ALL SELECT rate_limit_id FROM governance_virtual_keys WHERE rate_limit_id IS NOT NULL
 			UNION ALL SELECT rate_limit_id FROM governance_virtual_key_provider_configs WHERE rate_limit_id IS NOT NULL
 			UNION ALL SELECT rate_limit_id FROM governance_teams WHERE rate_limit_id IS NOT NULL
 			UNION ALL SELECT rate_limit_id FROM governance_customers WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT id FROM governance_rate_limits WHERE id = ? AND model_config_id IS NOT NULL
 		) AS rate_limit_refs
-		WHERE rate_limit_id = ?
-	`, rateLimitID).Scan(&references).Error; err != nil {
+		WHERE referenced_id = ?
+	`, rateLimitID, rateLimitID).Scan(&references).Error; err != nil {
 		return fmt.Errorf("failed to check legacy rate limit %q references: %w", rateLimitID, err)
 	}
 	if references == 0 {

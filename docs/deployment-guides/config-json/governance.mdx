@@ -149,6 +149,30 @@ Rate limits cap requests or tokens over a rolling window:
         "request_reset_duration": "1h",
         "token_max_limit": 1000000,
         "token_reset_duration": "1h"
+      },
+      {
+        "id": "rl-platform-rpm",
+        "metric": "requests",
+        "request_max_limit": 15,
+        "request_reset_duration": "1m"
+      },
+      {
+        "id": "rl-platform-rpd",
+        "metric": "requests",
+        "request_max_limit": 1500,
+        "request_reset_duration": "1d"
+      },
+      {
+        "id": "rl-platform-tpm",
+        "metric": "tokens",
+        "token_max_limit": 1000000,
+        "token_reset_duration": "1m"
+      },
+      {
+        "id": "rl-platform-tpd",
+        "metric": "tokens",
+        "token_max_limit": 10000000,
+        "token_reset_duration": "1d"
       }
     ]
   }
@@ -158,6 +182,7 @@ Rate limits cap requests or tokens over a rolling window:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique rate limit ID |
+| `metric` | No | Model-level rule metric: `requests` or `tokens`; omit for a legacy paired row |
 | `request_max_limit` | No | Maximum requests in window |
 | `request_reset_duration` | No | Window for request counter |
 | `token_max_limit` | No | Maximum tokens (input + output) in window |
@@ -180,7 +205,7 @@ Attach a rate limit to a virtual key via `virtual_keys[].rate_limit_id`, or to a
         "model_name": "gpt-4o",
         "provider": "openai",
         "budget_id": "budget-production",
-        "rate_limit_ids": ["rl-platform-rpm", "rl-platform-rpd"]
+        "rate_limit_ids": ["rl-platform-rpm", "rl-platform-rpd", "rl-platform-tpm", "rl-platform-tpd"]
       },
       {
         "id": "mc-openai-provider",

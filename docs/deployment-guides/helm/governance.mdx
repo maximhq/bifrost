@@ -122,6 +122,27 @@ bifrost:
         token_reset_duration: "1h"
         request_max_limit: 100
         request_reset_duration: "1h"
+
+      # Model-level independent windows: 15 RPM + 1,500 RPD + 1M TPM + 10M TPD
+      - id: "rl-platform-rpm"
+        metric: "requests"
+        request_max_limit: 15
+        request_reset_duration: "1m"
+
+      - id: "rl-platform-rpd"
+        metric: "requests"
+        request_max_limit: 1500
+        request_reset_duration: "1d"
+
+      - id: "rl-platform-tpm"
+        metric: "tokens"
+        token_max_limit: 1000000
+        token_reset_duration: "1m"
+
+      - id: "rl-platform-tpd"
+        metric: "tokens"
+        token_max_limit: 10000000
+        token_reset_duration: "1d"
 ```
 
 ---
@@ -282,7 +303,7 @@ bifrost:
         model_name: "gpt-4o"
         provider: "openai"
         budget_id: "budget-production"
-        rate_limit_id: "rate-limit-high"
+        rate_limit_ids: ["rl-platform-rpm", "rl-platform-rpd", "rl-platform-tpm", "rl-platform-tpd"]
 
       # Global provider-level budget (all models, all traffic, openai only)
       - id: "mc-openai-provider"
@@ -304,7 +325,7 @@ bifrost:
         scope: "virtual_key"
         scope_id: "vk-dev-all"
         budget_id: "budget-testing"
-        rate_limit_id: "rate-limit-standard"
+        rate_limit_ids: ["rl-platform-rpm", "rl-platform-rpd"]
 ```
 
 ---

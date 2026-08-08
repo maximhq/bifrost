@@ -3716,6 +3716,7 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 // paths (e.g. the enterprise user-deletion flow) reuse it. Owned budgets are released
 // from both the active Budgets slice and the legacy single BudgetID column.
 func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.Context, scope, scopeID string) {
+	referenceIndex := gs.buildRateLimitReferenceIndex()
 	gs.modelConfigs.Range(func(key, value any) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
 		if !ok || mc == nil {
@@ -3726,16 +3727,17 @@ func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.C
 				gs.DeleteBudget(ctx, mc.Budgets[i].ID)
 			}
 			for i := range mc.RateLimits {
-				if !gs.rateLimitReferencedByOtherOwner(mc.RateLimits[i].ID, mc.ID) {
+				if !referenceIndex.referencedByOtherOwner(mc.RateLimits[i].ID, mc.ID) {
 					gs.DeleteRateLimit(ctx, mc.RateLimits[i].ID)
 				}
 			}
 			if mc.BudgetID != nil {
 				gs.DeleteBudget(ctx, *mc.BudgetID)
 			}
-			if mc.RateLimitID != nil && !gs.rateLimitReferencedByOtherOwner(*mc.RateLimitID, mc.ID) {
+			if mc.RateLimitID != nil && !referenceIndex.referencedByOtherOwner(*mc.RateLimitID, mc.ID) {
 				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
 			}
+			referenceIndex.removeModelConfig(mc)
 			gs.modelConfigs.Delete(key)
 		}
 		return true
@@ -4178,86 +4180,127 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 	})
 }
 
-func (gs *LocalGovernanceStore) rateLimitReferencedByOtherOwner(rateLimitID, excludedModelConfigID string) bool {
-	if rateLimitID == "" {
+// rateLimitReferenceIndex captures all in-memory governance owners of a rate
+// limit. Model owners are tracked by model config ID so a caller can exclude
+// the model currently being deleted while still protecting shared legacy rows.
+// Other governance owners only need presence tracking.
+type rateLimitReferenceIndex struct {
+	modelConfigs map[string]map[string]struct{}
+	otherOwners  map[string]struct{}
+}
+
+func (index *rateLimitReferenceIndex) addModelConfig(modelConfigID, rateLimitID string) {
+	if index == nil || modelConfigID == "" || rateLimitID == "" {
+		return
+	}
+	owners := index.modelConfigs[rateLimitID]
+	if owners == nil {
+		owners = make(map[string]struct{})
+		index.modelConfigs[rateLimitID] = owners
+	}
+	owners[modelConfigID] = struct{}{}
+}
+
+func (index *rateLimitReferenceIndex) addOtherOwner(rateLimitID string) {
+	if index == nil || rateLimitID == "" {
+		return
+	}
+	index.otherOwners[rateLimitID] = struct{}{}
+}
+
+func (index *rateLimitReferenceIndex) referencedByOtherOwner(rateLimitID, excludedModelConfigID string) bool {
+	if index == nil || rateLimitID == "" {
 		return false
 	}
-	modelConfigReferenced := false
-	gs.modelConfigs.Range(func(_, value any) bool {
-		mc, ok := value.(*configstoreTables.TableModelConfig)
-		if !ok || mc == nil || mc.ID == excludedModelConfigID {
+	if _, exists := index.otherOwners[rateLimitID]; exists {
+		return true
+	}
+	for modelConfigID := range index.modelConfigs[rateLimitID] {
+		if modelConfigID != excludedModelConfigID {
 			return true
 		}
-		if mc.RateLimitID != nil && *mc.RateLimitID == rateLimitID {
-			modelConfigReferenced = true
-			return false
+	}
+	return false
+}
+
+func (index *rateLimitReferenceIndex) removeModelConfig(modelConfig *configstoreTables.TableModelConfig) {
+	if index == nil || modelConfig == nil {
+		return
+	}
+	remove := func(rateLimitID string) {
+		owners := index.modelConfigs[rateLimitID]
+		delete(owners, modelConfig.ID)
+		if len(owners) == 0 {
+			delete(index.modelConfigs, rateLimitID)
 		}
-		for i := range mc.RateLimits {
-			if mc.RateLimits[i].ID == rateLimitID {
-				modelConfigReferenced = true
-				return false
-			}
+	}
+	if modelConfig.RateLimitID != nil {
+		remove(*modelConfig.RateLimitID)
+	}
+	for i := range modelConfig.RateLimits {
+		remove(modelConfig.RateLimits[i].ID)
+	}
+}
+
+func (gs *LocalGovernanceStore) buildRateLimitReferenceIndex() *rateLimitReferenceIndex {
+	index := &rateLimitReferenceIndex{
+		modelConfigs: make(map[string]map[string]struct{}),
+		otherOwners:  make(map[string]struct{}),
+	}
+	gs.modelConfigs.Range(func(_, value any) bool {
+		modelConfig, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || modelConfig == nil {
+			return true
+		}
+		if modelConfig.RateLimitID != nil {
+			index.addModelConfig(modelConfig.ID, *modelConfig.RateLimitID)
+		}
+		for i := range modelConfig.RateLimits {
+			index.addModelConfig(modelConfig.ID, modelConfig.RateLimits[i].ID)
 		}
 		return true
 	})
-	if modelConfigReferenced {
-		return true
-	}
-	providerReferenced := false
 	gs.providers.Range(func(_, value any) bool {
 		provider, ok := value.(*configstoreTables.TableProvider)
-		if ok && provider != nil && provider.RateLimitID != nil && *provider.RateLimitID == rateLimitID {
-			providerReferenced = true
-			return false
+		if ok && provider != nil && provider.RateLimitID != nil {
+			index.addOtherOwner(*provider.RateLimitID)
 		}
 		return true
 	})
-	if providerReferenced {
-		return true
-	}
-	teamReferenced := false
 	gs.teams.Range(func(_, value any) bool {
 		team, ok := value.(*configstoreTables.TableTeam)
-		if ok && team != nil && team.RateLimitID != nil && *team.RateLimitID == rateLimitID {
-			teamReferenced = true
-			return false
+		if ok && team != nil && team.RateLimitID != nil {
+			index.addOtherOwner(*team.RateLimitID)
 		}
 		return true
 	})
-	if teamReferenced {
-		return true
-	}
-	customerReferenced := false
 	gs.customers.Range(func(_, value any) bool {
 		customer, ok := value.(*configstoreTables.TableCustomer)
-		if ok && customer != nil && customer.RateLimitID != nil && *customer.RateLimitID == rateLimitID {
-			customerReferenced = true
-			return false
+		if ok && customer != nil && customer.RateLimitID != nil {
+			index.addOtherOwner(*customer.RateLimitID)
 		}
 		return true
 	})
-	if customerReferenced {
-		return true
-	}
-	virtualKeyReferenced := false
 	gs.virtualKeys.Range(func(_, value any) bool {
-		vk, ok := value.(*configstoreTables.TableVirtualKey)
-		if !ok || vk == nil {
+		virtualKey, ok := value.(*configstoreTables.TableVirtualKey)
+		if !ok || virtualKey == nil {
 			return true
 		}
-		if vk.RateLimitID != nil && *vk.RateLimitID == rateLimitID {
-			virtualKeyReferenced = true
-			return false
+		if virtualKey.RateLimitID != nil {
+			index.addOtherOwner(*virtualKey.RateLimitID)
 		}
-		for i := range vk.ProviderConfigs {
-			if vk.ProviderConfigs[i].RateLimitID != nil && *vk.ProviderConfigs[i].RateLimitID == rateLimitID {
-				virtualKeyReferenced = true
-				return false
+		for i := range virtualKey.ProviderConfigs {
+			if virtualKey.ProviderConfigs[i].RateLimitID != nil {
+				index.addOtherOwner(*virtualKey.ProviderConfigs[i].RateLimitID)
 			}
 		}
 		return true
 	})
-	return virtualKeyReferenced
+	return index
+}
+
+func (gs *LocalGovernanceStore) rateLimitReferencedByOtherOwner(rateLimitID, excludedModelConfigID string) bool {
+	return gs.buildRateLimitReferenceIndex().referencedByOtherOwner(rateLimitID, excludedModelConfigID)
 }
 
 // ScopedModelConfigIDs returns the IDs of all in-memory model configs for the

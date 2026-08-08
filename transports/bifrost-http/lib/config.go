@@ -3991,16 +3991,9 @@ func validateModelConfigGovernanceOwnership(tx *gorm.DB, modelConfig configstore
 		if id == "" {
 			continue
 		}
-		if err := validateModelRateLimitLinkOwnership(tx, id, modelConfig.ID); err != nil {
-			return err
-		}
-		var rateLimit configstoreTables.TableRateLimit
-		if err := tx.Where("id = ?", id).First(&rateLimit).Error; err != nil {
-			return fmt.Errorf("failed to load model rate limit %q: %w", id, err)
-		}
-		key, err := modelRateLimitReferenceKey(rateLimit)
+		key, err := validateModelRateLimitLinkOwnership(tx, id, modelConfig.ID)
 		if err != nil {
-			return fmt.Errorf("invalid model rate limit %q: %w", id, err)
+			return err
 		}
 		if previousID, exists := seenModelRateLimitRules[key]; exists {
 			return fmt.Errorf("model config %q contains duplicate rate limit rule %q (IDs %q and %q)", modelConfig.ID, key, previousID, id)
@@ -7372,51 +7365,52 @@ func DeepCopy[T any](in T) (T, error) {
 // validateModelRateLimitLinkOwnership verifies that a config-file rate limit is
 // a single-metric rule and is not already owned by another model config or
 // singular governance owner.
-func validateModelRateLimitLinkOwnership(tx *gorm.DB, rateLimitID, mcID string) error {
+func validateModelRateLimitLinkOwnership(tx *gorm.DB, rateLimitID, mcID string) (string, error) {
 	var rateLimit configstoreTables.TableRateLimit
 	if err := tx.Where("id = ?", rateLimitID).First(&rateLimit).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("rate_limit_id %q referenced by model config %q does not exist", rateLimitID, mcID)
+			return "", fmt.Errorf("rate_limit_id %q referenced by model config %q does not exist", rateLimitID, mcID)
 		}
-		return fmt.Errorf("failed to validate model rate_limit %q: %w", rateLimitID, err)
+		return "", fmt.Errorf("failed to validate model rate_limit %q: %w", rateLimitID, err)
 	}
-	if _, err := modelRateLimitReferenceKey(rateLimit); err != nil {
-		return fmt.Errorf("rate limit %q is not a valid single-metric model rule: %w", rateLimitID, err)
+	key, err := modelRateLimitReferenceKey(rateLimit)
+	if err != nil {
+		return "", fmt.Errorf("rate limit %q is not a valid single-metric model rule: %w", rateLimitID, err)
 	}
 	if rateLimit.ModelConfigID != nil && *rateLimit.ModelConfigID != mcID {
-		return fmt.Errorf("rate limit %q is already owned by model config %q", rateLimitID, *rateLimit.ModelConfigID)
+		return "", fmt.Errorf("rate limit %q is already owned by model config %q", rateLimitID, *rateLimit.ModelConfigID)
 	}
 	var other configstoreTables.TableModelConfig
 	if err := tx.Where("id <> ? AND rate_limit_id = ?", mcID, rateLimitID).Select("id").First(&other).Error; err == nil {
-		return fmt.Errorf("rate limit %q is already linked to model config %q", rateLimitID, other.ID)
+		return "", fmt.Errorf("rate limit %q is already linked to model config %q", rateLimitID, other.ID)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("failed to validate legacy rate limit ownership: %w", err)
+		return "", fmt.Errorf("failed to validate legacy rate limit ownership: %w", err)
 	}
 	var providerOwner configstoreTables.TableProvider
 	if err := tx.Where("rate_limit_id = ?", rateLimitID).Select("name").First(&providerOwner).Error; err == nil {
-		return fmt.Errorf("rate limit %q is already linked to provider %q", rateLimitID, providerOwner.Name)
+		return "", fmt.Errorf("rate limit %q is already linked to provider %q", rateLimitID, providerOwner.Name)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("failed to validate provider rate limit ownership: %w", err)
+		return "", fmt.Errorf("failed to validate provider rate limit ownership: %w", err)
 	}
 	var teamOwner configstoreTables.TableTeam
 	if err := tx.Where("rate_limit_id = ?", rateLimitID).Select("id").First(&teamOwner).Error; err == nil {
-		return fmt.Errorf("rate limit %q is already linked to team %q", rateLimitID, teamOwner.ID)
+		return "", fmt.Errorf("rate limit %q is already linked to team %q", rateLimitID, teamOwner.ID)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("failed to validate team rate limit ownership: %w", err)
+		return "", fmt.Errorf("failed to validate team rate limit ownership: %w", err)
 	}
 	var vkOwner configstoreTables.TableVirtualKey
 	if err := tx.Where("rate_limit_id = ?", rateLimitID).Select("id").First(&vkOwner).Error; err == nil {
-		return fmt.Errorf("rate limit %q is already linked to virtual key %q", rateLimitID, vkOwner.ID)
+		return "", fmt.Errorf("rate limit %q is already linked to virtual key %q", rateLimitID, vkOwner.ID)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("failed to validate virtual key rate limit ownership: %w", err)
+		return "", fmt.Errorf("failed to validate virtual key rate limit ownership: %w", err)
 	}
 	var customerOwner configstoreTables.TableCustomer
 	if err := tx.Where("rate_limit_id = ?", rateLimitID).Select("id").First(&customerOwner).Error; err == nil {
-		return fmt.Errorf("rate limit %q is already linked to customer %q", rateLimitID, customerOwner.ID)
+		return "", fmt.Errorf("rate limit %q is already linked to customer %q", rateLimitID, customerOwner.ID)
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("failed to validate customer rate limit ownership: %w", err)
+		return "", fmt.Errorf("failed to validate customer rate limit ownership: %w", err)
 	}
-	return nil
+	return key, nil
 }
 
 func modelRateLimitReferenceKey(rateLimit configstoreTables.TableRateLimit) (string, error) {

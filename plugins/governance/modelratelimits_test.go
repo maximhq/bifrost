@@ -11,20 +11,20 @@ import (
 
 func TestBumpRateLimitUsageOnlyUpdatesConfiguredMetrics(t *testing.T) {
 	store := newStandaloneStore(t)
-	max := int64(1000)
+	maxLimit := int64(1000)
 	duration := "1h"
 
 	tokenRule := &configstoreTables.TableRateLimit{
 		ID:                 "model-tokens",
 		Metric:             configstoreTables.ModelRateLimitMetricTokens,
-		TokenMaxLimit:      &max,
+		TokenMaxLimit:      &maxLimit,
 		TokenResetDuration: &duration,
 		TokenLastReset:     time.Now(),
 	}
 	requestRule := &configstoreTables.TableRateLimit{
 		ID:                   "model-requests",
 		Metric:               configstoreTables.ModelRateLimitMetricRequests,
-		RequestMaxLimit:      &max,
+		RequestMaxLimit:      &maxLimit,
 		RequestResetDuration: &duration,
 		RequestLastReset:     time.Now(),
 	}
@@ -99,12 +99,12 @@ func TestUpdateModelConfigInMemoryPreservesOrResetsRuleUsageByWindow(t *testing.
 	modelID := "model-config"
 	minute := "1m"
 	day := "1d"
-	max := int64(15)
+	maxLimit := int64(15)
 	rule := configstoreTables.TableRateLimit{
 		ID:                   "model-rpm",
 		ModelConfigID:        &modelID,
 		Metric:               configstoreTables.ModelRateLimitMetricRequests,
-		RequestMaxLimit:      &max,
+		RequestMaxLimit:      &maxLimit,
 		RequestResetDuration: &minute,
 		RequestCurrentUsage:  7,
 		RequestLastReset:     time.Now().Add(-time.Minute),
@@ -138,4 +138,37 @@ func TestUpdateModelConfigInMemoryPreservesOrResetsRuleUsageByWindow(t *testing.
 	reset := store.LoadRateLimit(ctx, rule.ID)
 	require.NotNil(t, reset)
 	require.Equal(t, int64(0), reset.RequestCurrentUsage)
+}
+
+func TestDeleteModelConfigsForScopeInMemoryReleasesSharedRuleAfterLastOwner(t *testing.T) {
+	store := newStandaloneStore(t)
+	ctx := context.Background()
+	scopeID := "virtual-key"
+	modelIDOne := "model-one"
+	modelIDTwo := "model-two"
+	maxLimit := int64(15)
+	duration := "1m"
+
+	makeModel := func(id string) *configstoreTables.TableModelConfig {
+		return &configstoreTables.TableModelConfig{
+			ID:      id,
+			Scope:   configstoreTables.ModelConfigScopeVirtualKey,
+			ScopeID: &scopeID,
+			RateLimits: []configstoreTables.TableRateLimit{{
+				ID:                   "shared-model-rule",
+				ModelConfigID:        &id,
+				Metric:               configstoreTables.ModelRateLimitMetricRequests,
+				RequestMaxLimit:      &maxLimit,
+				RequestResetDuration: &duration,
+			}},
+		}
+	}
+	store.modelConfigs.Store("model-one-key", makeModel(modelIDOne))
+	store.modelConfigs.Store("model-two-key", makeModel(modelIDTwo))
+	store.rateLimits.Store("shared-model-rule", &configstoreTables.TableRateLimit{ID: "shared-model-rule"})
+
+	store.DeleteModelConfigsForScopeInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, scopeID)
+
+	_, exists := store.rateLimits.Load("shared-model-rule")
+	require.False(t, exists, "shared rule should be released after the final model owner is removed")
 }

@@ -24,14 +24,19 @@ func TestModelRateLimitReferenceKeyCanonicalizesWindows(t *testing.T) {
 func TestModelRateLimitReferenceKeyRejectsPairedOrInvalidRules(t *testing.T) {
 	maxLimit := int64(15)
 	duration := "1m"
-	tests := []configstoreTables.TableRateLimit{
-		{Metric: "", RequestMaxLimit: &maxLimit, RequestResetDuration: &duration},
-		{Metric: configstoreTables.ModelRateLimitMetricRequests, TokenMaxLimit: &maxLimit, TokenResetDuration: &duration, RequestMaxLimit: &maxLimit, RequestResetDuration: &duration},
-		{Metric: configstoreTables.ModelRateLimitMetricTokens, TokenMaxLimit: &maxLimit},
+	tests := []struct {
+		name string
+		rule configstoreTables.TableRateLimit
+	}{
+		{name: "missing metric", rule: configstoreTables.TableRateLimit{Metric: "", RequestMaxLimit: &maxLimit, RequestResetDuration: &duration}},
+		{name: "paired token and request fields", rule: configstoreTables.TableRateLimit{Metric: configstoreTables.ModelRateLimitMetricRequests, TokenMaxLimit: &maxLimit, TokenResetDuration: &duration, RequestMaxLimit: &maxLimit, RequestResetDuration: &duration}},
+		{name: "missing reset duration", rule: configstoreTables.TableRateLimit{Metric: configstoreTables.ModelRateLimitMetricTokens, TokenMaxLimit: &maxLimit}},
 	}
 
-	for _, rule := range tests {
-		_, err := modelRateLimitReferenceKey(rule)
-		require.Error(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := modelRateLimitReferenceKey(tt.rule)
+			require.Error(t, err)
+		})
 	}
 }

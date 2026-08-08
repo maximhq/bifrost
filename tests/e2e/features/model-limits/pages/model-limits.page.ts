@@ -133,6 +133,11 @@ export class ModelLimitsPage extends BasePage {
       await this.page.getByTestId(`${testId}-add-btn`).click()
     }
 
+    while ((await lines.count()) > config.length) {
+      const excessIndex = (await lines.count()) - 1
+      await this.page.getByTestId(`${testId}-remove-${excessIndex}`).click()
+    }
+
     for (let index = 0; index < config.length; index += 1) {
       const rule = config[index]
       const line = this.page.getByTestId(`${testId}-line-${index}`)

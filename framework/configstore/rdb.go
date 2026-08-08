@@ -5713,7 +5713,7 @@ func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm
 
 	mcIDs := make([]string, 0, len(modelConfigs))
 	budgetIDs := make([]string, 0, len(modelConfigs))
-	rateLimitIDs := make([]string, 0, len(modelConfigs))
+	legacyRateLimitIDs := make([]string, 0, len(modelConfigs))
 	for i := range modelConfigs {
 		mcIDs = append(mcIDs, modelConfigs[i].ID)
 		for j := range modelConfigs[i].Budgets {
@@ -5723,10 +5723,7 @@ func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm
 			budgetIDs = append(budgetIDs, *modelConfigs[i].BudgetID)
 		}
 		if modelConfigs[i].RateLimitID != nil {
-			rateLimitIDs = append(rateLimitIDs, *modelConfigs[i].RateLimitID)
-		}
-		for j := range modelConfigs[i].RateLimits {
-			rateLimitIDs = append(rateLimitIDs, modelConfigs[i].RateLimits[j].ID)
+			legacyRateLimitIDs = append(legacyRateLimitIDs, *modelConfigs[i].RateLimitID)
 		}
 	}
 
@@ -5738,11 +5735,11 @@ func (s *RDBConfigStore) deleteModelConfigsWhere(ctx context.Context, txDB *gorm
 			return err
 		}
 	}
-	if len(rateLimitIDs) > 0 {
+	if len(modelConfigs) > 0 {
 		if err := txDB.WithContext(ctx).Where("model_config_id IN ?", mcIDs).Delete(&tables.TableRateLimit{}).Error; err != nil {
 			return err
 		}
-		for _, rateLimitID := range uniqueStrings(rateLimitIDs) {
+		for _, rateLimitID := range uniqueStrings(legacyRateLimitIDs) {
 			if err := deleteRateLimitIfUnreferenced(txDB.WithContext(ctx), rateLimitID); err != nil {
 				return err
 			}
@@ -5902,12 +5899,9 @@ func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ..
 	if modelConfig.BudgetID != nil {
 		budgetIDs = append(budgetIDs, *modelConfig.BudgetID)
 	}
-	rateLimitIDs := make([]string, 0, len(modelConfig.RateLimits)+1)
-	for i := range modelConfig.RateLimits {
-		rateLimitIDs = append(rateLimitIDs, modelConfig.RateLimits[i].ID)
-	}
+	legacyRateLimitIDs := make([]string, 0, 1)
 	if modelConfig.RateLimitID != nil {
-		rateLimitIDs = append(rateLimitIDs, *modelConfig.RateLimitID)
+		legacyRateLimitIDs = append(legacyRateLimitIDs, *modelConfig.RateLimitID)
 	}
 	// Delete the model config first
 	if err := txDB.WithContext(ctx).Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
@@ -5928,7 +5922,7 @@ func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string, tx ..
 	if err := txDB.WithContext(ctx).Where("model_config_id = ?", id).Delete(&tables.TableRateLimit{}).Error; err != nil {
 		return err
 	}
-	for _, rateLimitID := range uniqueStrings(rateLimitIDs) {
+	for _, rateLimitID := range uniqueStrings(legacyRateLimitIDs) {
 		if err := deleteRateLimitIfUnreferenced(txDB.WithContext(ctx), rateLimitID); err != nil {
 			return err
 		}
