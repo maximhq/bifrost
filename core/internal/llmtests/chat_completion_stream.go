@@ -653,9 +653,11 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				t.Parallel()
 			}
 
-			if testConfig.Provider == schemas.OpenAI || testConfig.Provider == schemas.Groq {
-				// OpenAI and Groq because reasoning for them in stream is extremely flaky
-				t.Skip("Skipping ChatCompletionStreamWithReasoningValidated test for OpenAI and Groq")
+			if testConfig.Provider == schemas.OpenAI || testConfig.Provider == schemas.Groq || testConfig.Provider == schemas.Copilot {
+				// OpenAI, Groq and Copilot because reasoning for them in stream is extremely flaky
+				// (e.g., GitHub Copilot's gpt-5-mini only emits a `reasoning_tokens` usage counter,
+				// not `reasoning_content` deltas, so chunk-level reasoning indicators are absent).
+				t.Skip("Skipping ChatCompletionStreamWithReasoningValidated test for OpenAI, Groq and Copilot")
 				return
 			}
 
