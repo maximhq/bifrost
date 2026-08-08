@@ -283,10 +283,12 @@ client-reconnect:
     operationId: reconnectMCPClient
     summary: Reconnect MCP client
     description: |
-      Reconnects an MCP client that is in an error or disconnected state.
-      Not applicable (400) to per-user auth clients (no shared upstream
-      connection) or to clients in pending_verification state — complete the
-      admin verification instead.
+      Reconnects an MCP client that is in an error or unstable state.
+      Not applicable (400) to any per-call client — a shared client running
+      per-call (needs_session_stickiness false/omitted) as well as any
+      per-user auth type — since none of them hold a shared upstream
+      connection to re-establish. Also not applicable to clients in
+      pending_verification state — complete the admin verification instead.
     tags:
       - MCP
     parameters:

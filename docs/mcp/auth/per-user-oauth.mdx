@@ -243,6 +243,8 @@ Per-user clients hold no persistent upstream connection, but their tool list sti
 
 A failed sync keeps the existing tool set and retries on the next cycle. In `config.json`, the field also accepts duration strings such as `"10m"` (recommended); a bare number there is a legacy nanosecond value, unlike the API which takes minutes.
 
+Every sync's result persists to the database (skipped when it's byte-identical to what's already stored), so a restart doesn't revert the tool list to whatever was discovered at the client's original bootstrap verification.
+
 ---
 
 ## Public URL configuration
