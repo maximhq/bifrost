@@ -41,6 +41,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
+	"github.com/maximhq/bifrost/core/providers/qwen"
 	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/runway"
@@ -4416,6 +4417,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return cerebras.NewCerebrasProvider(config, bifrost.logger)
 	case schemas.DeepSeek:
 		return deepseek.NewDeepSeekProvider(config, bifrost.logger)
+	case schemas.Qwen:
+		return qwen.NewQwenProvider(config, bifrost.logger)
 	case schemas.Wafer:
 		return wafer.NewWaferProvider(config, bifrost.logger)
 	case schemas.Gemini:
