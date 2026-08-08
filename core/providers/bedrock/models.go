@@ -12,11 +12,7 @@ type BedrockRerankRequest struct {
 	Queries                []BedrockRerankQuery          `json:"queries"`
 	Sources                []BedrockRerankSource         `json:"sources"`
 	RerankingConfiguration BedrockRerankingConfiguration `json:"rerankingConfiguration"`
-}
-
-// GetExtraParams implements RequestBodyWithExtraParams.
-func (*BedrockRerankRequest) GetExtraParams() map[string]interface{} {
-	return nil
+	providerUtils.ExtraParamsMixin
 }
 
 const (

@@ -3559,9 +3559,9 @@ func TestAnthropicOrderedOutputConfigRoundTripsReasoning(t *testing.T) {
 				schemas.KV("effort", "medium"),
 			)),
 		),
-		ExtraParams: map[string]any{
-			"reasoning_summary": "auto",
-		},
+	}
+	request.ExtraParams = map[string]any{
+		"reasoning_summary": "auto",
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -3605,9 +3605,9 @@ func TestAnthropicOutputConfigFormatStillFallsBackToBudgetTokensForReasoning(t *
 				)),
 			)),
 		),
-		ExtraParams: map[string]any{
-			"reasoning_summary": "auto",
-		},
+	}
+	request.ExtraParams = map[string]any{
+		"reasoning_summary": "auto",
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
