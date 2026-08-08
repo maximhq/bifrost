@@ -1561,6 +1561,12 @@ type ChatToResponsesStreamState struct {
 	HasEmittedInProgress  bool              // Whether we've emitted response.in_progress
 	TextItemAdded         bool              // Whether text item has been added
 	TextItemClosed        bool              // Whether text item has been closed
+	// ClosedTextItems holds text runs whose items were already closed (a tool
+	// call brackets the open text item so blocks never overlap). A later text
+	// delta must open a fresh item — emitting a delta for a closed item id makes
+	// strict clients (Vercel AI SDK v5) abort with "text part not found" — and
+	// the closed runs must still appear in the final response output.
+	ClosedTextItems []ClosedTextItem
 	TextItemHasContent    bool              // Whether text item has received any content deltas
 	TextBuffer            strings.Builder   // Accumulated text deltas for output_text.done/content_part.done
 	TextOutputIndex       int               // Output index assigned to the text/message item
@@ -1571,6 +1577,14 @@ type ChatToResponsesStreamState struct {
 	CurrentOutputIndex    int               // Current output index counter
 	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
 	SequenceNumber        int               // Monotonic sequence number across all chunks
+}
+
+// ClosedTextItem records a completed text run whose output item was closed
+// mid-stream (text interrupted by a tool call) so response.completed can render it.
+type ClosedTextItem struct {
+	ID          string
+	Text        string
+	OutputIndex int
 }
 
 // chatToResponsesStreamStatePool provides a pool for ChatToResponsesStreamState objects.
@@ -1637,6 +1651,7 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.TextItemHasContent = false
 	state.TextBuffer = strings.Builder{}
 	state.TextOutputIndex = 0
+	state.ClosedTextItems = nil
 	state.ReasoningItemAdded = false
 	state.ReasoningItemClosed = false
 	state.ReasoningOutputIndex = 0
@@ -1676,6 +1691,7 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.TextItemHasContent = false
 		state.TextBuffer = strings.Builder{}
 		state.TextOutputIndex = 0
+		state.ClosedTextItems = nil
 		state.ReasoningItemAdded = false
 		state.ReasoningItemClosed = false
 		state.ReasoningOutputIndex = 0
@@ -1853,6 +1869,22 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	// Text content delta. Reasoning (if any) is closed first so blocks never overlap.
 	if hasContent {
 		closeReasoningItem()
+
+		// Text resuming after a tool call closed the previous text item must
+		// open a fresh item: the client deregistered the closed item's part on
+		// output_item.done, so a delta reusing its id aborts strict consumers.
+		// The closed run is kept for the final response output.
+		if state.TextItemAdded && state.TextItemClosed {
+			state.ClosedTextItems = append(state.ClosedTextItems, ClosedTextItem{
+				ID:          state.ItemIDs["text"],
+				Text:        state.TextBuffer.String(),
+				OutputIndex: state.TextOutputIndex,
+			})
+			state.TextItemAdded = false
+			state.TextItemClosed = false
+			state.TextItemHasContent = false
+			state.TextBuffer.Reset()
+		}
 
 		if !state.TextItemAdded {
 			outputIndex := state.CurrentOutputIndex
@@ -2291,6 +2323,37 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 				rMsg.ID = &itemID
 			}
 			allOutput = append(allOutput, rMsg)
+		}
+
+		// Text runs whose items were closed mid-stream (interrupted by tool
+		// calls) still belong in the final output, ahead of the current run.
+		for _, closed := range state.ClosedTextItems {
+			statusFinal := terminalStatus
+			messageType := ResponsesMessageTypeMessage
+			role := ResponsesInputMessageRoleAssistant
+			textType := ResponsesOutputMessageContentTypeText
+			closedText := closed.Text
+			closedMsg := ResponsesMessage{
+				Type:   &messageType,
+				Role:   &role,
+				Status: &statusFinal,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{
+							Type: textType,
+							Text: &closedText,
+							ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+								LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
+				},
+			}
+			if closed.ID != "" {
+				closedMsg.ID = Ptr(closed.ID)
+			}
+			allOutput = append(allOutput, closedMsg)
 		}
 
 		if state.TextItemAdded {
