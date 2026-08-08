@@ -86,7 +86,7 @@ The `oauth_config` block itself is optional, and every inner field is optional. 
 `client_id` and `client_secret` support `env.VAR_NAME` and `vault.path` references — `"client_secret": "env.GITHUB_SECRET"` resolves from the environment at runtime, and the reference (not the resolved secret) is what gets stored. Plain values also work (encrypted at rest, redacted in API responses). The other fields (`authorize_url`, `token_url`, `registration_url`, `scopes`) take literal values only.
 </Note>
 
-At boot the client lands in **`pending_verification`** state. From the MCP Gateway UI, open the client and click **Verify** — Bifrost runs the same admin test login popup the Web UI flow uses. On success the client transitions to `connected` with the tool list discovered, and the admin's bootstrap token is retained as the [admin discovery credential](#admin-discovery-credential) for later tool-list refresh.
+At boot the client lands in **`pending_verification`** state. From the MCP Gateway UI, open the client and click **Verify** — Bifrost runs the same admin test login popup the Web UI flow uses. On success the client transitions to `healthy` with the tool list discovered, and the admin's bootstrap token is retained as the [admin discovery credential](#admin-discovery-credential) for later tool-list refresh.
 
 The same flow is scriptable: `POST /api/mcp/client/{id}/initiate-verification` (`{id}` = MCP client ID) returns `authorize_url` plus `status_url` / `complete_url` hints — open `authorize_url` in a browser for the one-time admin login, poll `status_url` until `authorized`, then POST `complete_url` to run verification and tool discovery.
 
