@@ -209,7 +209,7 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 			request,
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  provider.GetProviderKey(),
-				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+				BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -253,7 +253,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  provider.GetProviderKey(),
 			IsStreaming:               true,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		})
@@ -322,7 +322,7 @@ func (provider *SGLProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  provider.GetProviderKey(),
 				ValidateTools:             true,
-				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+				BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -356,7 +356,7 @@ func (provider *SGLProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 			Provider:                  provider.GetProviderKey(),
 			IsStreaming:               true,
 			ValidateTools:             true,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		})
@@ -569,7 +569,7 @@ func (provider *SGLProvider) CountTokens(ctx *schemas.BifrostContext, key schema
 		anthropic.AnthropicRequestBuildConfig{
 			Provider:                  provider.GetProviderKey(),
 			ValidateTools:             true,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		},
