@@ -42,6 +42,44 @@ description: \"$VERSION changelog - $CURRENT_DATE\"
 </Tabs>
 "
 
+# Test reports table.
+#
+# Sits directly after the upgrade instructions and before the per-module
+# changelog sections: what shipped is only half the question, and "was it
+# verified, against which CLI versions" is the other half.
+#
+# The URLs are derived from the version alone - test-core and test-cli-harness
+# publish to test-reports/v<version>/<label>/ (see
+# upload-test-reports-to-r2.sh), so no job outputs have to be threaded through
+# the release graph to get here.
+#
+# TEST_REPORTS_BASE_URL is the public origin serving the R2 bucket. It is
+# deliberately not hardcoded: publishing a guessed domain into public release
+# notes would ship dead links on every release. With it unset the table is
+# skipped entirely rather than emitted with broken hrefs.
+if [ -n "${TEST_REPORTS_BASE_URL:-}" ]; then
+  REPORTS_BASE="${TEST_REPORTS_BASE_URL%/}/test-reports/$VERSION"
+  CHANGELOG_BODY+="
+## Test reports
+
+Every release is gated on the provider harness and the CLI harness. The CLI
+harness runs against the three most recent releases of each coding CLI, so the
+table below is also the compatibility record for this version.
+
+| Suite | What it covers | Report |
+| --- | --- | --- |
+| Provider harness | Every provider × modality through a live gateway | [failure breakdown]($REPORTS_BASE/provider-harness/harness-failures.md) |
+| CLI harness (latest) | Claude Code, Codex and OpenCode at their newest releases | [conversations]($REPORTS_BASE/cli-harness-latest/index.html) |
+| CLI harness (latest-1) | The same suite one CLI release back | [conversations]($REPORTS_BASE/cli-harness-latest-1/index.html) |
+| CLI harness (latest-2) | The same suite two CLI releases back | [conversations]($REPORTS_BASE/cli-harness-latest-2/index.html) |
+
+The CLI harness reports include the full conversation for every scenario - each
+prompt sent and each response received, turn by turn.
+"
+else
+  echo "⚠️  TEST_REPORTS_BASE_URL unset - omitting the test reports table from $VERSION"
+fi
+
 # Array to track cleaned changelog files
 CLEANED_CHANGELOG_FILES=()
 

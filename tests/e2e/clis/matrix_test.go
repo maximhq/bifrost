@@ -3,6 +3,7 @@ package clis
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -159,6 +160,7 @@ var clis = map[string]CLI{
 			args = append(args, prompt)
 			return args
 		},
+		PreLaunch:       codexPreLaunch,
 		MultiTurnDriver: codexResumeDriver,
 		// AttachImageArgs: -i/--image, confirmed via `codex exec --help` and
 		// https://learn.chatgpt.com/docs/developer-commands?surface=cli.
@@ -183,8 +185,14 @@ var clis = map[string]CLI{
 		ExtraEnv: map[string]string{
 			"OPENCODE_DISABLE_AUTOUPDATE": "1",
 		},
+		// No permission-bypass flag here: `--dangerously-skip-permissions` is
+		// Claude Code's, not OpenCode's -- it appears nowhere in `opencode run
+		// --help` or https://opencode.ai/docs/cli/, and OpenCode's arg parser
+		// is non-strict, so it was silently discarded rather than rejected.
+		// Tool permissions are granted in the generated config instead (see
+		// opencodePreLaunch).
 		SingleTurnArgs: func(model, prompt string, extra []string) []string {
-			args := []string{"run", "--dangerously-skip-permissions", "--format", "json"}
+			args := []string{"run", "--format", "json"}
 			if model != "" {
 				args = append(args, "--model", opencodeModelRef(model))
 			}
@@ -197,6 +205,41 @@ var clis = map[string]CLI{
 		// AttachImageArgs / EffortArgs: not researched for opencode -- the
 		// image-qa/pdf-qa/effort-level scenarios are scoped to claude + codex
 		// only (see scenarios_test.go).
+	},
+	// Same binary as "opencode", different wire format. The entry above uses
+	// @ai-sdk/openai-compatible, which talks /v1/chat/completions; this one uses
+	// @ai-sdk/openai, which talks /v1/responses -- the documented substitution
+	// at https://opencode.ai/docs/providers/ ("For providers using /v1/responses
+	// instead, substitute @ai-sdk/openai").
+	//
+	// It exists because the Responses path has its own request-conversion code
+	// per provider, and a chat/completions client cannot exercise any of it. A
+	// reasoning-replay conversion bug on Bedrock's Responses path was reported
+	// against a shipped build that this harness ran green, precisely because
+	// every opencode cell was on the chat/completions side and codex -- the only
+	// other Responses client -- is gated to openai. See supportsCLIProviderModel
+	// for the deliberately narrow provider scope.
+	"opencode-responses": {
+		ID:         "opencode-responses",
+		Binary:     "opencode",
+		InstallPkg: "opencode-ai",
+		BasePath:   "/openai",
+		BaseURLEnv: "OPENAI_BASE_URL",
+		APIKeyEnv:  "OPENAI_API_KEY",
+		ExtraEnv: map[string]string{
+			"OPENCODE_DISABLE_AUTOUPDATE": "1",
+		},
+		SingleTurnArgs: func(model, prompt string, extra []string) []string {
+			args := []string{"run", "--format", "json"}
+			if model != "" {
+				args = append(args, "--model", opencodeModelRef(model))
+			}
+			args = append(args, extra...)
+			args = append(args, prompt)
+			return args
+		},
+		PreLaunch:       opencodeResponsesPreLaunch,
+		MultiTurnDriver: opencodeResumeDriver,
 	},
 }
 
@@ -233,17 +276,47 @@ var geminiModels = []ModelInfo{
 	{ID: "gemini-2.5-flash", ExtendedThinking: true, WebSearch: true},
 }
 
+// azureUnavailable lists Anthropic model IDs that Azure publishes in its
+// Foundry catalog but that this subscription cannot actually deploy.
+//
+// claude-fable-5: present in the eastus2 and swedencentral catalogs, but the
+// subscription's TPM quota for it is a hard 0 (limit 0, used 0) in BOTH
+// regions, so `PUT .../deployments/claude-fable-5` fails with
+// InsufficientQuota. It is not a missing deployment we forgot to create -
+// there is no quota to create it against. Drop the entry once a quota
+// increase is granted (Foundry portal -> Operate -> Quotas).
+var azureUnavailable = map[string]bool{
+	"claude-fable-5": true,
+}
+
 // Azure OpenAI — same GPT-5.6/5.5/5.4 lineup, confirmed in the Azure AI
 // Foundry catalog (fetched 2026-08-05). WebSearch false: Azure OpenAI has no
 // native web_search tool parity with the OpenAI API yet — re-verify
 // periodically, this is an active gap Microsoft is closing.
+//
+// The Anthropic half is derived from anthropicModels rather than restated, so
+// Azure keeps tracking that list as it moves, minus anything in
+// azureUnavailable.
 var azureModels = append([]ModelInfo{
 	{ID: "gpt-5.6-sol", ExtendedThinking: true, AdaptiveThinking: true, WebSearch: false},
 	{ID: "gpt-5.6-terra", ExtendedThinking: true, AdaptiveThinking: true, WebSearch: false},
 	{ID: "gpt-5.6-luna", ExtendedThinking: true, AdaptiveThinking: true, WebSearch: false},
 	{ID: "gpt-5.5", ExtendedThinking: true, AdaptiveThinking: true, WebSearch: false},
 	{ID: "gpt-5.4", ExtendedThinking: true, AdaptiveThinking: true, WebSearch: false},
-}, anthropicModels...)
+}, withoutModels(anthropicModels, azureUnavailable)...)
+
+// withoutModels returns the entries of src whose ID is not in exclude. It
+// copies rather than filtering in place: src is a package-level catalog shared
+// with other providers, so mutating it would silently shrink theirs too.
+func withoutModels(src []ModelInfo, exclude map[string]bool) []ModelInfo {
+	out := make([]ModelInfo, 0, len(src))
+	for _, m := range src {
+		if !exclude[m.ID] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
 
 // Bedrock Anthropic models — sourced from AWS Bedrock model cards (fetched
 // 2026-08-05). None of these five are invocable via a bare single-region
@@ -259,8 +332,29 @@ var bedrockAnthropicModels = []ModelInfo{
 
 // Bedrock — non-Anthropic IDs sourced 2026-08-05 (AWS Bedrock model cards +
 // Nova 2 / Mistral Large 3 announcements).
+//
+// The gpt-oss IDs carry no "-1:0" suffix on purpose, and that is not a typo.
+// AWS publishes two different IDs per model, one per endpoint (see
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-120b.html
+// and .../model-card-openai-gpt-oss-20b.html, both fetched 2026-08-08):
+// bedrock-runtime (Converse/Invoke) takes "openai.gpt-oss-120b-1:0", while
+// bedrock-mantle (the OpenAI-compatible surface) takes bare
+// "openai.gpt-oss-120b". Bifrost routes every OpenAI-family model on the
+// bedrock provider to mantle -- isMantleModel in core/providers/bedrock/mantle.go
+// -- so the bare form is the correct one here; the suffixed form 404s.
+//
+// No cross-region prefix either: those model cards list Geo/Global CRIS as "Not
+// supported" outside GovCloud, so unlike the Anthropic-on-Bedrock entries these
+// take no "global."/"us." prefix.
+//
+// AdaptiveThinking is set from a live check rather than inferred: posting
+// reasoning_effort=high through Bifrost to bedrock/openai.gpt-oss-120b returns a
+// populated reasoning field alongside the answer. WebSearch and image input stay
+// off -- the model cards list Text as the only supported input modality.
 var bedrockModels = append([]ModelInfo{
 	{ID: "us.amazon.nova-2-lite-v1:0"},
+	{ID: "openai.gpt-oss-120b", AdaptiveThinking: true},
+	{ID: "openai.gpt-oss-20b", AdaptiveThinking: true},
 	{ID: "meta.llama4-maverick-17b-instruct-v1:0"},
 	{ID: "meta.llama4-scout-17b-instruct-v1:0"},
 	{ID: "mistral.mistral-large-3-675b-instruct"},
@@ -345,18 +439,106 @@ func claudePreLaunch(_, _, model string) ([]string, func(), error) {
 	return env, func() { _ = os.RemoveAll(tempHome) }, nil
 }
 
+// codexPreLaunch points codex at Bifrost via a per-cell CODEX_HOME/config.toml
+// instead of environment variables, and forces API-key auth.
+//
+// Env-based redirection does not work on codex any more: OPENAI_BASE_URL is not
+// read by the binary at all as of codex-cli 0.146.1 (the string is absent from
+// it -- the surviving base-URL knobs are the config.toml keys `openai_base_url`
+// and per-provider `base_url`). Left on env alone, codex silently ignores the
+// harness's base URL and dials api.openai.com.
+//
+// Auth has the same problem for a second reason: the built-in `openai` provider
+// carries requires_openai_auth = true (see the ModelProviderInfo field list in
+// the binary's serde metadata), so codex opens `wss://api.openai.com/v1/responses`
+// with ChatGPT OAuth tokens from auth.json and never falls back to
+// OPENAI_API_KEY. On CI there is no auth.json, which surfaces as
+// "401 Unauthorized: Missing bearer or basic authentication in header".
+//
+// Declaring our own provider fixes both: requires_openai_auth = false selects
+// API-key auth, env_key names the variable runCell already exports, and
+// supports_websockets = false keeps the transport on plain HTTP POST. base_url
+// gets "/v1" appended so we hit Bifrost's canonical /openai/v1/responses route
+// rather than its bare /openai/responses alias (codex appends "/responses" to
+// base_url directly -- which is why the stock provider's base_url ends in /v1).
+//
+// The temp CODEX_HOME doubles as isolation from the developer's real ~/.codex
+// (config.toml, sessions, auth) -- the same reason claudePreLaunch redirects
+// HOME. codexResume reuses this directory so `resume --last` reads the same
+// config and session store.
+func codexPreLaunch(baseURL, _, _ string) ([]string, func(), error) {
+	tempHome, err := os.MkdirTemp("", "bifrost-clis-codex-home-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create codex home: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tempHome) }
+
+	cfg := fmt.Sprintf(`model_provider = "bifrost"
+
+[model_providers.bifrost]
+name = "Bifrost"
+base_url = %q
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"
+requires_openai_auth = false
+supports_websockets = false
+`, strings.TrimSuffix(strings.TrimSpace(baseURL), "/")+"/v1")
+
+	if err := os.WriteFile(filepath.Join(tempHome, "config.toml"), []byte(cfg), 0o600); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("write codex config: %w", err)
+	}
+	return []string{"CODEX_HOME=" + tempHome}, cleanup, nil
+}
+
+// opencodePreLaunch wires OpenCode to Bifrost over /v1/chat/completions.
 func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
+	return opencodeWriteConfig(baseURL, apiKey, model, "@ai-sdk/openai-compatible")
+}
+
+// opencodeResponsesPreLaunch wires OpenCode to Bifrost over /v1/responses.
+//
+// Two differences from the chat/completions variant, both required:
+//
+//   - npm is @ai-sdk/openai rather than @ai-sdk/openai-compatible, per
+//     https://opencode.ai/docs/providers/.
+//   - baseURL gets "/v1" appended. The SDK appends "/responses" to baseURL
+//     verbatim, so without it requests land on Bifrost's bare /openai/responses
+//     alias instead of the canonical /openai/v1/responses route. Same reasoning
+//     as codexPreLaunch, and the same reason the docs' example baseURL ends
+//     in /v1.
+func opencodeResponsesPreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
+	return opencodeWriteConfig(
+		strings.TrimSuffix(strings.TrimSpace(baseURL), "/")+"/v1",
+		apiKey, model, "@ai-sdk/openai",
+	)
+}
+
+func opencodeWriteConfig(baseURL, apiKey, model, npmPkg string) ([]string, func(), error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil, func() {}, nil
 	}
 	modelRef := opencodeModelRef(model)
+	// "permission": "allow" is the bare-string form of PermissionConfig
+	// (anyOf PermissionActionConfig ask|allow|deny, per
+	// https://opencode.ai/config.json), granting every tool without a prompt.
+	// This is where the harness's non-interactive permission grant lives --
+	// OpenCode has no equivalent of Claude Code's
+	// --dangerously-skip-permissions flag. Set explicitly rather than relying
+	// on OpenCode's permissive default, so a future default flip can't hang
+	// tool-using cells on a prompt no one is there to answer.
+	//
+	// The provider block is the documented custom OpenAI-compatible gateway
+	// shape from https://opencode.ai/docs/providers/ -- npm +
+	// options.baseURL/apiKey + models, addressed as provider/model.
 	cfg := fmt.Sprintf(`{
   "$schema": "https://opencode.ai/config.json",
   "model": %q,
+  "permission": "allow",
   "provider": {
     "bifrost": {
-      "npm": "@ai-sdk/openai-compatible",
+      "npm": %q,
       "name": "Bifrost",
       "options": {
         "baseURL": %q,
@@ -369,7 +551,7 @@ func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) 
       }
     }
   }
-}`, modelRef, strings.TrimSpace(baseURL), strings.TrimSpace(apiKey), model, model)
+}`, modelRef, npmPkg, strings.TrimSpace(baseURL), strings.TrimSpace(apiKey), model, model)
 
 	f, err := os.CreateTemp("", "bifrost-e2e-opencode-*.json")
 	if err != nil {

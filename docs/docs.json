@@ -751,16 +751,22 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.0.0-prerelease2",
-              "changelogs/v2.0.0-prerelease1",
               "changelogs/v1.6.9",
               "changelogs/v1.6.8",
-              "changelogs/v1.6.7",
-              "changelogs/v1.6.6",
-              "changelogs/v1.6.5",
-              "changelogs/v1.6.4",
-              "changelogs/v1.6.3",
-              "changelogs/v1.6.2",
+              {
+                "group": "July 2026",
+                "pages": [
+                  "changelogs/v1.6.7",
+                  "changelogs/v1.6.6",
+                  "changelogs/v2.0.0-prerelease2",
+                  "changelogs/v1.6.5-opus-5",
+                  "changelogs/v1.6.5",
+                  "changelogs/v2.0.0-prerelease1",
+                  "changelogs/v1.6.4",
+                  "changelogs/v1.6.3",
+                  "changelogs/v1.6.2"
+                ]
+              },
               {
                 "group": "June 2026",
                 "pages": [
@@ -953,15 +959,21 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.9",
               "changelogs/ent-v1.5.8",
-              "changelogs/ent-v1.5.7",
-              "changelogs/ent-v1.5.6",
-              "changelogs/ent-v1.5.5",
-              "changelogs/ent-v2.0.0-prerelease2",
-              "changelogs/ent-v1.5.4",
-              "changelogs/ent-v2.0.0-prerelease1",
-              "changelogs/ent-v1.5.3",
-              "changelogs/ent-v1.5.2",
+              {
+                "group": "July 2026",
+                "pages": [
+                  "changelogs/ent-v1.5.7",
+                  "changelogs/ent-v1.5.6",
+                  "changelogs/ent-v1.5.5",
+                  "changelogs/ent-v2.0.0-prerelease2",
+                  "changelogs/ent-v1.5.4",
+                  "changelogs/ent-v2.0.0-prerelease1",
+                  "changelogs/ent-v1.5.3",
+                  "changelogs/ent-v1.5.2"
+                ]
+              },
               {
                 "group": "June 2026",
                 "pages": [
@@ -1059,14 +1071,19 @@
             "icon": "box",
             "pages": [
               "changelogs/helm-v2.1.34",
-              "changelogs/helm-v2.1.33",
-              "changelogs/helm-v2.1.32",
-              "changelogs/helm-v2.1.31",
-              "changelogs/helm-v2.1.30",
-              "changelogs/helm-v2.1.29",
-              "changelogs/helm-v2.1.28",
-              "changelogs/helm-v2.1.27",
-              "changelogs/helm-v2.1.26",
+              {
+                "group": "July 2026",
+                "pages": [
+                  "changelogs/helm-v2.1.33",
+                  "changelogs/helm-v2.1.32",
+                  "changelogs/helm-v2.1.31",
+                  "changelogs/helm-v2.1.30",
+                  "changelogs/helm-v2.1.29",
+                  "changelogs/helm-v2.1.28",
+                  "changelogs/helm-v2.1.27",
+                  "changelogs/helm-v2.1.26"
+                ]
+              },
               {
                 "group": "June 2026",
                 "pages": [
