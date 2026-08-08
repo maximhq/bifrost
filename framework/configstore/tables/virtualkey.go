@@ -49,7 +49,7 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	type Alias TableVirtualKeyProviderConfig
 	type TempProviderConfig struct {
 		Alias
-		KeyIDs []string `json:"key_ids"` // Config file format: key identifiers (TableKey.KeyID); use ["*"] to allow all keys, empty denies all
+		KeyIDs []string `json:"key_ids"` // Config file format: key identifiers (TableKey.KeyID or key name); use ["*"] to allow all keys, empty denies all
 	}
 
 	var temp TempProviderConfig
@@ -70,7 +70,10 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 			pc.AllowAllKeys = false
 			pc.Keys = make([]TableKey, len(temp.KeyIDs))
 			for i, keyID := range temp.KeyIDs {
-				pc.Keys[i] = TableKey{KeyID: keyID}
+				// Carry the entry as both identifiers: resolution tries key_id
+				// first and falls back to a provider-scoped name lookup, so
+				// key_ids may hold either UUIDs or key names (issue #5980).
+				pc.Keys[i] = TableKey{KeyID: keyID, Name: keyID}
 			}
 		}
 	}
