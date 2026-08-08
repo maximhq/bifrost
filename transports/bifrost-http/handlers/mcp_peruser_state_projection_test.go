@@ -74,7 +74,7 @@ func TestProjectPerUserAdminCredentialState(t *testing.T) {
 			adminTokenStatus: "needs_reauth", want: connected,
 		},
 		{
-			name:     "non-connected runtime state passes through even with a dead admin token",
+			name:     "pending_verification runtime state passes through even with a dead admin token",
 			authType: schemas.MCPAuthTypePerUserOauth, runtimeState: schemas.MCPConnectionStatePendingVerification,
 			adminTokenStatus: "needs_reauth", want: schemas.MCPConnectionStatePendingVerification,
 		},
@@ -82,6 +82,21 @@ func TestProjectPerUserAdminCredentialState(t *testing.T) {
 			name:     "disabled runtime state passes through even with a stale admin credential",
 			authType: schemas.MCPAuthTypePerUserHeaders, runtimeState: schemas.MCPConnectionStateDisabled,
 			adminCredStatus: "needs_update", want: schemas.MCPConnectionStateDisabled,
+		},
+		{
+			name:     "per_user_oauth unstable with a dead admin token projects needs_reauth (needs_reauth is a bigger indicator than unstable)",
+			authType: schemas.MCPAuthTypePerUserOauth, runtimeState: schemas.MCPConnectionStateUnstable,
+			adminTokenStatus: "needs_reauth", want: needsReauth,
+		},
+		{
+			name:     "per_user_headers unstable with a stale admin credential projects needs_reauth",
+			authType: schemas.MCPAuthTypePerUserHeaders, runtimeState: schemas.MCPConnectionStateUnstable,
+			adminCredStatus: "needs_update", want: needsReauth,
+		},
+		{
+			name:     "per_user_oauth unstable with an active admin token stays unstable",
+			authType: schemas.MCPAuthTypePerUserOauth, runtimeState: schemas.MCPConnectionStateUnstable,
+			adminTokenStatus: "active", want: schemas.MCPConnectionStateUnstable,
 		},
 		{
 			name:     "shared oauth clients are never projected",
