@@ -130,23 +130,26 @@ func TestDrainStderrPreventsBlockingOnFullPipeBuffer(t *testing.T) {
 
 	t.Run("without_drain_blocks", func(t *testing.T) {
 		t.Parallel()
-		sentinel := filepath.Join(t.TempDir(), "done")
+		dir := t.TempDir()
+		started := filepath.Join(dir, "started")
+		done := filepath.Join(dir, "done")
 
-		// Write 200KB to stderr (past typical 64KB pipe buffer), then sleep
-		// for 3 seconds before touching sentinel. If the pipe is not drained,
-		// the subprocess blocks on the write and never reaches sleep/sentinel.
-		cmd := fmt.Sprintf(`yes boom | head -c 200000 >&2; sleep 2; touch %q`, sentinel)
+		// Touch a start sentinel immediately, then write 200KB to stderr
+		// (past typical 64KB pipe buffer). Waiting for the start sentinel
+		// instead of a fixed sleep deterministically confirms the write has
+		// begun without guessing how long that takes on a given machine. If
+		// the pipe is not drained, the write blocks and the process never
+		// reaches the completion sentinel.
+		cmd := fmt.Sprintf(`touch %q; yes boom | head -c 200000 >&2; touch %q`, started, done)
 		cli := startedStdioClient(t, "sh", "-c", cmd)
 		// Intentionally do NOT call drainStderr here.
 		_ = cli
 
-		// Give time for the pipe to fill and the subprocess to block.
-		time.Sleep(500 * time.Millisecond)
+		requireSentinel(t, started, "subprocess never started writing stderr")
 
-		// The sentinel should not exist because the subprocess is still
-		// blocked on the stderr write. If we reach this point without
-		// finding the sentinel, we've proven the blocking behavior.
-		_, err := os.Stat(sentinel)
+		// The completion sentinel should not exist because the subprocess is
+		// still blocked on the stderr write.
+		_, err := os.Stat(done)
 		require.Error(t, err, "expected sentinel to NOT exist (subprocess should be blocked), but it was found")
 	})
 
