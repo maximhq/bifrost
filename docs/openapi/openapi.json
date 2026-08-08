@@ -43966,7 +43966,7 @@
       "post": {
         "operationId": "reconnectMCPClient",
         "summary": "Reconnect MCP client",
-        "description": "Reconnects an MCP client that is in an error or disconnected state.\nNot applicable (400) to per-user auth clients (no shared upstream\nconnection) or to clients in pending_verification state — complete the\nadmin verification instead.\n",
+        "description": "Reconnects an MCP client that is in an error or unstable state.\nNot applicable (400) to any per-call client — a shared client running\nper-call (needs_session_stickiness false/omitted) as well as any\nper-user auth type — since none of them hold a shared upstream\nconnection to re-establish. Also not applicable to clients in\npending_verification state — complete the admin verification instead.\n",
         "tags": [
           "MCP"
         ],
