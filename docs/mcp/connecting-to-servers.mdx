@@ -779,7 +779,7 @@ curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 ```
 
 <Note>
-Reconnect returns `400` for per-user auth clients (no shared upstream connection to re-establish) and for clients in `pending_verification` — complete the admin verification instead.
+Reconnect returns `400` for any per-call client — a shared client running per-call ([`needs_session_stickiness`](./connections#two-independent-axes) false/omitted) as well as any per-user auth type — since none of them hold a shared upstream connection to re-establish. Also `400` for clients in `pending_verification` — complete the admin verification instead.
 </Note>
 
 **Edit client configuration:**
@@ -1000,7 +1000,7 @@ You can also trigger manual reconnection at any time:
 curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
 ```
 
-Manual reconnection also uses the retry logic for robustness. Not applicable (`400`) to per-user auth clients — each user's connection is managed per request — or to clients in `pending_verification`, which need the one-time admin verification instead.
+Manual reconnection also uses the retry logic for robustness. Not applicable (`400`) to any per-call client — a shared client running per-call, or any per-user auth type — each call resolves its own connection/credential per request, with nothing shared to reconnect. Also not applicable to clients in `pending_verification`, which need the one-time admin verification instead.
 
 </Tab>
 <Tab title="Go SDK">
