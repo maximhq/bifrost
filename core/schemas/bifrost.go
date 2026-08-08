@@ -60,6 +60,7 @@ const (
 	Perplexity    ModelProvider = "perplexity"
 	Cerebras      ModelProvider = "cerebras"
 	DeepSeek      ModelProvider = "deepseek"
+	Qwen          ModelProvider = "qwen"
 	Gemini        ModelProvider = "gemini"
 	OpenRouter    ModelProvider = "openrouter"
 	Elevenlabs    ModelProvider = "elevenlabs"
@@ -95,6 +96,7 @@ var StandardProviders = []ModelProvider{
 	Cerebras,
 	Cohere,
 	DeepSeek,
+	Qwen,
 	Gemini,
 	Groq,
 	Mistral,

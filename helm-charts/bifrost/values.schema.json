@@ -937,6 +937,7 @@
                         "vertex",
                         "cerebras",
                         "deepseek",
+                        "qwen",
                         "parasail",
                         "perplexity",
                         "sgl",
