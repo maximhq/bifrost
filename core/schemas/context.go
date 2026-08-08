@@ -436,6 +436,10 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
+// The entry is nil-masked rather than deleted: Value(key) returns nil afterwards
+// instead of falling through to the parent context. This keeps security-sensitive
+// scrubs (clearCtxForFallback, key-identity scrubbing) from re-exposing values a
+// caller stashed on the parent context chain.
 func (bc *BifrostContext) ClearValue(key any) {
 	if bc.valueDelegate != nil {
 		bc.valueDelegate.ClearValue(key)

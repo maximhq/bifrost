@@ -201,7 +201,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 			anthropic.AnthropicRequestBuildConfig{
 				Provider:                  schemas.BedrockMantle,
 				Model:                     bareModel,
-				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+				BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -245,7 +245,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 			Provider:                  schemas.BedrockMantle,
 			Model:                     bareModel,
 			IsStreaming:               true,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		})
@@ -307,7 +307,7 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 				Provider:                  schemas.BedrockMantle,
 				Model:                     bareModel,
 				ValidateTools:             true,
-				BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+				BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 				ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 				ShouldSendBackRawResponse: provider.sendBackRawResponse,
 			},
@@ -351,7 +351,7 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 			Model:                     bareModel,
 			IsStreaming:               true,
 			ValidateTools:             true,
-			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
+			BetaHeaderOverrides:       providerUtils.EffectiveBetaHeaderOverridesFromContext(ctx, provider.networkConfig.BetaHeaderOverrides),
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		})
