@@ -454,20 +454,13 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	// DB claiming verified). In this order every partial failure leaves the
 	// DB row without tools and the retry path open:
 	//   - activation fails → nothing persisted → retry re-runs verification
-	//   - persistence fails → runtime works now, client re-parks on restart
-	//     and the retry re-runs verification
-	//
-	// Refresh the manager's config with the discovered tools, then set them
-	// on the client — SetClientTools populates the tool map and flips the
-	// state to connected. Per-user auth clients hold no shared upstream
-	// connection, so there is nothing to reconnect; this mirrors the
-	// per-user OAuth completion path.
+	//   - persistence fails → runtime not yet given the tools either (see
+	//     below) → retry re-runs verification cleanly, nothing to reconcile
 	if err := h.updateMCPClientWithRetry(bifrostCtx, clientConfig.ID, clientConfig); err != nil {
 		logger.Error(fmt.Sprintf("Failed to update MCP client after headers verification for client %s: %v", clientConfig.ID, err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but failed to activate the client: %v", err))
 		return
 	}
-	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
 
 	// Persist the discovered tools via UpdateMCPClientConfig. The store
 	// unconditionally writes every editable column from the given struct
@@ -501,21 +494,26 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		Disabled:                  clientConfig.Disabled,
 	}
 	if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, clientConfig.ID, updateReq); err != nil {
-		// NOTE: Partial success; the runtime client is connected and serving
-		// but the DB row still has no discovered tools, so runtime and
-		// database state have drifted. The replay guard reads DiscoveredTools
-		// from the DB, so retrying this endpoint re-runs verification and
-		// reconverges the two; a restart re-parks the client in
-		// pending_verification.
+		// NOTE: Partial success; the runtime client is activated (Healthy)
+		// but — since SetClientTools runs below, after this succeeds — has
+		// no tools live either, so runtime and DB agree (both empty) rather
+		// than drifting. The replay guard reads DiscoveredTools from the
+		// DB, so retrying this endpoint re-runs verification cleanly; a
+		// restart re-parks the client in pending_verification.
 		logger.Error(fmt.Sprintf(
 			"[PARTIAL SUCCESS] MCP client %s was activated after headers verification but persisting discovered tools failed: %v. "+
-				"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. "+
-				"Retry this endpoint to re-verify and persist.",
+				"The client is connected but has no tools live yet; retry this endpoint to re-run verification and persist.",
 			clientConfig.ID, err,
 		))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted, so runtime and database state have drifted until re-verified. Retry this endpoint to re-run verification and persist: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
+	// Set discovered tools on the client after persistence succeeds — not
+	// before. SetClientTools may propagate this update to other observers
+	// of the DB row (deployment-specific), so it must run strictly after
+	// the write above lands — otherwise a propagated update could be read
+	// back before the row it depends on was actually written.
+	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
 
 	// Retain the admin's sample header values as the auth_mode='admin'
 	// credential so the periodic tool syncer (ClientToolSyncer.performSync)
@@ -640,7 +638,6 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Verified successfully but failed to activate the client: %v", err))
 		return
 	}
-	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
 
 	// Persist the discovered tools. Full struct for the same reason as
 	// verify-headers: the store writes every editable column from the given
@@ -671,15 +668,26 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		Disabled:                  clientConfig.Disabled,
 	}
 	if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, clientConfig.ID, updateReq); err != nil {
+		// NOTE: Partial success; the runtime client is activated (Healthy)
+		// but — since SetClientTools runs below, after this succeeds — has
+		// no tools live either, so runtime and DB agree (both empty) rather
+		// than drifting. The replay guard reads DiscoveredTools from the
+		// DB, so retrying this endpoint re-runs verification cleanly; a
+		// restart re-parks the client in pending_verification.
 		logger.Error(fmt.Sprintf(
 			"[PARTIAL SUCCESS] MCP client %s was activated after exchange verification but persisting discovered tools failed: %v. "+
-				"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. "+
-				"Retry this endpoint to re-verify and persist.",
+				"The client is connected but has no tools live yet; retry this endpoint to re-run verification and persist.",
 			clientConfig.ID, err,
 		))
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted, so runtime and database state have drifted until re-verified. Retry this endpoint to re-run verification and persist: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
+	// Set discovered tools on the client after persistence succeeds — not
+	// before. SetClientTools may propagate this update to other observers
+	// of the DB row (deployment-specific), so it must run strictly after
+	// the write above lands — otherwise a propagated update could be read
+	// back before the row it depends on was actually written.
+	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping)
 
 	// Retain the admin credential for the periodic tool syncer and the
 	// refresh worker. Deliberately last, mirroring verify-headers: on a
