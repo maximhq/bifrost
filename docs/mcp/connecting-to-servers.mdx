@@ -67,6 +67,65 @@ HTTP connections communicate with MCP servers via HTTP requests. Ideal for remot
 
 For authenticated upstream servers, see [Authentication →](./auth/overview) and pick the auth type that matches: [Headers](./auth/headers), [OAuth 2.0](./auth/oauth), [Per-User OAuth](./auth/per-user-oauth), or [Per-User Headers](./auth/per-user-headers).
 
+#### Session Stickiness (HTTP only)
+
+For a **server-level** client (`auth_type` `oauth`, `headers`, or `none` — not the per-user auth types below, which are always per-call regardless of this setting), `needs_session_stickiness` controls whether Bifrost holds one persistent upstream connection or dials fresh for every tool call:
+
+| Value | Behavior |
+| --- | --- |
+| `true` | **Sticky.** One shared connection is opened once and reused for every tool call, with an automatic health-checked reconnect on failure. Lower per-call latency; if the connection's credential dies, the client needs an admin `reauthorize` to recover. |
+| `false` / omitted (default) | **Per-call.** A fresh connection (and, for `oauth`, a fresh credential resolution) is opened for every tool call and closed immediately after. Slightly higher per-call latency, but a dead upstream credential only affects the calls made while it's dead — nothing to manually reconnect once it's fixed. |
+
+Only meaningful for `connection_type: "http"` — `sse` and `stdio` connections are always sticky (an SSE session is inherently bound to its open stream, and STDIO needs a persistent subprocess), and explicitly setting `needs_session_stickiness: false` on either is rejected at creation.
+
+<Tabs>
+<Tab title="Web UI">
+
+Toggle **Session Stickiness** in the client's create/edit sheet (HTTP connections only):
+
+<Frame>
+  <img src="/media/ui-mcp-session-stickiness.png" alt="MCP client edit sheet showing the Session Stickiness toggle" />
+</Frame>
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "shared-api",
+    "connection_type": "http",
+    "connection_string": "https://mcp-server.example.com/mcp",
+    "auth_type": "oauth",
+    "needs_session_stickiness": false
+  }'
+```
+
+Omit the field to get the default (per-call). Existing clients can flip it via `PUT /api/mcp/client/{id}`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "shared-api",
+        "connection_type": "http",
+        "connection_string": "https://mcp-server.example.com/mcp",
+        "auth_type": "oauth",
+        "needs_session_stickiness": false
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
 ### SSE Connections
 
 Server-Sent Events (SSE) connections provide a persistent transport to MCP servers that stream events. Supports the same auth options as HTTP.
