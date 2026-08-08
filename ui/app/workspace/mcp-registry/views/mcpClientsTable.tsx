@@ -837,7 +837,7 @@ export default function MCPClientsTable({
 												</p>
 												<a
 													data-testid="mcp-client-state-link"
-													href="https://docs.getbifrost.ai/mcp/auth/overview#connection-states"
+													href="https://docs.getbifrost.ai/mcp/connections"
 													target="_blank"
 													rel="noreferrer"
 													className="text-primary mt-2 inline-block underline"
