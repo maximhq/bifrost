@@ -901,6 +901,8 @@ func (provider *VLLMProvider) CountTokens(ctx *schemas.BifrostContext, key schem
 		request,
 		anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.VLLM,
+			Model:                     request.Model,
+			IsCountTokens:             true,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		},

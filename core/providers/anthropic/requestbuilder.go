@@ -403,6 +403,12 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
+		// Claude Code history includes provider_specific_fields on tool_use blocks;
+		// strict count_tokens validators (e.g. vLLM) reject unknown content fields.
+		jsonBody, err = StripProviderSpecificFieldsFromContentBlocks(jsonBody)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+		}
 	}
 
 	if defaults.DeleteStreamField {

@@ -1904,6 +1904,35 @@ func StripEmptyThinkingBlocks(jsonBody []byte) ([]byte, error) {
 	return jsonBody, nil
 }
 
+// StripProviderSpecificFieldsFromContentBlocks removes provider_specific_fields
+// from message content blocks. Claude Code serializes tool_use history with
+// "provider_specific_fields": null; Anthropic-compatible count_tokens endpoints
+// (notably vLLM) reject that unknown field with "Extra inputs are not permitted".
+func StripProviderSpecificFieldsFromContentBlocks(jsonBody []byte) ([]byte, error) {
+	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return jsonBody, nil
+	}
+	var err error
+	for mi, msg := range messagesResult.Array() {
+		contentResult := msg.Get("content")
+		if !contentResult.Exists() || !contentResult.IsArray() {
+			continue
+		}
+		for ci, block := range contentResult.Array() {
+			if !block.Get("provider_specific_fields").Exists() {
+				continue
+			}
+			path := fmt.Sprintf("messages.%d.content.%d.provider_specific_fields", mi, ci)
+			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, path)
+			if err != nil {
+				return nil, fmt.Errorf("failed to strip provider_specific_fields at %s: %w", path, err)
+			}
+		}
+	}
+	return jsonBody, nil
+}
+
 // StripAutoInjectableTools removes code_execution tools from the raw JSON body's tools array
 // when web_search or web_fetch tools are also present. The Anthropic API auto-injects
 // code_execution when web_search_20260209 or web_fetch_20260209 is included in the request,
