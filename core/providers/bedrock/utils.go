@@ -999,42 +999,10 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 	for _, msg := range msgs {
 		var toolResultContent []BedrockContentBlock
 		if msg.Content.ContentStr != nil {
-			// Bedrock expects JSON to be a parsed object, not a string
-			// Validate and compact JSON without parsing into Go types (preserves key ordering)
-			var buf bytes.Buffer
-			if err := json.Compact(&buf, []byte(*msg.Content.ContentStr)); err != nil {
-				// If it's not valid JSON, wrap it as a text block instead
-				toolResultContent = append(toolResultContent, BedrockContentBlock{
-					Text: msg.Content.ContentStr,
-				})
-			} else {
-				compacted := buf.Bytes()
-				// Bedrock does not accept primitives or arrays directly in the json field
-				if len(compacted) > 0 && compacted[0] == '{' {
-					// Objects are valid as-is
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(compacted),
-					})
-				} else if len(compacted) > 0 && compacted[0] == '[' {
-					// Arrays need to be wrapped
-					wrapped := make([]byte, 0, len(compacted)+len(`{"results":}`))
-					wrapped = append(wrapped, `{"results":`...)
-					wrapped = append(wrapped, compacted...)
-					wrapped = append(wrapped, '}')
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(wrapped),
-					})
-				} else {
-					// Primitives (string, number, boolean, null) need to be wrapped
-					wrapped := make([]byte, 0, len(compacted)+len(`{"value":}`))
-					wrapped = append(wrapped, `{"value":`...)
-					wrapped = append(wrapped, compacted...)
-					wrapped = append(wrapped, '}')
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: json.RawMessage(wrapped),
-					})
-				}
-			}
+			// Bedrock expects JSON to be a parsed object, not a string; the
+			// helper also demotes documents with a nested Smithy "__type" key
+			// to text so Converse validation cannot reject them (issue #5762).
+			toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*msg.Content.ContentStr))
 		} else if msg.Content.ContentBlocks != nil {
 			for _, block := range msg.Content.ContentBlocks {
 				switch block.Type {
@@ -2425,6 +2393,50 @@ func decodeBedrockToolResultEnvelope(s string) ([]BedrockContentBlock, bool) {
 	return blocks, true
 }
 
+// containsNestedSmithyType reports whether the compacted JSON document carries
+// a "__type" key anywhere below the top level. "__type" is Smithy's type
+// discriminator: Bedrock's Converse validation treats a sub-object carrying it
+// as a typed union and rejects the request with a non-retryable
+// ValidationException (issue #5762). Top-level "__type" is accepted, verified
+// live against Bedrock. The byte scan short-circuits the decode for the
+// overwhelmingly common case of documents without the key. Any \u escape also
+// triggers the full check: json.Compact preserves escapes verbatim, so every
+// character of "__type" can arrive escaped (e.g. "__\u0074ype") and only the
+// decoded walk sees the real key, which is what Bedrock validates against.
+func containsNestedSmithyType(compacted []byte) bool {
+	if !bytes.Contains(compacted, []byte(`"__type"`)) && !bytes.Contains(compacted, []byte(`\u`)) {
+		return false
+	}
+	var doc interface{}
+	if sonic.Unmarshal(compacted, &doc) != nil {
+		return false
+	}
+	return hasNestedSmithyTypeKey(doc, true)
+}
+
+func hasNestedSmithyTypeKey(node interface{}, isRoot bool) bool {
+	switch v := node.(type) {
+	case map[string]interface{}:
+		if !isRoot {
+			if _, ok := v["__type"]; ok {
+				return true
+			}
+		}
+		for _, child := range v {
+			if hasNestedSmithyTypeKey(child, false) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, child := range v {
+			if hasNestedSmithyTypeKey(child, false) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // tryParseJSONIntoContentBlock try to parse input text into a JSON and returns a proper
 // BedrockContentBlock based on the result.
 func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
@@ -2434,6 +2446,13 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 		return BedrockContentBlock{Text: schemas.Ptr(text)}
 	}
 	compacted := buf.Bytes()
+
+	// Documents that would trip Bedrock's Smithy union validation must travel
+	// as text; Converse accepts JSON-in-text fine. Arrays are checked before
+	// wrapping since wrapping makes every array element nested.
+	if containsNestedSmithyType(compacted) {
+		return BedrockContentBlock{Text: schemas.Ptr(text)}
+	}
 
 	// Bedrock does not accept primitives or arrays directly in the json field
 	if len(compacted) > 0 && compacted[0] == '{' {
