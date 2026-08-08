@@ -356,6 +356,55 @@ type VerifyMCPClientHeadersRequest struct {
 // Synchronous: no callback, no popup. On success the client transitions
 // to connected; on failure the row stays in pending_verification and the
 // admin can retry.
+// isConcurrentVerifyReplay reports whether a reloaded row's DiscoveredTools
+// reflects a DIFFERENT (concurrent) verify-headers request completing this
+// client's one-time bootstrap during this request's own upstream
+// round-trip — the only scenario the replay guard exists to catch. Gated on
+// the client's STATE at the start of the request, not on DiscoveredTools'
+// own nil-ness: only a client that was genuinely still pending its one-time
+// bootstrap (pending_verification) can race another request finishing that
+// same bootstrap. A client repairing an already-verified admin credential
+// starts in some other state (Healthy, Unstable, ...) and must run through
+// to completion — in particular the admin-credential retention step below
+// — or that credential could never be repaired once a client has been
+// verified once.
+func isConcurrentVerifyReplay(wasPendingVerificationBeforeThisRequest, reloadedHasTools bool) bool {
+	return wasPendingVerificationBeforeThisRequest && reloadedHasTools
+}
+
+// isPrematureOAuthCompletion reports whether a complete-oauth request
+// should be rejected because the admin reauth flow it corresponds to never
+// actually resolved via a real callback. TableOauthConfig.Status can't be
+// used for this: it's write-once and never regresses once "authorized" (see
+// its own doc comment), so a client reauthorizing after an earlier
+// successful auth reads stale "authorized" throughout a failed attempt.
+// CompleteOAuthFlow always cleans up the flow row on completion, success or
+// failure alike, so a row still sitting there pending — and not yet expired
+// — means the callback never ran at all (e.g. the upstream/mock
+// authorization server rejected the request with a dead-end error page
+// instead of redirecting back).
+func isPrematureOAuthCompletion(flow *configstoreTables.TableMCPOauthFlow, now time.Time) bool {
+	return flow != nil && flow.Status == "pending" && now.Before(flow.ExpiresAt)
+}
+
+// getMCPClientRuntimeState returns the live MCPConnectionState the running
+// manager currently holds for id, or "" if the client isn't registered
+// there — MCPClientConfig.State (the DB-sourced struct) is never populated
+// by GetMCPClientConfigByID, since state isn't a DB column; this is the
+// only way to read it for a single client outside the paginated list path.
+func (h *MCPHandler) getMCPClientRuntimeState(id string) (schemas.MCPConnectionState, error) {
+	clients, err := h.client.GetMCPClients()
+	if err != nil {
+		return "", err
+	}
+	for _, c := range clients {
+		if c.Config != nil && c.Config.ID == id {
+			return c.State, nil
+		}
+	}
+	return "", nil
+}
+
 func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
@@ -389,6 +438,15 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("verify-headers only applies to auth_type='per_user_headers' clients, got %q", clientConfig.AuthType))
 		return
 	}
+	// Snapshot before verification runs — see isConcurrentVerifyReplay's doc:
+	// this is what tells a genuine concurrent double-submit of the one-time
+	// bootstrap apart from a legitimate repair of an already-verified client.
+	runtimeState, err := h.getMCPClientRuntimeState(id)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to check MCP client runtime state: %v", err))
+		return
+	}
+	wasPendingVerificationBeforeThisRequest := runtimeState == schemas.MCPConnectionStatePendingVerification
 	// No replay guard: mirrors reauthorizeMCPClient's OAuth equivalent
 	// (POST /reauthorize) — always re-runs verification against whatever
 	// sample values are submitted, no branching on whether the admin
@@ -436,7 +494,14 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 	// (verified, tools discovered) was already reached by the other
 	// request, so there's nothing left to do here — redoing the
 	// persist/activation below would only risk clobbering its tool set.
-	if clientConfig.DiscoveredTools != nil {
+	//
+	// Gated on isConcurrentVerifyReplay (not a bare DiscoveredTools != nil
+	// check): a client that wasn't pending_verification when this request
+	// started isn't racing another request's bootstrap, it's a legitimate
+	// repair of an already-verified client — that case must fall through
+	// and run to completion, or the admin credential (retained further
+	// below) could never be repaired once a client has been verified once.
+	if isConcurrentVerifyReplay(wasPendingVerificationBeforeThisRequest, clientConfig.DiscoveredTools != nil) {
 		SendJSON(ctx, map[string]any{
 			"status":      "success",
 			"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Each user will submit their own header values on first tool use.", len(clientConfig.DiscoveredTools)),
@@ -991,15 +1056,24 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 // projectPerUserAdminCredentialState overlays a response-only needs_reauth
 // state onto a per-user client's runtime state when the retained admin
 // credential used for periodic tool-list discovery needs repair. The runtime
-// manager is never touched: per-user clients stay connected (end-user
+// manager is never touched: per-user clients keep serving (end-user
 // credentials and tool calls keep working); this projection only tells the
 // registry UI that an admin should repair the discovery credential.
 // adminTokenStatus is the admin OAuth token row's status ("" when no row
 // exists), adminCredStatus the admin header credential row's status ("" when
 // no row exists). A missing row leaves the state alone: clients verified
 // before credential retention existed have no admin row and are healthy.
+//
+// Applies over both Healthy and Unstable runtime states: needs_reauth is a
+// more actionable signal than Unstable (a dead admin credential never
+// self-heals — Unstable might, on the next successful check), so it must
+// win rather than being masked by a pre-existing Unstable reading. It does
+// NOT apply over Disabled/PendingVerification/anything else: those already
+// carry a more specific, authoritative meaning of their own (an explicit
+// admin action, or a one-time bootstrap that was never completed at all)
+// that a stale discovery credential shouldn't override.
 func projectPerUserAdminCredentialState(authType schemas.MCPAuthType, runtimeState schemas.MCPConnectionState, adminTokenStatus, adminCredStatus string) schemas.MCPConnectionState {
-	if runtimeState != schemas.MCPConnectionStateHealthy {
+	if runtimeState != schemas.MCPConnectionStateHealthy && runtimeState != schemas.MCPConnectionStateUnstable {
 		return runtimeState
 	}
 	switch authType {
@@ -3080,6 +3154,18 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 					return
 				}
 				h.completePerUserOAuthAdminRepair(ctx, bifrostCtx, oauthConfigID, dbClient.ClientID)
+				return
+			}
+			// Shared oauth's own freshness check: unlike per_user_oauth's
+			// sharedToken-presence check above, a shared client already has
+			// an active token from its ORIGINAL auth sitting there the whole
+			// time a reauth is in flight — token presence/status alone can't
+			// tell a stale credential from a freshly-rotated one. The flow
+			// row can: see isPrematureOAuthCompletion's doc.
+			if pendingFlow, flowErr := h.store.ConfigStore.GetOauthUserSessionByModeIdentityAndMCPClient(ctx, schemas.MCPAuthModeAdmin, "", dbClient.ClientID); flowErr != nil {
+				logger.Warn(fmt.Sprintf("failed to check for an in-flight reauth flow for MCP client %s: %v", dbClient.ClientID, flowErr))
+			} else if isPrematureOAuthCompletion(pendingFlow, time.Now()) {
+				SendError(ctx, fasthttp.StatusConflict, "Authorization has not completed yet: the browser flow may still be open, or the upstream provider rejected it before redirecting back. Wait for it to finish, or retry reauthorize.")
 				return
 			}
 			reauthClientConfig, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, dbClient.ClientID)
