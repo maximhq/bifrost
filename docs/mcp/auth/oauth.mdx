@@ -153,7 +153,7 @@ The `oauth_config` block itself is optional, and every inner field is optional. 
 `client_id` and `client_secret` support `env.VAR_NAME` and `vault.path` references — `"client_secret": "env.GITHUB_SECRET"` resolves from the environment at runtime, and the reference (not the resolved secret) is what gets stored. Plain values also work (encrypted at rest, redacted in API responses). The other fields (`authorize_url`, `token_url`, `registration_url`, `scopes`) take literal values only.
 </Note>
 
-At boot the client lands in **`pending_verification`** state because the OAuth flow still needs a live admin browser session to complete. From the MCP Gateway UI, open the client and click **Authorize** — the same browser popup the Web UI Create flow uses. On success the OAuth tokens are stored, the tool list is discovered, and the client transitions to `connected`.
+At boot the client lands in **`pending_verification`** state because the OAuth flow still needs a live admin browser session to complete. From the MCP Gateway UI, open the client and click **Authorize** — the same browser popup the Web UI Create flow uses. On success the OAuth tokens are stored, the tool list is discovered, and the client transitions to `healthy`.
 
 The same flow is scriptable: `POST /api/mcp/client/{id}/initiate-verification` (this time `{id}` *is* the MCP client ID) returns the same `authorize_url` / `status_url` / `complete_url` payload as the create flow above — open `authorize_url` in a browser, poll `status_url`, then POST `complete_url`. Safe to call again if a previous attempt expired or was abandoned.
 
@@ -310,7 +310,7 @@ Rotating `client_id` or `client_secret` immediately signs out every current sess
 
 A shared OAuth client whose credential permanently dies lands in the **`needs_reauth`** connection state: the client was authorized and connected at least once, but the token can no longer be refreshed (provider-side revocation, expired refresh token, or a credential rotation). This is distinct from `pending_verification`, which means initial setup never completed.
 
-`needs_reauth` is sticky: the health monitor and enable/disable toggles will not flip the client back to `connected` or `disconnected`, and the **Reconnect** action is disabled for it (reconnecting cannot help when the credential itself is dead). Only a human redoing consent clears it.
+`needs_reauth` is sticky: the health monitor and enable/disable toggles will not flip the client back to `healthy` or `unstable`, and the **Reconnect** action is disabled for it (reconnecting cannot help when the credential itself is dead). Only a human redoing consent clears it.
 
 From the dashboard, open the client and click **Reauthorize**: Bifrost redoes the OAuth consent flow in a popup against the currently stored credentials, and on completion reconnects the client.
 
