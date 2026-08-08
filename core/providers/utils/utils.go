@@ -3180,8 +3180,10 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
 func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock:
-		// Cerebras, Perplexity, HuggingFace, and Bedrock mantle don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace, schemas.Bedrock, schemas.BedrockMantle:
+		// Cerebras, Perplexity, HuggingFace, and Bedrock mantle (both the legacy
+		// mantle routing under the bedrock provider key and the bedrock_mantle
+		// provider key) don't send [DONE] marker, ends stream after finish_reason
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
@@ -3199,6 +3201,15 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 }
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
+//
+// The drain is bounded by GetStreamIdleTimeout(ctx). This runs after the SSE
+// loop's own idle-timeout reader has already been stopped (stopIdleTimeout
+// fires before this is called), so nothing else bounds an upstream that holds
+// its chunked body open past the terminal event — bedrock_mantle does exactly
+// this. Without the bound, io.Copy blocks forever: it parks the calling
+// goroutine in this defer, and because that defer runs before the one that
+// closes the provider's response channel, the channel never closes, the SSE
+// producer loop never exits, and the client never sees `data: [DONE]`.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
 	if resp == nil {
 		return
@@ -3223,11 +3234,38 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
 		}
 	}()
-	// Drain any remaining data from the body stream before releasing.
-	// This prevents "whitespace in header" errors when the connection is reused
-	// (see: https://github.com/valyala/fasthttp/issues/1743).
-	if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-		getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+	// Drain any remaining data from the body stream before releasing. This
+	// prevents "whitespace in header" errors when the connection is reused
+	// (see: https://github.com/valyala/fasthttp/issues/1743). Bounded: run the
+	// copy in its own goroutine and race it against the idle timeout instead of
+	// blocking this goroutine (and thus the defer chain above it) indefinitely
+	// on an upstream that never sends its terminating chunk.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		defer func() {
+			if r := recover(); r != nil {
+				getLogger().Debug("stream already closed during bounded drain in ReleaseStreamingResponse: %v\n", r)
+			}
+		}()
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
+	}()
+	select {
+	case <-drained:
+	case <-time.After(GetStreamIdleTimeout(ctx)):
+		// Upstream never terminated its body. Force-close the connection so it
+		// is dropped rather than reused, and unblock the drain goroutine above
+		// (it will exit on its own once the Read it's parked in errors out).
+		// Do not call resp.CloseBodyStream()/fasthttp.ReleaseResponse below —
+		// the drain goroutine above may still be mid-Read on bodyStream, so a
+		// second concurrent close/release here would double-Put the pooled
+		// reader/requestStream. Leaking resp to GC is the same trade-off used
+		// elsewhere in this function when ownership of the close is uncertain.
+		getLogger().Warn("streaming response body drain timed out; dropping connection instead of reusing it")
+		closeBodyStream(bodyStream, ErrStreamIdleTimeout)
+		return
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
 	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close
