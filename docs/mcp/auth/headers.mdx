@@ -100,6 +100,8 @@ Use `"env.MY_VAR"` for environment variable references — e.g. `"Authorization"
 </Tab>
 </Tabs>
 
+By default this connection is per-call (a fresh connection per tool call, no shared upstream connection to keep alive) — see [Session Stickiness](../connecting-to-servers#session-stickiness-http-only) to make it sticky instead.
+
 ---
 
 ## Header lifecycle

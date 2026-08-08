@@ -194,6 +194,17 @@ MCPClientCreateRequestBase:
         Whether the MCP server supports ping for health checks.
         If true, uses lightweight ping method for health checks.
         If false, uses listTools method for health checks instead.
+    needs_session_stickiness:
+      type: boolean
+      default: false
+      description: |
+        HTTP-only. Only meaningful for auth_type "oauth", "headers", or "none"
+        (a server-level connection) — per-user auth types are always per-call
+        regardless of this field. When true, Bifrost holds one persistent
+        upstream connection, reused for every tool call. When false or
+        omitted (the default), a fresh connection is dialed per tool call.
+        Cannot be set to false for connection_type "sse" or "stdio" — both
+        are always sticky.
     tool_sync_interval:
       type: integer
       description: |
@@ -376,6 +387,15 @@ MCPClientUpdateRequest:
         Whether the MCP server supports ping for health checks.
         If true, uses lightweight ping method for health checks.
         If false, uses listTools method for health checks instead.
+    needs_session_stickiness:
+      type: boolean
+      description: |
+        HTTP-only. Only meaningful for auth_type "oauth", "headers", or "none"
+        — per-user auth types are always per-call regardless of this field.
+        When true, Bifrost holds one persistent upstream connection, reused
+        for every tool call. When false, a fresh connection is dialed per
+        tool call. Cannot be set to false for connection_type "sse" or
+        "stdio" — both are always sticky.
     tool_sync_interval:
       type: integer
       description: |
