@@ -2208,6 +2208,28 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 					},
 				},
 			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: &imageURL,
+								},
+							},
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+								ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+									ImageURL: &imageURL,
+									Detail:   schemas.Ptr("low"),
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -2229,19 +2251,36 @@ func TestToOpenAIResponsesRequest_DefaultsImageDetail(t *testing.T) {
 		t.Errorf("explicit detail not preserved: %v", blocks[2].ResponsesInputMessageContentBlockImage.Detail)
 	}
 
+	toolOutputBlocks := req.Input.OpenAIResponsesRequestInputArray[1].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+	if len(toolOutputBlocks) != 2 {
+		t.Fatalf("tool output blocks: got %d, want 2", len(toolOutputBlocks))
+	}
+	if toolOutputBlocks[0].ResponsesInputMessageContentBlockImage.Detail == nil ||
+		*toolOutputBlocks[0].ResponsesInputMessageContentBlockImage.Detail != "auto" {
+		t.Errorf("tool output missing detail not defaulted to auto: %v", toolOutputBlocks[0].ResponsesInputMessageContentBlockImage.Detail)
+	}
+	if toolOutputBlocks[1].ResponsesInputMessageContentBlockImage.Detail == nil ||
+		*toolOutputBlocks[1].ResponsesInputMessageContentBlockImage.Detail != "low" {
+		t.Errorf("tool output explicit detail not preserved: %v", toolOutputBlocks[1].ResponsesInputMessageContentBlockImage.Detail)
+	}
+
 	// Wire-level: the marshaled JSON must carry detail on every input_image.
 	data, err := sonic.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal converted request: %v", err)
 	}
-	if strings.Count(string(data), `"detail"`) != 2 {
-		t.Errorf("wire JSON does not carry detail on both image blocks: %s", data)
+	if strings.Count(string(data), `"detail"`) != 4 {
+		t.Errorf("wire JSON does not carry detail on all image blocks: %s", data)
 	}
 
 	// Caller's input must remain untouched.
 	original := bifrostReq.Input[0].Content.ContentBlocks[1].ResponsesInputMessageContentBlockImage
 	if original.Detail != nil {
 		t.Errorf("caller's input was mutated: detail = %q", *original.Detail)
+	}
+	toolOutputOriginal := bifrostReq.Input[1].ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[0].ResponsesInputMessageContentBlockImage
+	if toolOutputOriginal.Detail != nil {
+		t.Errorf("caller's tool output was mutated: detail = %q", *toolOutputOriginal.Detail)
 	}
 }
 
