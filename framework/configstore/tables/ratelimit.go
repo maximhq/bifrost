@@ -64,6 +64,12 @@ func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
 		if rl.Metric == ModelRateLimitMetricRequests && (rl.TokenMaxLimit != nil || rl.TokenResetDuration != nil) {
 			return fmt.Errorf("request model rate limit cannot contain token fields")
 		}
+		if rl.Metric == ModelRateLimitMetricTokens && (rl.TokenMaxLimit == nil || rl.TokenResetDuration == nil) {
+			return fmt.Errorf("token model rate limit requires token_max_limit and token_reset_duration")
+		}
+		if rl.Metric == ModelRateLimitMetricRequests && (rl.RequestMaxLimit == nil || rl.RequestResetDuration == nil) {
+			return fmt.Errorf("request model rate limit requires request_max_limit and request_reset_duration")
+		}
 	}
 	// Validate token reset duration if provided
 	if rl.TokenResetDuration != nil {
