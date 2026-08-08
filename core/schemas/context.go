@@ -33,6 +33,12 @@ var reservedKeys = []any{
 	BifrostContextKeyUpstreamLatency,
 	BifrostContextKeyRoutingInfo,
 	BifrostContextKeyMCPInboundBearer,
+	// BifrostContextKeyProviderOverride is intentionally excluded from reservedKeys.
+	// Bifrost itself writes to this key (via ctx.SetValue) inside tryRequest and
+	// tryStreamRequest after each PreLLMHook run. Adding it here would cause those
+	// internal writes to be silently dropped when blockRestrictedWrites is enabled,
+	// breaking the override mechanism. Plugin developers should use req.Update* methods;
+	// any direct ctx.SetValue for this key is overwritten by Bifrost before it is read.
 }
 
 // pluginLogStore holds plugin log entries accumulated during request processing.
@@ -419,6 +425,10 @@ func (bc *BifrostContext) SetRoutingInfoSnapshot(ri RoutingInfo) {
 
 // ClearValue clears a value from the internal userValues map.
 // For scoped contexts, delegates to the root context via valueDelegate.
+// The entry is nil-masked rather than deleted: Value(key) returns nil afterwards
+// instead of falling through to the parent context. This keeps security-sensitive
+// scrubs (clearCtxForFallback, key-identity scrubbing) from re-exposing values a
+// caller stashed on the parent context chain.
 func (bc *BifrostContext) ClearValue(key any) {
 	if bc.valueDelegate != nil {
 		bc.valueDelegate.ClearValue(key)
