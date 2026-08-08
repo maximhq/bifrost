@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,28 @@ func TestDeepCopyResponsesStreamResponseCopiesToolCaller(t *testing.T) {
 	}
 	if copied.Item.ResponsesToolMessage.Caller.ToolID == original.Item.ResponsesToolMessage.Caller.ToolID {
 		t.Fatal("caller tool id pointer was aliased")
+	}
+}
+
+func TestDeepCopyResponsesMessagePreservesImageGenerationAction(t *testing.T) {
+	action := &schemas.ResponsesToolMessageActionStruct{}
+	actionField := reflect.ValueOf(action).Elem().FieldByName("ResponsesImageGenerationCallAction")
+	if !actionField.IsValid() {
+		t.Skip("released core dependency predates image generation string actions")
+	}
+	actionField.Set(reflect.ValueOf(schemas.Ptr("generate")))
+
+	copied := deepCopyResponsesMessage(schemas.ResponsesMessage{
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Action: action,
+		},
+	})
+	if copied.ResponsesToolMessage == nil || copied.Action == nil {
+		t.Fatalf("unexpected copied message: %#v", copied)
+	}
+	copiedField := reflect.ValueOf(copied.Action).Elem().FieldByName("ResponsesImageGenerationCallAction")
+	if copiedField.IsNil() || copiedField.Elem().String() != "generate" {
+		t.Fatalf("image generation action was not preserved")
 	}
 }
 

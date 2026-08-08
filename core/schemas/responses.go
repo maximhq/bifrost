@@ -1780,11 +1780,12 @@ type ResponsesCodeExecutionCall struct {
 }
 
 type ResponsesToolMessageActionStruct struct {
-	ResponsesComputerToolCallAction   *ResponsesComputerToolCallAction
-	ResponsesWebSearchToolCallAction  *ResponsesWebSearchToolCallAction
-	ResponsesWebFetchToolCallAction   *ResponsesWebFetchToolCallAction
-	ResponsesLocalShellToolCallAction *ResponsesLocalShellToolCallAction
-	ResponsesMCPApprovalRequestAction *ResponsesMCPApprovalRequestAction
+	ResponsesComputerToolCallAction    *ResponsesComputerToolCallAction
+	ResponsesWebSearchToolCallAction   *ResponsesWebSearchToolCallAction
+	ResponsesWebFetchToolCallAction    *ResponsesWebFetchToolCallAction
+	ResponsesLocalShellToolCallAction  *ResponsesLocalShellToolCallAction
+	ResponsesMCPApprovalRequestAction  *ResponsesMCPApprovalRequestAction
+	ResponsesImageGenerationCallAction *string
 }
 
 func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
@@ -1803,10 +1804,35 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	if action.ResponsesMCPApprovalRequestAction != nil {
 		return MarshalSorted(action.ResponsesMCPApprovalRequestAction)
 	}
+	if action.ResponsesImageGenerationCallAction != nil {
+		return MarshalSorted(action.ResponsesImageGenerationCallAction)
+	}
 	return nil, fmt.Errorf("responses tool message action struct is empty")
 }
 
 func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error {
+	*action = ResponsesToolMessageActionStruct{}
+
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return fmt.Errorf("responses tool message action is empty")
+	}
+	// Image-generation actions are strings; the other action variants are objects.
+	if trimmed[0] == '"' {
+		var imageGenerationAction string
+		if err := Unmarshal(trimmed, &imageGenerationAction); err != nil {
+			return fmt.Errorf("failed to unmarshal image generation action: %w", err)
+		}
+		action.ResponsesImageGenerationCallAction = &imageGenerationAction
+		return nil
+	}
+	// Every other action variant is an object; reject null and any other
+	// non-object token instead of letting it fall through to a zero-valued
+	// object variant.
+	if trimmed[0] != '{' {
+		return fmt.Errorf("responses tool message action must be a JSON string or object, got: %s", trimmed)
+	}
+
 	// First, peek at the type field to determine which variant to unmarshal
 	var typeStruct struct {
 		Type string `json:"type"`
@@ -3273,6 +3299,7 @@ type ResponsesToolCodeInterpreter struct {
 
 // ResponsesToolImageGeneration represents a tool image generation
 type ResponsesToolImageGeneration struct {
+	Action            *string                                     `json:"action,omitempty"`             // "auto" | "generate" | "edit"
 	Background        *string                                     `json:"background,omitempty"`         // "transparent" | "opaque" | "auto"
 	InputFidelity     *string                                     `json:"input_fidelity,omitempty"`     // "high" | "low"
 	InputImageMask    *ResponsesToolImageGenerationInputImageMask `json:"input_image_mask,omitempty"`   // Optional mask for inpainting
