@@ -181,6 +181,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/connections",
               {
                 "group": "Authentication",
                 "icon": "shield-check",
