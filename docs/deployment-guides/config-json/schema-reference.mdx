@@ -290,6 +290,7 @@ Common fields on each `client_configs` entry:
 | `tools_to_auto_execute` | array | Subset of `tools_to_execute` that runs without user confirmation |
 | `headers` | object | Static admin headers (used by `headers` and as additions on `per_user_headers`) |
 | `is_code_mode_client` | boolean | Wrap tools as Python code-mode helpers instead of raw tool calls |
+| `needs_session_stickiness` | boolean | HTTP-only, and only meaningful for `oauth`/`headers`/`none` (per-user auth types are always per-call). `true` holds one persistent upstream connection reused for every tool call; `false`/omitted (default) dials fresh per tool call. Cannot be `false` for `connection_type` `"sse"`/`"stdio"` — both are always sticky. See [Session Stickiness](/mcp/connecting-to-servers#session-stickiness-http-only). |
 
 Auth-type-specific fields:
 
