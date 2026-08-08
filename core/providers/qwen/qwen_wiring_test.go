@@ -3,6 +3,7 @@ package qwen
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -27,10 +28,13 @@ func wiringTestKey() schemas.Key {
 }
 
 func TestQwenChatCompletionWiring(t *testing.T) {
+	var mu sync.Mutex
 	var gotPath, gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"qwen3.7-flash",` +
 			`"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],` +
@@ -52,6 +56,8 @@ func TestQwenChatCompletionWiring(t *testing.T) {
 		t.Fatalf("chat completion failed: %v", bifrostErr)
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
 	if gotPath != "/chat/completions" {
 		t.Errorf("request path = %q, want /chat/completions (base URL carries the version segment)", gotPath)
 	}
