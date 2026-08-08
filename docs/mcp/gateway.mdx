@@ -255,7 +255,7 @@ Bifrost automatically monitors the health of connected MCP clients:
 **How it works:**
 - **Ping Mechanism:** Every 10 seconds (configurable), sends a ping to each connected client
 - **Check Timeout:** Each ping has a 5-second timeout
-- **Failure Threshold:** After 5 consecutive failed pings, client is marked as `disconnected`
+- **Failure Threshold:** After 5 consecutive failed pings, client is marked as `unstable`
 - **State Tracking:** Real-time state updates (connected ↔ disconnected)
 - **Manual Reconnection:** Once disconnected by failed health checks, requires manual reconnect via API or UI. One exception: when a live tool call hits a clean upstream auth rejection, Bifrost force-refreshes the credential and reconnects in the background on its own (see [Auth failure recovery](./tool-execution#auth-failure-recovery))
 - **`needs_reauth` is sticky:** clients whose OAuth credential permanently died are parked in `needs_reauth`, health checks won't flip them back, and Reconnect is disabled for them; an admin must [reauthorize](./auth/oauth#reauthorization) instead
