@@ -143,32 +143,30 @@ func TestUpdateModelConfigInMemoryPreservesOrResetsRuleUsageByWindow(t *testing.
 func TestDeleteModelConfigsForScopeInMemoryReleasesSharedRuleAfterLastOwner(t *testing.T) {
 	store := newStandaloneStore(t)
 	ctx := context.Background()
-	scopeID := "virtual-key"
 	modelIDOne := "model-one"
 	modelIDTwo := "model-two"
+	ruleID := "shared-model-rule"
 	maxLimit := int64(15)
 	duration := "1m"
 
-	makeModel := func(id string) *configstoreTables.TableModelConfig {
+	makeModel := func(id, scopeID string) *configstoreTables.TableModelConfig {
 		return &configstoreTables.TableModelConfig{
 			ID:      id,
 			Scope:   configstoreTables.ModelConfigScopeVirtualKey,
 			ScopeID: &scopeID,
-			RateLimits: []configstoreTables.TableRateLimit{{
-				ID:                   "shared-model-rule",
-				ModelConfigID:        &id,
-				Metric:               configstoreTables.ModelRateLimitMetricRequests,
-				RequestMaxLimit:      &maxLimit,
-				RequestResetDuration: &duration,
-			}},
+			RateLimitID: &ruleID,
+			RateLimit:   &configstoreTables.TableRateLimit{ID: ruleID, RequestMaxLimit: &maxLimit, RequestResetDuration: &duration},
 		}
 	}
-	store.modelConfigs.Store("model-one-key", makeModel(modelIDOne))
-	store.modelConfigs.Store("model-two-key", makeModel(modelIDTwo))
-	store.rateLimits.Store("shared-model-rule", &configstoreTables.TableRateLimit{ID: "shared-model-rule"})
+	store.modelConfigs.Store("model-one-key", makeModel(modelIDOne, "scope-one"))
+	store.modelConfigs.Store("model-two-key", makeModel(modelIDTwo, "scope-two"))
+	store.rateLimits.Store(ruleID, &configstoreTables.TableRateLimit{ID: ruleID})
 
-	store.DeleteModelConfigsForScopeInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, scopeID)
+	store.DeleteModelConfigsForScopeInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, "scope-one")
+	_, exists := store.rateLimits.Load(ruleID)
+	require.True(t, exists, "shared rule should remain while the second model owner exists")
 
-	_, exists := store.rateLimits.Load("shared-model-rule")
+	store.DeleteModelConfigsForScopeInMemory(ctx, configstoreTables.ModelConfigScopeVirtualKey, "scope-two")
+	_, exists = store.rateLimits.Load(ruleID)
 	require.False(t, exists, "shared rule should be released after the final model owner is removed")
 }
