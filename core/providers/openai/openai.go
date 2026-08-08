@@ -1189,6 +1189,10 @@ func HandleOpenAIChatCompletionStreaming(
 		// service_tier is echoed on chunks; propagate to the final chunk for priority/flex billing
 		var serviceTier *schemas.BifrostServiceTier
 		forwardedTerminalFinishReason := false
+		// Set when the upstream's terminal chunk carried usage alongside the
+		// finish_reason and content, and that single frame was forwarded intact
+		// (issue #5604) — the synthetic trailing chunk is skipped entirely then.
+		forwardedTerminalUsage := false
 		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
 		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
 		usageSeen := false
@@ -1344,11 +1348,13 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 
 				// Handle usage-only chunks (when stream_options include_usage is true)
+				chunkCarriedUsage := response.Usage != nil
 				if response.Usage != nil {
 					// Collect usage information and send at the end of the stream
 					// Here in some cases usage comes before final message
 					// So we need to check if the response.Usage is nil and then if usage != nil
 					// then add up all tokens
+					usageSeen = true
 					if response.Usage.PromptTokens > usage.PromptTokens {
 						usage.PromptTokens = response.Usage.PromptTokens
 					}
@@ -1407,11 +1413,31 @@ func HandleOpenAIChatCompletionStreaming(
 						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
 					if choice.FinishReason != nil && *choice.FinishReason != "" {
 						forwardedTerminalFinishReason = true
+						// The upstream sent its terminal chunk with content,
+						// finish_reason, and usage in one frame (issue #5604):
+						// forward it intact rather than splitting the usage
+						// into a trailing empty-delta frame that would leave
+						// the last data frame with finish_reason null.
+						if chunkCarriedUsage {
+							forwardedTerminalUsage = true
+							response.Usage = usage
+						}
 					}
 					chunkIndex++
 
 					response.ExtraFields.ChunkIndex = chunkIndex
-					response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+					if forwardedTerminalUsage {
+						// This frame replaces the synthesized terminal chunk,
+						// so it carries the whole-stream latency like the
+						// synthesized one did.
+						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+						if sendBackRawRequest {
+							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					} else {
+						response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+					}
 					lastChunkTime = time.Now()
 
 					if sendBackRawResponse {
@@ -1462,11 +1488,23 @@ func HandleOpenAIChatCompletionStreaming(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, pendingFinalEvent, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 		} else {
+			if forwardedTerminalUsage {
+				// The terminal frame already delivered finish_reason and usage
+				// together; a synthetic trailing chunk would recreate the
+				// split this path exists to avoid.
+				return
+			}
 			finalFinishReason := finishReason
 			if forwardedTerminalFinishReason {
 				finalFinishReason = nil
 			}
-			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finalFinishReason, chunkIndex, modelName, created)
+			// Never fabricate zero usage: an upstream that withholds usage gets
+			// a terminal chunk without a usage object, not total_tokens: 0.
+			finalUsage := usage
+			if !usageSeen {
+				finalUsage = nil
+			}
+			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, finalUsage, finalFinishReason, chunkIndex, modelName, created)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}
