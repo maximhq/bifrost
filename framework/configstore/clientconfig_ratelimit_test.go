@@ -33,4 +33,13 @@ func TestGenerateRateLimitHashIncludesMetric(t *testing.T) {
 	if requestHash == tokenHash {
 		t.Fatal("changing the metric must change the rate-limit config hash")
 	}
+	metricOnly := requests
+	metricOnly.Metric = tables.ModelRateLimitMetricTokens
+	metricOnlyHash, err := GenerateRateLimitHash(metricOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metricOnlyHash == requestHash {
+		t.Fatal("metric alone must change the rate-limit config hash")
+	}
 }

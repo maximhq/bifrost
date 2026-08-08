@@ -1481,8 +1481,11 @@ func (gs *LocalGovernanceStore) loadModelConfigRateLimits(ctx context.Context, m
 }
 
 func modelRateLimitRuleWindowUnchanged(next, previous configstoreTables.TableRateLimit) bool {
-	if next.Metric == "" || previous.Metric == "" {
+	if next.Metric == "" && previous.Metric == "" {
 		return true // legacy paired rows retain their historical behavior
+	}
+	if next.Metric == "" || previous.Metric == "" {
+		return false // converting between legacy and metric-specific rules resets usage
 	}
 	if next.Metric != previous.Metric {
 		return false
@@ -4091,6 +4094,7 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 		gs.rateLimits.Store(rateLimit.ID, rateLimit)
 	}
 	if previousModelRateLimits != nil {
+		referenceIndex := gs.buildRateLimitReferenceIndex()
 		for id := range previousModelRateLimits {
 			stillOwned := false
 			for i := range clone.RateLimits {
@@ -4100,7 +4104,7 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 				}
 			}
 			if !stillOwned {
-				if !gs.rateLimitReferencedByOtherOwner(id, mc.ID) {
+				if !referenceIndex.referencedByOtherOwner(id, mc.ID) {
 					gs.DeleteRateLimit(ctx, id)
 				}
 			}
@@ -4150,6 +4154,7 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 		return // Nothing to delete
 	}
 
+	referenceIndex := gs.buildRateLimitReferenceIndex()
 	// Find and delete the model config by ID
 	gs.modelConfigs.Range(func(key, value interface{}) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
@@ -4163,13 +4168,13 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 				gs.DeleteBudget(ctx, mc.Budgets[i].ID)
 			}
 			for i := range mc.RateLimits {
-				if !gs.rateLimitReferencedByOtherOwner(mc.RateLimits[i].ID, mcID) {
+				if !referenceIndex.referencedByOtherOwner(mc.RateLimits[i].ID, mcID) {
 					gs.DeleteRateLimit(ctx, mc.RateLimits[i].ID)
 				}
 			}
 
 			// Delete associated rate limit if exists
-			if mc.RateLimitID != nil && !gs.rateLimitReferencedByOtherOwner(*mc.RateLimitID, mcID) {
+			if mc.RateLimitID != nil && !referenceIndex.referencedByOtherOwner(*mc.RateLimitID, mcID) {
 				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
 			}
 

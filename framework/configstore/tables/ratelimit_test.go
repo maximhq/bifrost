@@ -55,6 +55,26 @@ func TestTableRateLimitBeforeSaveValidatesModelRuleShape(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "token metric with request fields",
+			rule: TableRateLimit{
+				ID:                   "mixed-token",
+				ModelConfigID:        &modelID,
+				Metric:               ModelRateLimitMetricTokens,
+				RequestMaxLimit:      &max,
+				RequestResetDuration: &duration,
+			},
+			wantErr: true,
+		},
+		{
+			name: "metric without limit fields",
+			rule: TableRateLimit{
+				ID:            "empty",
+				ModelConfigID: &modelID,
+				Metric:        ModelRateLimitMetricRequests,
+			},
+			wantErr: true,
+		},
+		{
 			name: "legacy paired rule remains valid",
 			rule: TableRateLimit{
 				ID:                   "legacy",

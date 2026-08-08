@@ -140,6 +140,22 @@ func TestUpdateModelConfigInMemoryPreservesOrResetsRuleUsageByWindow(t *testing.
 	require.Equal(t, int64(0), reset.RequestCurrentUsage)
 }
 
+func TestModelRateLimitRuleWindowUnchangedResetsMetricTransitions(t *testing.T) {
+	maxLimit := int64(15)
+	duration := "1m"
+	legacy := configstoreTables.TableRateLimit{
+		ID:                   "legacy-rule",
+		RequestMaxLimit:      &maxLimit,
+		RequestResetDuration: &duration,
+	}
+	metric := legacy
+	metric.Metric = configstoreTables.ModelRateLimitMetricRequests
+
+	require.True(t, modelRateLimitRuleWindowUnchanged(legacy, legacy))
+	require.False(t, modelRateLimitRuleWindowUnchanged(metric, legacy))
+	require.False(t, modelRateLimitRuleWindowUnchanged(legacy, metric))
+}
+
 func TestDeleteModelConfigsForScopeInMemoryReleasesSharedRuleAfterLastOwner(t *testing.T) {
 	store := newStandaloneStore(t)
 	ctx := context.Background()

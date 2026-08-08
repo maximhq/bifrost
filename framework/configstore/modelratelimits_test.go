@@ -61,6 +61,11 @@ func TestModelConfigRateLimitsPreloadAndDeleteOwnership(t *testing.T) {
 	loaded, err := store.GetModelConfigByID(ctx, modelID)
 	require.NoError(t, err)
 	require.Len(t, loaded.RateLimits, 2)
+	loadedIDs := make([]string, 0, len(loaded.RateLimits))
+	for _, rateLimit := range loaded.RateLimits {
+		loadedIDs = append(loadedIDs, rateLimit.ID)
+	}
+	require.ElementsMatch(t, []string{ownedRequest.ID, ownedToken.ID}, loadedIDs)
 
 	require.NoError(t, store.DeleteModelConfig(ctx, modelID))
 	var remaining []tables.TableRateLimit
