@@ -17,3 +17,5 @@
 - fix: retain tool `cache_control` markers through Bedrock Converse invoke requests so prompt caching applies to system blocks and tools (#5811)
 - feat: opt-in HTTP/2 PING keepalives on the Bedrock provider via a configurable interval (0 = off) [@jeremym-tanium](https://github.com/jeremym-tanium)
 - fix: clamp http2_ping_interval_in_seconds to avoid int64 overflow on conversion to time.Duration [@jeremym-tanium](https://github.com/jeremym-tanium)
+- fix: drain stderr pipe to prevent subprocess blocking in MCP stdio connections [@justinfx](https://github.com/justinfx)
+- feat: add optional `StderrHandler` callback for MCP stdio observability [@justinfx](https://github.com/justinfx)
