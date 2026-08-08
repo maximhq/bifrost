@@ -42703,10 +42703,10 @@
           {
             "name": "state",
             "in": "query",
-            "description": "Comma-separated runtime connection states to include (OR semantics),\nresolved against live engine state. Only `connected` and\n`disconnected` are meaningful filter values: `connected` matches\nclients the engine currently reports as connected; `disconnected`\nmatches everything else (error, pending states, needs_reauth,\ndisabled, not present in the engine). Selecting both, or neither,\napplies no state filter. Note the response-only needs_reauth\nprojection on per-user clients happens after filtering, so such\nclients still match `connected`.\n",
+            "description": "Comma-separated runtime connection states to include (OR semantics),\nresolved against live engine state. Only `healthy` and\n`unstable` are meaningful filter values: `healthy` matches\nclients the engine currently reports as healthy; `unstable`\nmatches everything else (error, pending states, needs_reauth,\ndisabled, not present in the engine). Selecting both, or neither,\napplies no state filter. Note the response-only needs_reauth\nprojection on per-user clients happens after filtering, so such\nclients still match `healthy`.\n",
             "schema": {
               "type": "string",
-              "example": "connected"
+              "example": "healthy"
             }
           },
           {
@@ -42922,6 +42922,11 @@
                             "type": "boolean",
                             "default": true,
                             "description": "Whether the MCP server supports ping for health checks.\nIf true, uses lightweight ping method for health checks.\nIf false, uses listTools method for health checks instead.\n"
+                          },
+                          "needs_session_stickiness": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HTTP-only. Only meaningful for auth_type \"oauth\", \"headers\", or \"none\"\n(a server-level connection) — per-user auth types are always per-call\nregardless of this field. When true, Bifrost holds one persistent\nupstream connection, reused for every tool call. When false or\nomitted (the default), a fresh connection is dialed per tool call.\nCannot be set to false for connection_type \"sse\" or \"stdio\" — both\nare always sticky.\n"
                           },
                           "tool_sync_interval": {
                             "type": "integer",
@@ -43175,6 +43180,11 @@
                             "default": true,
                             "description": "Whether the MCP server supports ping for health checks.\nIf true, uses lightweight ping method for health checks.\nIf false, uses listTools method for health checks instead.\n"
                           },
+                          "needs_session_stickiness": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HTTP-only. Only meaningful for auth_type \"oauth\", \"headers\", or \"none\"\n(a server-level connection) — per-user auth types are always per-call\nregardless of this field. When true, Bifrost holds one persistent\nupstream connection, reused for every tool call. When false or\nomitted (the default), a fresh connection is dialed per tool call.\nCannot be set to false for connection_type \"sse\" or \"stdio\" — both\nare always sticky.\n"
+                          },
                           "tool_sync_interval": {
                             "type": "integer",
                             "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
@@ -43426,6 +43436,11 @@
                             "type": "boolean",
                             "default": true,
                             "description": "Whether the MCP server supports ping for health checks.\nIf true, uses lightweight ping method for health checks.\nIf false, uses listTools method for health checks instead.\n"
+                          },
+                          "needs_session_stickiness": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HTTP-only. Only meaningful for auth_type \"oauth\", \"headers\", or \"none\"\n(a server-level connection) — per-user auth types are always per-call\nregardless of this field. When true, Bifrost holds one persistent\nupstream connection, reused for every tool call. When false or\nomitted (the default), a fresh connection is dialed per tool call.\nCannot be set to false for connection_type \"sse\" or \"stdio\" — both\nare always sticky.\n"
                           },
                           "tool_sync_interval": {
                             "type": "integer",
@@ -43702,6 +43717,10 @@
                   "is_ping_available": {
                     "type": "boolean",
                     "description": "Whether the MCP server supports ping for health checks.\nIf true, uses lightweight ping method for health checks.\nIf false, uses listTools method for health checks instead.\n"
+                  },
+                  "needs_session_stickiness": {
+                    "type": "boolean",
+                    "description": "HTTP-only. Only meaningful for auth_type \"oauth\", \"headers\", or \"none\"\n— per-user auth types are always per-call regardless of this field.\nWhen true, Bifrost holds one persistent upstream connection, reused\nfor every tool call. When false, a fresh connection is dialed per\ntool call. Cannot be set to false for connection_type \"sse\" or\n\"stdio\" — both are always sticky.\n"
                   },
                   "tool_sync_interval": {
                     "type": "integer",
@@ -44005,7 +44024,7 @@
       "post": {
         "operationId": "completeMCPClientOAuth",
         "summary": "Complete MCP client OAuth flow",
-        "description": "Completes an OAuth flow for an MCP client after the admin has authorized\nthe request upstream. Call it once the flow's status_url reports\n\"authorized\". It serves every admin-side OAuth completion with one\nendpoint:\n\n- Create-time and config.json-bootstrap flows: retrieves the pending MCP\n  client configuration and establishes the connection with the\n  OAuth-provided credentials (per_user_oauth clients instead verify with\n  the admin token, discover tools, and retain the token as the admin\n  discovery credential).\n- Reauthorize flows (started via POST /api/mcp/client/{id}/reauthorize):\n  for shared \"oauth\" clients, reconnects the client with the fresh\n  credential; for per_user_oauth clients, verifies the fresh admin token\n  upstream, re-discovers tools, and promotes it to the retained admin\n  discovery credential.\n\nReplays are rejected with 409: hitting the endpoint again after the flow\nalready completed (no pending configuration and no freshly-written\ntoken) returns \"OAuth flow has already been completed\".\n",
+        "description": "Completes an OAuth flow for an MCP client after the admin has authorized\nthe request upstream. Call it once the flow's status_url reports\n\"authorized\". It serves every admin-side OAuth completion with one\nendpoint:\n\n- Create-time and config.json-bootstrap flows: retrieves the pending MCP\n  client configuration and establishes the connection with the\n  OAuth-provided credentials (per_user_oauth clients instead verify with\n  the admin token, discover tools, and retain the token as the admin\n  discovery credential).\n- Reauthorize flows (started via POST /api/mcp/client/{id}/reauthorize):\n  for shared \"oauth\" clients, reconnects the client with the fresh\n  credential; for per_user_oauth clients, verifies the fresh admin token\n  upstream, re-discovers tools, and promotes it to the retained admin\n  discovery credential.\n\nReplays are rejected with 409: hitting the endpoint again after the flow\nalready completed (no pending configuration and no freshly-written\ntoken) returns \"OAuth flow has already been completed\". A shared\n\"oauth\" reauthorize is also rejected with 409 if its flow never\nactually resolved via a real callback — e.g. the upstream authorization\nserver rejected the request outright before ever redirecting back —\nreturning \"Authorization has not completed yet\". This is detected via\nthe flow's own row rather than the client's overall OAuth status,\nwhich never regresses once a client has been authorized once and so\ncan't distinguish a stale prior authorization from a fresh one.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -44058,7 +44077,7 @@
             }
           },
           "409": {
-            "description": "OAuth flow has already been completed for this MCP client (replay)",
+            "description": "Either \"OAuth flow has already been completed for this MCP client\"\n(replay), or \"Authorization has not completed yet: the browser\nflow may still be open, or the upstream provider rejected it\nbefore redirecting back\" (a shared \"oauth\" reauthorize whose flow\nnever actually resolved via a callback).\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -81966,15 +81985,15 @@
           "state": {
             "type": "string",
             "enum": [
-              "connected",
-              "disconnected",
+              "healthy",
+              "unstable",
               "error",
-              "pending_tools",
               "pending_verification",
               "needs_reauth",
-              "disabled"
+              "disabled",
+              "degraded"
             ],
-            "description": "Connection state of an MCP client:\n- connected: Client is connected and ready to use\n- disconnected: Client is not connected (will be auto-recovered by health monitor)\n- error: Client is in an unrecoverable error state\n- pending_tools: Connected but tools not yet populated (per-user clients)\n- pending_verification: Declared (typically via config.json) but the one-time\n  admin verification has not been completed yet. Complete it via\n  POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /\n  per_user_oauth) or POST /api/mcp/client/{id}/verify-headers\n  (auth_type per_user_headers).\n- needs_reauth: Setup completed at least once, but a credential an admin is\n  responsible for has permanently died and needs a human to repair it.\n  For shared OAuth clients the connection credential itself was\n  rejected/expired with no silent recovery; the state is sticky (the health\n  monitor will not clobber it) until an admin runs\n  POST /api/mcp/client/{id}/reauthorize. For per-user clients this is a\n  response-only projection meaning the retained admin discovery credential\n  needs repair; end-user credentials and tool calls keep working, only\n  periodic tool-list refresh pauses. Repair via reauthorize\n  (per_user_oauth), verify-headers with fresh sample values\n  (per_user_headers), or verify-exchange (token_exchange, which\n  re-exchanges the signed-in admin's own identity token — no sample\n  values to supply).\n- disabled: Client has been intentionally disabled; no connection or workers are active\n"
+            "description": "Connection state of an MCP client:\n- healthy: Bifrost's own periodic connection check (ping/list_tools for\n  sticky clients, list_tools for per-call clients) most recently\n  succeeded.\n- unstable: The periodic connection check most recently failed with a\n  transient-classified error. Purely informational — unlike\n  needs_reauth, this never gates execution; tool calls are still\n  attempted normally. Self-heals to healthy on the next successful\n  check, no human action required.\n- error: A data-consistency fallback used only when a client is\n  registered in the config store but missing from the runtime manager\n  entirely — a deeper anomaly than anything in the normal\n  connect/health-check lifecycle, which never assigns this value itself.\n- pending_verification: Declared (typically via config.json) but the one-time\n  admin verification has not been completed yet. Complete it via\n  POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /\n  per_user_oauth) or POST /api/mcp/client/{id}/verify-headers\n  (auth_type per_user_headers).\n- needs_reauth: Setup completed at least once, but a credential an admin is\n  responsible for has permanently died and needs a human to repair it.\n  For shared OAuth clients the connection credential itself was\n  rejected/expired with no silent recovery; the state is sticky (the health\n  monitor will not clobber it) until an admin runs\n  POST /api/mcp/client/{id}/reauthorize. For per-user clients this is a\n  response-only projection — computed at list-time, never stored in the\n  runtime manager — meaning the retained admin discovery credential\n  needs repair; end-user credentials and tool calls keep working, only\n  periodic tool-list refresh pauses. Overlays onto both healthy and\n  unstable runtime readings, never onto disabled or\n  pending_verification. Repair via reauthorize (per_user_oauth),\n  verify-headers with fresh sample values (per_user_headers), or\n  verify-exchange (token_exchange, which re-exchanges the signed-in\n  admin's own identity token — no sample values to supply).\n- disabled: Client has been intentionally disabled; no connection or workers are active\n- degraded: A read-time cluster aggregate, never a single node's own\n  local state — multiple instances of a distributed deployment each\n  currently hold a different self-reported state for the same client.\n  Only meaningful for states that can genuinely vary per instance\n  (healthy, unstable, pending_verification); needs_reauth/disabled are\n  config-sourced facts expected to already agree everywhere. Never\n  appears in a single-instance deployment.\n"
           },
           "vk_configs": {
             "type": "array",
