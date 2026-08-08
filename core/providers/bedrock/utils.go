@@ -1890,7 +1890,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, pa
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
 			var schemaObjectBytes []byte
-			if tool.Function.Parameters != nil {
+			if tool.Function.Parameters != nil && !tool.Function.Parameters.IsExplicitEmptyObject() {
 				// ToolFunctionParameters.MarshalJSON handles all fields including
 				// properties, required, enum, additionalProperties, $defs, etc.
 				var err error
@@ -1899,7 +1899,8 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, pa
 					continue
 				}
 			} else {
-				// Fallback to empty object schema if no parameters
+				// Fallback to an empty object schema if parameters are missing or
+				// were explicitly supplied as an empty object.
 				schemaObjectBytes = []byte(`{"type":"object","properties":{}}`)
 			}
 
