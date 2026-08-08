@@ -137,7 +137,7 @@ Declare the client with `auth_type: "per_user_headers"` and the required header-
 }
 ```
 
-At boot the client lands in **`pending_verification`** state. From the MCP Gateway UI, open the client and click **Verify** — Bifrost opens the same sample-values dialog the Web UI Create flow uses. Submit values, the upstream verify runs, tools are discovered, the values are retained as the [admin discovery credential](#admin-discovery-credential) for later tool-list refresh, and the client transitions to `connected`.
+At boot the client lands in **`pending_verification`** state. From the MCP Gateway UI, open the client and click **Verify** — Bifrost opens the same sample-values dialog the Web UI Create flow uses. Submit values, the upstream verify runs, tools are discovered, the values are retained as the [admin discovery credential](#admin-discovery-credential) for later tool-list refresh, and the client transitions to `healthy`.
 
 The same step is scriptable — no browser involved:
 
@@ -152,7 +152,7 @@ curl -X POST http://localhost:8080/api/mcp/client/{id}/verify-headers \
   }'
 ```
 
-`user_headers` must cover every declared key. On success the response carries `tools_count` and the client transitions to `connected`; a `422` means the upstream verify failed (retry with different values). A `409` means the client was already verified and its [admin discovery credential](#admin-discovery-credential) is healthy (or absent), so there is nothing to re-verify. The one legitimate repeat call is a repair: while the admin credential sits in `needs_update`, the endpoint accepts fresh sample values and flips the credential back to `active` on success.
+`user_headers` must cover every declared key. On success the response carries `tools_count` and the client transitions to `healthy`; a `422` means the upstream verify failed (retry with different values). A `409` means the client was already verified and its [admin discovery credential](#admin-discovery-credential) is healthy (or absent), so there is nothing to re-verify. The one legitimate repeat call is a repair: while the admin credential sits in `needs_update`, the endpoint accepts fresh sample values and flips the credential back to `active` on success.
 
 **Lifecycle across restarts and config edits:** the verified state (discovered tools) is server-side and survives restarts and config.json re-syncs, including edits to `per_user_header_keys` — new keys apply to end-user submissions without re-verification. The key list cannot be *emptied*, though: an edit that removes all keys is ignored and the stored keys kept (with a warning at boot). Immutable fields — `auth_type`, `connection_type`, `connection_string`, `stdio_config` — cannot be changed after creation: file edits to them are ignored with a boot warning, matching the update API. Delete the client and re-declare it to change them.
 
