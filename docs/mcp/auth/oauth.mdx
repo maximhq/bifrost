@@ -164,6 +164,8 @@ Once authorized, the OAuth credentials live in the encrypted `oauth_configs` tab
 </Tab>
 </Tabs>
 
+By default this connection is per-call (a fresh connection and credential resolution per tool call, no shared upstream connection to keep alive) — see [Session Stickiness](../connecting-to-servers#session-stickiness-http-only) to make it sticky instead.
+
 ---
 
 ## PKCE for public clients
