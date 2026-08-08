@@ -67,13 +67,21 @@ MCPConnectionType:
 
 MCPConnectionState:
   type: string
-  enum: [connected, disconnected, error, pending_tools, pending_verification, needs_reauth, disabled]
+  enum: [healthy, unstable, error, pending_verification, needs_reauth, disabled, degraded]
   description: |
     Connection state of an MCP client:
-    - connected: Client is connected and ready to use
-    - disconnected: Client is not connected (will be auto-recovered by health monitor)
-    - error: Client is in an unrecoverable error state
-    - pending_tools: Connected but tools not yet populated (per-user clients)
+    - healthy: Bifrost's own periodic connection check (ping/list_tools for
+      sticky clients, list_tools for per-call clients) most recently
+      succeeded.
+    - unstable: The periodic connection check most recently failed with a
+      transient-classified error. Purely informational — unlike
+      needs_reauth, this never gates execution; tool calls are still
+      attempted normally. Self-heals to healthy on the next successful
+      check, no human action required.
+    - error: A data-consistency fallback used only when a client is
+      registered in the config store but missing from the runtime manager
+      entirely — a deeper anomaly than anything in the normal
+      connect/health-check lifecycle, which never assigns this value itself.
     - pending_verification: Declared (typically via config.json) but the one-time
       admin verification has not been completed yet. Complete it via
       POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /
@@ -85,14 +93,23 @@ MCPConnectionState:
       rejected/expired with no silent recovery; the state is sticky (the health
       monitor will not clobber it) until an admin runs
       POST /api/mcp/client/{id}/reauthorize. For per-user clients this is a
-      response-only projection meaning the retained admin discovery credential
+      response-only projection — computed at list-time, never stored in the
+      runtime manager — meaning the retained admin discovery credential
       needs repair; end-user credentials and tool calls keep working, only
-      periodic tool-list refresh pauses. Repair via reauthorize
-      (per_user_oauth), verify-headers with fresh sample values
-      (per_user_headers), or verify-exchange (token_exchange, which
-      re-exchanges the signed-in admin's own identity token — no sample
-      values to supply).
+      periodic tool-list refresh pauses. Overlays onto both healthy and
+      unstable runtime readings, never onto disabled or
+      pending_verification. Repair via reauthorize (per_user_oauth),
+      verify-headers with fresh sample values (per_user_headers), or
+      verify-exchange (token_exchange, which re-exchanges the signed-in
+      admin's own identity token — no sample values to supply).
     - disabled: Client has been intentionally disabled; no connection or workers are active
+    - degraded: A read-time cluster aggregate, never a single node's own
+      local state — multiple instances of a distributed deployment each
+      currently hold a different self-reported state for the same client.
+      Only meaningful for states that can genuinely vary per instance
+      (healthy, unstable, pending_verification); needs_reauth/disabled are
+      config-sourced facts expected to already agree everywhere. Never
+      appears in a single-instance deployment.
 
 MCPStdioConfig:
   type: object
