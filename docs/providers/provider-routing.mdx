@@ -1474,6 +1474,9 @@ customer_id                // Customer ID
 budget_used                // Budget usage %
 tokens_used                // Token rate limit usage %
 request                    // Request rate limit usage %
+
+// Request size
+context_length             // Input context length in tokens
 ```
 
 ### Examples
@@ -1494,6 +1497,12 @@ budget_used > 85                 // → groq/llama-2 (cheaper)
 
 ```cel
 team_name == "ml-research"       // → anthropic/claude-3-opus
+```
+
+#### Route long-context requests
+
+```cel
+context_length > 32000           // → vertex/gemini-2.5-pro
 ```
 
 #### Complex multi-condition routing
@@ -1527,9 +1536,10 @@ Within each scope, rules are sorted by **priority** (ascending: 0 before 10).
 | **Fallback Chains**    | Define multiple fallback providers for automatic failover              |
 | **Priority Ordering**  | Lower priority evaluated first within same scope                       |
 | **Capacity Awareness** | Access real-time budget and rate limit usage percentages               |
+| **Context Awareness**  | Route by request input context length using provider-native counts where available |
 
 <Info>
-For complexity-based routing driven by request content, see [Complexity Router](/features/governance/complexity-router). It adds a `complexity_tier` CEL variable that lets routing rules steer SIMPLE, MEDIUM, COMPLEX, and REASONING requests to different models.
+For complexity-based routing driven by request content, see [Complexity Router](/features/governance/complexity-router). It adds a `complexity_tier` CEL variable that lets routing rules steer SIMPLE, MEDIUM, COMPLEX, and REASONING requests to different models. For context-length routing, Bifrost uses provider-native token counting when supported and falls back to `ceil(serialized_request_bytes / 4)` when exact counting is unavailable.
 </Info>
 
 ### Integration with Governance
