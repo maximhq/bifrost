@@ -48,6 +48,7 @@ describe("budget overrides", () => {
 			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1Y" }, 1, true)?.toISOString(),
 		).toBe("2027-01-01T00:00:00.000Z");
 	});
+});
 
 describe("getModelRateLimitRules", () => {
 	it("normalizes every single-metric model rule without truncating windows", () => {
