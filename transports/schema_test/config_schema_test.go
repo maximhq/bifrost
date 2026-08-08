@@ -638,6 +638,32 @@ func TestSchemaGovernanceModelConfigs(t *testing.T) {
 			t.Errorf("governance with model_configs should be valid, got: %v", err)
 		}
 	})
+
+	t.Run("governance with multiple model rate-limit windows validates", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{
+			"governance": {
+				"rate_limits": [
+					{"id": "rl-rpm", "metric": "requests", "request_max_limit": 15, "request_reset_duration": "1m"},
+					{"id": "rl-rpd", "metric": "requests", "request_max_limit": 1500, "request_reset_duration": "1d"},
+					{"id": "rl-tpm", "metric": "tokens", "token_max_limit": 1000000, "token_reset_duration": "1m"},
+					{"id": "rl-tpd", "metric": "tokens", "token_max_limit": 10000000, "token_reset_duration": "1d"}
+				],
+				"model_configs": [{"id": "mc-1", "model_name": "gemini-2.5-flash", "rate_limit_ids": ["rl-rpm", "rl-rpd", "rl-tpm", "rl-tpd"]}]
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("multiple model rate-limit windows should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("legacy and multi model rate-limit references are mutually exclusive", func(t *testing.T) {
+		compiled := compileSchema(t)
+		config := `{"governance":{"model_configs":[{"id":"mc-1","model_name":"gpt-4o","rate_limit_id":"legacy","rate_limit_ids":["rpm"]}]}}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("expected rate_limit_id and rate_limit_ids to be rejected together")
+		}
+	})
 }
 
 // loadSchema reads and parses config.schema.json into a generic map.

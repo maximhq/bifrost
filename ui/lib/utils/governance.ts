@@ -27,6 +27,7 @@ export function parseResetPeriod(duration: string): string {
 import { budgetOverrideFormSchema } from "@/lib/types/schemas";
 
 import { formatCompactNumber } from "./numbers";
+import type { ModelConfig, ModelRateLimitMetric, RateLimit } from "@/lib/types/governance";
 
 export function formatCurrency(dollars: number) {
 	return `$${dollars.toFixed(2)}`;
@@ -198,4 +199,66 @@ export function getUsageVariant(percentage: number): "default" | "secondary" | "
 	if (percentage >= 90) return "destructive";
 	if (percentage >= 75) return "secondary";
 	return "default";
+}
+
+export interface ModelRateLimitRule {
+	id?: string;
+	metric: ModelRateLimitMetric;
+	max_limit: number;
+	reset_duration: string;
+	current_usage: number;
+}
+
+/**
+ * Normalizes both the new model-owned rule array and the legacy paired row
+ * into one UI shape. Legacy rows intentionally omit IDs so saving them causes
+ * the API to match by metric/window and copy their existing usage safely.
+ */
+export function getModelRateLimitRules(modelConfig: ModelConfig | null | undefined): ModelRateLimitRule[] {
+	if (!modelConfig) return [];
+	const rules: ModelRateLimitRule[] = [];
+	for (const rateLimit of modelConfig.rate_limits ?? []) {
+		if (rateLimit.metric === "tokens" && rateLimit.token_max_limit != null && rateLimit.token_reset_duration) {
+			rules.push({
+				id: rateLimit.id,
+				metric: "tokens",
+				max_limit: rateLimit.token_max_limit,
+				reset_duration: rateLimit.token_reset_duration,
+				current_usage: rateLimit.token_current_usage ?? 0,
+			});
+		} else if (rateLimit.metric === "requests" && rateLimit.request_max_limit != null && rateLimit.request_reset_duration) {
+			rules.push({
+				id: rateLimit.id,
+				metric: "requests",
+				max_limit: rateLimit.request_max_limit,
+				reset_duration: rateLimit.request_reset_duration,
+				current_usage: rateLimit.request_current_usage ?? 0,
+			});
+		} else {
+			rules.push(...legacyRateLimitRules(rateLimit));
+		}
+	}
+	if (modelConfig.rate_limit) rules.push(...legacyRateLimitRules(modelConfig.rate_limit));
+	return rules;
+}
+
+function legacyRateLimitRules(rateLimit: RateLimit): ModelRateLimitRule[] {
+	const rules: ModelRateLimitRule[] = [];
+	if (rateLimit.token_max_limit != null && rateLimit.token_reset_duration) {
+		rules.push({
+			metric: "tokens",
+			max_limit: rateLimit.token_max_limit,
+			reset_duration: rateLimit.token_reset_duration,
+			current_usage: rateLimit.token_current_usage ?? 0,
+		});
+	}
+	if (rateLimit.request_max_limit != null && rateLimit.request_reset_duration) {
+		rules.push({
+			metric: "requests",
+			max_limit: rateLimit.request_max_limit,
+			reset_duration: rateLimit.request_reset_duration,
+			current_usage: rateLimit.request_current_usage ?? 0,
+		});
+	}
+	return rules;
 }

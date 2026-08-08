@@ -684,6 +684,23 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 			}
 		}
 	}
+	preloadedRateLimitUsage := make(map[string][2]int64, len(preloadedMC.RateLimits))
+	for i := range preloadedMC.RateLimits {
+		preloadedRateLimitUsage[preloadedMC.RateLimits[i].ID] = [2]int64{
+			preloadedMC.RateLimits[i].TokenCurrentUsage,
+			preloadedMC.RateLimits[i].RequestCurrentUsage,
+		}
+	}
+	for i := range updatedMC.RateLimits {
+		rateLimit := &updatedMC.RateLimits[i]
+		oldUsage, ok := preloadedRateLimitUsage[rateLimit.ID]
+		if !ok || oldUsage[0] == rateLimit.TokenCurrentUsage && oldUsage[1] == rateLimit.RequestCurrentUsage {
+			continue
+		}
+		if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, rateLimit.ID, rateLimit.TokenCurrentUsage, rateLimit.RequestCurrentUsage); err != nil {
+			logger.Error("failed to sync model rate limit usage to database: %v", err)
+		}
+	}
 	if updatedMC.RateLimit != nil && preloadedMC.RateLimit != nil {
 		tokenUsageChanged := updatedMC.RateLimit.TokenCurrentUsage != preloadedMC.RateLimit.TokenCurrentUsage
 		requestUsageChanged := updatedMC.RateLimit.RequestCurrentUsage != preloadedMC.RateLimit.RequestCurrentUsage

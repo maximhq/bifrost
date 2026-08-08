@@ -1,2 +1,21 @@
 - feat: add proxy support for WebSocket-based realtime calls, mirroring existing HTTP proxy configuration (#5788)
 - perf: bulk virtual key provider replacement and direct VK lookup to eliminate per-provider round trips in the config store (#5844)
+- feat: webhook delivery system - `config_webhook_endpoints` table, store CRUD, dispatcher with SSRF-safe HTTP client, jobs work-queue and delivery history tables, endpoint resolution by name at submit time
+- feat: inline `error`/`error_omitted` fields in webhook payloads for failed async jobs
+- feat: throughput (tokens/sec) histogram endpoints, model rankings, and trend data
+- feat: `prompt_tokens` and `completion_tokens` in search stats
+- feat: show server fallback model in logs; content disabled message on logs UI
+- feat: toggle for always retaining content in object storage
+- feat: persist logs page-size preference in localStorage
+- feat: expose ClickHouse table migrations for enterprise
+- feat: `dual_credential_conflict_behavior` to resolve IDP token conflicts
+- feat: user email export to connectors
+- fix: gate matview read path on shape check to prevent "column does not exist" during rolling deploys
+- fix: bill for serving fallback model in anthropic
+- fix: make `RefineModelForProvider` idempotent and unify Groq/Replicate/Parasail prefix handling
+- fix: extend chat-responses pricing fallback to work bidirectionally
+- fix: replace fan-out attribution with single-owner additive rollup
+- fix: query creation from user input
+- fix: use `time.Now().Add` instead of channel receive for deadline
+- chore: upgraded core to v1.7.2
+- feat: support unlimited independent model-level request/token rate-limit windows with migration, enforcement, and safe legacy cleanup

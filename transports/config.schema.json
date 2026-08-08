@@ -614,6 +614,11 @@
                 "type": "string",
                 "description": "Rate limit ID"
               },
+              "metric": {
+                "type": "string",
+                "enum": ["tokens", "requests"],
+                "description": "Single metric for a model-owned rule; omit for legacy paired rate limits"
+              },
               "token_max_limit": {
                 "type": "integer",
                 "description": "Maximum tokens allowed"
@@ -1006,9 +1011,17 @@
               "rate_limit_id": {
                 "type": "string",
                 "description": "Rate limit ID to associate with this model"
+              },
+              "rate_limit_ids": {
+                "type": "array",
+                "description": "Rate limit IDs to associate with this model; each referenced row must declare one metric",
+                "items": { "type": "string" }
               }
             },
             "required": ["id", "model_name"],
+            "not": {
+              "required": ["rate_limit_id", "rate_limit_ids"]
+            },
             "additionalProperties": false
           }
         },

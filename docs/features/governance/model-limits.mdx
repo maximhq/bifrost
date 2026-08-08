@@ -6,7 +6,7 @@ icon: "sliders"
 
 ## Overview
 
-Model limits let you enforce spending caps and rate limits keyed on a specific model (or all models), an optional provider, and a **scope** that determines who the limit applies to.
+Model limits let you enforce spending caps and rate limits keyed on a specific model (or all models), an optional provider, and a **scope** that determines who the limit applies to. A model can have any number of independent request and token windows, such as `15 RPM + 1,500 RPD + 1M TPM + 10M TPD`.
 
 They are the unified control plane for all model-level governance in Bifrost:
 
@@ -71,7 +71,7 @@ Click **Add Model Limit** to open the configuration sheet.
 3. **Scope** — choose `Global` or `Virtual Key`
 4. **Scope Target** — appears when scope is `Virtual Key`; select the target virtual key
 5. **Budget** — add one or more budget lines, each with a dollar cap and reset duration. Multiple budgets per limit are supported (e.g. `$50/day` + `$500/month`).
-6. **Rate Limits** — optionally set token and/or request limits with their own reset durations
+6. **Rate Limits** — add any number of request or token rules, each with its own reset duration (for example, `15 requests / 1m` and `1,500 requests / 1d`)
 
 Click **Create Limit** to save.
 
@@ -131,6 +131,22 @@ curl "http://localhost:8080/api/governance/model-configs?scope=virtual_key&provi
           "last_reset": "2026-06-01T00:00:00Z"
         }
       ],
+      "rate_limits": [
+        {
+          "id": "rl_requests_minute",
+          "metric": "requests",
+          "request_max_limit": 15,
+          "request_reset_duration": "1m",
+          "request_current_usage": 3
+        },
+        {
+          "id": "rl_requests_day",
+          "metric": "requests",
+          "request_max_limit": 1500,
+          "request_reset_duration": "1d",
+          "request_current_usage": 81
+        }
+      ],
       "rate_limit": null,
       "created_at": "2026-05-01T10:00:00Z",
       "updated_at": "2026-06-01T00:00:00Z"
@@ -153,10 +169,12 @@ curl -X POST "http://localhost:8080/api/governance/model-configs" \
       { "max_limit": 200.00, "reset_duration": "1d" },
       { "max_limit": 2000.00, "reset_duration": "1M" }
     ],
-    "rate_limit": {
-      "request_max_limit": 1000,
-      "request_reset_duration": "1h"
-    }
+    "rate_limits": [
+      { "metric": "requests", "max_limit": 15, "reset_duration": "1m" },
+      { "metric": "requests", "max_limit": 1500, "reset_duration": "1d" },
+      { "metric": "tokens", "max_limit": 1000000, "reset_duration": "1m" },
+      { "metric": "tokens", "max_limit": 10000000, "reset_duration": "1d" }
+    ]
   }'
 ```
 
@@ -169,11 +187,12 @@ curl -X POST "http://localhost:8080/api/governance/model-configs" \
 | `scope` | string | No | `global` (default) or `virtual_key` |
 | `scope_id` | string | Conditional | Required when `scope` is not `global` |
 | `budgets` | array | No | One or more budget lines (each needs `max_limit` + `reset_duration`) |
-| `rate_limit` | object | No | Token and/or request rate limits |
+| `rate_limits` | array | No | Full desired set of single-metric rules. Each rule needs `metric`, `max_limit`, and `reset_duration`. A metric/window combination may appear only once. |
+| `rate_limit` | object | No | Deprecated legacy paired token/request rate limit. Do not send with `rate_limits`. |
 
 ### Update a model limit
 
-Send the full desired set of budgets — the server reconciles additions, updates, and removals. Send an empty `budgets` array to remove all budgets.
+Send the full desired set of budgets and rate-limit rules — the server reconciles additions, updates, and removals. Send an empty array to remove all entries of that type.
 
 ```bash
 curl -X PUT "http://localhost:8080/api/governance/model-configs/{mc_id}" \
@@ -182,9 +201,15 @@ curl -X PUT "http://localhost:8080/api/governance/model-configs/{mc_id}" \
     "budgets": [
       { "max_limit": 300.00, "reset_duration": "1d" },
       { "max_limit": 3000.00, "reset_duration": "1M" }
+    ],
+    "rate_limits": [
+      { "metric": "requests", "max_limit": 15, "reset_duration": "1m" },
+      { "metric": "requests", "max_limit": 1500, "reset_duration": "1d" }
     ]
   }'
 ```
+
+Updates replace the complete rule set. Send `"rate_limits": []` to clear every model-owned rate-limit rule. Omitting the field leaves the existing rules unchanged. Updating only `max_limit` preserves usage; changing `metric` or `reset_duration` starts a fresh window. `rate_limit` and `rate_limits` are mutually exclusive.
 
 ### Delete a model limit
 
@@ -215,7 +240,7 @@ Model limits are declared under `governance.model_configs`. Each entry reference
         "scope": "virtual_key",
         "scope_id": "vk-production",
         "budget_ids": ["b-gpt4o-daily"],
-        "rate_limit_id": "rl-gpt4o"
+        "rate_limit_ids": ["rl-gpt4o-rpm", "rl-gpt4o-rpd"]
       }
     ],
     "budgets": [
@@ -237,11 +262,16 @@ Model limits are declared under `governance.model_configs`. Each entry reference
     ],
     "rate_limits": [
       {
-        "id": "rl-gpt4o",
-        "request_max_limit": 500,
-        "request_reset_duration": "1h",
-        "token_max_limit": 500000,
-        "token_reset_duration": "1h"
+        "id": "rl-gpt4o-rpm",
+        "metric": "requests",
+        "request_max_limit": 15,
+        "request_reset_duration": "1m"
+      },
+      {
+        "id": "rl-gpt4o-rpd",
+        "metric": "requests",
+        "request_max_limit": 1500,
+        "request_reset_duration": "1d"
       }
     ]
   }
@@ -260,6 +290,9 @@ Model limits are declared under `governance.model_configs`. Each entry reference
 | `budget_ids` | string[] | No | List of `governance.budgets` IDs to attach. Supports multiple budgets (e.g. daily + monthly). Replaces `budget_id`. |
 | `budget_id` | string | No | Deprecated — single budget reference. Use `budget_ids` instead. |
 | `rate_limit_id` | string | No | References a `governance.rate_limits` entry |
+| `rate_limit_ids` | string[] | No | Full desired list of single-metric `governance.rate_limits` entries. Do not combine with `rate_limit_id`. |
+
+Each referenced `governance.rate_limits` row used by `rate_limit_ids` must set `metric` to `requests` or `tokens` and contain only that metric's limit fields. Legacy `rate_limit_id` rows may continue to contain both metrics for backward compatibility.
 
 </Tab>
 </Tabs>
@@ -349,6 +382,25 @@ curl -X POST "http://localhost:8080/api/governance/model-configs" \
 ```
 
 All budgets must pass for a request to be allowed — a spike that exhausts the daily cap blocks further requests until it resets, even if the monthly cap has room remaining.
+
+### Multi-window request and token limits
+
+Enforce provider-style RPM/RPD/TPM/TPD limits on one model. Every rule has its own counter and reset window; exhausting any one rule blocks the request.
+
+```bash
+curl -X POST "http://localhost:8080/api/governance/model-configs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_name": "gemini-2.5-flash",
+    "provider": "gemini",
+    "rate_limits": [
+      { "metric": "requests", "max_limit": 15, "reset_duration": "1m" },
+      { "metric": "requests", "max_limit": 1500, "reset_duration": "1d" },
+      { "metric": "tokens", "max_limit": 1000000, "reset_duration": "1m" },
+      { "metric": "tokens", "max_limit": 10000000, "reset_duration": "1d" }
+    ]
+  }'
+```
 
 ---
 

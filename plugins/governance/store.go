@@ -561,10 +561,10 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsage(ctx context.Context, rateLimi
 				gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 			}
 		}
-		if shouldUpdateTokens {
+		if shouldUpdateTokens && clone.TokenMaxLimit != nil {
 			clone.TokenCurrentUsage += tokensUsed
 		}
-		if shouldUpdateRequests {
+		if shouldUpdateRequests && clone.RequestMaxLimit != nil {
 			clone.RequestCurrentUsage++
 		}
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
@@ -594,8 +594,12 @@ func (gs *LocalGovernanceStore) BumpRateLimitUsageBy(ctx context.Context, rateLi
 			return nil
 		}
 		clone := *old
-		clone.TokenCurrentUsage += tokenDelta
-		clone.RequestCurrentUsage += requestDelta
+		if old.TokenMaxLimit != nil {
+			clone.TokenCurrentUsage += tokenDelta
+		}
+		if old.RequestMaxLimit != nil {
+			clone.RequestCurrentUsage += requestDelta
+		}
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
 			return nil
 		}
@@ -985,6 +989,17 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 				}
 			}
 			clone.Budgets = liveBudgets
+		}
+		if len(clone.RateLimits) > 0 {
+			ownedRateLimits := make([]configstoreTables.TableRateLimit, 0, len(clone.RateLimits))
+			for _, rule := range clone.RateLimits {
+				if liveRateLimit, exists := gs.rateLimits.Load(rule.ID); exists && liveRateLimit != nil {
+					if rateLimit, ok := liveRateLimit.(*configstoreTables.TableRateLimit); ok {
+						ownedRateLimits = append(ownedRateLimits, *rateLimit)
+					}
+				}
+			}
+			clone.RateLimits = ownedRateLimits
 		}
 		if clone.RateLimitID != nil {
 			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
@@ -1437,6 +1452,58 @@ func (gs *LocalGovernanceStore) loadModelConfigBudgets(ctx context.Context, mc *
 	return out
 }
 
+// loadModelConfigRateLimits returns all hot rows attached to a model config.
+// The legacy singular row is included for backward compatibility while a
+// config is being migrated; new model rule rows are independently evaluated.
+func (gs *LocalGovernanceStore) loadModelConfigRateLimits(ctx context.Context, mc *configstoreTables.TableModelConfig) []*configstoreTables.TableRateLimit {
+	if mc == nil {
+		return nil
+	}
+	result := make([]*configstoreTables.TableRateLimit, 0, len(mc.RateLimits)+1)
+	seen := make(map[string]struct{}, len(mc.RateLimits)+1)
+	for i := range mc.RateLimits {
+		if _, exists := seen[mc.RateLimits[i].ID]; exists {
+			continue
+		}
+		if rateLimit := gs.LoadRateLimit(ctx, mc.RateLimits[i].ID); rateLimit != nil {
+			result = append(result, rateLimit)
+			seen[rateLimit.ID] = struct{}{}
+		}
+	}
+	if mc.RateLimitID != nil {
+		if _, exists := seen[*mc.RateLimitID]; !exists {
+			if rateLimit := gs.LoadRateLimit(ctx, *mc.RateLimitID); rateLimit != nil {
+				result = append(result, rateLimit)
+			}
+		}
+	}
+	return result
+}
+
+func modelRateLimitRuleWindowUnchanged(next, previous configstoreTables.TableRateLimit) bool {
+	if next.Metric == "" && previous.Metric == "" {
+		return true // legacy paired rows retain their historical behavior
+	}
+	if next.Metric == "" || previous.Metric == "" {
+		return false // converting between legacy and metric-specific rules resets usage
+	}
+	if next.Metric != previous.Metric {
+		return false
+	}
+	var nextDuration, previousDuration *string
+	if next.Metric == configstoreTables.ModelRateLimitMetricTokens {
+		nextDuration, previousDuration = next.TokenResetDuration, previous.TokenResetDuration
+	} else {
+		nextDuration, previousDuration = next.RequestResetDuration, previous.RequestResetDuration
+	}
+	if nextDuration == nil || previousDuration == nil {
+		return false
+	}
+	nextParsed, nextErr := configstoreTables.ParseDuration(*nextDuration)
+	previousParsed, previousErr := configstoreTables.ParseDuration(*previousDuration)
+	return nextErr == nil && previousErr == nil && nextParsed == previousParsed
+}
+
 // CheckModelBudget performs budget checking for global-scope model-level configs, across all
 // four tiers (exact model±provider and all-models "*"±provider).
 func (gs *LocalGovernanceStore) CheckModelBudget(ctx context.Context, request *EvaluationRequest, baselines map[string]float64) (Decision, error) {
@@ -1731,11 +1798,8 @@ func (gs *LocalGovernanceStore) CheckModelRateLimit(ctx context.Context, request
 	model, provider := extractModelAndProvider(request)
 	entityWiseRateLimits := make(EntityWiseRateLimits)
 	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, provider) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if rateLimit := gs.LoadRateLimit(ctx, *mc.RateLimitID); rateLimit != nil {
-			entityWiseRateLimits[modelConfigEntityKey(mc)] = []*configstoreTables.TableRateLimit{rateLimit}
+		if rateLimits := gs.loadModelConfigRateLimits(ctx, mc); len(rateLimits) > 0 {
+			entityWiseRateLimits[modelConfigEntityKey(mc)] = rateLimits
 		}
 	}
 	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
@@ -1776,11 +1840,8 @@ func (gs *LocalGovernanceStore) CheckScopedModelRateLimit(ctx context.Context, s
 	model, provider := extractModelAndProvider(request)
 	entityWiseRateLimits := make(EntityWiseRateLimits)
 	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, provider) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if rateLimit := gs.LoadRateLimit(ctx, *mc.RateLimitID); rateLimit != nil {
-			entityWiseRateLimits[modelConfigEntityKey(mc)] = []*configstoreTables.TableRateLimit{rateLimit}
+		if rateLimits := gs.loadModelConfigRateLimits(ctx, mc); len(rateLimits) > 0 {
+			entityWiseRateLimits[modelConfigEntityKey(mc)] = rateLimits
 		}
 	}
 	return gs.CheckRateLimit(ctx, entityWiseRateLimits, tokensBaselines, requestsBaselines)
@@ -1886,11 +1947,10 @@ func (gs *LocalGovernanceStore) UpdateProviderAndModelRateLimitUsageInMemory(ctx
 		providerStr = &p
 	}
 	for _, mc := range gs.collectModelConfigsFor(ctx, configstoreTables.ModelConfigScopeGlobal, "", model, providerStr) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if err := gs.BumpRateLimitUsage(ctx, *mc.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			return err
+		for _, rateLimit := range gs.loadModelConfigRateLimits(ctx, mc) {
+			if err := gs.BumpRateLimitUsage(ctx, rateLimit.ID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1931,11 +1991,10 @@ func (gs *LocalGovernanceStore) UpdateScopedModelRateLimitUsageInMemory(ctx cont
 		providerStr = &p
 	}
 	for _, mc := range gs.collectModelConfigsFor(ctx, scope, scopeID, model, providerStr) {
-		if mc.RateLimitID == nil {
-			continue
-		}
-		if err := gs.BumpRateLimitUsage(ctx, *mc.RateLimitID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-			return err
+		for _, rateLimit := range gs.loadModelConfigRateLimits(ctx, mc) {
+			if err := gs.BumpRateLimitUsage(ctx, rateLimit.ID, tokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -2732,7 +2791,7 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	// Load routing rules
 	routingRules := config.RoutingRules
 
-	// Populate model configs with their relationships (Budgets and RateLimit)
+	// Populate model configs with their relationships (Budgets and RateLimits)
 	for i := range modelConfigs {
 		mc := &modelConfigs[i]
 
@@ -2741,6 +2800,36 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 			for j := range budgets {
 				if budgets[j].ModelConfigID != nil && *budgets[j].ModelConfigID == mc.ID {
 					mc.Budgets = append(mc.Budgets, budgets[j])
+				}
+			}
+		}
+
+		// Populate the model-owned multi-rule set either from explicit embedded
+		// rows or from config-file rate_limit_ids. Keep the legacy singular row
+		// separate so old clients can still read it during migration.
+		if len(mc.RateLimits) == 0 {
+			for j := range rateLimits {
+				if rateLimits[j].ModelConfigID != nil && *rateLimits[j].ModelConfigID == mc.ID {
+					mc.RateLimits = append(mc.RateLimits, rateLimits[j])
+				}
+			}
+		}
+		if len(mc.RateLimitIDs) > 0 {
+			for _, rateLimitID := range mc.RateLimitIDs {
+				for j := range rateLimits {
+					if rateLimits[j].ID == rateLimitID {
+						alreadyLinked := false
+						for k := range mc.RateLimits {
+							if mc.RateLimits[k].ID == rateLimitID {
+								alreadyLinked = true
+								break
+							}
+						}
+						if !alreadyLinked {
+							mc.RateLimits = append(mc.RateLimits, rateLimits[j])
+						}
+						break
+					}
 				}
 			}
 		}
@@ -2894,7 +2983,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	// (e.g., "openai/gpt-4o" and "gpt-4o" both store under base "gpt-4o").
 	for i := range modelConfigs {
 		mc := &modelConfigs[i]
-		// Stamp calendar alignment onto owned budgets and rate limit so the reset path
+		// Stamp calendar alignment onto owned budgets and rate limits so the reset path
 		// reads the right window (the flat budgets/rate-limits list lacks owner context).
 		// Mirrors how VK/team budgets are stamped from their owner.
 		for j := range mc.Budgets {
@@ -2904,6 +2993,10 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		if mc.RateLimit != nil {
 			mc.RateLimit.IsCalendarAligned = mc.CalendarAligned
 			gs.rateLimits.Store(mc.RateLimit.ID, mc.RateLimit)
+		}
+		for j := range mc.RateLimits {
+			mc.RateLimits[j].IsCalendarAligned = mc.CalendarAligned
+			gs.rateLimits.Store(mc.RateLimits[j].ID, &mc.RateLimits[j])
 		}
 		scopeID := ""
 		if mc.ScopeID != nil {
@@ -3291,6 +3384,12 @@ func (gs *LocalGovernanceStore) CollectApplicableGovernanceIDs(ctx context.Conte
 			rateLimitIDs = append(rateLimitIDs, *mc.RateLimitID)
 			seenRateLimits[*mc.RateLimitID] = true
 		}
+		for i := range mc.RateLimits {
+			if id := mc.RateLimits[i].ID; id != "" && !seenRateLimits[id] {
+				rateLimitIDs = append(rateLimitIDs, id)
+				seenRateLimits[id] = true
+			}
+		}
 	}
 
 	// --- Model-level (global scope), all four tiers incl. provider/all-models wildcards ---
@@ -3620,6 +3719,7 @@ func (gs *LocalGovernanceStore) DeleteVirtualKeyInMemory(ctx context.Context, vk
 // paths (e.g. the enterprise user-deletion flow) reuse it. Owned budgets are released
 // from both the active Budgets slice and the legacy single BudgetID column.
 func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.Context, scope, scopeID string) {
+	referenceIndex := gs.buildRateLimitReferenceIndex()
 	gs.modelConfigs.Range(func(key, value any) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
 		if !ok || mc == nil {
@@ -3629,12 +3729,18 @@ func (gs *LocalGovernanceStore) DeleteModelConfigsForScopeInMemory(ctx context.C
 			for i := range mc.Budgets {
 				gs.DeleteBudget(ctx, mc.Budgets[i].ID)
 			}
+			for i := range mc.RateLimits {
+				if !referenceIndex.referencedByOtherOwner(mc.RateLimits[i].ID, mc.ID) {
+					gs.DeleteRateLimit(ctx, mc.RateLimits[i].ID)
+				}
+			}
 			if mc.BudgetID != nil {
 				gs.DeleteBudget(ctx, *mc.BudgetID)
 			}
-			if mc.RateLimitID != nil {
+			if mc.RateLimitID != nil && !referenceIndex.referencedByOtherOwner(*mc.RateLimitID, mc.ID) {
 				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
 			}
+			referenceIndex.removeModelConfig(mc)
 			gs.modelConfigs.Delete(key)
 		}
 		return true
@@ -3945,6 +4051,19 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 
 	// Clone to avoid modifying the original
 	clone := *mc
+	clone.RateLimits = append([]configstoreTables.TableRateLimit(nil), clone.RateLimits...)
+	var previousModelRateLimits map[string]*configstoreTables.TableRateLimit
+	gs.modelConfigs.Range(func(_, value any) bool {
+		candidate, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || candidate == nil || candidate.ID != mc.ID {
+			return true
+		}
+		previousModelRateLimits = make(map[string]*configstoreTables.TableRateLimit, len(candidate.RateLimits))
+		for i := range candidate.RateLimits {
+			previousModelRateLimits[candidate.RateLimits[i].ID] = &candidate.RateLimits[i]
+		}
+		return false
+	})
 
 	// Store associated budgets, preserving existing in-memory usage per budget ID and
 	// stamping calendar alignment from the model config (consumed by the reset path).
@@ -3959,6 +4078,38 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 		}
 		gs.storeBudget(b.ID, b)
 	}
+	for i := range clone.RateLimits {
+		rateLimit := &clone.RateLimits[i]
+		rateLimit.IsCalendarAligned = clone.CalendarAligned
+		if existingRateLimitValue, exists := gs.rateLimits.Load(rateLimit.ID); exists && existingRateLimitValue != nil {
+			if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
+				if modelRateLimitRuleWindowUnchanged(*rateLimit, *existingRateLimit) {
+					rateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
+					rateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
+					rateLimit.TokenLastReset = existingRateLimit.TokenLastReset
+					rateLimit.RequestLastReset = existingRateLimit.RequestLastReset
+				}
+			}
+		}
+		gs.rateLimits.Store(rateLimit.ID, rateLimit)
+	}
+	if previousModelRateLimits != nil {
+		referenceIndex := gs.buildRateLimitReferenceIndex()
+		for id := range previousModelRateLimits {
+			stillOwned := false
+			for i := range clone.RateLimits {
+				if clone.RateLimits[i].ID == id {
+					stillOwned = true
+					break
+				}
+			}
+			if !stillOwned {
+				if !referenceIndex.referencedByOtherOwner(id, mc.ID) {
+					gs.DeleteRateLimit(ctx, id)
+				}
+			}
+		}
+	}
 
 	// Store associated rate limit if exists, preserving existing in-memory usage and
 	// stamping calendar alignment from the owning model config.
@@ -3968,6 +4119,8 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 			if erl, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && erl != nil {
 				clone.RateLimit.TokenCurrentUsage = erl.TokenCurrentUsage
 				clone.RateLimit.RequestCurrentUsage = erl.RequestCurrentUsage
+				clone.RateLimit.TokenLastReset = erl.TokenLastReset
+				clone.RateLimit.RequestLastReset = erl.RequestLastReset
 			}
 		}
 		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
@@ -4001,6 +4154,7 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 		return // Nothing to delete
 	}
 
+	referenceIndex := gs.buildRateLimitReferenceIndex()
 	// Find and delete the model config by ID
 	gs.modelConfigs.Range(func(key, value interface{}) bool {
 		mc, ok := value.(*configstoreTables.TableModelConfig)
@@ -4013,9 +4167,14 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 			for i := range mc.Budgets {
 				gs.DeleteBudget(ctx, mc.Budgets[i].ID)
 			}
+			for i := range mc.RateLimits {
+				if !referenceIndex.referencedByOtherOwner(mc.RateLimits[i].ID, mcID) {
+					gs.DeleteRateLimit(ctx, mc.RateLimits[i].ID)
+				}
+			}
 
 			// Delete associated rate limit if exists
-			if mc.RateLimitID != nil {
+			if mc.RateLimitID != nil && !referenceIndex.referencedByOtherOwner(*mc.RateLimitID, mcID) {
 				gs.DeleteRateLimit(ctx, *mc.RateLimitID)
 			}
 
@@ -4024,6 +4183,129 @@ func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(ctx context.Context, m
 		}
 		return true // continue iteration
 	})
+}
+
+// rateLimitReferenceIndex captures all in-memory governance owners of a rate
+// limit. Model owners are tracked by model config ID so a caller can exclude
+// the model currently being deleted while still protecting shared legacy rows.
+// Other governance owners only need presence tracking.
+type rateLimitReferenceIndex struct {
+	modelConfigs map[string]map[string]struct{}
+	otherOwners  map[string]struct{}
+}
+
+func (index *rateLimitReferenceIndex) addModelConfig(modelConfigID, rateLimitID string) {
+	if index == nil || modelConfigID == "" || rateLimitID == "" {
+		return
+	}
+	owners := index.modelConfigs[rateLimitID]
+	if owners == nil {
+		owners = make(map[string]struct{})
+		index.modelConfigs[rateLimitID] = owners
+	}
+	owners[modelConfigID] = struct{}{}
+}
+
+func (index *rateLimitReferenceIndex) addOtherOwner(rateLimitID string) {
+	if index == nil || rateLimitID == "" {
+		return
+	}
+	index.otherOwners[rateLimitID] = struct{}{}
+}
+
+func (index *rateLimitReferenceIndex) referencedByOtherOwner(rateLimitID, excludedModelConfigID string) bool {
+	if index == nil || rateLimitID == "" {
+		return false
+	}
+	if _, exists := index.otherOwners[rateLimitID]; exists {
+		return true
+	}
+	for modelConfigID := range index.modelConfigs[rateLimitID] {
+		if modelConfigID != excludedModelConfigID {
+			return true
+		}
+	}
+	return false
+}
+
+func (index *rateLimitReferenceIndex) removeModelConfig(modelConfig *configstoreTables.TableModelConfig) {
+	if index == nil || modelConfig == nil {
+		return
+	}
+	remove := func(rateLimitID string) {
+		owners := index.modelConfigs[rateLimitID]
+		delete(owners, modelConfig.ID)
+		if len(owners) == 0 {
+			delete(index.modelConfigs, rateLimitID)
+		}
+	}
+	if modelConfig.RateLimitID != nil {
+		remove(*modelConfig.RateLimitID)
+	}
+	for i := range modelConfig.RateLimits {
+		remove(modelConfig.RateLimits[i].ID)
+	}
+}
+
+func (gs *LocalGovernanceStore) buildRateLimitReferenceIndex() *rateLimitReferenceIndex {
+	index := &rateLimitReferenceIndex{
+		modelConfigs: make(map[string]map[string]struct{}),
+		otherOwners:  make(map[string]struct{}),
+	}
+	gs.modelConfigs.Range(func(_, value any) bool {
+		modelConfig, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || modelConfig == nil {
+			return true
+		}
+		if modelConfig.RateLimitID != nil {
+			index.addModelConfig(modelConfig.ID, *modelConfig.RateLimitID)
+		}
+		for i := range modelConfig.RateLimits {
+			index.addModelConfig(modelConfig.ID, modelConfig.RateLimits[i].ID)
+		}
+		return true
+	})
+	gs.providers.Range(func(_, value any) bool {
+		provider, ok := value.(*configstoreTables.TableProvider)
+		if ok && provider != nil && provider.RateLimitID != nil {
+			index.addOtherOwner(*provider.RateLimitID)
+		}
+		return true
+	})
+	gs.teams.Range(func(_, value any) bool {
+		team, ok := value.(*configstoreTables.TableTeam)
+		if ok && team != nil && team.RateLimitID != nil {
+			index.addOtherOwner(*team.RateLimitID)
+		}
+		return true
+	})
+	gs.customers.Range(func(_, value any) bool {
+		customer, ok := value.(*configstoreTables.TableCustomer)
+		if ok && customer != nil && customer.RateLimitID != nil {
+			index.addOtherOwner(*customer.RateLimitID)
+		}
+		return true
+	})
+	gs.virtualKeys.Range(func(_, value any) bool {
+		virtualKey, ok := value.(*configstoreTables.TableVirtualKey)
+		if !ok || virtualKey == nil {
+			return true
+		}
+		if virtualKey.RateLimitID != nil {
+			index.addOtherOwner(*virtualKey.RateLimitID)
+		}
+		for i := range virtualKey.ProviderConfigs {
+			if virtualKey.ProviderConfigs[i].RateLimitID != nil {
+				index.addOtherOwner(*virtualKey.ProviderConfigs[i].RateLimitID)
+			}
+		}
+		return true
+	})
+	return index
+}
+
+func (gs *LocalGovernanceStore) rateLimitReferencedByOtherOwner(rateLimitID, excludedModelConfigID string) bool {
+	return gs.buildRateLimitReferenceIndex().referencedByOtherOwner(rateLimitID, excludedModelConfigID)
 }
 
 // ScopedModelConfigIDs returns the IDs of all in-memory model configs for the
@@ -4242,7 +4524,7 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(ctx context.Context, rese
 	})
 }
 
-// updateRateLimitReferences updates all VKs, teams, customers and provider configs
+// updateRateLimitReferences updates all model configs, VKs, teams, customers and provider configs
 // that reference any of the reset rate limits. It makes ONE pass over each owner
 // map regardless of how many rate limits reset, and clones an owner only after a
 // match, so a background sweep costs O(owners + resets) instead of
@@ -4258,6 +4540,40 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(ctx context.Context, r
 			resets[rl.ID] = rl
 		}
 	}
+	// Update model configs that reference any reset rule. Model enforcement reads
+	// the live rateLimits map, but refreshing the embedded slices keeps API/status
+	// snapshots and subsequent config reloads consistent as well.
+	gs.modelConfigs.Range(func(key, value interface{}) bool {
+		modelConfig, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || modelConfig == nil {
+			return true
+		}
+		legacyMatch := modelConfig.RateLimitID != nil && resets[*modelConfig.RateLimitID] != nil
+		multiMatch := false
+		for i := range modelConfig.RateLimits {
+			if resets[modelConfig.RateLimits[i].ID] != nil {
+				multiMatch = true
+				break
+			}
+		}
+		if !legacyMatch && !multiMatch {
+			return true
+		}
+		clone := *modelConfig
+		if legacyMatch {
+			clone.RateLimit = resets[*modelConfig.RateLimitID]
+		}
+		if multiMatch {
+			clone.RateLimits = append([]configstoreTables.TableRateLimit(nil), modelConfig.RateLimits...)
+			for i := range clone.RateLimits {
+				if rateLimit := resets[clone.RateLimits[i].ID]; rateLimit != nil {
+					clone.RateLimits[i] = *rateLimit
+				}
+			}
+		}
+		gs.modelConfigs.Store(key, &clone)
+		return true
+	})
 	// Update VKs that reference these rate limits
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
@@ -4476,22 +4792,17 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 
 	// applyModelConfig folds a model config's rate-limit and budgets into the running max.
 	applyModelConfig := func(modelConfig *configstoreTables.TableModelConfig) {
-		if modelConfig.RateLimitID != nil {
-			if rateLimitValue, ok := gs.rateLimits.Load(*modelConfig.RateLimitID); ok && rateLimitValue != nil {
-				if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
-					if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
-						tokenPercent := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
-						if tokenPercent > result.RateLimitTokenPercentUsed {
-							result.RateLimitTokenPercentUsed = tokenPercent
-						}
-					}
-					// Calculate request percent used
-					if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
-						requestPercent := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
-						if requestPercent > result.RateLimitRequestPercentUsed {
-							result.RateLimitRequestPercentUsed = requestPercent
-						}
-					}
+		for _, rateLimit := range gs.loadModelConfigRateLimits(ctx, modelConfig) {
+			if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
+				tokenPercent := float64(rateLimit.TokenCurrentUsage+tokenBaselines[rateLimit.ID]) / float64(*rateLimit.TokenMaxLimit) * 100
+				if tokenPercent > result.RateLimitTokenPercentUsed {
+					result.RateLimitTokenPercentUsed = tokenPercent
+				}
+			}
+			if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
+				requestPercent := float64(rateLimit.RequestCurrentUsage+requestBaselines[rateLimit.ID]) / float64(*rateLimit.RequestMaxLimit) * 100
+				if requestPercent > result.RateLimitRequestPercentUsed {
+					result.RateLimitRequestPercentUsed = requestPercent
 				}
 			}
 		}

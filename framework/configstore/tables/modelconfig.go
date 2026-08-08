@@ -78,6 +78,9 @@ type TableModelConfig struct {
 	// governance.budgets) to link to this model config. Not persisted; used by the
 	// config sync path to set model_config_id on each referenced budget row.
 	BudgetIDs []string `gorm:"-" json:"budget_ids,omitempty"`
+	// RateLimitIDs is the config-file-only counterpart to RateLimits. It lists
+	// pre-declared, single-metric entries from governance.rate_limits.
+	RateLimitIDs []string `gorm:"-" json:"rate_limit_ids,omitempty"`
 
 	// Relationships
 	// Budgets are owned by this model config via TableBudget.ModelConfigID (a model
@@ -85,6 +88,9 @@ type TableModelConfig struct {
 	// active representation. The legacy single Budget/BudgetID below is kept inert
 	// for backward compatibility and is no longer read by enforcement.
 	Budgets []TableBudget `gorm:"foreignKey:ModelConfigID;constraint:OnDelete:CASCADE" json:"budgets,omitempty"`
+	// RateLimits are the active multi-rule model-limits representation. Each
+	// owned row contains exactly one metric (tokens or requests).
+	RateLimits []TableRateLimit `gorm:"foreignKey:ModelConfigID;constraint:OnDelete:CASCADE" json:"rate_limits,omitempty"`
 	// Legacy (inert): superseded by Budgets. Retained so existing rows/columns keep
 	// parsing; not read by the governance store after the multi-budget cutover.
 	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
@@ -107,7 +113,10 @@ func (TableModelConfig) TableName() string {
 // the stamped value off each budget. Mirrors TableTeam/TableVirtualKey. The governance
 // store's Update*InMemory paths re-stamp on every model-config update.
 func (mc *TableModelConfig) AfterFind(tx *gorm.DB) error {
-	StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, nil)
+	StampCalendarAlignment(mc.CalendarAligned, mc.Budgets, mc.RateLimit)
+	for i := range mc.RateLimits {
+		mc.RateLimits[i].IsCalendarAligned = mc.CalendarAligned
+	}
 	return nil
 }
 

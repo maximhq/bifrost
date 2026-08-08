@@ -341,6 +341,17 @@ type UpdateRateLimitRequest struct {
 	RequestResetDuration *string `json:"request_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 }
 
+// ModelRateLimitRuleRequest is the model-limits-only representation of one
+// rate-limit rule. Unlike the legacy rate_limit object, a rule contains one
+// metric and one reset window. ID is returned by the API and is optional on
+// update so clients can also match an existing rule by metric/window.
+type ModelRateLimitRuleRequest struct {
+	ID            string `json:"id,omitempty"`
+	Metric        string `json:"metric"`
+	MaxLimit      int64  `json:"max_limit"`
+	ResetDuration string `json:"reset_duration"`
+}
+
 func isBudgetRemovalRequest(req *UpdateBudgetRequest) bool {
 	return req != nil && req.MaxLimit == nil && req.ResetDuration == nil
 }
@@ -479,6 +490,215 @@ func coerceLegacyBudget(req *UpdateBudgetRequest, existing *configstoreTables.Ta
 func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
 	return req != nil && req.TokenMaxLimit == nil && req.RequestMaxLimit == nil &&
 		req.TokenResetDuration == nil && req.RequestResetDuration == nil
+}
+
+func modelRateLimitRuleKey(metric, resetDuration string) string {
+	if duration, err := configstoreTables.ParseDuration(resetDuration); err == nil {
+		return fmt.Sprintf("%s:%s", metric, duration.String())
+	}
+	return metric + ":" + resetDuration
+}
+
+func modelRateLimitRuleFromRequest(request ModelRateLimitRuleRequest, modelConfigID *string, calendarAligned bool) configstoreTables.TableRateLimit {
+	lastReset := budgetLastReset(calendarAligned, request.ResetDuration)
+	rule := configstoreTables.TableRateLimit{
+		ID:               uuid.NewString(),
+		ModelConfigID:    modelConfigID,
+		Metric:           request.Metric,
+		TokenLastReset:   lastReset,
+		RequestLastReset: lastReset,
+	}
+	if request.Metric == configstoreTables.ModelRateLimitMetricTokens {
+		rule.TokenMaxLimit = &request.MaxLimit
+		rule.TokenResetDuration = &request.ResetDuration
+	} else {
+		rule.RequestMaxLimit = &request.MaxLimit
+		rule.RequestResetDuration = &request.ResetDuration
+	}
+	return rule
+}
+
+func validateModelRateLimitRules(rules []ModelRateLimitRuleRequest, allowIDs bool) error {
+	seen := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		if !configstoreTables.IsValidModelRateLimitMetric(rule.Metric) {
+			return &badRequestError{err: fmt.Errorf("invalid model rate limit metric %q", rule.Metric)}
+		}
+		if rule.MaxLimit <= 0 {
+			return &badRequestError{err: fmt.Errorf("model rate limit max_limit must be greater than zero")}
+		}
+		duration, err := configstoreTables.ParseDuration(rule.ResetDuration)
+		if err != nil || duration <= 0 {
+			return &badRequestError{err: fmt.Errorf("invalid model rate limit reset_duration (must be a positive duration): %s", rule.ResetDuration)}
+		}
+		if !allowIDs && rule.ID != "" {
+			return &badRequestError{err: fmt.Errorf("rate limit id cannot be supplied when creating a model config")}
+		}
+		key := modelRateLimitRuleKey(rule.Metric, rule.ResetDuration)
+		if _, exists := seen[key]; exists {
+			return &badRequestError{err: fmt.Errorf("duplicate model rate limit rule: %s with reset_duration %s", rule.Metric, rule.ResetDuration)}
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// buildModelRateLimitLookup reserves ID-addressed rules before duration-only
+// matching, mirroring the budget reconciliation behavior. This prevents a
+// duration-only row from stealing a rule that a later ID entry is renaming.
+func buildModelRateLimitLookup(existing []configstoreTables.TableRateLimit, requests []ModelRateLimitRuleRequest) (map[string]configstoreTables.TableRateLimit, map[string]configstoreTables.TableRateLimit) {
+	claimedIDs := make(map[string]struct{}, len(requests))
+	for _, request := range requests {
+		if request.ID != "" {
+			claimedIDs[request.ID] = struct{}{}
+		}
+	}
+	byID := make(map[string]configstoreTables.TableRateLimit, len(existing))
+	byKey := make(map[string]configstoreTables.TableRateLimit, len(existing))
+	for _, rule := range existing {
+		byID[rule.ID] = rule
+		if _, claimed := claimedIDs[rule.ID]; claimed {
+			continue
+		}
+		if configstoreTables.IsValidModelRateLimitMetric(rule.Metric) {
+			duration := ""
+			if rule.Metric == configstoreTables.ModelRateLimitMetricTokens && rule.TokenResetDuration != nil {
+				duration = *rule.TokenResetDuration
+			} else if rule.Metric == configstoreTables.ModelRateLimitMetricRequests && rule.RequestResetDuration != nil {
+				duration = *rule.RequestResetDuration
+			}
+			if duration != "" {
+				byKey[modelRateLimitRuleKey(rule.Metric, duration)] = rule
+			}
+		}
+	}
+	return byID, byKey
+}
+
+func modelRateLimitRuleMatches(rule configstoreTables.TableRateLimit, request ModelRateLimitRuleRequest) bool {
+	if rule.Metric != request.Metric {
+		return false
+	}
+	if request.Metric == configstoreTables.ModelRateLimitMetricTokens && rule.TokenResetDuration != nil {
+		return modelRateLimitRuleKey(request.Metric, *rule.TokenResetDuration) == modelRateLimitRuleKey(request.Metric, request.ResetDuration)
+	}
+	if request.Metric == configstoreTables.ModelRateLimitMetricRequests && rule.RequestResetDuration != nil {
+		return modelRateLimitRuleKey(request.Metric, *rule.RequestResetDuration) == modelRateLimitRuleKey(request.Metric, request.ResetDuration)
+	}
+	return false
+}
+
+// reconcileModelConfigRateLimits replaces the model-owned multi-rule set. A
+// matched rule keeps usage only when both its metric and reset period remain
+// unchanged; changing either starts a fresh window. Legacy paired rows are
+// used as a read-only source for initial usage during the first conversion.
+func (h *GovernanceHandler) reconcileModelConfigRateLimits(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig, requests []ModelRateLimitRuleRequest) error {
+	if err := validateModelRateLimitRules(requests, true); err != nil {
+		return err
+	}
+	existingByID, existingByKey := buildModelRateLimitLookup(mc.RateLimits, requests)
+	reconciled := make([]configstoreTables.TableRateLimit, 0, len(requests))
+	matchedIDs := make(map[string]struct{}, len(requests))
+	for _, request := range requests {
+		var existing configstoreTables.TableRateLimit
+		found := false
+		if request.ID != "" {
+			var ok bool
+			existing, ok = existingByID[request.ID]
+			if !ok {
+				return &badRequestError{err: fmt.Errorf("rate limit %s does not belong to this model config", request.ID)}
+			}
+			delete(existingByID, request.ID)
+			delete(existingByKey, modelRateLimitRuleKey(existing.Metric, func() string {
+				if existing.Metric == configstoreTables.ModelRateLimitMetricTokens && existing.TokenResetDuration != nil {
+					return *existing.TokenResetDuration
+				}
+				if existing.Metric == configstoreTables.ModelRateLimitMetricRequests && existing.RequestResetDuration != nil {
+					return *existing.RequestResetDuration
+				}
+				return ""
+			}()))
+			found = true
+		} else {
+			key := modelRateLimitRuleKey(request.Metric, request.ResetDuration)
+			if candidate, ok := existingByKey[key]; ok {
+				existing = candidate
+				delete(existingByID, candidate.ID)
+				delete(existingByKey, key)
+				found = true
+			}
+		}
+
+		if found {
+			preserveUsage := modelRateLimitRuleMatches(existing, request)
+			existing.ModelConfigID = &mc.ID
+			existing.Metric = request.Metric
+			maxLimit := request.MaxLimit
+			resetDuration := request.ResetDuration
+			if request.Metric == configstoreTables.ModelRateLimitMetricTokens {
+				existing.TokenMaxLimit = &maxLimit
+				existing.TokenResetDuration = &resetDuration
+				existing.RequestMaxLimit = nil
+				existing.RequestResetDuration = nil
+				if !preserveUsage {
+					existing.TokenCurrentUsage = 0
+					existing.TokenLastReset = budgetLastReset(mc.CalendarAligned, request.ResetDuration)
+				}
+			} else {
+				existing.RequestMaxLimit = &maxLimit
+				existing.RequestResetDuration = &resetDuration
+				existing.TokenMaxLimit = nil
+				existing.TokenResetDuration = nil
+				if !preserveUsage {
+					existing.RequestCurrentUsage = 0
+					existing.RequestLastReset = budgetLastReset(mc.CalendarAligned, request.ResetDuration)
+				}
+			}
+			if err := validateRateLimit(&existing); err != nil {
+				return &badRequestError{err: err}
+			}
+			if err := h.configStore.UpdateRateLimit(ctx, &existing, tx); err != nil {
+				return err
+			}
+			reconciled = append(reconciled, existing)
+			matchedIDs[existing.ID] = struct{}{}
+			continue
+		}
+
+		// First-time conversion from a legacy paired row. Copy only the
+		// counter belonging to the requested metric and never mutate/delete
+		// the shared legacy row here.
+		rule := modelRateLimitRuleFromRequest(request, &mc.ID, mc.CalendarAligned)
+		if mc.RateLimit != nil {
+			if request.Metric == configstoreTables.ModelRateLimitMetricTokens && mc.RateLimit.TokenMaxLimit != nil && mc.RateLimit.TokenResetDuration != nil && modelRateLimitRuleKey(request.Metric, *mc.RateLimit.TokenResetDuration) == modelRateLimitRuleKey(request.Metric, request.ResetDuration) {
+				rule.TokenCurrentUsage = mc.RateLimit.TokenCurrentUsage
+				rule.TokenLastReset = mc.RateLimit.TokenLastReset
+			} else if request.Metric == configstoreTables.ModelRateLimitMetricRequests && mc.RateLimit.RequestMaxLimit != nil && mc.RateLimit.RequestResetDuration != nil && modelRateLimitRuleKey(request.Metric, *mc.RateLimit.RequestResetDuration) == modelRateLimitRuleKey(request.Metric, request.ResetDuration) {
+				rule.RequestCurrentUsage = mc.RateLimit.RequestCurrentUsage
+				rule.RequestLastReset = mc.RateLimit.RequestLastReset
+			}
+		}
+		if err := validateRateLimit(&rule); err != nil {
+			return &badRequestError{err: err}
+		}
+		if err := h.configStore.CreateRateLimit(ctx, &rule, tx); err != nil {
+			return err
+		}
+		reconciled = append(reconciled, rule)
+		matchedIDs[rule.ID] = struct{}{}
+	}
+
+	for _, existing := range mc.RateLimits {
+		if _, matched := matchedIDs[existing.ID]; !matched {
+			if err := h.configStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+				return err
+			}
+		}
+	}
+	mc.RateLimits = reconciled
+	mc.RateLimitID = nil
+	mc.RateLimit = nil
+	return nil
 }
 
 // reconcileModelConfigBudgets upserts the desired set of budgets owned by a model config
@@ -657,7 +877,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 	}
 	// Delete VK-scoped provider model configs whose provider is no longer configured.
 	var existing []configstoreTables.TableModelConfig
-	if err := tx.Preload("Budgets").
+	if err := tx.Preload("Budgets").Preload("RateLimits").
 		Where("scope = ? AND scope_id = ? AND model_name = ? AND provider IS NOT NULL",
 			configstoreTables.ModelConfigScopeVirtualKey, vk.ID, configstoreTables.ModelConfigAllModels).
 		Find(&existing).Error; err != nil {
@@ -676,7 +896,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 
 // reconcileVKModelConfig reconciles a single VK-scoped model config to the desired state.
 func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkModelConfigDesired) error {
-	q := tx.Preload("Budgets").Where("scope = ? AND scope_id = ? AND model_name = ?",
+	q := tx.Preload("Budgets").Preload("RateLimits").Where("scope = ? AND scope_id = ? AND model_name = ?",
 		configstoreTables.ModelConfigScopeVirtualKey, vk.ID, configstoreTables.ModelConfigAllModels)
 	if d.provider == nil {
 		q = q.Where("provider IS NULL")
@@ -759,7 +979,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	if d.budgetsProvided {
 		finalBudgetCount = len(d.budgets)
 	}
-	hasGovernance := mc.RateLimitID != nil || finalBudgetCount > 0
+	hasGovernance := mc.RateLimitID != nil || len(mc.RateLimits) > 0 || finalBudgetCount > 0
 
 	if !hasGovernance {
 		// No governance left → drop the model config (and its budgets) if it existed.
@@ -769,12 +989,17 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 					return err
 				}
 			}
+			for i := range mc.RateLimits {
+				if err := h.configStore.DeleteRateLimit(ctx, mc.RateLimits[i].ID, tx); err != nil {
+					return err
+				}
+			}
 			if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
 				return err
 			}
 		}
 		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+			if err := deleteModelConfigRateLimitIfUnreferenced(tx, rateLimitIDToDelete); err != nil {
 				return err
 			}
 		}
@@ -800,7 +1025,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	}
 
 	if rateLimitIDToDelete != "" {
-		if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+		if err := deleteModelConfigRateLimitIfUnreferenced(tx, rateLimitIDToDelete); err != nil {
 			return err
 		}
 	}
@@ -815,12 +1040,17 @@ func (h *GovernanceHandler) deleteVKModelConfig(ctx context.Context, tx *gorm.DB
 			return err
 		}
 	}
+	for i := range mc.RateLimits {
+		if err := h.configStore.DeleteRateLimit(ctx, mc.RateLimits[i].ID, tx); err != nil {
+			return err
+		}
+	}
 	rlID := mc.RateLimitID
 	if err := tx.Delete(&configstoreTables.TableModelConfig{}, "id = ?", mc.ID).Error; err != nil {
 		return err
 	}
 	if rlID != nil {
-		if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", *rlID).Error; err != nil {
+		if err := deleteModelConfigRateLimitIfUnreferenced(tx, *rlID); err != nil {
 			return err
 		}
 	}
@@ -1010,22 +1240,24 @@ type UpdateCustomerRequest struct {
 
 // CreateModelConfigRequest represents the request body for creating a model config
 type CreateModelConfigRequest struct {
-	ModelName string                  `json:"model_name" validate:"required"`
-	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means all providers
-	Scope     string                  `json:"scope,omitempty"`    // Defaults to "global" if not provided
-	ScopeID   *string                 `json:"scope_id,omitempty"` // Required for non-global scopes (e.g. the virtual key ID)
-	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`  // A model config may carry multiple budgets (distinct reset windows)
-	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	ModelName  string                      `json:"model_name" validate:"required"`
+	Provider   *string                     `json:"provider,omitempty"` // Optional provider, nil means all providers
+	Scope      string                      `json:"scope,omitempty"`    // Defaults to "global" if not provided
+	ScopeID    *string                     `json:"scope_id,omitempty"` // Required for non-global scopes (e.g. the virtual key ID)
+	Budgets    []CreateBudgetRequest       `json:"budgets,omitempty"`  // A model config may carry multiple budgets (distinct reset windows)
+	RateLimit  *CreateRateLimitRequest     `json:"rate_limit,omitempty"`
+	RateLimits []ModelRateLimitRuleRequest `json:"rate_limits,omitempty"`
 }
 
 // UpdateModelConfigRequest represents the request body for updating a model config.
 // Scope and scope_id are part of a config's identity and are intentionally not
 // editable here (mirroring model_name/provider) — change them by recreating the config.
 type UpdateModelConfigRequest struct {
-	ModelName *string                 `json:"model_name,omitempty"`
-	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means no change
-	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`  // Full desired set of budgets (reconciled against existing)
-	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	ModelName  *string                     `json:"model_name,omitempty"`
+	Provider   *string                     `json:"provider,omitempty"` // Optional provider, nil means no change
+	Budgets    []CreateBudgetRequest       `json:"budgets,omitempty"`  // Full desired set of budgets (reconciled against existing)
+	RateLimit  *UpdateRateLimitRequest     `json:"rate_limit,omitempty"`
+	RateLimits []ModelRateLimitRuleRequest `json:"rate_limits,omitempty"` // nil=no change, []=remove all
 }
 
 // UpdateProviderGovernanceRequest represents the request body for updating provider governance
@@ -3144,6 +3376,53 @@ func validateRateLimit(rateLimit *configstoreTables.TableRateLimit) error {
 	return nil
 }
 
+func uniqueStringIDs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+// deleteModelConfigRateLimitIfUnreferenced removes a legacy paired row only
+// after its model-config FK has been cleared and no other governance owner
+// still points at it. New model rules are owned by model_config_id and are
+// deleted directly by the reconciliation path.
+func deleteModelConfigRateLimitIfUnreferenced(tx *gorm.DB, rateLimitID string) error {
+	if rateLimitID == "" {
+		return nil
+	}
+	var references int64
+	if err := tx.Raw(`
+		SELECT COUNT(*) FROM (
+			SELECT rate_limit_id AS referenced_id FROM governance_model_configs WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM config_providers WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_virtual_keys WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_virtual_key_provider_configs WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_teams WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_customers WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT id FROM governance_rate_limits WHERE id = ? AND model_config_id IS NOT NULL
+		) AS rate_limit_refs
+		WHERE referenced_id = ?
+	`, rateLimitID, rateLimitID).Scan(&references).Error; err != nil {
+		return fmt.Errorf("failed to check legacy rate limit %q references: %w", rateLimitID, err)
+	}
+	if references == 0 {
+		if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (h *GovernanceHandler) getConfiguredProviderSet(ctx context.Context) (map[schemas.ModelProvider]struct{}, error) {
 	providers, err := h.configStore.GetProviders(ctx)
 	if err != nil {
@@ -3455,6 +3734,16 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 		return
 	}
+	if req.RateLimit != nil && req.RateLimits != nil {
+		SendError(ctx, 400, "rate_limit and rate_limits cannot be used together")
+		return
+	}
+	if req.RateLimits != nil {
+		if err := validateModelRateLimitRules(req.RateLimits, false); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+	}
 	// Validate budgets if provided
 	seenDurations := make(map[string]bool, len(req.Budgets))
 	for i := range req.Budgets {
@@ -3526,9 +3815,26 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 			}
 			mc.Budgets = append(mc.Budgets, budget)
 		}
+		// Create model-owned single-metric rules after the model config exists so
+		// the ownership FK is valid on databases with foreign-key enforcement.
+		for _, request := range req.RateLimits {
+			rule := modelRateLimitRuleFromRequest(request, &mc.ID, mc.CalendarAligned)
+			if err := validateRateLimit(&rule); err != nil {
+				return &badRequestError{err: err}
+			}
+			if err := h.configStore.CreateRateLimit(ctx, &rule, tx); err != nil {
+				return err
+			}
+			mc.RateLimits = append(mc.RateLimits, rule)
+		}
 		return nil
 	}); err != nil {
 		logger.Error("failed to create model config: %v", err)
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to create model config: %v", err))
 		return
 	}
@@ -3562,9 +3868,19 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to retrieve model config")
 		return
 	}
+	if req.RateLimit != nil && req.RateLimits != nil {
+		SendError(ctx, 400, "rate_limit and rate_limits cannot be used together")
+		return
+	}
+	if req.RateLimits != nil {
+		if err := validateModelRateLimitRules(req.RateLimits, true); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+	}
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		// Track rate-limit ID to delete after updating the model config (to avoid FK constraint).
-		var rateLimitIDToDelete string
+		var rateLimitIDsToDelete []string
 
 		// Update fields if provided
 		if req.ModelName != nil {
@@ -3582,14 +3898,22 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 				return err
 			}
 		}
+		if req.RateLimits != nil {
+			if mc.RateLimitID != nil {
+				rateLimitIDsToDelete = append(rateLimitIDsToDelete, *mc.RateLimitID)
+			}
+			if err := h.reconcileModelConfigRateLimits(ctx, tx, mc, req.RateLimits); err != nil {
+				return err
+			}
+		}
 		// Handle rate limit updates
-		if req.RateLimit != nil {
+		if req.RateLimits == nil && req.RateLimit != nil {
 			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
 			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
 			if rateLimitIsEmpty {
 				// Mark rate limit for deletion after FK is removed
 				if mc.RateLimitID != nil {
-					rateLimitIDToDelete = *mc.RateLimitID
+					rateLimitIDsToDelete = append(rateLimitIDsToDelete, *mc.RateLimitID)
 					mc.RateLimitID = nil
 					mc.RateLimit = nil
 				}
@@ -3638,8 +3962,8 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 
 		// Now that the FK reference is removed, delete the orphaned rate limit.
-		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+		for _, rateLimitID := range uniqueStringIDs(rateLimitIDsToDelete) {
+			if err := deleteModelConfigRateLimitIfUnreferenced(tx, rateLimitID); err != nil {
 				return err
 			}
 		}
@@ -3647,6 +3971,11 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		return nil
 	}); err != nil {
 		logger.Error("failed to update model config: %v", err)
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 		SendError(ctx, 500, fmt.Sprintf("Failed to update model config: %v", err))
 		return
 	}
@@ -3899,7 +4228,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			willHaveBudget = len(*effectiveBudgets) > 0
 		}
 
-		hasGovernance := mc.RateLimitID != nil || willHaveBudget
+		hasGovernance := mc.RateLimitID != nil || len(mc.RateLimits) > 0 || willHaveBudget
 		switch {
 		case !hasGovernance && isNew:
 			// Nothing to persist (removal request on a provider with no governance).
@@ -3908,6 +4237,11 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			// All governance removed → delete the model config and its owned budgets.
 			for _, b := range mc.Budgets {
 				if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", b.ID).Error; err != nil {
+					return err
+				}
+			}
+			for _, rateLimit := range mc.RateLimits {
+				if err := h.configStore.DeleteRateLimit(ctx, rateLimit.ID, tx); err != nil {
 					return err
 				}
 			}
@@ -3968,11 +4302,30 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 					}
 				}
 			}
+			for i := range mc.RateLimits {
+				rl := &mc.RateLimits[i]
+				snapped := false
+				if rl.Metric == configstoreTables.ModelRateLimitMetricTokens && rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
+					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+					rl.TokenCurrentUsage = 0
+					snapped = true
+				}
+				if rl.Metric == configstoreTables.ModelRateLimitMetricRequests && rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
+					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+					rl.RequestCurrentUsage = 0
+					snapped = true
+				}
+				if snapped {
+					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
+						return fmt.Errorf("failed to snap provider model rate limit %s on calendar-align enable: %w", rl.ID, err)
+					}
+				}
+			}
 		}
 
-		// Delete orphaned rate-limit row if it was unlinked.
+		// Delete orphaned legacy rate-limit row if it was unlinked.
 		if rateLimitIDToDelete != "" {
-			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+			if err := deleteModelConfigRateLimitIfUnreferenced(tx, rateLimitIDToDelete); err != nil {
 				return err
 			}
 		}
@@ -3994,7 +4347,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		if err := h.governanceManager.RemoveModelConfig(ctx, mc.ID); err != nil {
 			logger.Error("failed to remove provider governance from memory: %v", err)
 		}
-	} else if len(mc.Budgets) > 0 || mc.RateLimitID != nil {
+	} else if len(mc.Budgets) > 0 || len(mc.RateLimits) > 0 || mc.RateLimitID != nil {
 		if reloaded, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID); err != nil {
 			logger.Error("failed to reload provider governance in memory: %v", err)
 			if r, ok := modelConfigToProviderGovernance(&mc); ok {
