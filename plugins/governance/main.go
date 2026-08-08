@@ -1044,7 +1044,10 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// BifrostContextKeyMCPAddedTools is populated by AddToolsToRequest (which runs before
 	// PreLLMHook), so it contains the real expanded tool names (e.g. "youtube-search") rather
 	// than raw header patterns (e.g. "youtube-*"), giving us exact per-tool validation.
-	if result.Decision == DecisionAllow && result.VirtualKey != nil {
+	// Gate on hierarchyVK, not result.VirtualKey: the customer/team/user steps above
+	// return fresh EvaluationResults that never carry the VK, so result.VirtualKey is
+	// nil here whenever those steps ran.
+	if result.Decision == DecisionAllow && hierarchyVK != nil {
 		if addedTools, ok := ctx.Value(schemas.BifrostContextKeyMCPAddedTools).([]string); ok && len(addedTools) > 0 {
 			// Fetch once before the loop to avoid repeated lock acquisitions per tool.
 			var allowAllClients map[string]string
@@ -1053,15 +1056,15 @@ func (p *GovernancePlugin) EvaluateGovernanceRequest(ctx *schemas.BifrostContext
 			}
 			var disallowed []string
 			for _, tool := range addedTools {
-				if !p.isMCPToolAllowedByVKWith(result.VirtualKey, tool, allowAllClients) {
+				if !p.isMCPToolAllowedByVKWith(hierarchyVK, tool, allowAllClients) {
 					disallowed = append(disallowed, tool)
 				}
 			}
 			if len(disallowed) > 0 {
 				result = &EvaluationResult{
 					Decision:   DecisionMCPToolBlocked,
-					Reason:     fmt.Sprintf("MCP tools not allowed for virtual key '%s': %s", result.VirtualKey.Name, strings.Join(disallowed, ", ")),
-					VirtualKey: result.VirtualKey,
+					Reason:     fmt.Sprintf("MCP tools not allowed for virtual key '%s': %s", hierarchyVK.Name, strings.Join(disallowed, ", ")),
+					VirtualKey: hierarchyVK,
 				}
 			}
 		}
