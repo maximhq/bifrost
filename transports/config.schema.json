@@ -424,6 +424,9 @@
         "parasail": {
           "$ref": "#/$defs/provider"
         },
+        "nadir": {
+          "$ref": "#/$defs/provider"
+        },
         "perplexity": {
           "$ref": "#/$defs/provider"
         },
