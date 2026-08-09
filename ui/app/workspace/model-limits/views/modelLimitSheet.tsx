@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { resetDurationOptions } from "@/lib/constants/governance";
+import { budgetSignature } from "@/lib/utils/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
@@ -170,15 +171,21 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 	// A budget config change on an existing limit is when clearing accumulated
 	// spend becomes a meaningful choice; creating one has no usage to reset.
+	// Compared without ids on purpose: form rows carry none while persisted rows do,
+	// so including them would report a change on every save. The shared signature
+	// folds in the fiscal quarter, which a limit-and-duration comparison misses -
+	// moving Q1 from April to July reschedules the reset without touching either.
 	const budgetsChanged = (data: FormData) => {
 		if (!isEditing || !modelConfig) return false;
-		const signature = (rows: { max_limit?: number | null; reset_duration?: string }[]) =>
-			[...rows]
-				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}`)
-				.sort()
-				.join("|");
-		const next = (data.budgets ?? []).filter((b) => b.max_limit !== undefined && b.max_limit !== null);
-		return signature(next) !== signature(modelConfig.budgets ?? []);
+		const next = (data.budgets ?? [])
+			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
+			.map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration, reset_config: b.reset_config }));
+		const current = (modelConfig.budgets ?? []).map((b) => ({
+			max_limit: b.max_limit ?? undefined,
+			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
+		}));
+		return budgetSignature(next) !== budgetSignature(current);
 	};
 
 	const onSubmit = async (data: FormData) => {

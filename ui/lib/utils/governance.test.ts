@@ -157,3 +157,28 @@ describe("budgetSignature", () => {
 		expect(budgetSignature([{ id: "b-1", reset_duration: "1Q" }])).toBe("");
 	});
 });
+// The owner sheets compare budgets without ids: form rows have no id while
+// persisted rows do, so feeding ids in would make every save look like a change.
+describe("budgetSignature without ids", () => {
+	const row = (quarterStartMonth?: number) => [
+		{
+			max_limit: 500,
+			reset_duration: "1Q",
+			...(quarterStartMonth === undefined ? {} : { reset_config: { quarter_start_month: quarterStartMonth } }),
+		},
+	];
+
+	it("detects a fiscal quarter change on an otherwise identical budget", () => {
+		expect(budgetSignature(row(4))).not.toBe(budgetSignature(row(7)));
+	});
+
+	it("reports no change when only ids differ", () => {
+		const persisted = [{ id: "b-1", max_limit: 500, reset_duration: "1Q", reset_config: { quarter_start_month: 4 } }];
+		const stripped = persisted.map((b) => ({
+			max_limit: b.max_limit,
+			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
+		}));
+		expect(budgetSignature(stripped)).toBe(budgetSignature(row(4)));
+	});
+});

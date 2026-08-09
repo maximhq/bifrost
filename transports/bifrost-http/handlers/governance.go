@@ -2762,11 +2762,17 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to update team")
 		return
 	}
-	// Reloading team from in-memory store
+	// Reloading team from in-memory store.
+	//
+	// A failure here cannot be swallowed on this path: the usage reset below is
+	// ordered after the reload and depends on it having happened, so continuing
+	// would clear usage against stale in-memory config while the database already
+	// holds the new one, and still answer 200 with the pre-update team.
 	preloadedTeam, err := h.governanceManager.ReloadTeam(ctx, team.ID)
 	if err != nil {
 		logger.Error("failed to reload team: %v", err)
-		preloadedTeam = team
+		SendError(ctx, 500, "Team updated in database but failed to reload in-memory state")
+		return
 	}
 	// Clear usage in the store that enforces spend. This runs after the reload,
 	// which deliberately carries each budget's cached usage forward and would
@@ -3108,10 +3114,14 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Not swallowed on this path: the usage reset below is ordered after the reload
+	// and depends on it, so continuing would clear usage against stale in-memory
+	// config and still answer 200 with the pre-update customer.
 	preloadedCustomer, err := h.governanceManager.ReloadCustomer(ctx, customer.ID)
 	if err != nil {
 		logger.Error("failed to reload customer: %v", err)
-		preloadedCustomer = customer
+		SendError(ctx, 500, "Customer updated in database but failed to reload in-memory state")
+		return
 	}
 	// Clear usage in the store that enforces spend. This runs after the reload,
 	// which deliberately carries each budget's cached usage forward and would
@@ -3732,11 +3742,16 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, fmt.Sprintf("Failed to update model config: %v", err))
 		return
 	}
-	// Reload model config in memory (also reloads from DB to get full relationships)
+	// Reload model config in memory (also reloads from DB to get full relationships).
+	//
+	// Not swallowed on this path: the usage reset below is ordered after the reload
+	// and depends on it, so continuing would clear usage against stale in-memory
+	// config and still answer 200 with the pre-update model config.
 	updatedMC, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
 	if err != nil {
 		logger.Error("failed to reload model config in memory: %v", err)
-		updatedMC = mc
+		SendError(ctx, 500, "Model config updated in database but failed to reload in-memory state")
+		return
 	}
 	// Clear usage in the store that enforces spend. This runs after the reload,
 	// which deliberately carries each budget's cached usage forward and would

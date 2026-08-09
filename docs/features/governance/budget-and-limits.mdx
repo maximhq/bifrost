@@ -237,7 +237,9 @@ Supported on virtual keys, teams, customers, model limits, and provider governan
 <Note>
 The reset clears **usage only**. The reset window keeps its existing start and end, because `last_reset`
 only ever advances and never moves as a side effect of a configuration write. That rule is what keeps
-every node in a cluster agreeing on which window is currently open.
+every node in a cluster agreeing on which window is currently open. The normal scheduled reset is
+unaffected and still advances `last_reset` when the window closes, so a manually cleared budget resets
+again at its usual boundary rather than starting a fresh window from the moment you cleared it.
 </Note>
 
 ### Budget overrides

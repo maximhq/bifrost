@@ -332,6 +332,33 @@ type UpdateCustomerRequest struct {
 	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
+// CreateModelConfigRequest represents a request to create a model-scoped limit.
+type CreateModelConfigRequest struct {
+	ModelName string                  `json:"model_name"`
+	Provider  *string                 `json:"provider,omitempty"`
+	Scope     string                  `json:"scope,omitempty"`
+	ScopeID   *string                 `json:"scope_id,omitempty"`
+	Budgets   []BudgetRequest         `json:"budgets,omitempty"`
+	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+}
+
+// UpdateModelConfigRequest represents a request to update a model-scoped limit.
+type UpdateModelConfigRequest struct {
+	ModelName *string         `json:"model_name,omitempty"`
+	Provider  *string         `json:"provider,omitempty"`
+	Budgets   []BudgetRequest `json:"budgets,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+}
+
+// UpdateProviderGovernanceRequest represents a request to update provider-level governance.
+type UpdateProviderGovernanceRequest struct {
+	Budgets         *[]BudgetRequest `json:"budgets,omitempty"`
+	CalendarAligned *bool            `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+}
+
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request
 type ChatCompletionRequest struct {
 	Model       string        `json:"model"`

@@ -499,7 +499,17 @@ func customerBudgetUsage(t *testing.T, customerID string) float64 {
 	if !ok || len(budgets) == 0 {
 		t.Fatalf("customer %s has no budgets: %v", customerID, customer)
 	}
-	usage, _ := budgets[0].(map[string]interface{})["current_usage"].(float64)
+	budget, ok := budgets[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("customer %s first budget is not an object: %v", customerID, budgets[0])
+	}
+	// Checked rather than defaulted to 0: every reset assertion is "usage is now
+	// zero", so a helper that silently returns 0 for a missing field would make
+	// those assertions pass without the reset having done anything.
+	usage, ok := budget["current_usage"].(float64)
+	if !ok {
+		t.Fatalf("customer %s budget has no current_usage: %v", customerID, budget)
+	}
 	return usage
 }
 

@@ -24,7 +24,7 @@ import QuarterStartSelect from "@/components/ui/quarterStartSelect";
 import { budgetResetDurationOptions, resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
 import { CreateTeamRequest, Team, UpdateTeamRequest } from "@/lib/types/governance";
-import { formatCurrency } from "@/lib/utils/governance";
+import { budgetSignature, formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
@@ -239,17 +239,21 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 	// Whether this save changes budget configuration on an existing team, which is
 	// when clearing accumulated spend is a meaningful choice. Creating a team has
 	// no usage to reset, and a save that leaves budgets alone should not ask.
+	// Compared without ids on purpose: form rows carry none while persisted rows do,
+	// so including them would report a change on every save. The shared signature
+	// folds in the fiscal quarter, which a limit-and-duration comparison misses -
+	// moving Q1 from April to July reschedules the reset without touching either.
 	const budgetsChanged = () => {
 		if (!isEditing || !team) return false;
-		const signature = (rows: { max_limit?: number | null; reset_duration?: string }[]) =>
-			[...rows]
-				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}`)
-				.sort()
-				.join("|");
 		const next = formData.budgets
 			.filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
-			.map((r) => ({ max_limit: r.maxLimit, reset_duration: r.resetDuration }));
-		return signature(next) !== signature(team.budgets ?? []);
+			.map((r) => ({ max_limit: r.maxLimit, reset_duration: r.resetDuration, reset_config: r.resetConfig }));
+		const current = (team.budgets ?? []).map((b) => ({
+			max_limit: b.max_limit ?? undefined,
+			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
+		}));
+		return budgetSignature(next) !== budgetSignature(current);
 	};
 
 	const handleSubmit = async (e: React.FormEvent) => {
