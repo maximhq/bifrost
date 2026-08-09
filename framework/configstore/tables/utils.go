@@ -144,6 +144,12 @@ func ParseDuration(duration string) (time.Duration, error) {
 			return m * 24 * 30, nil // Approximate month as 30 days
 		}
 		return 0, fmt.Errorf("invalid month duration: %s", duration)
+	case duration[len(duration)-1:] == "Q":
+		quarters := duration[:len(duration)-1]
+		if q, err := time.ParseDuration(quarters + "h"); err == nil {
+			return q * 24 * 90, nil // Approximate quarter as 90 days
+		}
+		return 0, fmt.Errorf("invalid quarter duration: %s", duration)
 	case duration[len(duration)-1:] == "Y":
 		years := duration[:len(duration)-1]
 		if y, err := time.ParseDuration(years + "h"); err == nil {

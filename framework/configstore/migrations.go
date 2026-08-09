@@ -459,6 +459,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_budget_override_anchor_columns"}, run: migrationAddBudgetOverrideAnchorColumns},
 	{IDs: []string{"add_live_models_sync_interval_column"}, run: migrationAddLiveModelsSyncIntervalColumn},
 	{IDs: []string{"add_pricing_override_user_id_column"}, run: migrationAddPricingOverrideUserIDColumn},
+	{IDs: []string{"add_budget_reset_config_column"}, run: migrationAddBudgetResetConfigColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11004,6 +11005,46 @@ func migrationAddWebhookConfigClientColumn(ctx context.Context, db *gorm.DB, log
 		return fmt.Errorf("error while running webhook config client column migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddBudgetResetConfigColumn adds the reset_config_json column to
+// governance_budgets.
+//
+// Additive and nullable with no backfill: an existing budget has no quarter
+// definition, and a NULL column reads back as a nil ResetConfig, which every
+// window call site treats as January. Pre-existing budgets therefore keep their
+// current cadence exactly.
+func migrationAddBudgetResetConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_budget_reset_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableBudget{}, "reset_config_json") {
+				if err := mg.AddColumn(&tables.TableBudget{}, "ResetConfigJSON"); err != nil {
+					return fmt.Errorf("add reset_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: rollbackBudgetResetConfigColumn,
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running budget reset config column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// rollbackBudgetResetConfigColumn refuses to undo
+// migrationAddBudgetResetConfigColumn. reset_config_json is the only home for a
+// budget's quarter definition, and QuarterStartMonth reads a nil ResetConfig as
+// January, so dropping the column would not merely lose data: it would silently
+// re-window every fiscal-year budget onto the calendar year.
+func rollbackBudgetResetConfigColumn(*gorm.DB) error {
+	return fmt.Errorf("add_budget_reset_config_column is non-rollbackable: dropping reset_config_json would permanently delete every budget's fiscal-quarter definition and silently revert those budgets to the January default; the column is additive and older binaries safely ignore it")
 }
 
 // migrationAddWebhookJobsTable creates the webhook_jobs work-queue table.
