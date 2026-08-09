@@ -23,6 +23,9 @@ type pricingOverrideTestGovernanceManager struct{}
 func (pricingOverrideTestGovernanceManager) GetGovernanceData(ctx context.Context) *governance.GovernanceData {
 	return nil
 }
+func (pricingOverrideTestGovernanceManager) ResetBudgetUsageInMemory(context.Context, string, []string) error {
+	return nil
+}
 func (pricingOverrideTestGovernanceManager) ReloadVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
 	return nil, nil
 }
