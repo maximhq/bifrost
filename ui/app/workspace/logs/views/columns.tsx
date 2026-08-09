@@ -3,7 +3,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { getProviderLabel, ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
+import {
+	getProviderLabel,
+	logAppDisplayName,
+	mapAppToClientApp,
+	mapUserAgentToApp,
+	ProviderName,
+	RequestTypeColors,
+	RequestTypeLabels,
+	Status,
+	StatusBarColors,
+} from "@/lib/constants/logs";
 import { ChatMessageContent, LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
@@ -250,6 +260,7 @@ export const createColumns = (
 	onDelete: (log: LogEntry) => void,
 	hasDeleteAccess = true,
 	metadataKeys: string[] = [],
+	customAppIcons: Record<string, string> = {},
 ): ColumnDef<LogEntry>[] => {
 	const baseColumns: ColumnDef<LogEntry>[] = [
 		{
@@ -324,6 +335,23 @@ export const createColumns = (
 							<span className="truncate font-mono text-[12px]">{model || "N/A"}</span>
 							<span className="text-muted-foreground truncate text-[10.5px]">{provider ? getProviderLabel(provider) : "N/A"}</span>
 						</div>
+					</div>
+				);
+			},
+		},
+		{
+			id: "app",
+			accessorKey: "app",
+			header: "App",
+			size: 140,
+			cell: ({ row }) => {
+				const app = row.original.app ? mapAppToClientApp(row.original.app) : mapUserAgentToApp(row.original.user_agent);
+				const icon = row.original.app ? customAppIcons[row.original.app] || app.icon : app.icon;
+				const label = logAppDisplayName(app, row.original.user_agent);
+				return (
+					<div className="flex min-w-0 items-center gap-2" title={row.original.user_agent || undefined}>
+						{icon ? <img className="rounded-sm" src={icon} alt={label} width={20} height={20} loading="lazy" decoding="async" /> : null}
+						<span className="truncate text-[12px]">{label}</span>
 					</div>
 				);
 			},

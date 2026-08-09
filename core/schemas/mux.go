@@ -213,6 +213,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					respBlocks[i].FileID = block.File.FileID
 					respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
+						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
 						FileType: block.File.FileType,
 					}
@@ -430,7 +431,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				reasoningType := ResponsesMessageTypeReasoning
 				reasoningRole := ResponsesInputMessageRoleAssistant
 				rm := ResponsesMessage{
-					ID:   Ptr("rs_" + GetRandomString(50)),
+					ID:   new("rs_" + GetRandomString(50)),
 					Type: &reasoningType,
 					Role: &reasoningRole,
 				}
@@ -451,7 +452,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			reasoningRole := ResponsesInputMessageRoleAssistant
 			reasoningText := *am.Reasoning
 			messages = append(messages, ResponsesMessage{
-				ID:   Ptr("rs_" + GetRandomString(50)),
+				ID:   new("rs_" + GetRandomString(50)),
 				Type: &reasoningType,
 				Role: &reasoningRole,
 				Content: &ResponsesMessageContent{
@@ -616,7 +617,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				if block.File != nil {
 					responseBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 						FileData: block.File.FileData,
+						FileURL:  block.File.FileURL,
 						Filename: block.File.Filename,
+						FileType: block.File.FileType,
 					}
 					responseBlocks[i].FileID = block.File.FileID
 				}
@@ -642,6 +645,15 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		rm.ResponsesToolMessage = &ResponsesToolMessage{}
 		if cm.ChatToolMessage.ToolCallID != nil {
 			rm.ResponsesToolMessage.CallID = cm.ChatToolMessage.ToolCallID
+		}
+
+		// The chat surface marks a failed tool result with a bool and carries no
+		// error text, so there is nothing to put in ResponsesToolMessage.Error.
+		// Status "incomplete" is the equivalent signal on this surface, and is
+		// what the Anthropic Responses converter already reads back as is_error
+		// (providers/anthropic/responses.go).
+		if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
+			rm.Status = Ptr("incomplete")
 		}
 
 		// If tool output content exists, add it to function_call_output
@@ -836,6 +848,15 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						ToolCallID: rm.ResponsesToolMessage.CallID,
 					}
 
+					// Both spellings the Responses surface uses for a failed tool
+					// result collapse to the chat surface's single bool. Mirrors
+					// the same pair the Anthropic Responses converter treats as
+					// is_error (providers/anthropic/responses.go).
+					if (rm.ResponsesToolMessage.Error != nil && *rm.ResponsesToolMessage.Error != "") ||
+						(rm.Status != nil && *rm.Status == "incomplete") {
+						cm.ChatToolMessage.IsError = Ptr(true)
+					}
+
 					// Extract content from ResponsesFunctionToolCallOutput if present
 					// This is needed because OpenAI Responses API uses an "output" field
 					// which is stored in ResponsesFunctionToolCallOutput
@@ -924,7 +945,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					if block.ResponsesInputMessageContentBlockFile != nil {
 						chatBlocks[i].File = &ChatInputFile{
 							FileData: block.ResponsesInputMessageContentBlockFile.FileData,
+							FileURL:  block.ResponsesInputMessageContentBlockFile.FileURL,
 							Filename: block.ResponsesInputMessageContentBlockFile.Filename,
+							FileType: block.ResponsesInputMessageContentBlockFile.FileType,
 							FileID:   block.FileID,
 						}
 					}
@@ -1662,11 +1685,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	// Convert first streaming choice to BifrostResponsesStreamResponse
 	// Note: Chat API typically has one choice per chunk in streaming
 	choice := cr.Choices[0]
-	if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
-		return nil
+	var delta *ChatStreamResponseChoiceDelta
+	if choice.ChatStreamResponseChoice != nil {
+		delta = choice.ChatStreamResponseChoice.Delta
+	}
+	if delta == nil {
+		if choice.FinishReason == nil {
+			return nil
+		}
+		// Some OpenAI-compatible upstreams send their terminal chunk as
+		// {"delta":null,"finish_reason":"stop"} (or omit "delta" entirely).
+		// Fall through with an empty delta so the finish_reason handling below
+		// still runs and emits the Completed/Incomplete event with usage/stop_reason.
+		delta = &ChatStreamResponseChoiceDelta{}
 	}
 
-	delta := choice.ChatStreamResponseChoice.Delta
 	var responses []*BifrostResponsesStreamResponse
 
 	// Store message ID and model from first chunk

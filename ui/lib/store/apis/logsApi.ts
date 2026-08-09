@@ -89,6 +89,12 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.business_unit_ids && filters.business_unit_ids.length > 0) {
 		params.business_unit_ids = filters.business_unit_ids.join(",");
 	}
+	if (filters.apps && filters.apps.length > 0) {
+		params.apps = JSON.stringify(filters.apps);
+	}
+	if (filters.user_agents && filters.user_agents.length > 0) {
+		params.user_agents = JSON.stringify(filters.user_agents);
+	}
 	if (filters.metadata_filters) {
 		for (const [key, value] of Object.entries(filters.metadata_filters)) {
 			params[`metadata_${key}`] = value;
@@ -96,6 +102,16 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 
 	return params;
+}
+
+/**
+ * Row-cap params shared by the ranking endpoints. `all` wins over `limit`: the
+ * backend ignores a limit when all=true so exports are never truncated.
+ */
+function buildRankingLimitParams(limit?: number, all?: boolean): Record<string, string | number> {
+	if (all) return { all: "true" };
+	if (limit !== undefined) return { limit };
+	return {};
 }
 
 export const logsApi = baseApi.injectEndpoints({
@@ -305,16 +321,20 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
-		// Get model rankings with trends
+		// Get model rankings with trends.
+		// `limit` caps the number of ranked rows (backend default: 100); `all`
+		// returns every ranked entity and is what the dashboard export uses.
 		getModelRankings: builder.query<
 			ModelRankingsResponse,
 			{
 				filters: LogFilters;
+				limit?: number;
+				all?: boolean;
 			}
 		>({
-			query: ({ filters }) => ({
+			query: ({ filters, limit, all }) => ({
 				url: "/logs/rankings",
-				params: buildFilterParams(filters),
+				params: { ...buildFilterParams(filters), ...buildRankingLimitParams(limit, all) },
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -324,11 +344,13 @@ export const logsApi = baseApi.injectEndpoints({
 			{
 				filters: LogFilters;
 				dimension: RankingDimension;
+				limit?: number;
+				all?: boolean;
 			}
 		>({
-			query: ({ filters, dimension }) => ({
+			query: ({ filters, dimension, limit, all }) => ({
 				url: "/logs/rankings/by-dimension",
-				params: { ...buildFilterParams(filters), dimension },
+				params: { ...buildFilterParams(filters), dimension, ...buildRankingLimitParams(limit, all) },
 			}),
 			providesTags: ["Logs"],
 		}),
@@ -352,6 +374,8 @@ export const logsApi = baseApi.injectEndpoints({
 				routing_rules?: RoutingRule[];
 				routing_engines?: string[];
 				stop_reasons?: string[];
+				apps?: string[];
+				user_agents?: string[];
 				teams?: { id: string; name: string }[];
 				customers?: { id: string; name: string }[];
 				users?: { id: string; name: string }[];

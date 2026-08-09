@@ -303,11 +303,16 @@ func (h *WSRealtimeHandler) runRealtimeSession(
 		clientConn.writeRealtimeError(headerErr)
 		return
 	}
+	var proxyConfig *schemas.ProxyConfig
+	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
+		proxyConfig = providerCfg.ProxyConfig
+	}
+
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
 		KeyID:    key.ID,
 		Endpoint: wsURL,
-	}, mapToHTTPHeader(realtimeHeaders))
+	}, mapToHTTPHeader(realtimeHeaders), proxyConfig)
 	if err != nil {
 		clientConn.writeRealtimeError(newRealtimeWireBifrostError(502, "server_error", err.Error()))
 		return
@@ -830,11 +835,11 @@ var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyAPIKeyName,
 	schemas.BifrostContextKeySelectedKeyID,
 	schemas.BifrostContextKeySelectedKeyName,
-	// NOTE: BifrostContextKeyTraceID is intentionally NOT inherited here. The
-	// upgrade request's trace is already ended by the time realtime turns run, so
-	// inheriting it would route each turn's log entry into pendingLogsToInject
-	// under a dead trace ID whose Inject() never fires, dropping the row. Each
-	// realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
+	// NOTE: BifrostContextKeyTraceID (and its W3C export, BifrostContextKeyExportTraceID)
+	// are intentionally NOT inherited here. The upgrade request's trace is already ended
+	// by the time realtime turns run, so inheriting it would route each turn's log entry
+	// into pendingLogsToInject under a dead trace ID whose Inject() never fires, dropping
+	// the row. Each realtime turn mints its own trace in RunRealtimeTurnPreHooks instead.
 	schemas.BifrostContextKeyTransportPluginLogs,
 }
 

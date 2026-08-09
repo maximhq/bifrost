@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,22 @@ func newStandaloneStore(t *testing.T) *LocalGovernanceStore {
 		LastDBUsagesTokensRateLimits:   map[string]int64{},
 		LastDBUsagesRequestsRateLimits: map[string]int64{},
 	}
+}
+
+// TestGetVirtualKeyByID exercises the ID-keyed lookup directly without taking
+// the full governance snapshot path.
+func TestGetVirtualKeyByID(t *testing.T) {
+	store := newStandaloneStore(t)
+	vk := &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "test", Value: *schemas.NewSecretVar("sk-bf-test")}
+	store.storeVirtualKey(vk.Value.GetValue(), vk)
+
+	got, found := store.GetVirtualKeyByID(context.Background(), vk.ID)
+	require.True(t, found)
+	assert.Same(t, vk, got)
+
+	got, found = store.GetVirtualKeyByID(context.Background(), "missing")
+	assert.False(t, found)
+	assert.Nil(t, got)
 }
 
 // TestBumpBudgetUsage_NoLostIncrements proves the CAS retry loop in

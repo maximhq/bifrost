@@ -1,8 +1,10 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -59,6 +61,13 @@ export default function SecurityView() {
 		is_enabled: false,
 	});
 	const [passwordError, setPasswordError] = useState("");
+	const [setupToken, setSetupToken] = useState("");
+	const [setupTokenErrorMessage, setSetupTokenErrorMessage] = useState<string | null>(null);
+	// No admin account has ever been created on this instance yet. The very first
+	// PUT /api/config that creates one must include the setup token the operator
+	// configured via setup_token in config.json (or BIFROST_SETUP_TOKEN), so this
+	// field only needs to show up that once.
+	const isFirstTimeSetup = !bifrostConfig?.auth_config;
 
 	useEffect(() => {
 		if (bifrostConfig && config) {
@@ -197,6 +206,12 @@ export default function SecurityView() {
 				passwordInputRef.current?.focus({ preventScroll: true });
 				return;
 			}
+			if (isFirstTimeSetup && authConfig.is_enabled && !setupToken.trim()) {
+				setSetupTokenErrorMessage(
+					"Enter the setup token configured by your operator to create the first admin account. It's set via setup_token in config.json or the BIFROST_SETUP_TOKEN environment variable.",
+				);
+				return;
+			}
 			setPasswordError("");
 
 			await updateCoreConfig({
@@ -204,18 +219,27 @@ export default function SecurityView() {
 				client_config: localConfig,
 				...(showPasswordSection
 					? {
-							auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
-						}
+						auth_config: {
+							...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
+							...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
+						},
+					}
 					: {}),
 			}).unwrap();
+			setSetupToken("");
 			toast.success("Security settings updated successfully.");
 		} catch (error) {
-			toast.error(getErrorMessage(error));
+			const message = getErrorMessage(error);
+			if (isFirstTimeSetup && message.toLowerCase().includes("setup token")) {
+				setSetupTokenErrorMessage(message);
+			} else {
+				toast.error(message);
+			}
 		}
-	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig]);
+	}, [bifrostConfig, localConfig, authConfig, showPasswordSection, updateCoreConfig, isFirstTimeSetup, setupToken]);
 
 	return (
-		<div className="mx-auto h-[calc(100vh-50px)] w-full max-w-4xl space-y-4 overflow-y-auto">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
@@ -287,6 +311,25 @@ export default function SecurityView() {
 										</p>
 									) : null}
 								</div>
+								{isFirstTimeSetup && authConfig.is_enabled ? (
+									<div className="space-y-2">
+										<Label htmlFor="setup-token">Setup token</Label>
+										<Input
+											id="setup-token"
+											data-testid="security-setup-token-input"
+											type="password"
+											autoComplete="off"
+											placeholder="Paste the setup token configured by your operator"
+											value={setupToken}
+											onChange={(e) => setSetupToken(e.target.value)}
+										/>
+										<p className="text-muted-foreground text-xs">
+											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your
+											operator for the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
+											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
+										</p>
+									</div>
+								) : null}
 							</div>
 						</div>
 					</div>
@@ -457,11 +500,29 @@ export default function SecurityView() {
 					</div>
 				</div>
 			</div>
-			<div className="bg-card sticky bottom-0 flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
 			</div>
+			<Dialog open={!!setupTokenErrorMessage} onOpenChange={(open) => !open && setSetupTokenErrorMessage(null)}>
+				<DialogContent data-testid="setup-token-error-dialog">
+					<DialogHeader>
+						<DialogTitle>Setup token required</DialogTitle>
+						<DialogDescription>{setupTokenErrorMessage}</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setSetupTokenErrorMessage(null)} data-testid="setup-token-error-close">
+							Close
+						</Button>
+						<Button asChild data-testid="setup-token-error-view-docs">
+							<a href="https://docs.getbifrost.ai/quickstart/gateway/setting-up-auth" target="_blank" rel="noopener noreferrer">
+								View docs
+							</a>
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }

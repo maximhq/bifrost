@@ -171,6 +171,87 @@ func TestDropUnsupportedParams_ChatMaxCompletionTokensUnchanged(t *testing.T) {
 	}
 }
 
+// TestDropUnsupportedParams_ServiceTier pins service_tier passthrough on both
+// request paths. A dropped service_tier is invisible to the caller - the
+// provider simply serves the request at its default tier and bills it as such -
+// so this guards that the param survives whenever the catalog allowlists it.
+func TestDropUnsupportedParams_ServiceTier(t *testing.T) {
+	tests := []struct {
+		name          string
+		supported     []string
+		wantPreserved bool
+	}{
+		{
+			name:          "catalog lists service_tier",
+			supported:     []string{"temperature", "service_tier"},
+			wantPreserved: true,
+		},
+		{
+			name:          "catalog omits service_tier",
+			supported:     []string{"temperature"},
+			wantPreserved: false,
+		},
+		{
+			name:          "empty catalog",
+			supported:     []string{},
+			wantPreserved: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-5.4",
+					Params: &schemas.ChatParameters{
+						ServiceTier: schemas.Ptr(schemas.BifrostServiceTierPriority),
+						Temperature: schemas.Ptr(0.5),
+					},
+				},
+			}
+
+			dropped := dropUnsupportedParams(newTestContext(), req, tt.supported)
+			assertServiceTier(t, req.ChatRequest.Params.ServiceTier, dropped, tt.wantPreserved, tt.supported)
+		})
+
+		t.Run(tt.name+"/responses", func(t *testing.T) {
+			req := newResponsesRequest(schemas.OpenAI, "gpt-5.4", &schemas.ResponsesParameters{
+				ServiceTier: schemas.Ptr(schemas.BifrostServiceTierPriority),
+				Temperature: schemas.Ptr(0.5),
+			})
+
+			dropped := dropUnsupportedParams(newTestContext(), req, tt.supported)
+			assertServiceTier(t, req.ResponsesRequest.Params.ServiceTier, dropped, tt.wantPreserved, tt.supported)
+		})
+	}
+}
+
+func assertServiceTier(t *testing.T, got *schemas.BifrostServiceTier, dropped []string, wantPreserved bool, supported []string) {
+	t.Helper()
+
+	if wantPreserved {
+		if got == nil {
+			t.Fatalf("service_tier = dropped, want preserved (supported=%v)", supported)
+		}
+		if *got != schemas.BifrostServiceTierPriority {
+			t.Errorf("service_tier = %q, want %q", *got, schemas.BifrostServiceTierPriority)
+		}
+		if slices.Contains(dropped, "service_tier") {
+			t.Errorf("service_tier reported in dropped=%v, want absent", dropped)
+		}
+		return
+	}
+
+	if got != nil {
+		t.Fatalf("service_tier = %q, want dropped (supported=%v)", *got, supported)
+	}
+	if !slices.Contains(dropped, "service_tier") {
+		t.Errorf("service_tier not reported in dropped=%v, want present", dropped)
+	}
+}
+
 func TestDropUnsupportedParams_ChatReasoningWithUnsupportedTools(t *testing.T) {
 	newChat := func() *schemas.BifrostRequest {
 		return &schemas.BifrostRequest{

@@ -139,6 +139,317 @@ func TestToAnthropicChatRequest_OpenAICompatibleFileIDUsesFileSource(t *testing.
 	}
 }
 
+func TestToAnthropicChatRequest_DocumentOnlyMessageGetsPlaceholderTextBlock(t *testing.T) {
+	body := `{
+		"model": "anthropic/claude-sonnet-4-5-20250929",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{
+					"type": "file",
+					"file": {
+						"file_id": "file_abc123",
+						"filename": "tiny.pdf",
+						"format": "application/pdf"
+					}
+				}
+			]
+		}]
+	}`
+
+	var openAIReq openai.OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("unmarshal OpenAI-compatible request: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := openAIReq.ToBifrostChatRequest(ctx)
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected placeholder text block plus document block, got %d blocks", len(blocks))
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeText {
+		t.Fatalf("expected leading placeholder text block, got %q", blocks[0].Type)
+	}
+	if blocks[0].Text == nil || strings.TrimSpace(*blocks[0].Text) == "" {
+		t.Fatalf("expected non-empty placeholder text, got %v", blocks[0].Text)
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block after placeholder, got %q", blocks[1].Type)
+	}
+}
+
+func TestToAnthropicChatRequest_DocumentWithTextDoesNotGetPlaceholder(t *testing.T) {
+	body := `{
+		"model": "anthropic/claude-sonnet-4-5-20250929",
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "text", "text": "Read the attached PDF."},
+				{
+					"type": "file",
+					"file": {
+						"file_id": "file_abc123",
+						"filename": "tiny.pdf",
+						"format": "application/pdf"
+					}
+				}
+			]
+		}]
+	}`
+
+	var openAIReq openai.OpenAIChatRequest
+	if err := sonic.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("unmarshal OpenAI-compatible request: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := openAIReq.ToBifrostChatRequest(ctx)
+	result, err := ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected exactly two content blocks (no placeholder inserted), got %d", len(blocks))
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeText || blocks[0].Text == nil || *blocks[0].Text != "Read the attached PDF." {
+		t.Fatalf("expected original text block preserved unchanged, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", blocks[1].Type)
+	}
+}
+
+func TestToAnthropicChatRequest_UserDocumentWithWhitespaceTextGetsPlaceholder(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5-20250929",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{
+						Type: schemas.ChatContentBlockTypeText,
+						Text: new("   "),
+					},
+					{
+						Type: schemas.ChatContentBlockTypeFile,
+						File: &schemas.ChatInputFile{
+							FileID:   new("file_abc123"),
+							Filename: new("tiny.pdf"),
+							FileType: new("application/pdf"),
+						},
+					},
+				}},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: new("Understood.")},
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[0].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected placeholder text and document blocks, got %+v", blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeText || blocks[0].Text == nil || *blocks[0].Text != documentPlaceholderText {
+		t.Fatalf("expected leading document placeholder, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", blocks[1].Type)
+	}
+}
+
+// documentPrefillRequest builds a request whose final message is an assistant
+// prefill carrying a document block, optionally preceded by the given text.
+func documentPrefillRequest(prefillText *string) *schemas.BifrostChatRequest {
+	assistantBlocks := []schemas.ChatContentBlock{}
+	if prefillText != nil {
+		assistantBlocks = append(assistantBlocks, schemas.ChatContentBlock{
+			Type: schemas.ChatContentBlockTypeText,
+			Text: prefillText,
+		})
+	}
+	assistantBlocks = append(assistantBlocks, schemas.ChatContentBlock{
+		Type: schemas.ChatContentBlockTypeFile,
+		File: &schemas.ChatInputFile{
+			FileID:   new("file_abc123"),
+			Filename: new("tiny.pdf"),
+			FileType: new("application/pdf"),
+		},
+	})
+
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5-20250929",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: new("Summarize this.")},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentBlocks: assistantBlocks},
+			},
+		},
+	}
+}
+
+// lastMessageTextBlock returns the text of the last text block in the final
+// message of the converted request.
+func lastMessageTextBlock(t *testing.T, result *AnthropicMessageRequest) string {
+	t.Helper()
+	if len(result.Messages) == 0 {
+		t.Fatalf("expected at least one message")
+	}
+	blocks := result.Messages[len(result.Messages)-1].Content.ContentBlocks
+	for j := len(blocks) - 1; j >= 0; j-- {
+		if blocks[j].Type == AnthropicContentBlockTypeText {
+			if blocks[j].Text == nil {
+				t.Fatalf("expected non-nil text on text block %d", j)
+			}
+			return *blocks[j].Text
+		}
+	}
+	t.Fatalf("expected a text block in the final message, got %+v", blocks)
+	return ""
+}
+
+// A document-only assistant prefill must keep a usable text block: the
+// trailing-whitespace trim applied to the final assistant message previously
+// erased the injected placeholder, leaving an empty text block that Anthropic
+// rejects ("text content blocks must contain non-whitespace text").
+func TestToAnthropicChatRequest_AssistantPrefillDocumentOnlyKeepsPlaceholder(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, documentPrefillRequest(nil))
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	text := lastMessageTextBlock(t, result)
+	if strings.TrimSpace(text) == "" {
+		t.Fatalf("expected non-whitespace placeholder text to survive trimming, got %q", text)
+	}
+	if text != strings.TrimRight(text, " \n\r\t") {
+		t.Fatalf("final assistant text must not end with trailing whitespace, got %q", text)
+	}
+}
+
+// A caller-supplied whitespace-only prefill text block alongside a document is
+// removed during normalization, so the document placeholder must replace it.
+func TestToAnthropicChatRequest_AssistantPrefillWhitespaceTextWithDocumentRestoresPlaceholder(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, documentPrefillRequest(new("   ")))
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	text := lastMessageTextBlock(t, result)
+	if strings.TrimSpace(text) == "" {
+		t.Fatalf("expected placeholder to replace the whitespace-only text block, got %q", text)
+	}
+}
+
+// Anthropic requires a thinking-enabled assistant turn to begin with its
+// thinking/redacted_thinking blocks, so the document placeholder must be
+// inserted after them rather than prepended at index 0.
+func TestToAnthropicChatRequest_AssistantPrefillDocumentKeepsReasoningBlocksFirst(t *testing.T) {
+	req := documentPrefillRequest(nil)
+	req.Input[len(req.Input)-1].ChatAssistantMessage = &schemas.ChatAssistantMessage{
+		ReasoningDetails: []schemas.ChatReasoningDetails{
+			{
+				Index:     0,
+				Type:      schemas.BifrostReasoningDetailsTypeText,
+				Text:      new("Let me read the document."),
+				Signature: new("sig_abc123"),
+			},
+			{
+				Index: 1,
+				Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+				Data:  new("redacted_payload"),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[len(result.Messages)-1].Content.ContentBlocks
+	want := []AnthropicContentBlockType{
+		AnthropicContentBlockTypeThinking,
+		AnthropicContentBlockTypeRedactedThinking,
+		AnthropicContentBlockTypeText,
+		AnthropicContentBlockTypeDocument,
+	}
+	if len(blocks) != len(want) {
+		t.Fatalf("expected %d blocks, got %+v", len(want), blocks)
+	}
+	for i, wantType := range want {
+		if blocks[i].Type != wantType {
+			t.Fatalf("block %d: expected %q, got %q (blocks: %+v)", i, wantType, blocks[i].Type, blocks)
+		}
+	}
+	if blocks[2].Text == nil || *blocks[2].Text != documentPlaceholderText {
+		t.Fatalf("expected the document placeholder after the reasoning blocks, got %+v", blocks[2])
+	}
+}
+
+func TestToAnthropicChatRequest_AssistantPrefillDropsTrailingWhitespaceWhenUsableTextExists(t *testing.T) {
+	req := documentPrefillRequest(nil)
+	req.Input[len(req.Input)-1].Content.ContentBlocks = []schemas.ChatContentBlock{
+		{
+			Type: schemas.ChatContentBlockTypeText,
+			Text: new("Read this"),
+		},
+		{
+			Type: schemas.ChatContentBlockTypeFile,
+			File: &schemas.ChatInputFile{
+				FileID:   new("file_abc123"),
+				Filename: new("tiny.pdf"),
+				FileType: new("application/pdf"),
+			},
+		},
+		{
+			Type: schemas.ChatContentBlockTypeText,
+			Text: new("   "),
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("convert to Anthropic request: %v", err)
+	}
+
+	blocks := result.Messages[len(result.Messages)-1].Content.ContentBlocks
+	if len(blocks) != 2 {
+		t.Fatalf("expected usable text and document blocks, got %+v", blocks)
+	}
+	if blocks[0].Type != AnthropicContentBlockTypeText || blocks[0].Text == nil || *blocks[0].Text != "Read this" {
+		t.Fatalf("expected usable text preserved unchanged, got %+v", blocks[0])
+	}
+	if blocks[1].Type != AnthropicContentBlockTypeDocument {
+		t.Fatalf("expected document block, got %q", blocks[1].Type)
+	}
+}
+
 func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 	makeReq := func(props *schemas.OrderedMap) *schemas.BifrostChatRequest {
 		return &schemas.BifrostChatRequest{
@@ -209,6 +520,78 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 
 	if string(jsonA) != string(jsonB) {
 		t.Errorf("caching broken: same schema produced different JSON\nA: %s\nB: %s", jsonA, jsonB)
+	}
+}
+
+// TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock is the regression test for a
+// live harness failure: Anthropic's real API rejects cache_control nested inside
+// tool_result.content ("cache_control may not be specified within `tool_result.content`.
+// Instead, place it directly on `tool_result`"), but the ChatMessageRoleTool conversion branch
+// (chat.go:759-808) only ever copied a content block's CacheControl onto the nested block itself
+// (line 784), never onto the outer tool_result block, so every cached tool result built via the
+// unified chat-completions dialect was wire-invalid for Anthropic-family providers. The fix
+// hoists the first CacheControl found among a tool message's content blocks onto the tool_result
+// block itself and strips it from the nested block, mirroring the same hoist-to-outer-level
+// pattern already used for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
+func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.T) {
+	toolCallID := "toolu_1"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("what is the weather in nyc")},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(toolCallID)},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{
+						Type:         schemas.ChatContentBlockTypeText,
+						Text:         schemas.Ptr("68F, partly cloudy."),
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					},
+				}},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var toolResultBlock *AnthropicContentBlock
+	for i := range result.Messages {
+		msg := result.Messages[i]
+		if msg.Role != "user" || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for j := range msg.Content.ContentBlocks {
+			if msg.Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolResult {
+				toolResultBlock = &msg.Content.ContentBlocks[j]
+			}
+		}
+	}
+	if toolResultBlock == nil {
+		t.Fatal("expected a tool_result content block in the converted request")
+	}
+
+	if toolResultBlock.CacheControl == nil {
+		t.Fatal("expected cache_control to be hoisted onto the tool_result block itself")
+	}
+	if toolResultBlock.CacheControl.Type != schemas.CacheControlTypeEphemeral {
+		t.Errorf("tool_result cache_control type = %q, want %q", toolResultBlock.CacheControl.Type, schemas.CacheControlTypeEphemeral)
+	}
+
+	if toolResultBlock.Content == nil || toolResultBlock.Content.ContentBlocks == nil || len(toolResultBlock.Content.ContentBlocks) != 1 {
+		t.Fatalf("expected exactly 1 nested content block, got %+v", toolResultBlock.Content)
+	}
+	if toolResultBlock.Content.ContentBlocks[0].CacheControl != nil {
+		t.Error("nested content block must not carry cache_control -- Anthropic's real API rejects it there")
 	}
 }
 
@@ -1281,10 +1664,64 @@ func TestToAnthropicChatRequest_MidConversationSystem_Opus48(t *testing.T) {
 	}
 }
 
-// TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement verifies
-// that a mid-conv system message with invalid placement (followed by user, not
-// assistant) falls back to top-level system accumulation rather than emitting
-// a role:"system" that would 400 on the Anthropic API.
+// assertInlinedReminder asserts that `text` reached the messages array as a mid-conversation
+// reminder inlined into a user turn (the <system-reminder> envelope), and that it did NOT end up
+// in the top-level system block. Hoisting into `system` preserves the text but renders it ahead
+// of every message, invalidating the cached prefix behind it — measured at roughly half the
+// prompt on a warm conversation. See inlineMidConversationSystem.
+func assertInlinedReminder(t *testing.T, result *AnthropicMessageRequest, text string) {
+	t.Helper()
+	want := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+
+	var found bool
+	for _, msg := range result.Messages {
+		if msg.Role != AnthropicMessageRoleUser {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Text != nil && *block.Text == want {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected %q inlined as a <system-reminder> user turn, roles were %v", text, chatRoleSeq(result.Messages))
+	}
+
+	if result.System != nil {
+		if result.System.ContentStr != nil && strings.Contains(*result.System.ContentStr, text) {
+			t.Errorf("mid-conversation content %q was hoisted into top-level system; that collapses the cached prefix", text)
+		}
+		for _, block := range result.System.ContentBlocks {
+			if block.Text != nil && strings.Contains(*block.Text, text) {
+				t.Errorf("mid-conversation content %q was hoisted into top-level system; that collapses the cached prefix", text)
+			}
+		}
+	}
+
+	for i, msg := range result.Messages {
+		if msg.Role == AnthropicMessageRoleSystem {
+			t.Errorf("msg[%d] has role:system — the inline fallback must not emit one", i)
+		}
+	}
+}
+
+func chatRoleSeq(msgs []AnthropicMessage) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, string(m.Role))
+	}
+	return out
+}
+
+// TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement verifies that a mid-conv
+// system message Anthropic would reject on placement grounds is inlined rather than forwarded.
+//
+// Anthropic enforces two clauses: the turn must FOLLOW a user message and must be last or
+// followed by an assistant turn. This input violates both (it follows an assistant and is
+// followed by a user), so forwarding it returns 400. The converter previously fell back to
+// hoisting into top-level system, which avoided the 400 but collapsed the cached prefix; it now
+// inlines, which avoids the 400 AND keeps the cache anchor inside `messages`.
 func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testing.T) {
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
@@ -1293,7 +1730,7 @@ func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testin
 			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Initial.")}},
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
 			{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hi!")}},
-			// system followed by user — invalid placement, Anthropic returns 400
+			// Follows an assistant AND is followed by a user — violates both clauses.
 			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Bad placement.")}},
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Continue")}},
 		},
@@ -1307,32 +1744,21 @@ func TestToAnthropicChatRequest_MidConversationSystem_InvalidPlacement(t *testin
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Invalid placement: falls back to top-level system accumulation.
+	// The leading system prompt still hoists — only mid-conversation content inlines.
 	if result.System == nil {
-		t.Fatal("expected top-level System to contain both initial and fallback content")
+		t.Fatal("expected the leading system prompt to remain in top-level System")
 	}
-	blocks := result.System.ContentBlocks
-	if len(blocks) != 2 {
-		t.Fatalf("expected 2 system blocks (initial + fallback), got %d", len(blocks))
+	if got := textBlocks(result.System); len(got) != 1 || got[0] != "Initial." {
+		t.Errorf("top-level System = %v, want exactly [\"Initial.\"]", got)
 	}
-	if blocks[0].Text == nil || *blocks[0].Text != "Initial." {
-		t.Errorf("block[0] = %v, want \"Initial.\"", blocks[0].Text)
-	}
-	if blocks[1].Text == nil || *blocks[1].Text != "Bad placement." {
-		t.Errorf("block[1] = %v, want \"Bad placement.\"", blocks[1].Text)
-	}
-	// No role:"system" in messages array.
-	for i, msg := range result.Messages {
-		if msg.Role == AnthropicMessageRoleSystem {
-			t.Errorf("msg[%d] has role:system — invalid placement should have been caught", i)
-		}
-	}
+	assertInlinedReminder(t, result, "Bad placement.")
 }
 
-// TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends verifies that
-// for a non-supporting model/provider the mid-conversation system content is
-// appended to (not overwrites) the top-level system field.
-func TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends(t *testing.T) {
+// TestToAnthropicChatRequest_MidConversationSystem_FallbackInlines verifies the fallback for a
+// provider that cannot carry role:"system" at all. Bedrock, Vertex, and Foundry do not expose
+// mid-conversation system messages regardless of model, so every such message takes the fallback
+// path — which inlines rather than hoisting.
+func TestToAnthropicChatRequest_MidConversationSystem_FallbackInlines(t *testing.T) {
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Bedrock,
 		Model:    "global.anthropic.claude-opus-4-8",
@@ -1353,31 +1779,18 @@ func TestToAnthropicChatRequest_MidConversationSystem_FallbackAppends(t *testing
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Top-level system field must exist and contain BOTH the initial and mid-conv content.
 	if result.System == nil {
-		t.Fatal("expected top-level System to be set")
+		t.Fatal("expected the leading system prompt to remain in top-level System")
 	}
-	if len(result.System.ContentBlocks) != 2 {
-		t.Fatalf("expected 2 system content blocks (initial + mid-conv appended), got %d", len(result.System.ContentBlocks))
+	if got := textBlocks(result.System); len(got) != 1 || got[0] != "Initial system." {
+		t.Errorf("top-level System = %v, want exactly [\"Initial system.\"]", got)
 	}
-	if result.System.ContentBlocks[0].Text == nil || *result.System.ContentBlocks[0].Text != "Initial system." {
-		t.Errorf("block[0] = %v, want 'Initial system.'", result.System.ContentBlocks[0].Text)
-	}
-	if result.System.ContentBlocks[1].Text == nil || *result.System.ContentBlocks[1].Text != "Mid-conv instruction." {
-		t.Errorf("block[1] = %v, want 'Mid-conv instruction.'", result.System.ContentBlocks[1].Text)
-	}
-
-	// No role:"system" entry should appear in the messages array.
-	for i, msg := range result.Messages {
-		if msg.Role == AnthropicMessageRoleSystem {
-			t.Errorf("msg[%d] has role system — should not appear for Bedrock", i)
-		}
-	}
+	assertInlinedReminder(t, result, "Mid-conv instruction.")
 }
 
-// TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47 verifies that
-// mid-conversation system messages are NOT emitted for Opus 4.7 (feature is
-// Opus 4.8+ only).
+// TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47 verifies that a model predating
+// the feature (Opus 4.7; it is Opus 4.8+) takes the inline fallback rather than emitting a
+// role:"system" the API would reject.
 func TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47(t *testing.T) {
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
@@ -1398,29 +1811,7 @@ func TestToAnthropicChatRequest_MidConversationSystem_NotOnOpus47(t *testing.T) 
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Mid-conv instruction must be preserved in the top-level System field.
-	if result.System == nil {
-		t.Fatal("expected top-level System to contain fallback mid-conversation instruction")
-	}
-	foundFallback := false
-	if result.System.ContentStr != nil && *result.System.ContentStr == "New instruction." {
-		foundFallback = true
-	}
-	for _, block := range result.System.ContentBlocks {
-		if block.Text != nil && *block.Text == "New instruction." {
-			foundFallback = true
-			break
-		}
-	}
-	if !foundFallback {
-		t.Fatal("expected mid-conversation system content to be preserved in top-level System")
-	}
-
-	for i, msg := range result.Messages {
-		if msg.Role == AnthropicMessageRoleSystem {
-			t.Errorf("msg[%d] has role system — should not appear for Opus 4.7", i)
-		}
-	}
+	assertInlinedReminder(t, result, "New instruction.")
 }
 
 // TestToBifrostChatCompletionStream_NoArgToolFlushesEmptyObject covers the

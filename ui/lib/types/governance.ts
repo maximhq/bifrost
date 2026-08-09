@@ -47,6 +47,10 @@ export interface Team {
 	rate_limit_id?: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendar_aligned?: boolean;
+	// Number of virtual keys assigned to this team (server-computed via a
+	// correlated subquery; the list endpoints report this instead of embedding
+	// the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	customer?: Customer;
 	budgets?: Budget[]; // Multi-budget: each with a distinct reset_duration
@@ -58,6 +62,9 @@ export interface Customer {
 	name: string;
 	rate_limit_id?: string;
 	calendar_aligned?: boolean;
+	// Number of virtual keys owned by this customer (server-computed; the list
+	// endpoint reports this instead of embedding the virtual keys themselves)
+	virtual_key_count?: number;
 	// Populated relationships
 	teams?: Team[];
 	budgets?: Budget[];
@@ -99,6 +106,10 @@ export interface VirtualKey {
 	customer?: Customer;
 	budgets?: Budget[];
 	rate_limit?: RateLimit;
+	// Read-only, server-computed: true when the VK is governed by an access profile.
+	// Lets the UI lock edits and show the managed-key notice without the separately
+	// RBAC-gated access-profile lookup.
+	is_access_profile_managed?: boolean;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
@@ -279,6 +290,8 @@ export interface GetVirtualKeysParams {
 	search?: string;
 	customer_id?: string;
 	team_id?: string;
+	/** Enterprise-only: filters to virtual keys assigned to this user. */
+	user_id?: string;
 	exclude_access_profile_managed_virtual?: boolean;
 	exclude_assigned_virtual_keys?: boolean;
 	for_user_assignment?: boolean;
@@ -497,6 +510,8 @@ export interface PricingOverridePatch {
 	output_cost_per_image_above_512_and_512_pixels_and_premium_image?: number;
 	output_cost_per_image_above_1024_and_1024_pixels?: number;
 	output_cost_per_image_above_1024_and_1024_pixels_and_premium_image?: number;
+	output_cost_per_image_above_2048_and_2048_pixels?: number;
+	output_cost_per_image_above_4096_and_4096_pixels?: number;
 	output_cost_per_image_low_quality?: number;
 	output_cost_per_image_medium_quality?: number;
 	output_cost_per_image_high_quality?: number;

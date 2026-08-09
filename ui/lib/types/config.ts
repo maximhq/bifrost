@@ -262,6 +262,7 @@ export interface NetworkConfig {
 	keep_alive_timeout_in_seconds?: number;
 	max_conns_per_host?: number;
 	enforce_http2?: boolean;
+	http2_ping_interval_in_seconds?: number;
 	beta_header_overrides?: Record<string, boolean>;
 	allow_private_network?: boolean;
 }
@@ -494,6 +495,10 @@ export interface AuthConfig {
 	admin_username: SecretVar;
 	admin_password: SecretVar;
 	is_enabled: boolean;
+	/** Write-only: required only when this PUT request creates the very first admin account
+	 *  (no admin account exists yet). Provided by the operator via setup_token in config.json
+	 *  or the BIFROST_SETUP_TOKEN env var. Never persisted or returned by GET /api/config. */
+	setup_token?: string;
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)

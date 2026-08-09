@@ -3,7 +3,7 @@ title: "Cloudflare ZTNA (Access)"
 description: "Front Bifrost Enterprise with Cloudflare Access (Zero Trust) as an identity-aware proxy that authenticates every request before it reaches Bifrost."
 ---
 
-An **identity-aware proxy (IAP)** sits in front of Bifrost and authenticates the user *before* the request ever reaches it. The proxy validates identity, then injects a signed token header on every request. Bifrost verifies that token against the proxy's own keys and authenticates the user from its claims — no interactive login redirect happens at Bifrost itself.
+An **identity-aware proxy (IAP)** sits in front of Bifrost and authenticates the user *before* the request ever reaches it. The proxy validates identity, then injects a signed token header on every request. Bifrost verifies that token against the proxy's own keys and authenticates the user from its claims - no interactive login redirect happens at Bifrost itself.
 
 This guide covers [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) (part of Cloudflare's Zero Trust / ZTNA platform). Cloudflare authenticates users against your identity provider and forwards a signed `Cf-Access-Jwt-Assertion` header (an RS256 JWT) to Bifrost. Bifrost validates it against your Cloudflare team domain's JWKS and binds it to your application's audience (AUD) tag.
 
@@ -17,13 +17,13 @@ This guide covers [Cloudflare Access](https://www.cloudflare.com/zero-trust/prod
 
 1. A user requests a Bifrost URL protected by a Cloudflare Access application.
 2. Cloudflare authenticates the user against your configured identity provider and enforces your Access policies.
-3. Cloudflare forwards the request to Bifrost with the `Cf-Access-Jwt-Assertion` header — a short-lived RS256 JWT signed by your team domain.
+3. Cloudflare forwards the request to Bifrost with the `Cf-Access-Jwt-Assertion` header - a short-lived RS256 JWT signed by your team domain.
 4. Bifrost validates the token's signature against `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, checks the audience (AUD) tag, and resolves the user from the token's identity claim (`email` by default).
 
 Because Bifrost validates the proxy's token (not the IdP's), both the dashboard and the inference APIs are protected by the same upstream authentication layer.
 
 <Warning>
-  When the proxy header is absent, Bifrost falls back to the IDP login - so if Bifrost is reachable directly (bypassing Cloudflare), a client can skip your Access policies. Restrict network access so Bifrost is only reachable through Cloudflare (e.g. via a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) or by allowlisting Cloudflare IPs), and ensure the proxy strips any client-supplied `Cf-Access-Jwt-Assertion` header before injecting its own.
+  When the proxy header is absent, Bifrost falls back to the IDP login - so if Bifrost is reachable directly (bypassing Cloudflare), a client can skip your Access policies and will fallback to the configured IDP on Bifrost.
 </Warning>
 
 ---
@@ -52,8 +52,6 @@ The auth proxy runs in one of two modes:
 - A **Cloudflare Zero Trust** account with Access enabled
 - Your Bifrost deployment reachable through Cloudflare (proxied DNS / tunnel)
 - An identity provider already configured in Bifrost under **User Provisioning**
-- Bifrost [roles](../rbac) created for any roles you plan to map (full mode)
-- For **login-only** mode: users already provisioned in Bifrost (via SCIM or a prior interactive login)
 
 ---
 
@@ -88,7 +86,7 @@ You need two values from Cloudflare:
 | Value | Where to find it |
 | --- | --- |
 | **Team domain (issuer)** | Your Zero Trust team domain, e.g. `https://<team>.cloudflareaccess.com`. This is your team's account URL. |
-| **Application Audience (AUD) tag** | Open your application, go to the **Additional settings** tab, and select **AUD tag**. Copy the **Token** value — a long hex string that uniquely identifies this application. |
+| **Application Audience (AUD) tag** | Open your application, go to the **Additional settings** tab, and select **AUD tag**. Copy the **Token** value - a long hex string that uniquely identifies this application. |
 
 <Frame caption="Copy the Application Audience (AUD) tag from the application's Additional settings → AUD tag tab.">
   <img src="/media/user-provisioning/auth-proxy/cloudflare-aud-tag.png" alt="Cloudflare Access application Additional settings tab showing the Application Audience AUD tag token value" />
@@ -145,7 +143,7 @@ Select **Login only** (authenticate against existing roles) or **Full** (map rol
 | **Team domain (issuer)** | Your Cloudflare team domain, e.g. `https://<team>.cloudflareaccess.com`. Bifrost derives the JWKS endpoint and the `Cf-Access-Jwt-Assertion` header automatically. |
 | **Application AUD tag** | The Audience tag from your Access application, binding the token to this application. |
 
-The **Advanced** section lets you override the request header, supply an explicit JWKS URL, or change the identity claim — all optional for Cloudflare Access.
+The **Advanced** section lets you override the request header, supply an explicit JWKS URL, or change the identity claim - all optional for Cloudflare Access.
 
 </Step>
 
@@ -153,7 +151,7 @@ The **Advanced** section lets you override the request header, supply an explici
 
 Save the provider configuration. Click **Verify & Next** and complete the wizard.
 
-Identity-Aware Proxy changes on an already-enabled provider — turning IAP on or off, switching the proxy type, or editing the team domain, AUD tag, JWKS, or mode — are hot-reloaded and take effect immediately (and are propagated to peer nodes in a cluster).
+Identity-Aware Proxy changes on an already-enabled provider - turning IAP on or off, switching the proxy type, or editing the team domain, AUD tag, JWKS, or mode - are hot-reloaded and take effect immediately (and are propagated to peer nodes in a cluster).
 
 </Step>
 
@@ -199,7 +197,7 @@ The `authProxy` block lives inside your SSO provider's `config` under the top-le
 | `userIdClaim` | string (secret) | No | Token claim used as the user identity. Defaults to `email`. |
 
 <Note>
-  \*Either `audience` or a non-empty `allowedAudiences` is required — an unbound token would be accepted across applications. All URLs must use `https`.
+  \*Either `audience` or a non-empty `allowedAudiences` is required - an unbound token would be accepted across applications. All URLs must use `https`.
 </Note>
 
 ---
@@ -222,6 +220,7 @@ The `authProxy` block lives inside your SSO provider's `config` under the top-le
 
 ## Next steps
 
+- **[AWS ALB](./aws-alb)** - front Bifrost with an AWS Application Load Balancer
 - **[Generic OIDC proxy](./generic-proxy)** - front Bifrost with any OIDC-based identity-aware proxy
 - **[RBAC](../rbac)** - define the roles the proxy authenticates against
 - **[User provisioning](../user-provisioning)** - SCIM and OIDC provider setup

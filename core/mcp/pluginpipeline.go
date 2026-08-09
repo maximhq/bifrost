@@ -159,11 +159,16 @@ func (m *MCPManager) RunWithPluginPipeline(
 		startOpSpan(req)
 		resp, opErr := op(req)
 		if opErr != nil {
-			return resp, &schemas.BifrostError{
+			bErr := &schemas.BifrostError{
 				IsBifrostError: false,
 				Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 				ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 			}
+			var authRequiredErr *schemas.MCPAuthRequiredError
+			if errors.As(opErr, &authRequiredErr) {
+				bErr.ExtraFields.MCPAuthRequired = authRequiredErr
+			}
+			return resp, bErr
 		}
 		return resp, nil
 	}
@@ -240,6 +245,10 @@ func (m *MCPManager) RunWithPluginPipeline(
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 			ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
+		}
+		var authRequiredErr *schemas.MCPAuthRequiredError
+		if errors.As(opErr, &authRequiredErr) {
+			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
 		}
 	}
 
@@ -338,7 +347,10 @@ func (m *MCPManager) runConnectWithPluginPipeline(
 		if opErr != nil {
 			return resp, &schemas.BifrostError{
 				IsBifrostError: false,
-				Error:          &schemas.ErrorField{Message: opErr.Error()},
+				// Error kept alongside Message (json:"-", same as
+				// runWithPluginPipeline) so callers can classify via
+				// errors.Is/errors.As instead of string-matching.
+				Error: &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 			}
 		}
 		return resp, nil
@@ -393,7 +405,10 @@ func (m *MCPManager) runConnectWithPluginPipeline(
 	if opErr != nil {
 		bErr = &schemas.BifrostError{
 			IsBifrostError: false,
-			Error:          &schemas.ErrorField{Message: opErr.Error()},
+			// Error kept alongside Message (json:"-", same as
+			// runWithPluginPipeline) so callers can classify via
+			// errors.Is/errors.As instead of string-matching.
+			Error: &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 		}
 	}
 
@@ -481,8 +496,8 @@ func (m *MCPManager) runListToolsWithHooks(ctx context.Context, conn *client.Cli
 // runPingWithHooks wraps conn.Ping in the MCP plugin gate. A PreHook may short-circuit
 // the ping (synthetic healthy/unhealthy) without touching the wire; a PostHook may
 // inspect the latency and outcome. Any error returned here is treated identically to a
-// real ping failure by the health-monitor state machine.
-func (chm *ClientHealthMonitor) runPingWithHooks(ctx context.Context, conn *client.Client, clientName string) error {
+// real ping failure by the connection checker's state machine.
+func (m *MCPManager) runPingWithHooks(ctx context.Context, conn *client.Client, clientName string) error {
 	req := &schemas.BifrostMCPRequest{
 		RequestType:           schemas.MCPRequestTypePing,
 		ClientName:            clientName,
@@ -490,7 +505,7 @@ func (chm *ClientHealthMonitor) runPingWithHooks(ctx context.Context, conn *clie
 	}
 	gateCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	start := time.Now()
-	_, bErr := chm.manager.RunWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	_, bErr := m.RunWithPluginPipeline(gateCtx, req, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Use gateCtx so a PreMCPHook's context writes (e.g. BifrostContextKeyMCPExtraHeaders)
 		// reach the transport headerFunc on this ping. See runListToolsWithHooks for details.
 		if pingErr := conn.Ping(gateCtx); pingErr != nil {

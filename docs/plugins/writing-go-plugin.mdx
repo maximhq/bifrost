@@ -420,6 +420,76 @@ Key points:
 - **No-op when unscoped** - safe to call in any context; silently ignored outside plugin hooks
 - Logs are retrievable via `ctx.GetPluginLogs()` (read copy) or `ctx.DrainPluginLogs()` (transfer ownership)
 
+#### `ctx.GetModelInfo(provider, model)` <sup>v1.6.7+</sup>
+
+Returns pricing and capability metadata for a model - the same information the `/v1/models` endpoint reports. Available from every hook, and from plugins built without a `framework` dependency.
+
+```go
+info := ctx.GetModelInfo(schemas.Anthropic, "claude-opus-5")
+if info == nil {
+	return // unknown model, or no catalog configured
+}
+
+if info.ContextLength != nil {
+	ctx.Log(schemas.LogLevelInfo, fmt.Sprintf("context window: %d tokens", *info.ContextLength))
+}
+if info.IsDeprecated {
+	ctx.Log(schemas.LogLevelWarn, "model is deprecated")
+}
+```
+
+**What comes back** - a `*schemas.Model`:
+
+| Field | Type | Description |
+|---|---|---|
+| `ID` | `string` | The model string you asked for |
+| `Pricing` | `*schemas.Pricing` | Flat per-token rates as decimal strings - `Prompt`, `Completion`, `Image`, `InputCacheRead`, `InputCacheWrite`, `WebSearch` |
+| `ContextLength` | `*int` | Total context window; falls back to max input tokens when the catalog has no separate value |
+| `MaxInputTokens` | `*int` | Input token ceiling |
+| `MaxOutputTokens` | `*int` | Output token ceiling |
+| `Architecture` | `*schemas.Architecture` | Modality, tokenizer, input/output modalities |
+| `SupportedParameters` | `[]string` | Request parameters the model accepts |
+| `IsDeprecated` | `bool` | Whether the model is retired |
+| `AdditionalAttributes` | `map[string]string` | Editorial metadata (description, tags) |
+
+Key points:
+- **Returns `nil`** when the model is unknown to the catalog, and also when no catalog is configured - always nil-check
+- **Fresh copy** - the returned `*schemas.Model` belongs to you; mutating it affects nothing else
+- **Provider is required** - pass the concrete provider that serves the model. Read it from `req.GetRequestFields()` in a pre-hook, or from the response's `RoutingInfo` in a post-hook, rather than inferring it from the model string
+- **Every field is optional** - the catalog is only as complete as the provider datasheet, so nil-check individual pointers too
+
+#### `ctx.CalculateCost(resp)` <sup>v1.6.7+</sup>
+
+Returns the dollar cost of a completed response.
+
+```go
+func (p *MyPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	cost := ctx.CalculateCost(resp) // compute synchronously
+	go func() {
+		p.reportToBilling(cost) // then use the value anywhere
+	}()
+	return resp, bifrostErr, nil
+}
+```
+
+Prefer this over doing arithmetic on `GetModelInfo(...).Pricing`. That field carries only flat prompt and completion rates, while `CalculateCost` applies the full pricing resolution:
+
+- Long-context tiers (128k / 200k / 272k)
+- Batch, priority, flex and fast rates
+- Cache read and cache write costs
+- The provider and request-mode fallback chain, so aliased and provider-prefixed models still resolve
+- Any virtual key, user, or provider key pricing override in effect for this request
+
+<Warning>
+Call `ctx.CalculateCost` **synchronously inside your hook**. It reads governance scopes (user ID, virtual key ID, selected key ID) off the request context, and that read is not safe once the request has been cancelled. If you need the cost in a background goroutine, compute it in the hook and close over the `float64` as shown above.
+</Warning>
+
+Returns `0` when no catalog is configured or the response carries no billable usage.
+
+<Note>
+Both methods are inert rather than fatal when no model catalog is wired - `GetModelInfo` returns `nil` and `CalculateCost` returns `0`. This keeps plugins portable between the Bifrost HTTP gateway, which always configures a catalog, and Go SDK embeddings of `core`, which may not.
+</Note>
+
 <Tabs>
   <Tab title="v1.5.x+">
 #### `HTTPTransportPreHook(ctx, req)`

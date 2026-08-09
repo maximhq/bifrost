@@ -1,0 +1,1 @@
+- perf: bulk virtual key provider replacement and direct VK lookup to eliminate per-provider round trips in the governance store (#5844)

@@ -1791,8 +1791,12 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		// Message stop - always set stopReason
 		stopReason := "end_turn"
-		if bifrostResp.Response != nil && bifrostResp.Response.IncompleteDetails != nil {
-			stopReason = bifrostResp.Response.IncompleteDetails.Reason
+		if bifrostResp.Response != nil {
+			if bifrostResp.Response.StopReason != nil {
+				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
+			} else if bifrostResp.Response.IncompleteDetails != nil {
+				stopReason = bifrostResp.Response.IncompleteDetails.Reason
+			}
 		}
 		event.StopReason = &stopReason
 
@@ -2234,8 +2238,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Converse API genuinely can't consume are dropped. The kept slice is used
 	// locally below — bifrostReq.Params.Tools is never mutated.
 	var keepTools []schemas.ResponsesTool
+	var providerDroppedTools []string
 	if bifrostReq.Params != nil && bifrostReq.Params.Tools != nil {
-		keepTools, _ = anthropic.ValidateResponsesToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock)
+		keepTools, providerDroppedTools = anthropic.ValidateResponsesToolsForProvider(bifrostReq.Params.Tools, schemas.Bedrock)
 	}
 
 	bedrockReq := &BedrockConverseRequest{
@@ -2508,25 +2513,24 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	}
 
 	// Convert tools (using the provider-filtered keepTools set computed above).
+	var modelDroppedTools []string
 	if len(keepTools) > 0 {
 		var bedrockTools []BedrockTool
 		isNova2 := schemas.IsNova2Model(capModel)
 		for _, tool := range keepTools {
-			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
-				if !isNova2 {
-					// skip adding this tool
-					continue
-				}
-				var systemToolName BedrockSystemToolType
-				switch tool.Type {
-				case schemas.ResponsesToolTypeWebSearch:
-					systemToolName = BedrockSystemToolNovaGrounding
-				case schemas.ResponsesToolTypeCodeInterpreter:
+			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebSearchPreview || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
+				// web_search and web_search_preview are both kept for Bedrock by
+				// ValidateResponsesToolsForProvider (same case, same WebSearchNova
+				// carve-out) — both must map to nova_grounding here too.
+				systemToolName := BedrockSystemToolNovaGrounding
+				if tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
 					systemToolName = BedrockSystemToolNovaCodeInterpreter
 				}
-				bedrockTools = append(bedrockTools, BedrockTool{
-					SystemTool: &BedrockSystemTool{Name: systemToolName},
-				})
+				if bt := convertToNovaSystemTool(systemToolName, isNova2); bt != nil {
+					bedrockTools = append(bedrockTools, *bt)
+				} else {
+					modelDroppedTools = append(modelDroppedTools, string(tool.Type))
+				}
 				continue
 			}
 			if tool.ResponsesToolFunction != nil {
@@ -2582,6 +2586,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				Tools: bedrockTools,
 			}
 		}
+	}
+	if dropped := append(append([]string{}, providerDroppedTools...), modelDroppedTools...); len(dropped) > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyDroppedUnsupportedTools, dropped)
 	}
 
 	// Convert tool choice
@@ -2662,8 +2669,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	if !schemas.BedrockModelSupportsCachePoints(capModel) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
-	} else if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
-		downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+	} else {
+		if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+		}
+		// Bedrock rejects a request carrying more than BedrockMaxCachePoints markers outright,
+		// so trim the earliest rather than let the whole call fail. Runs last, after every
+		// converter branch has contributed its markers.
+		clampBedrockCachePoints(bedrockReq)
 	}
 
 	return bedrockReq, nil
@@ -2889,6 +2902,7 @@ func ensureResponsesToolConfigForConversation(ctx context.Context, bifrostReq *s
 func extractToolsFromResponsesConversationHistory(ctx context.Context, messages []schemas.ResponsesMessage, model string) (bool, []BedrockTool) {
 	var hasToolContent bool
 	toolMap := make(map[string]*schemas.ResponsesTool) // Use map to deduplicate by name
+	var toolNames []string                             // Insertion-order tracking for toolMap
 	var hasNovaGrounding, hasNovaCodeInterpreter bool
 
 	for _, msg := range messages {
@@ -2901,6 +2915,7 @@ func extractToolsFromResponsesConversationHistory(ctx context.Context, messages 
 				if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
 					toolName := *msg.ResponsesToolMessage.Name
 					if _, exists := toolMap[toolName]; !exists {
+						toolNames = append(toolNames, toolName)
 						// Create a minimal tool definition
 						toolMap[toolName] = &schemas.ResponsesTool{
 							Type: "function",
@@ -2926,7 +2941,8 @@ func extractToolsFromResponsesConversationHistory(ctx context.Context, messages 
 
 	// Convert function tool map to BedrockTool slice
 	var tools []BedrockTool
-	for _, tool := range toolMap {
+	for _, toolName := range toolNames {
+		tool := toolMap[toolName]
 		if tool.Name != nil && tool.ResponsesToolFunction != nil {
 			schemaObject := tool.ResponsesToolFunction.Parameters
 			if schemaObject == nil {
@@ -3803,6 +3819,41 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 	}
 	bedrockMessages = mergedMessages
 
+	// Merging rescues a document block that has a text sibling elsewhere in the
+	// same role's turn, but a message that never had one (or whose only text
+	// block was empty) is still document-only at this point. Insert a
+	// placeholder so it still validates ("A text block must be included when
+	// using documents").
+	for i := range bedrockMessages {
+		if !hasBedrockDocumentBlock(bedrockMessages[i].Content) {
+			continue
+		}
+		content := bedrockMessages[i].Content
+		filtered := content[:0]
+		hasUsableText := false
+		for _, b := range content {
+			if b.Text != nil {
+				if strings.TrimSpace(*b.Text) == "" {
+					continue
+				}
+				hasUsableText = true
+			}
+			filtered = append(filtered, b)
+		}
+		content = filtered
+		if !hasUsableText {
+			at := leadingBedrockReasoningBlockCount(content)
+			withPlaceholder := make([]BedrockContentBlock, 0, len(content)+1)
+			withPlaceholder = append(withPlaceholder, content[:at]...)
+			withPlaceholder = append(withPlaceholder, BedrockContentBlock{
+				Text: schemas.Ptr(bedrockDocumentPlaceholderText),
+			})
+			withPlaceholder = append(withPlaceholder, content[at:]...)
+			content = withPlaceholder
+		}
+		bedrockMessages[i].Content = content
+	}
+
 	return bedrockMessages, systemMessages, nil
 }
 
@@ -3870,22 +3921,58 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
+	// Only the LAST breakpoint in a reminder is emitted. Within a single message an intermediate
+	// cachePoint buys nothing — a marker at the end already closes over every preceding block, and
+	// the message is atomic so no later request can diverge in its middle — while still consuming
+	// one of the four checkpoints Bedrock allows per request. Collapsing to one keeps a
+	// pathological reminder from crowding out the system and tool-result anchors.
+	var lastCacheControl *schemas.CacheControl
 
-	// Text-only by design: reminders never carry images, and we deliberately attach no cache point
-	// here — a breakpoint on this moving-tail message would shift every turn and defeat the prefix
-	// caching this inlining exists for.
+	// Text-only by design: reminders never carry images.
+	//
+	// The breakpoint, by contrast, has to survive the inlining. A mid-conversation reminder
+	// frequently carries the conversation-level cache anchor — Claude Code's third breakpoint,
+	// after the two on the leading system prompt — and dropping it leaves both survivors inside
+	// the `system` block, pinning the cacheable prefix at the system/tools floor so the entire
+	// conversation body is re-read uncached on every turn. That is the exact collapse the
+	// surrounding inlining exists to prevent.
+	//
+	// A breakpoint on this moving tail is not a wasted breakpoint: Bedrock matches the longest
+	// cached prefix at or before each breakpoint, so one that advances a turn at a time extends
+	// the cached prefix and costs a single write, which is how incremental conversation caching
+	// is meant to work. Measured end to end in the harness — 49.8% → 99.9% hit rate on a warm
+	// ~19K prompt. See tests/e2e/api/runners/lib/midconv-system-cache-parity.mjs and
+	// midconvcachepoint_test.go.
+	//
+	// Models that don't support prompt caching are unaffected: stripCachePointsFromBedrockRequest
+	// runs later in ToBedrockResponsesRequest and drops cachePoint-only content blocks outright.
 	if msg.Content.ContentStr != nil {
+		// The string form has nowhere to hang a per-block cache_control, so no breakpoint was
+		// sent and none may be invented — that would burn a cache checkpoint the client never
+		// asked for, against a cap Bedrock sets at 4 for Claude.
 		wrap(*msg.Content.ContentStr)
 	} else if msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Text != nil {
 				wrap(*block.Text)
+				if block.CacheControl != nil {
+					lastCacheControl = block.CacheControl
+				}
 			}
 		}
 	}
 
 	if len(contentBlocks) == 0 {
 		return nil
+	}
+
+	// Per Converse semantics a cachePoint element terminates the cacheable prefix rather than
+	// opening one, so it follows the text it closes over — the same ordering every sibling call
+	// site in this file already uses for tool_use and tool_result blocks.
+	if lastCacheControl != nil {
+		contentBlocks = append(contentBlocks, BedrockContentBlock{
+			CachePoint: newBedrockCachePoint(lastCacheControl.TTL),
+		})
 	}
 
 	return &BedrockMessage{
@@ -4254,6 +4341,44 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				outputMessages = append(outputMessages, toolMsg)
 			}
 
+		} else if block.Image != nil {
+			// Image content
+			role := convertBedrockRoleToBifrostRole(msg.Role)
+
+			imageBlock := schemas.ResponsesMessageContentBlock{
+				Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+				ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{},
+			}
+			if block.Image.Source.Bytes == nil {
+				continue
+			}
+			mediaType := "image/jpeg"
+			switch block.Image.Format {
+			case "png":
+				mediaType = "image/png"
+			case "gif":
+				mediaType = "image/gif"
+			case "webp":
+				mediaType = "image/webp"
+			}
+			dataURL := *block.Image.Source.Bytes
+			if !strings.HasPrefix(dataURL, "data:") {
+				dataURL = fmt.Sprintf("data:%s;base64,%s", mediaType, dataURL)
+			}
+			imageBlock.ResponsesInputMessageContentBlockImage.ImageURL = &dataURL
+
+			bifrostMsg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{imageBlock},
+				},
+			}
+			if isOutputMessage {
+				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+			}
+			outputMessages = append(outputMessages, bifrostMsg)
+
 		} else if block.Document != nil {
 			// Document content
 			role := convertBedrockRoleToBifrostRole(msg.Role)
@@ -4365,14 +4490,38 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			// Create a copy of the value to avoid range loop variable capture
 			toolResultID := block.ToolResult.ToolUseID
 
+			// A cache_control nested inside the tool_result's own content (independent of one on
+			// the tool_result block itself, which the block.CachePoint sibling handler below
+			// already covers) surfaces here as a standalone CachePoint block within Content.
+			// Bifrost's canonical form has no per-nested-block cache granularity for tool results
+			// (mirrors the single ToolResult.CacheControl field on the egress side), so fold it
+			// into the message-level CacheControl, same as the sibling-CachePoint fallback below.
+			var nestedCacheControl *schemas.CacheControl
+			for _, c := range block.ToolResult.Content {
+				if c.CachePoint != nil {
+					nestedCacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+						TTL:  c.CachePoint.TTL,
+					}
+					break
+				}
+			}
+
 			resultMsg := schemas.ResponsesMessage{
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				CacheControl: nestedCacheControl,
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
 					CallID: &toolResultID,
 					Output: &schemas.ResponsesToolMessageOutputStruct{
 						ResponsesToolCallOutputStr: &resultContent,
 					},
 				},
+			}
+			// Anthropic's tool_result.is_error normalizes to Status "error" in invoke.go's
+			// UnmarshalJSON; surface it the same way the native Anthropic provider does
+			// (anthropic/responses.go) so a failed tool call isn't read back as a success.
+			if block.ToolResult.Status != nil && *block.ToolResult.Status == "error" {
+				resultMsg.Status = schemas.Ptr("incomplete")
 			}
 			if isOutputMessage {
 				resultMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
@@ -4412,7 +4561,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 	// Handle reasoning blocks - prepend reasoning message if we collected any
 	if len(reasoningContentBlocks) > 0 {
 		reasoningMessage := schemas.ResponsesMessage{
-			ID:   schemas.Ptr("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
+			ID:   new("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{},
@@ -4447,7 +4596,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 			}
 		}
 	} else if msg.ResponsesReasoning != nil {
-		if msg.ResponsesReasoning.Summary != nil {
+		if len(msg.ResponsesReasoning.Summary) > 0 {
 			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
 				reasoningBlock := BedrockContentBlock{
 					ReasoningContent: &BedrockReasoningContent{
@@ -4458,14 +4607,11 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 				}
 				reasoningBlocks = append(reasoningBlocks, reasoningBlock)
 			}
-		} else if msg.ResponsesReasoning.EncryptedContent != nil {
-			// Bedrock doesn't have a direct equivalent to encrypted content,
-			// so we'll store it as a regular reasoning block with a special marker
-			encryptedText := fmt.Sprintf("[ENCRYPTED_REASONING: %s]", *msg.ResponsesReasoning.EncryptedContent)
+		} else if msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
 			reasoningBlock := BedrockContentBlock{
 				ReasoningContent: &BedrockReasoningContent{
 					ReasoningText: &BedrockReasoningContentText{
-						Text: &encryptedText,
+						Signature: msg.ResponsesReasoning.EncryptedContent,
 					},
 				},
 			}

@@ -18,9 +18,23 @@
 //     --providers "openai anthropic" \
 //     --tmp-dir tmp \
 //     --log tmp/newman-cli.log
+//
+// Add --ci for GitHub Actions: no alternate screen buffer and no in-place
+// redraw (impossible in an append-only job log). Emits a progress snapshot
+// every --ci-interval seconds (default 30), a line per failure as it is
+// parsed, and a plain-text final table into stdout + $GITHUB_STEP_SUMMARY.
 
-import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  openSync,
+  readSync,
+  closeSync,
+  appendFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { resolveCiIntervalMs } from "./lib/ci-interval.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -42,6 +56,13 @@ const SEQ_LOG = args.log || join(TMP_DIR, "newman-cli.log");
 const TAIL_INTERVAL_MS = 250;
 const RENDER_INTERVAL_MS = 1000;
 const IDLE_EXIT_MS = 3000;
+
+// CI mode: GitHub Actions logs are an append-only stream, so the alternate
+// screen buffer + cursor-home redraw used interactively is impossible there.
+// Instead we emit periodic append-only snapshots plus a line per failure as it
+// is parsed, and a plain-text final table (also into $GITHUB_STEP_SUMMARY).
+const CI = args.ci === "true" || args.ci === "1";
+const CI_INTERVAL_MS = resolveCiIntervalMs(args["ci-interval"]);
 
 if (PROVIDERS.length === 0) {
   console.error("[harness-monitor] --providers is required");
@@ -90,6 +111,7 @@ const state = {
 };
 let lastByteAt = Date.now();
 let lastRenderLines = 0;
+let sawBytes = false;
 
 // ----- Denominator: walk the filtered collection per provider. ----------------
 
@@ -173,6 +195,7 @@ function readNewBytes() {
     h.buf = lines.pop();
     for (const raw of lines) handleLine(stripAnsi(raw), h.provider);
     lastByteAt = Date.now();
+    sawBytes = true;
   }
 }
 
@@ -268,6 +291,12 @@ function handleLine(line, taggedProvider) {
   if ((m = trimmed.match(RE_ASSERT_FAIL)) && ps.currentRequest) {
     ps.currentRequestHadFail = true;
     ps.lastFailure = { folder: ps.currentRequestFolder, text: m[1].trim() };
+    if (CI) {
+      ciLog(
+        `✗ ${provider} · ${ps.currentRequestFolder || "(root)"} · ` +
+          `${ps.currentRequest} · ${m[1].trim()}`
+      );
+    }
     return;
   }
 }
@@ -288,8 +317,19 @@ function readStatusFile() {
     const [p, v] = ln.split(":");
     const ps = state.providers[p];
     if (!ps) continue;
+    const prev = ps.status;
     if (v === "pass") ps.status = "pass";
     else if (v === "fail") ps.status = "fail";
+    if (CI && ps.status !== prev && (ps.status === "pass" || ps.status === "fail")) {
+      // A status-file line is only written after that provider's newman process
+      // exited, so its log is complete - commit the trailing request before
+      // reporting counts, otherwise the summary lags by one request.
+      finalizeRequest(ps);
+      ciLog(
+        `${ps.status === "pass" ? "✓" : "✗"} ${p} finished: ` +
+          `${ps.pass} passed, ${ps.fail} failed of ${ps.totalRequests || ps.doneRequests}`
+      );
+    }
   }
   return { lines: lines.length };
 }
@@ -471,6 +511,46 @@ function rowWithRawCells(cells, widths) {
   return line;
 }
 
+// ----- CI render: append-only, no cursor control. -----------------------------
+
+function ciLog(msg) {
+  process.stdout.write(`[harness ${fmtDuration(Date.now() - state.startedAt)}] ${msg}\n`);
+}
+
+// One-line snapshot of every provider that has started, e.g.
+//   [harness 02:31] openai 41/120 (✓40 ✗1) · anthropic 33/98 (✓33 ✗0)
+function drawCi() {
+  const parts = [];
+  for (const p of PROVIDERS) {
+    const ps = state.providers[p];
+    if (ps.status === "pending" && ps.doneRequests === 0) continue;
+    const total = ps.totalRequests || "?";
+    parts.push(`${p} ${ps.doneRequests}/${total} (✓${ps.pass} ✗${ps.fail})`);
+  }
+  if (parts.length === 0) {
+    ciLog("waiting for newman output...");
+    return;
+  }
+  ciLog(parts.join(" · "));
+}
+
+// Final plain-text table. Goes to stdout so it lands in the job log, and to
+// $GITHUB_STEP_SUMMARY (when set) so it renders on the workflow summary page.
+function ciFinalReport() {
+  const plain = renderFrame().map(stripAnsi);
+  process.stdout.write("\n" + plain.join("\n") + "\n");
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) return;
+  try {
+    appendFileSync(
+      summaryPath,
+      "## Provider harness\n\n```\n" + plain.join("\n") + "\n```\n\n"
+    );
+  } catch {
+    // Summary is best-effort - never fail the run over it.
+  }
+}
+
 function draw() {
   const lines = renderFrame();
   const rows = process.stdout.rows || lines.length;
@@ -503,7 +583,10 @@ function shouldExit() {
   } else {
     // Sequential mode: rely on signals from the Makefile. Also exit when the
     // log shows the newman "failures" summary block AND we've been idle.
-    if (Date.now() - lastByteAt > IDLE_EXIT_MS * 2 && lastRenderLines > 0) {
+    // lastRenderLines only advances in interactive mode (CI never calls draw()),
+    // so in CI use "we have seen at least one log byte" as the equivalent guard.
+    const started = CI ? sawBytes : lastRenderLines > 0;
+    if (Date.now() - lastByteAt > IDLE_EXIT_MS * 2 && started) {
       const allDone = PROVIDERS.every(
         (p) => state.providers[p].totalRequests === 0 ||
                state.providers[p].doneRequests >= state.providers[p].totalRequests
@@ -519,6 +602,10 @@ function teardown(code = 0) {
   // the trailing in-flight request before the final frame.
   readNewBytes();
   finalizeAll();
+  if (CI) {
+    ciFinalReport();
+    process.exit(code);
+  }
   draw();
   // Snapshot the final frame to stderr so it persists on the main screen
   // after we leave the alt buffer (otherwise the user sees the table vanish).
@@ -536,7 +623,8 @@ process.on("SIGHUP", () => teardown(0));
 // Enter alt screen buffer + hide cursor + clear it. This gives us a fresh
 // canvas with a known origin so cursor-home redraws are deterministic and
 // the preamble (boot logs, launch messages) is preserved on the main screen.
-process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?25l");
+// Skipped in CI, where there is no terminal to take over.
+if (!CI) process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?25l");
 
 // Initial denominator pass; retry once a second until at least one provider has totals.
 loadDenominators();
@@ -552,10 +640,20 @@ setInterval(() => {
   readStatusFile();
 }, TAIL_INTERVAL_MS);
 
-setInterval(() => {
-  draw();
-  if (shouldExit()) teardown(0);
-}, RENDER_INTERVAL_MS);
+if (CI) {
+  // Exit checks still run at the interactive cadence; only the (much noisier)
+  // snapshot printing is throttled to CI_INTERVAL_MS.
+  setInterval(() => {
+    if (shouldExit()) teardown(0);
+  }, RENDER_INTERVAL_MS);
+  setInterval(drawCi, CI_INTERVAL_MS);
+  ciLog(`monitoring ${PROVIDERS.length} provider(s): ${PROVIDERS.join(", ")}`);
+} else {
+  setInterval(() => {
+    draw();
+    if (shouldExit()) teardown(0);
+  }, RENDER_INTERVAL_MS);
 
-// Draw a first frame immediately so the user sees something.
-draw();
+  // Draw a first frame immediately so the user sees something.
+  draw();
+}

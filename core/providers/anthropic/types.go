@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -26,8 +27,21 @@ const (
 	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
 	// AnthropicStructuredOutputsBetaHeader is required for strict tool validation and output_format.
 	AnthropicStructuredOutputsBetaHeader = "structured-outputs-2025-11-13"
-	// AnthropicAdvancedToolUseBetaHeader is required for defer_loading, input_examples, and allowed_callers.
+	// AnthropicAdvancedToolUseBetaHeader now gates only allowed_callers (programmatic
+	// tool calling) — see AnthropicToolSearchBetaHeader below for defer_loading, which
+	// used to be part of this bundle but is gated by its own beta as of current docs.
+	// https://platform.claude.com/docs/en/build-with-claude/overview ("Programmatic tool calling" row)
 	AnthropicAdvancedToolUseBetaHeader = "advanced-tool-use-2025-11-20"
+	// AnthropicToolSearchBetaHeader is required for tool.defer_loading and the
+	// tool_search_tool_* server tool. Available on the Claude API, Vertex AI,
+	// Azure AI Foundry, and Claude in Amazon Bedrock (Mantle) — but NOT on classic
+	// Amazon Bedrock's Converse API, which Bifrost's Bedrock provider always uses
+	// for tool-bearing requests. AWS's own docs restrict this feature to the
+	// InvokeModel/InvokeModelWithResponseStream APIs, never Converse:
+	// https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-tool-use.html
+	// https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+	// Do not gate this on AdvancedToolUse, and do not add a bundle fallback for Bedrock.
+	AnthropicToolSearchBetaHeader = "tool-search-tool-2025-10-19"
 	// AnthropicToolExamplesBetaHeader is required for tool.input_examples as a
 	// standalone feature (Bedrock supports this narrow header without the full
 	// advanced-tool-use-2025-11-20 bundle).
@@ -97,6 +111,7 @@ const (
 	// Use these with strings.HasPrefix when filtering headers per provider,
 	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
 	AnthropicAdvancedToolUseBetaHeaderPrefix     = "advanced-tool-use-"
+	AnthropicToolSearchBetaHeaderPrefix          = "tool-search-tool-"
 	AnthropicToolExamplesBetaHeaderPrefix        = "tool-examples-"
 	AnthropicStructuredOutputsBetaHeaderPrefix   = "structured-outputs-"
 	AnthropicPromptCachingScopeBetaHeaderPrefix  = "prompt-caching-scope-"
@@ -147,9 +162,9 @@ type ProviderFeatureSupport struct {
 	Bash                   bool // bash client tool (cite: A, B-header)
 	Memory                 bool // memory client tool — on Bedrock bundled under context-management-2025-06-27 (cite: A, B-header)
 	TextEditor             bool // text_editor client tool (cite: A)
-	ToolSearch             bool // tool_search server tool — tool-search-tool-2025-10-19 (cite: A, B-header)
+	ToolSearch             bool // tool_search server tool + tool.defer_loading — tool-search-tool-2025-10-19 (cite: A). NOT supported on classic Amazon Bedrock: AWS restricts this to InvokeModel/InvokeModelWithResponseStream, never Converse, which is the only API Bifrost's Bedrock provider uses for tool-bearing requests.
 	MCP                    bool // MCP connector — explicit "not supported on Bedrock/Vertex" (cite: MCP-excl)
-	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: defer_loading + input_examples + allowed_callers (cite: A)
+	AdvancedToolUse        bool // advanced-tool-use-2025-11-20 bundle: allowed_callers only as of current docs — defer_loading now has its own beta, see ToolSearch (cite: A)
 	InputExamples          bool // tool.input_examples standalone — tool-examples-2025-10-29. Bedrock supports this independently of the AdvancedToolUse bundle (cite: B-header). On Anthropic / Azure the bundle implicitly covers it.
 	StructuredOutputs      bool // strict tool validation / output_format (cite: A)
 	PromptCachingScope     bool // cache_control.scope — prompt-caching-scope-2026-01-05 (cite: A)
@@ -229,11 +244,15 @@ var ProviderFeatures = map[schemas.ModelProvider]ProviderFeatureSupport{
 	// AWS Bedrock — cite: A + B-header (definitive beta-header list).
 	// Notably NOT supported per docs: MCP, Skills, FilesAPI, WebFetch,
 	// WebSearch, CodeExecution, FastMode, TaskBudgets, AdvisorTool,
-	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope.
+	// InferenceGeo, RedactThinking, AdvancedToolUse (full), PromptCachingScope,
+	// ToolSearch (tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
+	// only per AWS's own docs; Bifrost's Bedrock provider always dispatches
+	// tool-bearing requests via Converse, so this can never work end-to-end —
+	// see the ToolSearch field comment above for citations).
 	schemas.Bedrock: {
 		WebSearchNova: true, // nova_grounding — Responses path only
 		CodeExecNova:  true, // nova_code_interpreter — Responses path only
-		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true, ToolSearch: true,
+		ComputerUse:   true, Bash: true, Memory: true, TextEditor: true,
 		ContainerBasic:         true,
 		StructuredOutputs:      true, // documented on Bedrock per A overview matrix
 		Compaction:             true, // compact-2026-01-12 per B-header
@@ -856,31 +875,32 @@ func (req *AnthropicMessageRequest) IsStreamingRequested() bool {
 
 // Known fields for AnthropicMessageRequest
 var anthropicMessageRequestKnownFields = map[string]bool{
-	"model":              true,
-	"max_tokens":         true,
-	"messages":           true,
-	"metadata":           true,
-	"system":             true,
-	"cache_control":      true,
-	"temperature":        true,
-	"top_p":              true,
-	"top_k":              true,
-	"stop_sequences":     true,
-	"stream":             true,
-	"tools":              true,
-	"tool_choice":        true,
-	"mcp_servers":        true,
-	"thinking":           true,
-	"output_format":      true,
-	"output_config":      true,
-	"speed":              true,
-	"service_tier":       true,
-	"inference_geo":      true,
-	"context_management": true,
-	"container":          true,
-	"diagnostics":        true,
-	"extra_params":       true,
-	"fallbacks":          true,
+	"model":                 true,
+	"max_tokens":            true,
+	"messages":              true,
+	"metadata":              true,
+	"system":                true,
+	"cache_control":         true,
+	"temperature":           true,
+	"top_p":                 true,
+	"top_k":                 true,
+	"stop_sequences":        true,
+	"stream":                true,
+	"tools":                 true,
+	"tool_choice":           true,
+	"mcp_servers":           true,
+	"thinking":              true,
+	"output_format":         true,
+	"output_config":         true,
+	"speed":                 true,
+	"service_tier":          true,
+	"inference_geo":         true,
+	"context_management":    true,
+	"container":             true,
+	"diagnostics":           true,
+	"fallback_credit_token": true,
+	"extra_params":          true,
+	"fallbacks":             true,
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for AnthropicMessageRequest.
@@ -900,30 +920,7 @@ func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Parse JSON to extract unknown fields
-	var rawData map[string]json.RawMessage
-	if err := sonic.Unmarshal(data, &rawData); err != nil {
-		return err
-	}
-
-	// Initialize ExtraParams if not already initialized
-	if req.ExtraParams == nil {
-		req.ExtraParams = make(map[string]interface{})
-	}
-
-	// Extract unknown fields, preserving nested key ordering for prompt caching.
-	// Store as json.RawMessage (compacted) instead of parsing into map[string]interface{}
-	// which would destroy key order on re-serialization.
-	for key, value := range rawData {
-		if !anthropicMessageRequestKnownFields[key] {
-			var buf bytes.Buffer
-			if err := json.Compact(&buf, value); err == nil {
-				req.ExtraParams[key] = json.RawMessage(buf.Bytes())
-			} else {
-				req.ExtraParams[key] = json.RawMessage(value)
-			}
-		}
-	}
+	extractAnthropicMessageRequestUnknownFields(data, req)
 
 	// Compact known json.RawMessage fields for deterministic cache keys
 	if len(req.OutputFormat) > 0 {
@@ -940,6 +937,28 @@ func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// extractAnthropicMessageRequestUnknownFields scans only the top-level object,
+// avoiding a second decode and RawMessage copy for every known request field.
+func extractAnthropicMessageRequestUnknownFields(data []byte, req *AnthropicMessageRequest) {
+	gjson.ParseBytes(data).ForEach(func(key, value gjson.Result) bool {
+		keyString := key.String()
+		if anthropicMessageRequestKnownFields[keyString] {
+			return true
+		}
+
+		if req.ExtraParams == nil {
+			req.ExtraParams = make(map[string]interface{})
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(value.Raw)); err == nil {
+			req.ExtraParams[keyString] = json.RawMessage(buf.Bytes())
+		} else {
+			req.ExtraParams[keyString] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
 }
 
 // MarshalJSON implements custom JSON marshalling for AnthropicMessageRequest.

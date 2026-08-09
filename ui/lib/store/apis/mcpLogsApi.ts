@@ -28,6 +28,12 @@ function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string
 	if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 		params.llm_request_ids = filters.llm_request_ids.join(",");
 	}
+	if (filters.apps && filters.apps.length > 0) {
+		params.apps = JSON.stringify(filters.apps);
+	}
+	if (filters.user_agents && filters.user_agents.length > 0) {
+		params.user_agents = JSON.stringify(filters.user_agents);
+	}
 	if (filters.period) {
 		params.period = filters.period;
 	} else {
@@ -78,6 +84,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 					params.llm_request_ids = filters.llm_request_ids.join(",");
 				}
+				if (filters.apps && filters.apps.length > 0) {
+					params.apps = JSON.stringify(filters.apps);
+				}
+				if (filters.user_agents && filters.user_agents.length > 0) {
+					params.user_agents = JSON.stringify(filters.user_agents);
+				}
 				if (filters.period) {
 					params.period = filters.period;
 				} else {
@@ -127,6 +139,12 @@ export const mcpLogsApi = baseApi.injectEndpoints({
 				}
 				if (filters.llm_request_ids && filters.llm_request_ids.length > 0) {
 					params.llm_request_ids = filters.llm_request_ids.join(",");
+				}
+				if (filters.apps && filters.apps.length > 0) {
+					params.apps = JSON.stringify(filters.apps);
+				}
+				if (filters.user_agents && filters.user_agents.length > 0) {
+					params.user_agents = JSON.stringify(filters.user_agents);
 				}
 				if (filters.period) {
 					params.period = filters.period;

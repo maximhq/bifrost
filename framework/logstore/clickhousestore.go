@@ -45,6 +45,27 @@ type ClickHouseLogStore struct {
 // chRMWShards is the number of RMW lock shards; keys are hashed onto them.
 const chRMWShards = 128
 
+// chRMWBatchChunk bounds how many rows a single batch insert locks at once.
+// A batch is written under lockRMWBatch across two network round trips (the
+// existence filter, then the insert). With the default MaxBatchSize of 1000
+// against 128 shards, one unchunked batch locks effectively every shard, so it
+// behaves as a global lock and stalls every concurrent Update — the object-storage
+// upload workers and deferred-usage updaters in particular. Chunking keeps the
+// held-shard set small enough that those callers interleave.
+const chRMWBatchChunk = 128
+
+// forEachRMWChunk applies fn to successive slices of at most chRMWBatchChunk
+// entries, stopping at the first error.
+func forEachRMWChunk[T any](entries []T, fn func([]T) error) error {
+	for start := 0; start < len(entries); start += chRMWBatchChunk {
+		end := min(start+chRMWBatchChunk, len(entries))
+		if err := fn(entries[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func chRMWShard(table, id string) int {
 	h := fnv.New32a()
 	h.Write([]byte(table))
@@ -173,6 +194,11 @@ func (s *ClickHouseLogStore) chReinsert(ctx context.Context, v interface{}) erro
 // because retried creates reuse the original entry (same timestamp), and the
 // tables' dedup key is (timestamp, id) anyway - a same-id row at a different
 // timestamp would be a distinct logical row regardless of this check.
+//
+// The window is per-call, so it cannot see a row an earlier chunk of the same
+// logical batch inserted at a different timestamp. Chunked callers therefore
+// carry their own batch-wide seen-id set and never hand the same id to two
+// calls; this function's duplicate skipping only covers one call's entries.
 func chFilterMissing[T any](ctx context.Context, db *gorm.DB, table string, entries []*T, idOf func(*T) string, tsOf func(*T) time.Time) ([]*T, error) {
 	ids := make([]string, 0, len(entries))
 	var minTS, maxTS time.Time
@@ -252,22 +278,40 @@ func (s *ClickHouseLogStore) BatchCreateIfNotExists(ctx context.Context, entries
 	if len(entries) == 0 {
 		return nil
 	}
-	ids := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e != nil {
+	// Batch-wide, not chunk-local: chFilterMissing bounds its existence probe to
+	// the chunk's timestamp window, so a repeat id carrying a different timestamp
+	// in a later chunk would miss the row an earlier chunk inserted. Dedup on id
+	// alone across the whole batch to match the SQL stores' ON CONFLICT (id) DO
+	// NOTHING and keep the result independent of where chunk boundaries fall.
+	seen := make(map[string]struct{}, len(entries))
+	return forEachRMWChunk(entries, func(chunk []*Log) error {
+		fresh := make([]*Log, 0, len(chunk))
+		ids := make([]string, 0, len(chunk))
+		for _, e := range chunk {
+			if e == nil {
+				continue
+			}
+			if _, ok := seen[e.ID]; ok {
+				continue
+			}
+			seen[e.ID] = struct{}{}
+			fresh = append(fresh, e)
 			ids = append(ids, e.ID)
 		}
-	}
-	defer s.lockRMWBatch("logs", ids)()
-	missing, err := chFilterMissing(ctx, s.db, "logs", entries, func(l *Log) string { return l.ID }, func(l *Log) time.Time { return l.Timestamp })
-	if err != nil {
-		return err
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	// Omit inc_number so ClickHouse's DEFAULT generateSnowflakeID() fires.
-	return s.db.WithContext(ctx).Omit("inc_number").Create(&missing).Error
+		if len(fresh) == 0 {
+			return nil
+		}
+		defer s.lockRMWBatch("logs", ids)()
+		missing, err := chFilterMissing(ctx, s.db, "logs", fresh, func(l *Log) string { return l.ID }, func(l *Log) time.Time { return l.Timestamp })
+		if err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		// Omit inc_number so ClickHouse's DEFAULT generateSnowflakeID() fires.
+		return s.db.WithContext(ctx).Omit("inc_number").Create(&missing).Error
+	})
 }
 
 // BatchCreateMCPToolLogsIfNotExists inserts the MCP tool log entries whose
@@ -276,22 +320,36 @@ func (s *ClickHouseLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Conte
 	if len(entries) == 0 {
 		return nil
 	}
-	ids := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e != nil {
+	// Batch-wide dedup for the same reason as BatchCreateIfNotExists above.
+	seen := make(map[string]struct{}, len(entries))
+	return forEachRMWChunk(entries, func(chunk []*MCPToolLog) error {
+		fresh := make([]*MCPToolLog, 0, len(chunk))
+		ids := make([]string, 0, len(chunk))
+		for _, e := range chunk {
+			if e == nil {
+				continue
+			}
+			if _, ok := seen[e.ID]; ok {
+				continue
+			}
+			seen[e.ID] = struct{}{}
+			fresh = append(fresh, e)
 			ids = append(ids, e.ID)
 		}
-	}
-	defer s.lockRMWBatch("mcp_tool_logs", ids)()
-	missing, err := chFilterMissing(ctx, s.db, "mcp_tool_logs", entries, func(l *MCPToolLog) string { return l.ID }, func(l *MCPToolLog) time.Time { return l.Timestamp })
-	if err != nil {
-		return err
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	// Omit inc_number so ClickHouse's DEFAULT generateSnowflakeID() fires.
-	return s.db.WithContext(ctx).Omit("inc_number").Create(&missing).Error
+		if len(fresh) == 0 {
+			return nil
+		}
+		defer s.lockRMWBatch("mcp_tool_logs", ids)()
+		missing, err := chFilterMissing(ctx, s.db, "mcp_tool_logs", fresh, func(l *MCPToolLog) string { return l.ID }, func(l *MCPToolLog) time.Time { return l.Timestamp })
+		if err != nil {
+			return err
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		// Omit inc_number so ClickHouse's DEFAULT generateSnowflakeID() fires.
+		return s.db.WithContext(ctx).Omit("inc_number").Create(&missing).Error
+	})
 }
 
 // --- Updates (read-modify-write + re-insert) ---

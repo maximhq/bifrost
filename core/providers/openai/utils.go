@@ -21,17 +21,39 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			ChatToolMessage: message.ChatToolMessage,
 		}
 		if message.OpenAIChatAssistantMessage != nil {
+			// Callers replay assistant reasoning under any of three keys. Normalize them
+			// onto Reasoning so downstream provider logic sees replayed reasoning
+			// regardless of spelling — DeepSeek in particular gates thinking on it.
+			reasoning := message.OpenAIChatAssistantMessage.Reasoning
+			if reasoning == nil {
+				reasoning = message.OpenAIChatAssistantMessage.ReasoningAlias
+			}
+			if reasoning == nil {
+				for _, detail := range message.OpenAIChatAssistantMessage.ReasoningDetails {
+					if detail.Text != nil {
+						reasoning = detail.Text
+						break
+					}
+				}
+			}
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				Refusal:     message.OpenAIChatAssistantMessage.Refusal,
-				Reasoning:   message.OpenAIChatAssistantMessage.Reasoning,
-				Annotations: message.OpenAIChatAssistantMessage.Annotations,
-				ToolCalls:   message.OpenAIChatAssistantMessage.ToolCalls,
+				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
+				Reasoning:        reasoning,
+				ReasoningDetails: message.OpenAIChatAssistantMessage.ReasoningDetails,
+				Annotations:      message.OpenAIChatAssistantMessage.Annotations,
+				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
 	}
 	return bifrostMessages
 }
 
+// ConvertBifrostMessagesToOpenAIMessages converts Bifrost chat messages to the
+// OpenAI wire format, dropping neutral-format fields the OpenAI wire has no
+// carrier for. Over-long tool call IDs are stripped of embedded provider
+// reasoning signatures, and tool messages lose is_error so providers that reject
+// unknown message parameters never see it.
+// The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
@@ -52,6 +74,14 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				toolMsgCopy.ToolCallID = &stripped
 				openaiMessages[i].ChatToolMessage = &toolMsgCopy
 			}
+		}
+		// The OpenAI wire format has no tool-error field; strip is_error so
+		// providers that reject unknown message parameters never see it. Clone
+		// first — ChatToolMessage is shared with the caller's input.
+		if openaiMessages[i].ChatToolMessage != nil && openaiMessages[i].ChatToolMessage.IsError != nil {
+			toolMsgCopy := *openaiMessages[i].ChatToolMessage
+			toolMsgCopy.IsError = nil
+			openaiMessages[i].ChatToolMessage = &toolMsgCopy
 		}
 		if message.ChatAssistantMessage != nil {
 			// Strip the same embedded signature from over-long assistant tool call IDs. Clone the
@@ -125,7 +155,7 @@ func isOpenAIReasoningModel(model string) bool {
 		}
 	}
 	// Check for GPT-5 series models which support reasoning.effort
-	if strings.HasPrefix(modelLower, "gpt-5") {
+	if strings.Contains(modelLower, "gpt-5") {
 		return true
 	}
 	return false
