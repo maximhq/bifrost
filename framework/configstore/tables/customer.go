@@ -21,6 +21,11 @@ type TableCustomer struct {
 	Teams       []TableTeam       `gorm:"foreignKey:CustomerID" json:"teams"`
 	VirtualKeys []TableVirtualKey `gorm:"foreignKey:CustomerID" json:"virtual_keys"`
 
+	// VirtualKeyCount is the number of virtual keys owned by this customer. Not
+	// persisted; populated by the read paths so list responses can report the
+	// count without carrying (or even loading) the full VirtualKeys relation.
+	VirtualKeyCount int `gorm:"-" json:"virtual_key_count"`
+
 	CalendarAligned bool `gorm:"default:false" json:"calendar_aligned"`
 
 	// Config hash is used to detect the changes synced from config.json file

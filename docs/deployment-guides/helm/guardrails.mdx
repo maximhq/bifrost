@@ -554,17 +554,35 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 
 ## Rules
 
-Rules are CEL expressions that fire when their condition is met. Available CEL variables:
+Rules are CEL expressions that fire when their condition is met. Set `target` to `"llm"` or `"mcp"` to select the request boundary the rule guards. The target defaults to `"llm"` when omitted.
+
+All targets expose these request identity variables:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `headers` | `map<string,string>` | HTTP request headers |
+| `virtual_key` | `string` | Virtual key ID |
+| `customer` | `string` | Customer ID |
+| `team` | `string` | Team ID |
+| `user` | `string` | User ID |
+
+LLM rules additionally expose:
 
 | Variable | Type | Description |
 |----------|------|-------------|
 | `model` | `string` | Model name from the request |
 | `provider` | `string` | Provider name (e.g. `"openai"`) |
-| `headers` | `map<string,string>` | HTTP request headers |
 | `params` | `map<string,string>` | Query parameters |
-| `customer` | `string` | Customer ID |
-| `team` | `string` | Team ID |
-| `user` | `string` | User ID |
+
+MCP rules additionally expose:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `mcp_client` | `string` | Name of the MCP client executing the tool |
+| `mcp_tool` | `string` | Name of the MCP tool being executed |
+| `mcp_arguments` | `map<string,dyn>` | Parsed tool arguments, with values preserving their JSON types |
+
+Target-specific variables are isolated. For example, `model` is unavailable to MCP rules, and `mcp_tool` is unavailable to LLM rules.
 
 Rule fields:
 
@@ -574,12 +592,15 @@ Rule fields:
 | `name` | Yes | Human-readable name |
 | `description` | No | Optional description |
 | `enabled` | Yes | `true` to activate |
+| `target` | No | `"llm"` (default) or `"mcp"` |
 | `cel_expression` | Yes | CEL boolean expression; `"true"` matches all requests |
-| `apply_to` | Yes | `"input"`, `"output"`, or `"both"` |
+| `apply_to` | Yes | `"input"`, `"output"`, or `"both"`. For MCP rules, input is the tool arguments and output is the tool result |
 | `sampling_rate` | No | `0`–`100`; percentage of requests to check (default: 100) |
 | `timeout` | No | Rule timeout in seconds |
 | `stream_replay_event_interval_ms` | No | Delay between buffered events after block-capable output guardrails allow a streaming response. Defaults to `0` (immediate delivery); the dashboard uses `25` when pacing is enabled. |
 | `provider_config_ids` | No | Provider `id`s to invoke when this rule matches |
+
+`max_turns_to_send`, `evaluation_mode`, and `stream_replay_event_interval_ms` configure LLM conversation and streaming behavior. They do not change MCP tool execution behavior.
 
 ```yaml
 bifrost:
@@ -589,6 +610,7 @@ bifrost:
         name: "block-secrets-input"
         description: "Block prompts containing API keys"
         enabled: true
+        target: "llm"
         cel_expression: "true"
         apply_to: "input"
         sampling_rate: 100
@@ -599,6 +621,7 @@ bifrost:
         name: "azure-output-gpt4o"
         description: "Scan GPT-4o responses"
         enabled: true
+        target: "llm"
         cel_expression: "model == 'gpt-4o'"
         apply_to: "output"
         sampling_rate: 100
@@ -609,6 +632,7 @@ bifrost:
       - id: 103
         name: "grayswan-openai-input"
         enabled: true
+        target: "llm"
         cel_expression: "provider == 'openai'"
         apply_to: "input"
         sampling_rate: 50
@@ -618,11 +642,22 @@ bifrost:
       - id: 104
         name: "strict-team-check"
         enabled: true
+        target: "llm"
         cel_expression: "team == 'team-platform'"
         apply_to: "both"
         sampling_rate: 100
         timeout: 30
         provider_config_ids: [1, 3]   # multiple providers run in parallel
+
+      - id: 105
+        name: "protect-github-issue-creation"
+        enabled: true
+        target: "mcp"
+        cel_expression: "mcp_client == 'github' && mcp_tool == 'create_issue'"
+        apply_to: "input"
+        sampling_rate: 100
+        timeout: 10
+        provider_config_ids: [1]
 ```
 
 ---

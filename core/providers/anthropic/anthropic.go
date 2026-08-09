@@ -222,6 +222,9 @@ func completeRequest(
 
 	// Set network-config extra headers, excluding anthropic-beta (set explicitly below).
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	// Force JSON content type after extra headers so network config can't override it
 	// (matches the original per-provider completeRequest ordering).
@@ -773,6 +776,9 @@ func HandleAnthropicChatCompletionStreaming(
 	req.Header.SetContentType("application/json")
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
@@ -1412,6 +1418,9 @@ func HandleAnthropicResponsesStream(
 	req.Header.SetContentType("application/json")
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))

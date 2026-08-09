@@ -333,7 +333,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			if !strings.HasPrefix(url, "/") {
 				url = "/" + url
 			}
-			bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, headers)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughHeaders, headers)
 			bifrostCtx.SetValue(schemas.BifrostContextKeyURLPath, url)
 			// This key is also used in IsClaudeCodeMaxMode
 			// So if you are changing the behaviour of this key, make sure to change IsClaudeCodeMaxMode as well

@@ -10,7 +10,8 @@ import {
 } from "@/components/ui/combobox";
 import { Label } from "@/components/ui/label";
 import type { DBKey, VirtualKey } from "@/lib/types/governance";
-import { useCallback, useMemo, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export function ApiKeySelectorView({
 	providerKeys,
@@ -20,6 +21,8 @@ export function ApiKeySelectorView({
 	disabled,
 	placeholder,
 	requireVirtualKey,
+	onSearchChange,
+	isSearching,
 }: {
 	providerKeys: DBKey[];
 	virtualKeys: VirtualKey[];
@@ -28,32 +31,55 @@ export function ApiKeySelectorView({
 	disabled?: boolean;
 	placeholder?: string;
 	requireVirtualKey?: boolean;
+	/** Mirrors typing to the caller so virtual keys can be searched server-side. */
+	onSearchChange?: (search: string) => void;
+	isSearching?: boolean;
 }) {
 	const [query, setQuery] = useState("");
 
-	const allOptions = useMemo(() => {
-		const apiKeyOpts = providerKeys.map((k) => ({ label: k.name, value: k.key_id, group: "api" as const }));
-		const vkOpts = virtualKeys.map((vk) => ({ label: vk.name, value: vk.value, group: "virtual" as const }));
-		if (requireVirtualKey) return vkOpts;
-		return [{ label: "Auto (default)", value: "__auto__", group: "api" as const }, ...apiKeyOpts, ...vkOpts];
-	}, [providerKeys, virtualKeys, requireVirtualKey]);
-
-	const filtered = useMemo(() => {
-		if (!query) return allOptions;
+	// Provider keys are already in memory, so they filter here. Virtual keys
+	// arrive from the server pre-narrowed by the same query.
+	const apiKeyOptions = useMemo(() => {
+		if (requireVirtualKey) return [];
+		const opts = [{ label: "Auto (default)", value: "__auto__" }, ...providerKeys.map((k) => ({ label: k.name, value: k.key_id }))];
+		if (!query) return opts;
 		const q = query.toLowerCase();
-		return allOptions.filter((o) => o.label.toLowerCase().includes(q));
-	}, [allOptions, query]);
+		return opts.filter((o) => o.label.toLowerCase().includes(q));
+	}, [providerKeys, requireVirtualKey, query]);
 
-	const filteredApiKeys = useMemo(() => filtered.filter((o) => o.group === "api"), [filtered]);
-	const filteredVirtualKeys = useMemo(() => filtered.filter((o) => o.group === "virtual"), [filtered]);
+	const virtualKeyOptions = useMemo(() => virtualKeys.map((vk) => ({ label: vk.name, value: vk.value })), [virtualKeys]);
+
+	// Only one page of virtual keys is loaded at a time, so the selected key can
+	// drop out of the list as the search narrows. Names seen once are kept so the
+	// trigger doesn't lose its label.
+	const labelCacheRef = useRef<Map<string, string>>(new Map());
+	useEffect(() => {
+		for (const o of virtualKeyOptions) labelCacheRef.current.set(o.value, o.label);
+	}, [virtualKeyOptions]);
+
+	const handleSearchChange = useCallback(
+		(v: string) => {
+			setQuery(v);
+			onSearchChange?.(v);
+		},
+		[onSearchChange],
+	);
 
 	const getLabel = useCallback(
 		(val: string | null) => {
-			if (requireVirtualKey && val === "__auto__") return "";
-			return allOptions.find((o) => o.value === val)?.label ?? val ?? "";
+			if (!val) return "";
+			if (val === "__auto__") return requireVirtualKey ? "" : "Auto (default)";
+			const providerKey = providerKeys.find((k) => k.key_id === val);
+			if (providerKey) return providerKey.name;
+			const virtualKey = virtualKeys.find((vk) => vk.value === val);
+			if (virtualKey) return virtualKey.name;
+			// Never fall back to `val` — for a virtual key that is the secret itself.
+			return labelCacheRef.current.get(val) ?? "";
 		},
-		[allOptions, requireVirtualKey],
+		[providerKeys, virtualKeys, requireVirtualKey],
 	);
+
+	const hasResults = apiKeyOptions.length > 0 || virtualKeyOptions.length > 0;
 
 	return (
 		<div className="flex flex-col gap-2">
@@ -64,9 +90,9 @@ export function ApiKeySelectorView({
 				value={value}
 				onValueChange={(v) => onValueChange(v)}
 				onOpenChange={(open) => {
-					if (open) setQuery("");
+					if (open) handleSearchChange("");
 				}}
-				onInputValueChange={(v) => setQuery(v)}
+				onInputValueChange={handleSearchChange}
 				filter={null}
 				itemToStringLabel={getLabel}
 			>
@@ -78,28 +104,34 @@ export function ApiKeySelectorView({
 				/>
 				<ComboboxContent>
 					<ComboboxList>
-						{filteredApiKeys.length > 0 && (
+						{apiKeyOptions.length > 0 && (
 							<ComboboxGroup>
 								<ComboboxLabel>API Keys</ComboboxLabel>
-								{filteredApiKeys.map((o) => (
+								{apiKeyOptions.map((o) => (
 									<ComboboxItem key={o.value} value={o.value}>
 										{o.label}
 									</ComboboxItem>
 								))}
 							</ComboboxGroup>
 						)}
-						{filteredApiKeys.length > 0 && filteredVirtualKeys.length > 0 && <ComboboxSeparator />}
-						{filteredVirtualKeys.length > 0 && (
+						{apiKeyOptions.length > 0 && virtualKeyOptions.length > 0 && <ComboboxSeparator />}
+						{virtualKeyOptions.length > 0 && (
 							<ComboboxGroup>
 								<ComboboxLabel>Virtual Keys</ComboboxLabel>
-								{filteredVirtualKeys.map((o) => (
+								{virtualKeyOptions.map((o) => (
 									<ComboboxItem key={o.value} value={o.value}>
 										{o.label}
 									</ComboboxItem>
 								))}
 							</ComboboxGroup>
 						)}
-						{filtered.length === 0 && <div className="text-muted-foreground py-6 text-center text-sm">No results found.</div>}
+						{isSearching && !hasResults && (
+							<div className="text-muted-foreground flex items-center justify-center gap-2 py-6 text-sm">
+								<Loader2 className="size-4 animate-spin" />
+								Searching...
+							</div>
+						)}
+						{!isSearching && !hasResults && <div className="text-muted-foreground py-6 text-center text-sm">No results found.</div>}
 					</ComboboxList>
 				</ComboboxContent>
 			</Combobox>

@@ -408,6 +408,48 @@ func (i *Interval) MarshalJSON() ([]byte, error) {
 	return providerUtils.MarshalSorted(aux)
 }
 
+// WebSearch enables standard web search for grounding. Text results only.
+type WebSearch struct{}
+
+// ImageSearch enables image search for grounding. Image bytes are returned.
+type ImageSearch struct{}
+
+// SearchTypes selects which search surfaces the Google Search tool may use.
+// When unset, web search is enabled by default.
+type SearchTypes struct {
+	// Optional. Enables web search.
+	WebSearch *WebSearch `json:"webSearch,omitempty"`
+	// Optional. Enables image search.
+	ImageSearch *ImageSearch `json:"imageSearch,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (s *SearchTypes) UnmarshalJSON(data []byte) error {
+	type Alias SearchTypes
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		WebSearchSnake   *WebSearch   `json:"web_search,omitempty"`
+		ImageSearchSnake *ImageSearch `json:"image_search,omitempty"`
+	}{
+		Alias: (*Alias)(s),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Use snake_case if camelCase wasn't provided
+	if s.WebSearch == nil && aux.WebSearchSnake != nil {
+		s.WebSearch = aux.WebSearchSnake
+	}
+	if s.ImageSearch == nil && aux.ImageSearchSnake != nil {
+		s.ImageSearch = aux.ImageSearchSnake
+	}
+
+	return nil
+}
+
 // GoogleSearch is a tool to support Google Search in Model. Powered by Google.
 type GoogleSearch struct {
 	// Optional. Filter search results to a specific time range.
@@ -416,6 +458,8 @@ type GoogleSearch struct {
 	// Optional. List of domains to be excluded from the search results.
 	// The default limit is 2000 domains.
 	ExcludeDomains []string `json:"excludeDomains,omitempty"`
+	// Optional. The set of search types to enable. Web search when unset.
+	SearchTypes *SearchTypes `json:"searchTypes,omitempty"`
 }
 
 // UnmarshalJSON handles both camelCase and snake_case
@@ -424,8 +468,9 @@ func (g *GoogleSearch) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		*Alias
 		// snake_case alternatives
-		TimeRangeFilterSnake *Interval `json:"time_range_filter,omitempty"`
-		ExcludeDomainsSnake  []string  `json:"exclude_domains,omitempty"`
+		TimeRangeFilterSnake *Interval    `json:"time_range_filter,omitempty"`
+		ExcludeDomainsSnake  []string     `json:"exclude_domains,omitempty"`
+		SearchTypesSnake     *SearchTypes `json:"search_types,omitempty"`
 	}{
 		Alias: (*Alias)(g),
 	}
@@ -440,6 +485,9 @@ func (g *GoogleSearch) UnmarshalJSON(data []byte) error {
 	}
 	if len(g.ExcludeDomains) == 0 && len(aux.ExcludeDomainsSnake) > 0 {
 		g.ExcludeDomains = aux.ExcludeDomainsSnake
+	}
+	if g.SearchTypes == nil && aux.SearchTypesSnake != nil {
+		g.SearchTypes = aux.SearchTypesSnake
 	}
 
 	return nil
@@ -1929,10 +1977,24 @@ type GroundingChunkWeb struct {
 	URI string `json:"uri,omitempty"`
 }
 
+// Chunk from image search.
+type GroundingChunkImage struct {
+	// The web page URI for attribution.
+	SourceURI string `json:"sourceUri,omitempty"`
+	// The image asset URL.
+	ImageURI string `json:"imageUri,omitempty"`
+	// The title of the web page that the image is from.
+	Title string `json:"title,omitempty"`
+	// The root domain of the web page that the image is from.
+	Domain string `json:"domain,omitempty"`
+}
+
 // Grounding chunk.
 type GroundingChunk struct {
 	// Grounding chunk from Google Maps. This field is not supported in Gemini API.
 	Maps *GroundingChunkMaps `json:"maps,omitempty"`
+	// Grounding chunk from image search.
+	Image *GroundingChunkImage `json:"image,omitempty"`
 	// Grounding chunk from context retrieved by the retrieval tools. This field is not
 	// supported in Gemini API.
 	RetrievedContext *GroundingChunkRetrievedContext `json:"retrievedContext,omitempty"`
@@ -2017,6 +2079,8 @@ type GroundingMetadata struct {
 	SourceFlaggingUris []*GroundingMetadataSourceFlaggingURI `json:"sourceFlaggingUris,omitempty"`
 	// Optional. Web search queries for the following-up web search.
 	WebSearchQueries []string `json:"webSearchQueries,omitempty"`
+	// Optional. Image search queries used for grounding.
+	ImageSearchQueries []string `json:"imageSearchQueries,omitempty"`
 }
 
 // Candidate represents a response candidate generated from the model.
@@ -2414,6 +2478,16 @@ type GeminiFileRetrieveRequest struct {
 // GeminiFileDeleteRequest request represents the request for deleting a file.
 type GeminiFileDeleteRequest struct {
 	FileID string `json:"file_id"`
+}
+
+// GeminiCountTokensRequest represents the request body for Google Gemini's count tokens API.
+// Two shapes reach this endpoint: the generateContentRequest envelope the Gemini API requires,
+// and the flat generateContent body Vertex accepts. The embedded request parses the flat shape,
+// so every field it already understands — systemInstruction, tools, fallbacks — survives ingress
+// without this type having to re-declare them and drift as fields are added.
+type GeminiCountTokensRequest struct {
+	GeminiGenerationRequest
+	GenerateContentRequest *GeminiGenerationRequest `json:"generateContentRequest,omitempty"`
 }
 
 // GeminiCountTokensResponse represents the response from Google Gemini's count tokens API.

@@ -36,6 +36,7 @@ type BifrostConfig struct {
 	KeySelector        KeySelector   // Custom key selector function
 	KeyPoolFilter      KeyPoolFilter // Optional hook to filter available keys before selection; nil = all keys eligible
 	KVStore            KVStore       // shared KV store for clustering/session stickiness; nil = disabled
+	ModelCatalog       ModelInfoProvider
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -215,6 +216,15 @@ const (
 	// Used when there's no VK or user; the caller owns the session ID and must
 	// present it on every subsequent request to use the bound OAuth token.
 	MCPAuthModeSession MCPAuthMode = "session"
+	// MCPAuthModeAdmin: no identity dimension, the flow belongs to an MCP
+	// client's shared credential itself, not any caller. Used by
+	// InitiateUserOAuthFlow for redoing consent on an already-authorized
+	// shared client (see the MCP client reauthorize endpoint); the
+	// resulting token is still written with AuthMode "shared" (a
+	// TableMCPOauthToken-column distinction from the flow row's FlowMode
+	// "admin", see TableMCPOauthFlow's FlowMode field comment for why
+	// those two are named differently on purpose).
+	MCPAuthModeAdmin MCPAuthMode = "admin"
 	// MCPAuthModeNone: no identity dimension is present on the request (no
 	// user, no VK, no session header). Lets callers branch on the mode
 	// without mistaking an unauthenticated request for a session-mode caller.
@@ -270,6 +280,7 @@ const (
 	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"            // time.Duration (per-chunk idle timeout for streaming)
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"             // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                  // map[string][]string
+	BifrostContextKeyPassthroughHeaders                  BifrostContextKey = "bifrost-anthropic-passthrough-headers"  // map[string][]string (the caller's raw request headers, captured for Anthropic OAuth passthrough where their token is the upstream credential; ONLY the Anthropic provider may forward these — every other provider authenticates with its own configured credentials. Reserved: set by the transport, never by a plugin)
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                 // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeyChangeRequestType                   BifrostContextKey = "bifrost-change-request-type"                      // RequestType (set by plugins to trigger request type conversion in core, e.g. text->chat or chat->responses)
@@ -281,13 +292,16 @@ const (
 	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
 	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
+	BifrostContextKeyApp                                 BifrostContextKey = "app"                                              // string (canonical app key such as claude-code; set by plugins)
 	BifrostContextKeySkipBudgetAndRateLimits             BifrostContextKey = "bifrost-skip-budget-and-rate-limits"              // bool (set by bifrost for read-only requests like list models that don't consume quota)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
-	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (trace ID for distributed tracing - set by tracing middleware)
+	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (per-request trace store handle - set by tracing middleware or stream pre-hooks; use BifrostContextKeyExportTraceID for the W3C trace ID)
+	BifrostContextKeyExportTraceID                       BifrostContextKey = "bifrost-export-trace-id"                          // string (W3C trace ID advertised to the caller via the x-bifrost-trace-id response header; equals the store handle when no traceparent was inherited - set by tracing middleware)
 	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
+	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo and ctx.CalculateCost - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
 	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func([]PluginLogEntry) (callback to complete trace after streaming, receives transport plugin logs - set by tracing middleware)
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
@@ -311,6 +325,7 @@ const (
 	BifrostContextKeyShouldStoreRawInLogs                BifrostContextKey = "bifrost-should-store-raw-in-logs"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw request/response should be persisted in log records
 	BifrostContextKeyRetryDBFetch                        BifrostContextKey = "bifrost-retry-db-fetch"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyBaseProviderType                    BifrostContextKey = "bifrost-base-provider-type"                       // ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY) — built-in provider backing this attempt (custom providers resolve to their BaseProviderType)
 	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyHTTPRoute                           BifrostContextKey = "bifrost-http-route"                               // string (set by bifrost - DO NOT SET THIS MANUALLY — matched route template, set by HTTP transport; used as the low-cardinality metrics `path` label)
 	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
@@ -339,6 +354,7 @@ const (
 	BifrostContextKeyUserID                              BifrostContextKey = "bifrost-user-id"                    // string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyUserName                            BifrostContextKey = "bifrost-user-name"                  // string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyUserEmail                           BifrostContextKey = "bifrost-user-email"                 // string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyMCPInboundBearer                    BifrostContextKey = "bifrost-mcp-inbound-bearer"         // string (the caller's validated identity-provider token, used as the subject of delegated token exchange; set by the upstream auth layer - DO NOT SET THIS MANUALLY. SECURITY: live credential - never log its value)
 	BifrostContextKeyQueryScope                          BifrostContextKey = "bifrost-query-scope"                // configstore.QueryScope (func that mutates a query; set by upstream wrapper - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyVisibilityFilterProvider            BifrostContextKey = "bifrost-visibility-filter-provider" // DEPRECATED: replaced by BifrostContextKeyQueryScope. Will be removed once all callers migrate.
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
@@ -347,6 +363,7 @@ const (
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
+	BifrostContextKeyDroppedUnsupportedTools             BifrostContextKey = "bifrost-dropped-unsupported-tools"          // []string (set by provider request builders — tool type strings silently dropped because the target provider/model doesn't support them)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                    // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
 	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
 	BifrostContextKeyLargePayloadReader                  BifrostContextKey = "bifrost-large-payload-reader"               // io.Reader (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large payloads
@@ -377,10 +394,12 @@ const (
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"         // bool (set by compat plugin) - if model supports assistant prefill
+	BifrostContextKeyCompatDroppedParams                 BifrostContextKey = "bifrost-compat-dropped-params"              // []string (set by compat plugin) - params stripped from the request because the model catalog did not allowlist them; read back in PostLLMHook to populate extra_fields.dropped_compat_plugin_params
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
 	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
+	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"         // bool (set by auth middleware ONLY when dashboard/admin auth is unconfigured or disabled and the request was let through without any credential check - distinct from IsLocalAdminContextKey, which is also set on genuinely authenticated sessions; handlers gating especially dangerous capabilities (e.g. native plugin/subprocess loading) should check this, not IsLocalAdminContextKey)
 	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present" // bool (set by HTTP transport) - passthrough raw request requested
 	BifrostContextKeyConnectionClosed                    BifrostContextKey = "connection_closed"
 	BifrostContextKeyTempTokenScope                      BifrostContextKey = "bifrost-temp-token-scope"       // string (set by auth middleware when a temp token authorized the request - names the scope from the temptoken registry)
@@ -1708,8 +1727,13 @@ type BifrostResponseExtraFields struct {
 	ParseErrors               []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 	ConvertedRequestType      RequestType        `json:"converted_request_type,omitempty"`
 	DroppedCompatPluginParams []string           `json:"dropped_compat_plugin_params,omitempty"` // params dropped by the compat plugin based on model catalog
-	ProviderResponseHeaders   map[string]string  `json:"provider_response_headers,omitempty"`    // HTTP response headers from the provider (filtered to exclude transport-level headers)
-	PassthroughPath           string             `json:"passthrough_path,omitempty"`             // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	// DroppedUnsupportedTools lists tool type strings silently stripped from the
+	// request because the target provider/model doesn't support them (e.g.
+	// web_search requested against a non-Nova Bedrock model). Currently populated
+	// only by the Bedrock provider.
+	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
+	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
 }
 
 type RoutingInfo struct {

@@ -31,11 +31,12 @@ func newRealtimeTurnContext(
 			if value == nil {
 				continue
 			}
-			// Never inherit a session/transport-level trace ID. Each realtime turn
-			// must mint its own trace in RunRealtimeTurnPreHooks so its log entry is
-			// delivered when the turn's trace is completed and flushed. Inheriting a
-			// trace whose lifecycle is owned elsewhere strands the entry forever.
-			if ctxKey == schemas.BifrostContextKeyTraceID {
+			// Never inherit a session/transport-level trace ID (store handle or its
+			// W3C export). Each realtime turn must mint its own trace in
+			// RunRealtimeTurnPreHooks so its log entry is delivered when the turn's
+			// trace is completed and flushed. Inheriting a trace whose lifecycle is
+			// owned elsewhere strands the entry forever.
+			if ctxKey == schemas.BifrostContextKeyTraceID || ctxKey == schemas.BifrostContextKeyExportTraceID {
 				continue
 			}
 			ctx.SetValue(ctxKey, value)

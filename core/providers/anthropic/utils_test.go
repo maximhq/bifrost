@@ -1332,6 +1332,30 @@ func TestFilterBetaHeadersForProvider(t *testing.T) {
 		}
 	})
 
+	t.Run("Vertex/keeps_tool_search_beta_header", func(t *testing.T) {
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.Vertex)
+		if len(result) != 1 || result[0] != AnthropicToolSearchBetaHeader {
+			t.Errorf("expected %q to be kept for Vertex, got %v", AnthropicToolSearchBetaHeader, result)
+		}
+	})
+
+	t.Run("BedrockMantle/keeps_tool_search_beta_header", func(t *testing.T) {
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.BedrockMantle)
+		if len(result) != 1 || result[0] != AnthropicToolSearchBetaHeader {
+			t.Errorf("expected %q to be kept for Bedrock Mantle, got %v", AnthropicToolSearchBetaHeader, result)
+		}
+	})
+
+	t.Run("Bedrock/drops_tool_search_beta_header", func(t *testing.T) {
+		// tool-search-tool-2025-10-19 is InvokeModel/InvokeModelWithResponseStream
+		// only per AWS's docs; classic Bedrock always uses Converse here, so this
+		// must never reach AWS regardless of what the client sends.
+		result := FilterBetaHeadersForProvider([]string{AnthropicToolSearchBetaHeader}, schemas.Bedrock)
+		if len(result) != 0 {
+			t.Errorf("expected %q to be dropped for Bedrock, got %v", AnthropicToolSearchBetaHeader, result)
+		}
+	})
+
 	t.Run("unknown_headers_dropped_for_non_anthropic", func(t *testing.T) {
 		result := FilterBetaHeadersForProvider([]string{"some-future-beta-2025"}, schemas.Vertex)
 		if len(result) != 0 {
@@ -1892,6 +1916,39 @@ func TestStripUnsupportedAnthropicFields_ContainerSkillsGating(t *testing.T) {
 		}
 		if req.Container.ContainerObject.Skills == nil {
 			t.Errorf("expected empty skills preserved on Skills=true provider (not nilled)")
+		}
+	})
+}
+
+// TestStripUnsupportedAnthropicFields_ToolSearchGating covers #5xxx: defer_loading
+// used to be gated on AdvancedToolUse (the advanced-tool-use-2025-11-20 bundle), but
+// per current Anthropic docs defer_loading now has its own beta
+// (tool-search-tool-2025-10-19) and must be gated on ToolSearch instead. Vertex is a
+// real example where the two flags diverge: ToolSearch=true, AdvancedToolUse=false.
+func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
+	t.Run("vertex_tool_search_true_advanced_tool_use_false_keeps_defer_loading", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-sonnet-4-5",
+			Tools: []AnthropicTool{
+				{Name: "search", DeferLoading: schemas.Ptr(true)},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Vertex, "claude-sonnet-4-5")
+		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
+			t.Errorf("expected defer_loading to survive for Vertex (ToolSearch=true), got %v", req.Tools[0].DeferLoading)
+		}
+	})
+
+	t.Run("bedrock_tool_search_false_strips_defer_loading", func(t *testing.T) {
+		req := &AnthropicMessageRequest{
+			Model: "claude-sonnet-4-5",
+			Tools: []AnthropicTool{
+				{Name: "search", DeferLoading: schemas.Ptr(true)},
+			},
+		}
+		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-sonnet-4-5")
+		if req.Tools[0].DeferLoading != nil {
+			t.Errorf("expected defer_loading to be stripped for Bedrock (ToolSearch=false), got %v", *req.Tools[0].DeferLoading)
 		}
 	})
 }

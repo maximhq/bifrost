@@ -103,7 +103,7 @@ The same keys (`provisioningToken`, `claimScimAttributes`) apply directly under 
 </Steps>
 
 <Warning>
-  Keep the token in a Kubernetes Secret and reference it with the `env.` prefix — never commit the literal value. Rotating the token in the dashboard invalidates any value seeded here.
+  Keep the token in a Kubernetes Secret and reference it with the `env.` prefix - never commit the literal value. Rotating the token in the dashboard invalidates any value seeded here.
 </Warning>
 
 Then use this token as the **Secret Token** and your deployment's SCIM endpoint as the **Tenant URL** in [Step 2](#step-2-configure-entra-provisioning) below.

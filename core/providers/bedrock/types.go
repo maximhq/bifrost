@@ -292,10 +292,10 @@ type BedrockS3Location struct {
 
 // BedrockToolUse represents a tool use request
 type BedrockToolUse struct {
-	ToolUseID string          `json:"toolUseId"`       // Required: Unique identifier for this tool use
-	Name      string          `json:"name"`            // Required: Name of the tool to use
-	Input     json.RawMessage `json:"input"`           // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
-	Type      string          `json:"type,omitempty"`  // Optional: "server_tool_use" for Nova system tools
+	ToolUseID string          `json:"toolUseId"`      // Required: Unique identifier for this tool use
+	Name      string          `json:"name"`           // Required: Name of the tool to use
+	Input     json.RawMessage `json:"input"`          // Required: Input parameters for the tool (json.RawMessage preserves key ordering for prompt caching)
+	Type      string          `json:"type,omitempty"` // Optional: "server_tool_use" for Nova system tools
 }
 
 // BedrockToolResult represents the result of a tool use
@@ -524,7 +524,7 @@ type BedrockGuardrailTrace struct {
 
 // BedrockGuardrailAssessment represents a guardrail assessment
 type BedrockGuardrailAssessment struct {
-	AppliedGuardrailDetails   *BedrockGuardrailAppliedDetails           `json:"appliedGuardrailDetails,omitempty"`
+	AppliedGuardrailDetails   *BedrockGuardrailAppliedDetails            `json:"appliedGuardrailDetails,omitempty"`
 	AutomatedReasoningPolicy  *BedrockGuardrailAutomatedReasoningPolicy  `json:"automatedReasoningPolicy,omitempty"`
 	ContentPolicy             *BedrockGuardrailContentPolicy             `json:"contentPolicy,omitempty"`
 	ContextualGroundingPolicy *BedrockGuardrailContextualGroundingPolicy `json:"contextualGroundingPolicy,omitempty"`
@@ -693,18 +693,21 @@ type BedrockInvokeMessagesResponse struct {
 
 // BedrockInvokeMessagesContentBlock represents a content block in an Anthropic Messages response.
 type BedrockInvokeMessagesContentBlock struct {
-	Type     string      `json:"type"`
-	Text     string      `json:"text,omitempty"`
-	ID       string      `json:"id,omitempty"`
-	Name     string      `json:"name,omitempty"`
-	Input    interface{} `json:"input,omitempty"`
-	Thinking string      `json:"thinking,omitempty"`
+	Type      string      `json:"type"`
+	Text      string      `json:"text,omitempty"`
+	ID        string      `json:"id,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Input     interface{} `json:"input,omitempty"`
+	Thinking  string      `json:"thinking,omitempty"`
+	Signature string      `json:"signature,omitempty"`
 }
 
 // BedrockInvokeMessagesUsage represents token usage in an Anthropic Messages response.
 type BedrockInvokeMessagesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // BedrockInvokeAI21Response represents AI21 Jamba's InvokeModel response format.

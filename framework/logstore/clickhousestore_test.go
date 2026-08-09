@@ -549,24 +549,28 @@ func TestClickHouseMCPToolLogs(t *testing.T) {
 		chTestMCPToolLog("ch-mcp-1", ts),
 		chTestMCPToolLog("ch-mcp-2", ts.Add(time.Millisecond)),
 	}
+	entries[0].RedactionMapping = `plain:{"input":{"EMAIL-1":"private@example.com"}}`
 	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, entries))
 	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, nil)) // no-op
 
 	found, err := store.FindMCPToolLog(ctx, "ch-mcp-1")
 	require.NoError(t, err)
 	assert.Equal(t, "search_web", found.ToolName)
+	assert.Equal(t, entries[0].RedactionMapping, found.RedactionMapping)
 
 	// Map update.
 	latency := 42.0
 	require.NoError(t, store.UpdateMCPToolLog(ctx, "ch-mcp-1", map[string]interface{}{
-		"status":  "success",
-		"latency": latency,
+		"status":            "success",
+		"latency":           latency,
+		"redaction_mapping": `plain:{"output":{"EMAIL-2":"result@example.com"}}`,
 	}))
 	found, err = store.FindMCPToolLog(ctx, "ch-mcp-1")
 	require.NoError(t, err)
 	assert.Equal(t, "success", found.Status)
 	require.NotNil(t, found.Latency)
 	assert.Equal(t, 42.0, *found.Latency)
+	assert.Contains(t, found.RedactionMapping, "result@example.com")
 	assert.Equal(t, int64(1), chCountRows(t, store.db, "mcp_tool_logs", "ch-mcp-1"))
 
 	// Struct update preserves untouched fields and the dedup key.

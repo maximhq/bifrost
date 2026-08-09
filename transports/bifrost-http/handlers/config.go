@@ -86,6 +86,9 @@ func getPasswordPolicyFailures(password string) []string {
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
+	// ValidateSetupToken checks the one-time bootstrap token required to create the
+	// first admin account. Returns true once an admin account already exists.
+	ValidateSetupToken(token string) bool
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	UpdateSyncConfig(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
@@ -193,14 +196,12 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				"admin_password": passwordSecretVar,
 				"is_enabled":     authConfig.IsEnabled,
 			}
-		} else {
-			// No auth config exists yet, return default empty SecretVar values
-			mapConfig["auth_config"] = map[string]any{
-				"admin_username": &schemas.SecretVar{},
-				"admin_password": &schemas.SecretVar{},
-				"is_enabled":     false,
-			}
 		}
+		// When authConfig is nil, no admin account has been created yet: leave
+		// auth_config unset (rather than a placeholder object) so the UI's
+		// isFirstTimeSetup check (!bifrostConfig?.auth_config) can tell "no admin
+		// configured yet" apart from "admin configured with empty fields" and show
+		// the setup-token field / include setup_token in the create request.
 	} else {
 		mapConfig["auth_config"] = map[string]any{
 			"admin_username": &schemas.SecretVar{},
@@ -277,6 +278,21 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
+// authConfigWithSetupToken extends the persisted AuthConfig shape with the
+// one-time bootstrap setup_token field, for the auth_config object in PUT
+// /api/config requests only. setup_token lives here (nested under auth_config
+// on the wire) rather than directly on configstore.AuthConfig because that
+// type is also what gets persisted to and read back from the DB via
+// UpdateAuthConfig/GetAuthConfig; keeping SetupToken off it means there's no
+// risk of it ever being written to storage or echoed back by GET /api/config.
+type authConfigWithSetupToken struct {
+	configstore.AuthConfig
+	// SetupToken is the one-time bootstrap token (see AuthMiddleware.bootstrapToken)
+	// required only when this request is creating the very first admin account.
+	// It is never persisted.
+	SetupToken string `json:"setup_token,omitempty"`
+}
+
 // updateConfig updates the core configuration settings.
 // Currently, it supports hot-reloading of the `drop_excess_requests` setting.
 // Note that settings like `prometheus_labels` cannot be changed at runtime.
@@ -289,7 +305,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	payload := struct {
 		ClientConfig    configstore.ClientConfig               `json:"client_config"`
 		FrameworkConfig configstoreTables.TableFrameworkConfig `json:"framework_config"`
-		AuthConfig      *configstore.AuthConfig                `json:"auth_config"`
+		AuthConfig      *authConfigWithSetupToken              `json:"auth_config"`
 	}{}
 
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
@@ -415,6 +431,24 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// The 'error' behavior rejects exactly the requests token_exchange
+	// clients rely on (an identity token alongside a virtual key), so the
+	// two settings are mutually exclusive — mirrored by the MCP client
+	// create path rejecting token_exchange while it is 'error'. Checked up
+	// front, alongside the other validations above: everything below this
+	// point applies live in-memory mutations before the DB write at the end
+	// of this handler, so a rejection here must happen before any of that
+	// runs — otherwise a 400 would leave runtime state changed with nothing
+	// persisted.
+	if payload.ClientConfig.DualCredentialConflictBehavior == configstoreTables.DualCredentialConflictBehaviorError && h.store.MCPConfig != nil {
+		for _, mcpClient := range h.store.MCPConfig.ClientConfigs {
+			if mcpClient.AuthType == schemas.MCPAuthTypeTokenExchange {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("dual_credential_conflict_behavior cannot be set to 'error' while MCP client %q uses auth_type 'token_exchange'; delete that client first or choose 'prefer_idp'/'prefer_vk'", mcpClient.Name))
+				return
+			}
+		}
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
@@ -527,7 +561,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
 	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
 
-	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp)
+	// Only update when explicitly provided to avoid clearing the stored default (prefer_idp).
+	// The conflict-vs-token_exchange validation already ran up front, before
+	// any live mutation.
 	if payload.ClientConfig.DualCredentialConflictBehavior != "" {
 		updatedConfig.DualCredentialConflictBehavior = payload.ClientConfig.DualCredentialConflictBehavior
 	}
@@ -858,6 +894,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
 				return
 			}
+
+			// Creating the very first admin account is the one config write this
+			// endpoint allows while genuinely unauthenticated (no admin exists yet to
+			// authenticate as). Require the operator-configured setup token (config.json
+			// setup_token or BIFROST_SETUP_TOKEN env var) so that action can't be taken by
+			// an unauthenticated network caller racing the real operator to a freshly
+			// exposed instance.
+			if authConfig == nil && !h.configManager.ValidateSetupToken(payload.AuthConfig.SetupToken) {
+				SendError(ctx, fasthttp.StatusForbidden, "a valid setup token is required to create the initial admin account; configure setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and pass it in this request")
+				return
+			}
 			// Fetching current Auth config
 			if payload.AuthConfig.AdminUserName.GetValue() != "" {
 				if payload.AuthConfig.AdminPassword.ShouldPreserveStored() {
@@ -892,7 +939,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				}
 			}
 			// Save auth config - this handles both first-time creation and updates
-			err = h.configManager.UpdateAuthConfig(ctx, payload.AuthConfig)
+			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
 			if err != nil {
 				logger.Warn("failed to update auth config: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
@@ -906,7 +953,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			if payload.AuthConfig.AdminUserName == nil || payload.AuthConfig.AdminUserName.GetValue() == "" {
 				payload.AuthConfig.AdminUserName = authConfig.AdminUserName
 			}
-			err = h.configManager.UpdateAuthConfig(ctx, payload.AuthConfig)
+			err = h.configManager.UpdateAuthConfig(ctx, &payload.AuthConfig.AuthConfig)
 			if err != nil {
 				logger.Warn("failed to update auth config: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))

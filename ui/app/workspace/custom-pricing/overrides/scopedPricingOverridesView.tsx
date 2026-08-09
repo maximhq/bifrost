@@ -1,3 +1,5 @@
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+import FullPageLoader from "@/components/fullPageLoader";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -17,18 +19,12 @@ import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
-import {
-	getErrorMessage,
-	useDeletePricingOverrideMutation,
-	useGetPricingOverridesQuery,
-	useGetProvidersQuery,
-	useGetVirtualKeysQuery,
-} from "@/lib/store";
+import { getErrorMessage, useDeletePricingOverrideMutation, useGetPricingOverridesQuery, useGetProvidersQuery } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { useLocation } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import PricingOverrideSheet from "./pricingOverrideSheet";
 import { PricingOverridesEmptyState } from "./pricingOverridesEmptyState";
@@ -108,7 +104,7 @@ function parseScopeKind(value: string | null): ScopeFilter {
 }
 
 // Returns the top-level scope label: "Global", "Virtual Key", or "User".
-function scopeLabel(override: PricingOverride, _virtualKeyMap: Map<string, string>): string {
+function scopeLabel(override: PricingOverride): string {
 	const scopeKind = resolveScopeKind(override);
 	if (override.virtual_key_id && scopeKind.startsWith("virtual_key")) {
 		return "Virtual Key";
@@ -220,6 +216,8 @@ export default function ScopedPricingOverridesView() {
 	);
 
 	const { data, isLoading, error } = useGetPricingOverridesQuery(queryArgs);
+	const hasLoadedOnceRef = useRef(false);
+	if (data || error) hasLoadedOnceRef.current = true;
 
 	// Snap offset back when total shrinks past current page
 	const totalCount = data?.total_count ?? 0;
@@ -228,7 +226,6 @@ export default function ScopedPricingOverridesView() {
 		setOffset(totalCount === 0 ? 0 : Math.floor((totalCount - 1) / PAGE_SIZE) * PAGE_SIZE);
 	}, [totalCount, offset]);
 	const { data: providersData } = useGetProvidersQuery();
-	const { data: virtualKeysData } = useGetVirtualKeysQuery();
 	const { data: allKeysData = [] } = useGetAllKeysQuery();
 	const [deleteOverride, { isLoading: isDeleting }] = useDeletePricingOverrideMutation();
 
@@ -244,7 +241,6 @@ export default function ScopedPricingOverridesView() {
 
 	const rows = data?.pricing_overrides ?? [];
 	const providers = useMemo(() => providersData ?? [], [providersData]);
-	const virtualKeys = useMemo(() => virtualKeysData?.virtual_keys ?? [], [virtualKeysData]);
 
 	const providerMap = useMemo(() => new Map<string, string>(providers.map((provider) => [provider.name, provider.name])), [providers]);
 	const providerKeyOptions = useMemo(
@@ -264,7 +260,6 @@ export default function ScopedPricingOverridesView() {
 		() => new Map<string, string>(providerKeyOptions.map((key) => [key.id, key.label])),
 		[providerKeyOptions],
 	);
-	const virtualKeyMap = useMemo(() => new Map<string, string>(virtualKeys.map((vk) => [vk.id, vk.name])), [virtualKeys]);
 
 	const createScopeLock = useMemo(() => {
 		if (scopeKind === "all") return undefined;
@@ -301,6 +296,13 @@ export default function ScopedPricingOverridesView() {
 
 	const hasActiveFilters = debouncedSearch || scopeKind !== "all" || userID || virtualKeyID || providerID || providerKeyID;
 
+	// Without this the table chrome paints first, then swaps to the full-page empty
+	// state once the first response resolves to zero rows. Hold a plain loader until
+	// then; later filter/page fetches keep the table so the chrome doesn't jump.
+	if (isLoading && !hasLoadedOnceRef.current) {
+		return <FullPageLoader />;
+	}
+
 	if (!isLoading && !error && totalCount === 0 && !hasActiveFilters) {
 		return (
 			<>
@@ -330,17 +332,42 @@ export default function ScopedPricingOverridesView() {
 				</Button>
 			</div>
 
-			{/* Search */}
-			<div className="relative mb-4 max-w-sm">
-				<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-				<Input
-					aria-label="Search pricing overrides by name"
-					placeholder="Search by name..."
-					value={search}
-					onChange={(e) => setSearch(e.target.value)}
-					className="pl-9"
-					data-testid="pricing-overrides-search-input"
-				/>
+			{/* Search and filters */}
+			<div className="mb-4 flex flex-wrap items-center gap-2">
+				<div className="relative w-full max-w-sm">
+					<Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+					<Input
+						aria-label="Search pricing overrides by name"
+						placeholder="Search by name..."
+						value={search}
+						onChange={(e) => setSearch(e.target.value)}
+						className="pl-9"
+						data-testid="pricing-overrides-search-input"
+					/>
+				</div>
+
+				<div className="w-56" data-testid="pricing-overrides-virtual-key-filter">
+					<VirtualKeySelector
+						value={virtualKeyID}
+						onChange={setVirtualKeyID}
+						placeholder="All virtual keys"
+						triggerClassName="h-9"
+						// A page, not a sheet — portalling keeps the popover out of the
+						// scrolling table container.
+						noPortal={false}
+					/>
+				</div>
+
+				{virtualKeyID && (
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={() => setVirtualKeyID("")}
+						data-testid="pricing-overrides-virtual-key-filter-clear-btn"
+					>
+						Clear
+					</Button>
+				)}
 			</div>
 
 			<div className="mb-2 overflow-hidden rounded-sm border">
@@ -374,7 +401,7 @@ export default function ScopedPricingOverridesView() {
 									<TableRow key={row.id} className="group hover:bg-muted/50 cursor-pointer transition-colors">
 										<TableCell>{row.name || "-"}</TableCell>
 										<TableCell>
-											<Badge variant="secondary">{scopeLabel(row, virtualKeyMap)}</Badge>
+											<Badge variant="secondary">{scopeLabel(row)}</Badge>
 										</TableCell>
 										<TableCell>
 											{(() => {

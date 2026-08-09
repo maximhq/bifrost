@@ -795,6 +795,14 @@ paths:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
   /api/mcp/client/{id}/complete-oauth:
     $ref: './paths/management/mcp.yaml#/client-complete-oauth'
+  /api/mcp/client/{id}/initiate-verification:
+    $ref: './paths/management/mcp.yaml#/client-initiate-verification'
+  /api/mcp/client/{id}/reauthorize:
+    $ref: './paths/management/mcp.yaml#/client-reauthorize'
+  /api/mcp/client/{id}/verify-headers:
+    $ref: './paths/management/mcp.yaml#/client-verify-headers'
+  /api/mcp/client/{id}/verify-exchange:
+    $ref: './paths/management/mcp.yaml#/client-verify-exchange'
 
   # MCP — per-user sessions (OAuth tokens + headers credentials + pending flows)
   /api/mcp/sessions:
@@ -831,6 +839,8 @@ paths:
     $ref: './paths/management/governance.yaml#/virtual-keys-quota'
   /api/governance/virtual-keys/{vk_id}:
     $ref: './paths/management/governance.yaml#/virtual-keys-by-id'
+  /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override:
+    $ref: './paths/management/governance.yaml#/virtual-keys-budget-override'
 
   # Governance - Teams
   /api/governance/teams:
@@ -927,6 +937,8 @@ paths:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profiles'
   /api/users/{target_user_id}/access-profiles/{profile_id}:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-by-id'
+  /api/users/{target_user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override:
+    $ref: './paths/management/accessprofiles.yaml#/users-access-profile-budget-override'
   /api/users/{target_user_id}/access-profiles/{profile_id}/virtual-keys:
     $ref: './paths/management/accessprofiles.yaml#/users-access-profile-virtual-keys'
   /api/users/{target_user_id}/access-profiles/virtual-keys/{vk_id}:
@@ -1178,6 +1190,12 @@ components:
         application/json:
           schema:
             $ref: './schemas/inference/common.yaml#/BifrostError'
+    Conflict:
+      description: Conflict with the current state of the resource
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
     InternalError:
       description: Internal server error
       content:
@@ -1251,6 +1269,8 @@ components:
       $ref: './schemas/inference/text.yaml#/TextCompletionResponse'
 
     # ==================== Responses API ====================
+    ContextManagement:
+      $ref: './schemas/inference/responses.yaml#/ContextManagement'
     ResponsesRequest:
       $ref: './schemas/inference/responses.yaml#/ResponsesRequest'
     ResponsesResponse:
@@ -1570,6 +1590,10 @@ components:
       $ref: './schemas/management/governance.yaml#/CreateBudgetRequest'
     UpdateBudgetRequest:
       $ref: './schemas/management/governance.yaml#/UpdateBudgetRequest'
+    BudgetOverrideRequest:
+      $ref: './schemas/management/governance.yaml#/BudgetOverrideRequest'
+    BudgetOverrideResponse:
+      $ref: './schemas/management/governance.yaml#/BudgetOverrideResponse'
     CreateRateLimitRequest:
       $ref: './schemas/management/governance.yaml#/CreateRateLimitRequest'
     UpdateRateLimitRequest:
@@ -1612,6 +1636,8 @@ components:
       $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
 
     # Governance - Pricing Overrides
+    PricingOverrideScopeKind:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideScopeKind'
     PricingOverrideRequestType:
       $ref: './schemas/management/governance.yaml#/PricingOverrideRequestType'
     PricingPatch:

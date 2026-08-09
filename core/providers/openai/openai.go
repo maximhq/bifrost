@@ -1192,6 +1192,11 @@ func HandleOpenAIChatCompletionStreaming(
 		// Defer final completed/incomplete event until usage chunk arrives (fallback path only).
 		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
 		usageSeen := false
+		// Fallback path only: tracks whether the upstream ever sent a finish_reason,
+		// so a finish_reason that fails to produce a terminal event (e.g. a future
+		// regression in ToBifrostResponsesStreamResponse) is treated as truncation
+		// instead of a silent stream close.
+		fallbackFinishReasonSeen := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1254,6 +1259,10 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 
 			if isResponsesToChatCompletionsFallback {
+				if len(response.Choices) > 0 && response.Choices[0].FinishReason != nil && *response.Choices[0].FinishReason != "" {
+					fallbackFinishReasonSeen = true
+				}
+
 				// Accumulate usage across chunks; attached to final event below.
 				if response.Usage != nil {
 					usageSeen = true
@@ -1428,7 +1437,10 @@ func HandleOpenAIChatCompletionStreaming(
 		// that is indistinguishable from a provider that generated zero tokens.
 		terminalSignalSeen := providerUtils.SSEStreamEndedOnMarker(sseReader)
 		if isResponsesToChatCompletionsFallback {
-			terminalSignalSeen = terminalSignalSeen || pendingFinalEvent != nil
+			// A finish_reason without a resulting terminal event means the conversion
+			// path failed to synthesize Completed/Incomplete — treat that as truncation
+			// rather than a silent stream close, even though [DONE] may have arrived.
+			terminalSignalSeen = pendingFinalEvent != nil || (terminalSignalSeen && !fallbackFinishReasonSeen)
 		} else {
 			terminalSignalSeen = terminalSignalSeen || finishReason != nil
 		}
@@ -7435,16 +7447,7 @@ func (provider *OpenAIProvider) Passthrough(
 		return nil, err
 	}
 
-	path := req.Path
-	// if path has v1 or v1/ remove it
-	if after, ok := strings.CutPrefix(path, "/v1"); ok {
-		path = after
-	}
-
-	url := provider.networkConfig.BaseURL + "/v1" + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
-	}
+	url := provider.buildPassthroughURL(req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -7500,6 +7503,34 @@ func (provider *OpenAIProvider) Passthrough(
 	return bifrostResponse, nil
 }
 
+// buildPassthroughURL returns the upstream URL for raw passthrough requests.
+func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) string {
+	path := req.Path
+	baseURL := provider.networkConfig.BaseURL
+	if req.UpstreamURL != "" {
+		baseURL = strings.TrimRight(req.UpstreamURL, "/")
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		url := baseURL + path
+		if req.RawQuery != "" {
+			url += "?" + req.RawQuery
+		}
+		return url
+	}
+
+	// if path has v1 or v1/ remove it
+	if after, ok := strings.CutPrefix(path, "/v1"); ok {
+		path = after
+	}
+
+	url := baseURL + "/v1" + path
+	if req.RawQuery != "" {
+		url += "?" + req.RawQuery
+	}
+	return url
+}
+
 func (provider *OpenAIProvider) PassthroughStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -7512,14 +7543,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	path := req.Path
-	if after, ok := strings.CutPrefix(path, "/v1"); ok {
-		path = after
-	}
-	url := provider.networkConfig.BaseURL + "/v1" + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
-	}
+	url := provider.buildPassthroughURL(req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

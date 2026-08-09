@@ -11,6 +11,41 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// documentPlaceholderText is prepended to a message whose content holds
+// document blocks but no text block. Anthropic requires a text block alongside
+// documents ("A text block must be included when using documents") and
+// separately rejects text blocks that are empty or whitespace-only ("text
+// content blocks must contain non-whitespace text"), so the placeholder has to
+// be non-whitespace. Being non-whitespace also makes it survive the
+// trailing-whitespace trim applied to a final assistant prefill below.
+const documentPlaceholderText = "."
+
+// hasAnthropicDocumentBlock reports whether any of the content blocks is a
+// document block, i.e. whether the message needs an accompanying text block.
+func hasAnthropicDocumentBlock(blocks []AnthropicContentBlock) bool {
+	for _, b := range blocks {
+		if b.Type == AnthropicContentBlockTypeDocument {
+			return true
+		}
+	}
+	return false
+}
+
+// leadingAnthropicReasoningBlockCount returns the number of thinking and
+// redacted_thinking blocks at the head of the content slice. Anthropic requires
+// a thinking-enabled assistant turn to begin with its thinking blocks, so any
+// block injected into the message has to start at this index instead of 0.
+func leadingAnthropicReasoningBlockCount(blocks []AnthropicContentBlock) int {
+	count := 0
+	for _, b := range blocks {
+		if b.Type != AnthropicContentBlockTypeThinking && b.Type != AnthropicContentBlockTypeRedactedThinking {
+			break
+		}
+		count++
+	}
+	return count
+}
+
 // convertFunctionToolToAnthropic turns an OpenAI-style function tool
 // (schemas.ChatTool with non-nil Function) into an AnthropicTool.
 // Factored out from ToAnthropicChatRequest's tool loop so the loop can branch
@@ -559,7 +594,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						budgetTokens = MinimumReasoningMaxTokens
 					}
 					if budgetTokens < MinimumReasoningMaxTokens {
-						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
+						return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic: %w", MinimumReasoningMaxTokens, ErrReasoningMaxTokensTooLow)
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -577,7 +612,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					setEffortOnOutputConfig(anthropicReq, effort)
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -587,7 +622,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// Older models: budget_tokens only
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("%w: %w", ErrReasoningMaxTokensTooLow, err)
 					}
 					anthropicReq.Thinking = &AnthropicThinking{
 						Type:         "enabled",
@@ -645,6 +680,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// (Anthropic API + Opus 4.8+ only).
 	seenConversation := false
 	midConvSystemSupported := SupportsMidConversationSystem(bifrostReq.Provider, capModel)
+	// See the same gate in ConvertBifrostMessagesToAnthropicMessages: when the native
+	// role:"system" form isn't available, inline as a user turn instead of hoisting into the
+	// top-level system block, which would invalidate the cached prefix behind it. Anthropic
+	// model family only — these call sites also serve DeepSeek/Fireworks/SGL, which keep hoisting.
+	inlineMidConvSystem := schemas.IsAnthropicModelFamily(ctx, capModel)
 
 	i := 0
 	for i < len(messages) {
@@ -652,11 +692,16 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		switch msg.Role {
 		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
-			// Anthropic placement rule: a mid-conv system message must end the array
-			// or be immediately followed by an assistant turn. Anything else (e.g.
-			// [user, system, user]) returns a 400, so fall through to top-level system.
-			midConvPlacementOK := i == len(messages)-1 ||
-				messages[i+1].Role == schemas.ChatMessageRoleAssistant
+			// Anthropic placement rule, both clauses: a mid-conv system message must FOLLOW a
+			// user message (or an assistant message ending in server-tool use) AND must end the
+			// array or be immediately followed by an assistant turn. Violating either returns a
+			// 400 ("messages.N: role 'system' must follow a 'user' message ..."). Checking only
+			// the trailing clause lets [.., assistant, system, assistant] through to a 400, so
+			// both are checked here; the assistant-ending-in-server-tool-use exception is not
+			// recognized, which only costs a cache-preserving fallback, never a rejection.
+			midConvPlacementOK := (i == len(messages)-1 ||
+				messages[i+1].Role == schemas.ChatMessageRoleAssistant) &&
+				i > 0 && messages[i-1].Role == schemas.ChatMessageRoleUser
 			if seenConversation && midConvSystemSupported && midConvPlacementOK {
 				// Mid-conversation system message — emit directly as role:"system".
 				var content AnthropicContent
@@ -706,6 +751,18 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						}
 					}
 				}
+				// Native form unavailable (unsupported model, or a placement Anthropic
+				// rejects). Inline in place so the cache anchor stays inside `messages`
+				// rather than collapsing the cached prefix from the top-level system block.
+				var inlined *AnthropicMessage
+				if seenConversation && inlineMidConvSystem {
+					inlined = inlineMidConversationSystem(&newContent)
+				}
+				if inlined != nil {
+					anthropicMessages = append(anthropicMessages, *inlined)
+					i++
+					continue
+				}
 				systemContent = appendToSystemContent(systemContent, newContent)
 				// If the entire transcript consists only of system/developer messages
 				if i == len(messages)-1 && len(anthropicMessages) == 0 {
@@ -733,6 +790,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					toolResult := AnthropicContentBlock{
 						Type:      AnthropicContentBlockTypeToolResult,
 						ToolUseID: &sanitizedToolUseID,
+						IsError:   toolMsg.ChatToolMessage.IsError,
 					}
 
 					// Convert tool result content
@@ -742,14 +800,28 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						} else if toolMsg.Content.ContentBlocks != nil {
 							blocks := make([]AnthropicContentBlock, 0, len(toolMsg.Content.ContentBlocks))
 							for _, block := range toolMsg.Content.ContentBlocks {
+								// Anthropic rejects cache_control nested inside tool_result.content
+								// ("cache_control may not be specified within `tool_result.content`.
+								// Instead, place it directly on `tool_result`"), so hoist the first
+								// one found onto the tool_result block itself rather than copying it
+								// onto the nested block -- mirrors the same hoist-to-outer-level
+								// pattern already used for Bedrock's nested cachePoint
+								// (core/providers/bedrock/responses.go).
+								if block.CacheControl != nil && toolResult.CacheControl == nil {
+									toolResult.CacheControl = block.CacheControl
+								}
 								if block.Text != nil && *block.Text != "" {
 									blocks = append(blocks, AnthropicContentBlock{
-										Type:         AnthropicContentBlockTypeText,
-										Text:         block.Text,
-										CacheControl: block.CacheControl,
+										Type: AnthropicContentBlockTypeText,
+										Text: block.Text,
 									})
 								} else if block.ImageURLStruct != nil {
-									blocks = append(blocks, ConvertToAnthropicImageBlock(block))
+									imageBlock := ConvertToAnthropicImageBlock(block)
+									// ConvertToAnthropicImageBlock copies CacheControl onto the
+									// returned block unconditionally (correct for a top-level image
+									// block, but not here -- it's already hoisted above).
+									imageBlock.CacheControl = nil
+									blocks = append(blocks, imageBlock)
 								}
 							}
 							if len(blocks) > 0 {
@@ -851,6 +923,39 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			}
 
+			// Anthropic rejects a message whose content contains a document
+			// block with no accompanying text block ("A text block must be
+			// included when using documents"). Insert a placeholder so
+			// document-only messages still validate.
+			if hasAnthropicDocumentBlock(content) {
+				filtered := content[:0]
+				hasUsableText := false
+				for _, b := range content {
+					if b.Type == AnthropicContentBlockTypeText {
+						if b.Text == nil || strings.TrimSpace(*b.Text) == "" {
+							continue
+						}
+						hasUsableText = true
+					}
+					filtered = append(filtered, b)
+				}
+				content = filtered
+				if !hasUsableText {
+					// A thinking-enabled assistant turn must begin with its
+					// thinking/redacted_thinking blocks, so the placeholder goes
+					// after them rather than at index 0.
+					at := leadingAnthropicReasoningBlockCount(content)
+					withPlaceholder := make([]AnthropicContentBlock, 0, len(content)+1)
+					withPlaceholder = append(withPlaceholder, content[:at]...)
+					withPlaceholder = append(withPlaceholder, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: schemas.Ptr(documentPlaceholderText),
+					})
+					withPlaceholder = append(withPlaceholder, content[at:]...)
+					content = withPlaceholder
+				}
+			}
+
 			// Set content
 			if len(content) == 1 && content[0].Type == AnthropicContentBlockTypeText {
 				// Always use ContentBlocks for consistent array serialization
@@ -887,6 +992,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// provider does not support. Fail-closed tool validation stays in
 	// ValidateToolsForProvider; this is strip-silently for additive fields.
 	stripUnsupportedAnthropicFields(anthropicReq, bifrostReq.Provider, capModel)
+
+	// Exceeding the provider's cache-checkpoint cap is a hard rejection, not a degradation, so
+	// trim the earliest markers rather than let the whole request fail. Runs last, after every
+	// converter branch (including the mid-conversation inline fallback) has contributed markers.
+	clampAnthropicCacheBreakpoints(anthropicReq)
 
 	return anthropicReq, nil
 }
@@ -1683,17 +1793,29 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 			streamMessage := &AnthropicMessageResponse{
 				ID:    bifrostResp.ID,
 				Type:  "message",
-				Role:  string(choice.ChatNonStreamResponseChoice.Message.Role),
+				Role:  string(schemas.ChatMessageRoleAssistant),
 				Model: bifrostResp.Model,
+				// usage is required by strict Anthropic clients on message_start
+				// (@ai-sdk/anthropic's schema marks usage.input_tokens non-optional), and
+				// the real counts only land on the terminal message_delta — see the same
+				// reasoning on the Responses converter in responses.go.
+				Usage: &AnthropicUsage{},
 			}
 
-			// Convert content
-			var content []AnthropicContentBlock
-			if choice.ChatNonStreamResponseChoice.Message.Content.ContentStr != nil {
-				content = append(content, AnthropicContentBlock{
-					Type: AnthropicContentBlockTypeText,
-					Text: choice.ChatNonStreamResponseChoice.Message.Content.ContentStr,
-				})
+			// Convert content. Always an array, never null: the message_start schema
+			// types content as a list, so a nil slice is rejected outright.
+			content := []AnthropicContentBlock{}
+			message := choice.ChatNonStreamResponseChoice.Message
+			if message != nil {
+				if message.Role != "" {
+					streamMessage.Role = string(message.Role)
+				}
+				if message.Content != nil && message.Content.ContentStr != nil {
+					content = append(content, AnthropicContentBlock{
+						Type: AnthropicContentBlockTypeText,
+						Text: message.Content.ContentStr,
+					})
+				}
 			}
 
 			streamMessage.Content = content
@@ -1707,12 +1829,19 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 
 	// Handle usage information
 	if bifrostResp.Usage != nil {
-		if streamResp.Type == "" {
-			streamResp.Type = "message_delta"
-		}
-		streamResp.Usage = &AnthropicUsage{
+		usage := &AnthropicUsage{
 			InputTokens:  bifrostResp.Usage.PromptTokens,
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
+		}
+		// On message_start usage is nested under message.usage; only message_delta
+		// carries it at the top level.
+		if streamResp.Type == AnthropicStreamEventTypeMessageStart && streamResp.Message != nil {
+			streamResp.Message.Usage = usage
+		} else {
+			if streamResp.Type == "" {
+				streamResp.Type = "message_delta"
+			}
+			streamResp.Usage = usage
 		}
 	}
 
@@ -1720,10 +1849,10 @@ func ToAnthropicChatStreamResponse(bifrostResp *schemas.BifrostChatResponse) str
 	if bifrostResp.ID != "" {
 		streamResp.ID = &bifrostResp.ID
 	}
-	if bifrostResp.Model != "" {
-		if streamResp.Message == nil {
-			streamResp.Message = &AnthropicMessageResponse{}
-		}
+	// message_start is the only Anthropic event carrying a message object; attaching a
+	// stub one to a delta frame emits an object with empty id/type/role and null content
+	// that strict clients reject.
+	if bifrostResp.Model != "" && streamResp.Message != nil {
 		streamResp.Message.Model = bifrostResp.Model
 	}
 

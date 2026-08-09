@@ -38,13 +38,19 @@ func TestHybrid_ContentHiddenStripsDBRowAndSkipsHydration(t *testing.T) {
 
 	entry := newContentHiddenTestEntry("hidden-1")
 	entry.ContentHidden = true
+	entry.TokenUsageParsed = billingTestUsage()
 	require.NoError(t, entry.SerializeFields())
 
 	require.NoError(t, hybrid.CreateIfNotExists(ctx, entry))
-	waitForUploads(t, func() bool { return objStore.Len() == 1 })
+	// Wait for the has_object flag, not just the object: processUpload writes the
+	// flag after the Put, so waiting on objStore.Len() alone races the assertion
+	// below under parallel load.
+	waitForOffload(t, inner, "hidden-1")
+	require.Equal(t, 1, objStore.Len())
 
-	// The DB row must hold no content at all: no payload fields, no summary,
-	// no last-user-message preview.
+	// The DB row must hold no request/response content: no content payload fields,
+	// summary, or last-user-message preview. Pricing metadata is not content and
+	// remains DB-resident.
 	dbRow, err := inner.FindByID(ctx, "hidden-1")
 	require.NoError(t, err)
 	assert.True(t, dbRow.ContentHidden)
@@ -52,6 +58,8 @@ func TestHybrid_ContentHiddenStripsDBRowAndSkipsHydration(t *testing.T) {
 	assert.Empty(t, dbRow.InputHistory)
 	assert.Empty(t, dbRow.OutputMessage)
 	assert.Empty(t, dbRow.ContentSummary)
+	assert.NotEmpty(t, dbRow.TokenUsage)
+	require.NotNil(t, dbRow.TokenUsageParsed)
 
 	// The full payload must be in object storage.
 	data, err := objStore.Get(ctx, ObjectKey("test", entry.Timestamp, "hidden-1"))

@@ -1,0 +1,207 @@
+---
+title: "AWS ALB (Application Load Balancer)"
+description: "Front Bifrost Enterprise with an AWS Application Load Balancer as an identity-aware proxy that authenticates every request before it reaches Bifrost."
+---
+
+An **identity-aware proxy (IAP)** sits in front of Bifrost and authenticates the user *before* the request ever reaches it. The proxy validates identity, then injects a signed token header on every request. Bifrost verifies that token against the proxy's own keys and authenticates the user from its claims - no interactive login redirect happens at Bifrost itself.
+
+This guide covers [AWS Application Load Balancer](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/listener-authenticate-users.html) with its built-in `authenticate-oidc` action. The ALB authenticates users against your identity provider (or Amazon Cognito) and forwards a signed `x-amzn-oidc-data` header - an **ES256** JWT signed by AWS's regional key - to Bifrost. Bifrost validates it against the regional public-key endpoint and pins it to the ARN of your load balancer.
+
+<Info>
+  The auth proxy **fronts an existing identity provider** already configured in Bifrost. Set up your IdP first ([Okta](../setting-up-okta/oidc), [Entra](../setting-up-entra/oidc), [Generic OIDC](../setting-up-generic-oidc/oidc), etc.), then enable the Identity-Aware Proxy on that same provider.
+</Info>
+
+---
+
+## How it works
+
+1. A user requests a Bifrost URL served through an ALB listener rule that has an `authenticate-oidc` action.
+2. The ALB authenticates the user against your configured identity provider and only forwards the request once authentication succeeds.
+3. The ALB forwards the request to Bifrost with the `x-amzn-oidc-data` header - a short-lived ES256 JWT signed by AWS's regional key, carrying the user's claims.
+4. Bifrost reads the JWT's `kid`, fetches the matching public key from `https://public-keys.auth.elb.<region>.amazonaws.com/<kid>`, validates the signature, confirms the token's signer matches your **ALB ARN**, and resolves the user from the token's identity claim (`email` by default).
+
+Because Bifrost validates the proxy's token (not the IdP's), both the dashboard and the inference APIs are protected by the same upstream authentication layer.
+
+<Warning>
+  When the proxy header is absent, Bifrost falls back to the IdP login - so if Bifrost is reachable directly (bypassing the ALB), a client can skip authentication via ALB but will be asked to login through the configured IDP.
+</Warning>
+
+---
+
+## Modes
+
+The auth proxy runs in one of two modes:
+
+| Mode | What it does | When to use |
+| --- | --- | --- |
+| **Login only** *(default)* | Validates identity and authenticates an **already-provisioned** user (looked up by the configured identity claim, `email` by default). No role, team, or business unit is derived from the token. The user's existing role (e.g. from SCIM) governs dashboard access. | You provision users and roles via SCIM or interactive OIDC login, and only want the proxy to handle authentication. |
+| **Full** | Validates the token **and** runs attribute → role / team / business-unit mapping from its claims, exactly like an interactive login. | You want role and team assignments derived from the proxy token itself. |
+
+<Note>
+  **Login-only** never creates users and rejects an identity that isn't already provisioned. A user without a role can't sign in to the dashboard but remains a valid authenticated identity for inference endpoints.
+</Note>
+
+<Warning>
+  **Full mode** requires the IdP claims used for mapping (e.g. `groups`) to be present in the `x-amzn-oidc-data` token. The ALB includes the claims returned by your IdP's userinfo/ID token - confirm your group or role claim is among them before using full mode, or role and team mapping will not match and login will be denied.
+</Warning>
+
+---
+
+## Prerequisites
+
+- An **Application Load Balancer** fronting your Bifrost deployment, with an `authenticate-oidc` action on the listener rule
+- The **ARN** of that load balancer and its AWS **region**
+- An identity provider already configured in Bifrost under **User Provisioning**
+
+---
+
+## Step 1: Configure ALB OIDC authentication
+
+<Steps>
+
+<Step title="Add an authenticate-oidc action to your listener rule">
+
+In the EC2 console, open your Application Load Balancer's HTTPS listener and edit the rule that routes to Bifrost. Add an **Authenticate** action of type **OIDC** ahead of the **Forward** action, and enter your identity provider's issuer, authorization, token, and user-info endpoints plus the client ID and secret.
+
+Follow the AWS guide for the full setup: [Authenticate users using an Application Load Balancer](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/listener-authenticate-users.html). Only users who complete authentication will ever reach Bifrost.
+
+</Step>
+
+<Step title="Copy the load balancer ARN and region">
+
+You need two values from AWS:
+
+| Value | Where to find it |
+| --- | --- |
+| **Load balancer ARN** | On the load balancer's **Description** tab, copy the **ARN** (e.g. `arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188`). Bifrost pins the token's signer to this ARN. |
+| **Region** | The AWS region of the load balancer (e.g. `us-east-1`). Bifrost derives it from the ARN automatically, so this is only needed as an override. |
+
+</Step>
+
+</Steps>
+
+---
+
+## Step 2: Pass through IdP claims (full mode only)
+
+Skip this step if you're using **login-only** mode.
+
+For **full** mode, the IdP attributes you map on (groups, roles, department, etc.) must be present in the `x-amzn-oidc-data` token. The ALB populates that token from the claims your IdP returns, so enable the relevant OIDC scopes/claims on the ALB's OIDC provider and confirm the group or role claim is included.
+
+<Note>
+  Any claim the ALB includes in the `x-amzn-oidc-data` token becomes available for attribute mapping in Bifrost.
+</Note>
+
+---
+
+## Step 3: Enable the Identity-Aware Proxy in Bifrost
+
+<Steps>
+
+<Step title="Open your provider's configuration">
+
+In the Bifrost dashboard, go to **Governance** → **User Provisioning** and open the identity provider you want to front with the ALB. Continue to the **Provider Configuration** step, where the **Identity-Aware Proxy (IAP)** section appears.
+
+</Step>
+
+<Step title="Enable the proxy and select AWS ALB">
+
+Toggle **Identity-Aware Proxy (IAP)** on, then set **Proxy** to **AWS ALB**. The **Expected signer (ALB ARN)** field appears below, along with the **Mode** selector.
+
+<Frame caption="Enable the Identity-Aware Proxy section, choose AWS ALB, and fill in the load balancer ARN.">
+  <img src="/media/user-provisioning/auth-proxy/bifrost-aws-alb-iap.png" alt="Bifrost Identity-Aware Proxy section with AWS ALB selected, showing Mode and Expected signer (ALB ARN) fields" />
+</Frame>
+
+</Step>
+
+<Step title="Choose a mode">
+
+Select **Login only** (authenticate against existing roles) or **Full** (map roles and teams from the token). See [Modes](#modes) above.
+
+</Step>
+
+<Step title="Fill in the AWS ALB fields">
+
+| Field | Value |
+| --- | --- |
+| **Expected signer (ALB ARN)** | The ARN of your load balancer, pinning the token's signer to this specific ALB. Bifrost derives the region and the public-key endpoint from it. |
+
+The **Advanced** section lets you override the region, supply an explicit public-key base URL (for partitions like GovCloud), override the request header, or change the identity claim - all optional for a standard ALB.
+
+</Step>
+
+<Step title="Save">
+
+Save the provider configuration. Click **Verify & Next** and complete the wizard.
+
+Identity-Aware Proxy changes on an already-enabled provider - turning IAP on or off, switching the proxy type, or editing the ARN, region, or mode - are hot-reloaded and take effect immediately (and are propagated to peer nodes in a cluster).
+
+</Step>
+
+</Steps>
+
+---
+
+## Configuration reference
+
+The Identity-Aware Proxy is stored as an `authProxy` block on the SSO provider's configuration. Fields marked **string (secret)** below accept a plain-text value, an `env.VAR_NAME` reference, or a `vault.path/to/secret` reference; `enabled`, `provider`, `mode`, and `allowedAudiences` are plain values.
+
+The `authProxy` block lives inside your SSO provider's `config` under the top-level `scim_config`, alongside that provider's own fields:
+
+```json
+{
+  "scim_config": {
+    "enabled": true,
+    "provider": "okta",
+    "config": {
+      ...
+      "authProxy": {
+        "enabled": true,
+        "provider": "aws-alb",
+        "mode": "full",
+        "expectedSigner": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188"
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | boolean | Yes | Turns the identity-aware proxy on. |
+| `provider` | string | No | Set to `aws-alb`. (`cloudflare-access` is the default; `generic` is the other option.) |
+| `mode` | string | No | `login_only` (default) or `full`. |
+| `expectedSigner` | string (secret) | Yes | The ALB ARN to pin the token's signer to. The regional key signs tokens for every ALB in the region, so this binds acceptance to your load balancer specifically. |
+| `region` | string (secret) | No | Region for the public-key endpoint. Derived from the signer ARN when blank. |
+| `publicKeyBaseUrl` | string (secret) | No | Override base URL for the public-key endpoint (keys are fetched from `<base>/<kid>`). Needed for partitions like GovCloud; must be `https`. |
+| `headerName` | string (secret) | No | Override the request header. Defaults to `x-amzn-oidc-data`. |
+| `userIdClaim` | string (secret) | No | Token claim used as the user identity. Defaults to `email`. |
+
+<Note>
+  AWS ALB does not use `issuerUrl`, `jwksUrl`, or `audience` - those apply to the JWKS-based providers (Cloudflare Access and generic). The ALB token is validated by ES256 signature against the regional public key and pinned to `expectedSigner`.
+</Note>
+
+---
+
+## Troubleshooting
+
+### Every request returns 401 Unauthorized
+**Cause:** The token signature or signer check failed.
+**Fix:** Confirm **Expected signer (ALB ARN)** exactly matches your load balancer's ARN (including account ID and region), and that the region resolved from the ARN is where the ALB actually runs. If you set a custom **public-key base URL**, verify it's reachable and `https`.
+
+### Users get 403 "not provisioned" in login-only mode
+**Cause:** Login-only mode never creates users; the identity isn't in Bifrost yet.
+**Fix:** Provision the user first via SCIM or a one-time interactive login, or switch the provider to **Full** mode so users are provisioned from the token.
+
+### Role/team mapping doesn't apply in full mode
+**Cause:** The mapping claims (e.g. `groups`) aren't present in the `x-amzn-oidc-data` token.
+**Fix:** Enable the relevant claims/scopes on the ALB's OIDC provider so they're included in the token (see [Step 2](#step-2%3A-pass-through-idp-claims-full-mode-only)).
+
+---
+
+## Next steps
+
+- **[Cloudflare ZTNA](./cloudflare-ztna)** - front Bifrost with Cloudflare Access instead
+- **[Generic OIDC proxy](./generic-proxy)** - front Bifrost with any OIDC-based identity-aware proxy
+- **[RBAC](../rbac)** - define the roles the proxy authenticates against
+- **[User provisioning](../user-provisioning)** - SCIM and OIDC provider setup

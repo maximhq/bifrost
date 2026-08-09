@@ -115,6 +115,13 @@ type ExternalQuotaBudgetResolver func(ctx context.Context, vk *configstoreTables
 type ExternalQuotaBudgetResult struct {
 	// Budgets replaces the VK's own budget rows in the quota response.
 	Budgets []configstoreTables.TableBudget
+	// RateLimit, when non-nil, replaces the VK's own rate-limit row (enterprise:
+	// the access-profile rate limit that carries the real usage for an AP-managed VK).
+	RateLimit *configstoreTables.TableRateLimit
+	// Managed reports that the VK is access-profile-managed. Set independently of
+	// Budgets/RateLimit so the flag reaches the response even when the profile has
+	// neither — it drives the managed-key UI (lock + notice).
+	Managed bool
 	// UsageUserID, when non-empty, scopes the per_model_usage query to this user id
 	// instead of the VK id.
 	UsageUserID string
@@ -746,6 +753,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 		}
 	}
 
+
 	// Resulting budget count: the desired set if provided, else the existing set.
 	finalBudgetCount := len(mc.Budgets)
 	if d.budgetsProvided {
@@ -917,6 +925,37 @@ func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []c
 	for i := range vks {
 		applyVKGovernanceFromModelConfigs(&vks[i], byKey)
 	}
+}
+
+// applyExternalBudgets swaps a VK's own budget and rate-limit rows for the ones
+// that actually govern its spend when an external resolver supplies them
+// (enterprise: the access-profile budgets and rate limit that carry the real usage
+// for an AP-managed VK, in place of the VK's own untracked mirror rows). This is the
+// same resolution the self-service quota endpoint performs, applied to the admin
+// read paths so the VK detail/list responses show the effective limits without the
+// caller needing a separate, differently-gated access-profile lookup. No-op in OSS
+// (resolver nil) and for non-AP-managed VKs (resolver returns nil). A resolver error
+// degrades gracefully to the VK's own rows rather than failing the whole read.
+func (h *GovernanceHandler) applyExternalBudgets(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
+	if h.externalQuotaBudgetResolver == nil || vk == nil {
+		return
+	}
+	ext, err := h.externalQuotaBudgetResolver(ctx, vk)
+	if err != nil {
+		logger.Error("failed to resolve external budgets for VK %s: %v", vk.ID, err)
+		return
+	}
+	if ext == nil {
+		return
+	}
+	// The VK is access-profile-managed: its own budget/rate-limit rows are untracked
+	// mirrors (reset to current_usage=0 at adoption and never charged), so surface the
+	// AP's governance verbatim. An empty budget slice or nil rate limit means the AP has
+	// none — we must NOT fall back to the misleading VK rows. This mirrors the UI's
+	// managing-profile branch and getVirtualKeyQuota, so all read paths agree.
+	vk.IsAccessProfileManaged = ext.Managed
+	vk.Budgets = ext.Budgets
+	vk.RateLimit = ext.RateLimit
 }
 
 func collectProviderConfigDeleteIDs(
@@ -1151,6 +1190,16 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	if fromMemory {
+		// The in-memory cache holds no VK↔user assignments (GovernanceData.Users carries
+		// only budget/rate-limit ids), so a user_id filter cannot be applied here. Reject
+		// the combination rather than silently dropping the filter: the database path
+		// fails closed on user_id, and returning every cached key instead would be the
+		// exact inverse of that contract. The other filters keep their long-standing
+		// ignored-under-from_memory behaviour.
+		if len(ctx.QueryArgs().Peek("user_id")) > 0 {
+			SendError(ctx, 400, "user_id filter is not supported with from_memory=true; omit from_memory to filter virtual keys by user")
+			return
+		}
 		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
@@ -1172,6 +1221,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			copy(pcs, vk.ProviderConfigs)
 			clone.ProviderConfigs = pcs
 			applyVKGovernanceFromModelConfigs(&clone, byKey)
+			h.applyExternalBudgets(ctx, &clone)
 			hydratedVKs[i] = &clone
 		}
 		SendJSON(ctx, map[string]interface{}{
@@ -1189,6 +1239,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	search := string(ctx.QueryArgs().Peek("search"))
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
 	teamID := string(ctx.QueryArgs().Peek("team_id"))
+	userID := string(ctx.QueryArgs().Peek("user_id"))
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	order := string(ctx.QueryArgs().Peek("order"))
 	isExport := string(ctx.QueryArgs().Peek("export")) == "true"
@@ -1196,12 +1247,13 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
 			CustomerID:                         customerID,
 			TeamID:                             teamID,
+			UserID:                             userID,
 			SortBy:                             sortBy,
 			Order:                              order,
 			Export:                             isExport,
@@ -1247,6 +1299,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		}
 		// Reverse-map governance from VK-scoped model configs for display.
 		h.hydrateVKListGovernance(ctx, virtualKeys)
+		for i := range virtualKeys {
+			h.applyExternalBudgets(ctx, &virtualKeys[i])
+		}
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
 			"count":        len(virtualKeys),
@@ -1265,6 +1320,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.hydrateVKListGovernance(ctx, virtualKeys)
+	for i := range virtualKeys {
+		h.applyExternalBudgets(ctx, &virtualKeys[i])
+	}
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_keys": virtualKeys,
 		"count":        len(virtualKeys),
@@ -1504,6 +1562,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 				copy(pcs, vk.ProviderConfigs)
 				clone.ProviderConfigs = pcs
 				applyVKGovernanceFromModelConfigs(&clone, byKey)
+				h.applyExternalBudgets(ctx, &clone)
 				SendJSON(ctx, map[string]interface{}{
 					"virtual_key": &clone,
 				})
@@ -1524,6 +1583,9 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, vk)
+	// Surface the effective (e.g. access-profile) budgets in place of the VK's own
+	// untracked rows so the admin detail panel matches the self-service quota view.
+	h.applyExternalBudgets(ctx, vk)
 
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_key": vk,
@@ -2029,18 +2091,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
-	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
-		// Should never happen but just in case
-		logger.Error("failed to reload virtual key after update: %v", err)
-		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
-		return
-	}
 
 	// Per-user credential reconciliation when the VK's MCP allowlist
 	// changed. Mirrors the AP-propagation path: enterprise orphans /
 	// reactivates credentials keyed to this VK (vk-keyed creds) and to the
 	// VK's owner (user-keyed creds) against the new effective allowlist
 	// (explicit rows ∪ MCPs with AllowOnAllVirtualKeys=true). OSS no-ops.
+	// Must run before ReloadVirtualKey: the reload also evicts this VK's
+	// cached OAuth tokens and header credentials, and an eviction that lands
+	// before these writes could be refilled from the pre-reconcile rows and
+	// then never dropped.
 	if req.MCPConfigs != nil && h.configStore != nil {
 		if err := h.configStore.ReconcileOauthAfterVKChange(ctx, vk.ID); err != nil {
 			logger.Error("reconcile OAuth credentials after VK %s update failed: %v", vk.ID, err)
@@ -2048,6 +2108,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if err := h.configStore.ReconcileMCPHeadersAfterVKChange(ctx, vk.ID); err != nil {
 			logger.Error("reconcile per-user-headers credentials after VK %s update failed: %v", vk.ID, err)
 		}
+	}
+
+	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
+		// Should never happen but just in case
+		logger.Error("failed to reload virtual key after update: %v", err)
+		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
+		return
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -2177,7 +2244,9 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to delete virtual key")
 		return
 	}
-	// Removing key from in-memory store
+	// Removing key from in-memory store. RemoveVirtualKey also evicts the
+	// VK's cached OAuth access tokens and header credentials internally,
+	// covering the rows the database delete above cascaded over.
 	err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
 	if err != nil {
 		// But we ignore this error because its not
@@ -5010,6 +5079,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 	}
 
 	budgetRows := vk.Budgets
+	rateLimit := vk.RateLimit
 	usageUserID := ""
 	if resolve := h.externalQuotaBudgetResolver; resolve != nil {
 		ext, err := resolve(ctx, vk)
@@ -5018,7 +5088,10 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if ext != nil {
+			// AP-managed VK: surface the AP's governance verbatim in place of the VK's own
+			// untracked mirror rows. Empty budgets / nil rate limit mean the AP has none.
 			budgetRows = ext.Budgets
+			rateLimit = ext.RateLimit
 			usageUserID = ext.UsageUserID
 		}
 	}
@@ -5035,7 +5108,7 @@ func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
 		"virtual_key_name": vk.Name,
 		"is_active":        vk.IsActiveValue(),
 		"budgets":          budgets,
-		"rate_limit":       vk.RateLimit,
+		"rate_limit":       rateLimit,
 		"provider_configs": vk.ProviderConfigs,
 		"model_configs":    models,
 	})

@@ -12,13 +12,13 @@ export interface CELFieldDefinition {
 	placeholder?: string;
 	inputType?: "text" | "select" | "keyValue" | "number";
 	valueEditorType?:
-		| "text"
-		| "select"
-		| "keyValue"
-		| "number"
-		| "textarea"
-		| "budgetNumber"
-		| ((operator: string) => "text" | "select" | "keyValue" | "number" | "textarea" | "budgetNumber");
+	| "text"
+	| "select"
+	| "keyValue"
+	| "number"
+	| "textarea"
+	| "budgetNumber"
+	| ((operator: string) => "text" | "select" | "keyValue" | "number" | "textarea" | "budgetNumber");
 	operators?: string[];
 	defaultOperator?: string;
 	defaultValue?: any;
@@ -59,19 +59,27 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 		defaultOperator: "=",
 		values: [
 			{ name: "text_completion", label: "Text Completion" },
+			{ name: "text_completion_stream", label: "Text Completion (Streaming)" },
 			{ name: "chat_completion", label: "Chat Completion" },
+			{ name: "chat_completion_stream", label: "Chat Completion (Streaming)" },
 			{ name: "responses", label: "Responses" },
+			{ name: "responses_stream", label: "Responses (Streaming)" },
 			{ name: "embedding", label: "Embeddings" },
 			{ name: "image_generation", label: "Image Generation" },
+			{ name: "image_generation_stream", label: "Image Generation (Streaming)" },
 			{ name: "image_edit", label: "Image Edit" },
+			{ name: "image_edit_stream", label: "Image Edit (Streaming)" },
 			{ name: "image_variation", label: "Image Variation" },
 			{ name: "speech", label: "Speech" },
+			{ name: "speech_stream", label: "Speech (Streaming)" },
 			{ name: "transcription", label: "Transcription" },
+			{ name: "transcription_stream", label: "Transcription (Streaming)" },
 			{ name: "count_tokens", label: "Count Tokens" },
 			{ name: "rerank", label: "Rerank" },
 			{ name: "video_generation", label: "Video Generation" },
 		],
-		description: "Filter rules by the type of API request (chat, text, embeddings, images, audio, etc.)",
+		description:
+			"Filter rules by the type of API request (chat, text, embeddings, images, audio, etc.). Streaming and non-streaming requests are distinct types: select both to cover all requests of a kind.",
 	},
 	{
 		name: "headers",
@@ -143,18 +151,18 @@ export function getRoutingFields(providers: string[] = [], models: string[] = []
 	const providerValues =
 		providers.length > 0
 			? providers.map((provider) => ({
-					name: provider,
-					label: getProviderLabel(provider),
-				}))
+				name: provider,
+				label: getProviderLabel(provider),
+			}))
 			: [{ name: "_no_providers", label: "No providers configured", disabled: true }];
 
 	// Create model field values
 	const modelValues =
 		models.length > 0
 			? models.map((model) => ({
-					name: model,
-					label: model,
-				}))
+				name: model,
+				label: model,
+			}))
 			: [];
 
 	// Create metric options for scope input: providers + models
