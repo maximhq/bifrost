@@ -34,6 +34,7 @@ const NetworkConfigSchema = z
 		base_url: z.string().optional(),
 		extra_headers: z.record(z.string(), z.string()).optional(),
 		default_request_timeout_in_seconds: z.number().min(1, "Timeout must be greater than 0 seconds"),
+		connect_timeout_in_seconds: z.number().int().min(1).max(3600).optional(),
 		max_retries: z.number().min(0, "Max retries cannot be negative"),
 		retry_backoff_initial: z.number(),
 		retry_backoff_max: z.number(),

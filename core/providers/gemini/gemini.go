@@ -76,7 +76,7 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 

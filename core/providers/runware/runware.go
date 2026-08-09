@@ -42,7 +42,7 @@ func NewRunwareProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 
 	// Configure proxy if provided
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 
 	// Set default BaseURL if not provided. Runware's single endpoint already includes /v1.

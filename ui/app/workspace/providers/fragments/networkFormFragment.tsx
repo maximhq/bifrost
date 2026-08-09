@@ -78,6 +78,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				extra_headers: provider.network_config?.extra_headers,
 				default_request_timeout_in_seconds:
 					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
+				connect_timeout_in_seconds: provider.network_config?.connect_timeout_in_seconds ?? DefaultNetworkConfig.connect_timeout_in_seconds,
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
@@ -116,6 +117,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				extra_headers: data.network_config?.extra_headers || undefined,
 				default_request_timeout_in_seconds:
 					data.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
+				connect_timeout_in_seconds: data.network_config?.connect_timeout_in_seconds ?? DefaultNetworkConfig.connect_timeout_in_seconds,
 				max_retries: data.network_config?.max_retries ?? 0,
 				retry_backoff_initial: data.network_config?.retry_backoff_initial ?? 500,
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
@@ -151,6 +153,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				extra_headers: provider.network_config?.extra_headers,
 				default_request_timeout_in_seconds:
 					provider.network_config?.default_request_timeout_in_seconds ?? DefaultNetworkConfig.default_request_timeout_in_seconds,
+				connect_timeout_in_seconds: provider.network_config?.connect_timeout_in_seconds ?? DefaultNetworkConfig.connect_timeout_in_seconds,
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
@@ -224,6 +227,38 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											/>
 										</FormControl>
 										<FormDescription>{secondsToHumanReadable(field.value)}</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="network_config.connect_timeout_in_seconds"
+								render={({ field }) => (
+									<FormItem className="flex-1">
+										<FormLabel>Connect Timeout (seconds)</FormLabel>
+										<FormControl>
+											<Input
+												placeholder="30"
+												data-testid="network-config-connect-timeout-input"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? "" : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value;
+													if (value === "") {
+														field.onChange(undefined);
+														return;
+													}
+													const parsed = Number(value);
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed);
+													}
+													form.trigger("network_config");
+												}}
+											/>
+										</FormControl>
+										<FormDescription>Max time to establish a connection (DNS + TCP) before failing fast</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}

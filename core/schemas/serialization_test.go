@@ -1150,6 +1150,28 @@ func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	assert.Contains(t, string(data), `"stream_idle_timeout_in_seconds":120`)
 }
 
+// TestNetworkConfig_ConnectTimeoutRoundTrip verifies that connect_timeout_in_seconds
+// round-trips through JSON and gets its default from CheckAndSetDefaults (issue #5986).
+func TestNetworkConfig_ConnectTimeoutRoundTrip(t *testing.T) {
+	nc := NetworkConfig{ConnectTimeoutInSeconds: 10}
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, 10, decoded.ConnectTimeoutInSeconds, "connect_timeout_in_seconds should round-trip")
+	assert.Contains(t, string(data), `"connect_timeout_in_seconds":10`)
+
+	// unset -> defaulted so unconfigured setups fail fast on unreachable endpoints
+	cfgDefault := &ProviderConfig{}
+	cfgDefault.CheckAndSetDefaults()
+	assert.Equal(t, DefaultConnectTimeoutInSeconds, cfgDefault.NetworkConfig.ConnectTimeoutInSeconds)
+
+	// explicit value is preserved
+	cfgExplicit := &ProviderConfig{NetworkConfig: NetworkConfig{ConnectTimeoutInSeconds: 5}}
+	cfgExplicit.CheckAndSetDefaults()
+	assert.Equal(t, 5, cfgExplicit.NetworkConfig.ConnectTimeoutInSeconds)
+}
+
 func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	nc := NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 45}
 	data, err := json.Marshal(nc)

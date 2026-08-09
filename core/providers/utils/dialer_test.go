@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -22,7 +24,7 @@ func TestConfigureDialer_SetsRetryIfErr(t *testing.T) {
 		t.Fatal("precondition: RetryIfErr should be nil on a new client")
 	}
 
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	if client.RetryIfErr == nil {
 		t.Fatal("ConfigureDialer should set RetryIfErr")
@@ -47,7 +49,7 @@ func TestConfigureDialer_SetsDial(t *testing.T) {
 		t.Fatal("precondition: Dial should be nil on a new client")
 	}
 
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	if client.Dial == nil {
 		t.Fatal("ConfigureDialer should set a Dial function")
@@ -67,7 +69,7 @@ func TestConfigureDialer_ComposesWithExistingDial(t *testing.T) {
 		return net.Dial("tcp", addr)
 	}
 
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	// Start a test server to connect to
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +109,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 	// Test without existing dial (direct connection path)
 	t.Run("without_existing_dial", func(t *testing.T) {
 		client := &fasthttp.Client{}
-		ConfigureDialer(client, false)
+		ConfigureDialer(client, schemas.NetworkConfig{})
 
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -134,7 +136,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 			connFromProxy = conn
 			return conn, err
 		}
-		ConfigureDialer(client, false)
+		ConfigureDialer(client, schemas.NetworkConfig{})
 
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -163,7 +165,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 // same client pointer it received (for chaining).
 func TestConfigureDialer_ReturnValue(t *testing.T) {
 	client := &fasthttp.Client{}
-	result := ConfigureDialer(client, false)
+	result := ConfigureDialer(client, schemas.NetworkConfig{})
 	if result != client {
 		t.Error("ConfigureDialer should return the same client pointer")
 	}
@@ -179,8 +181,8 @@ func TestConfigureDialer_Idempotent(t *testing.T) {
 	defer server.Close()
 
 	client := &fasthttp.Client{}
-	ConfigureDialer(client, false)
-	ConfigureDialer(client, false) // called again
+	ConfigureDialer(client, schemas.NetworkConfig{})
+	ConfigureDialer(client, schemas.NetworkConfig{}) // called again
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -230,7 +232,7 @@ func TestConfigureDialer_WithRetryOnStaleConnection(t *testing.T) {
 		MaxConnsPerHost:     10,
 	}
 	// Use ConfigureDialer (the function under test) instead of manually setting RetryIfErr
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	// First request: establish connection in pool
 	req := fasthttp.AcquireRequest()
@@ -324,7 +326,7 @@ func TestConfigureDialer_SSRFProtection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &fasthttp.Client{ReadTimeout: time.Second}
-			ConfigureDialer(client, false)
+			ConfigureDialer(client, schemas.NetworkConfig{})
 			_, err := client.Dial(tt.addr)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
@@ -345,7 +347,7 @@ func TestConfigureDialer_SSRFProxyBypass(t *testing.T) {
 		proxyCalled = true
 		return nil, fmt.Errorf("proxy handled: %s", addr)
 	}
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	_, err := client.Dial("10.0.0.1:80")
 	if !proxyCalled {
@@ -357,10 +359,11 @@ func TestConfigureDialer_SSRFProxyBypass(t *testing.T) {
 }
 
 // TestConfigureDialer_SSRFZeroTimeout verifies that SSRF protection is active
-// even when ReadTimeout is 0 (context.Background() is used instead of WithTimeout).
+// even when both the connect timeout and ReadTimeout are 0
+// (context.Background() is used instead of WithTimeout).
 func TestConfigureDialer_SSRFZeroTimeout(t *testing.T) {
 	client := &fasthttp.Client{ReadTimeout: 0}
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	_, err := client.Dial("169.254.169.254:80")
 	if err == nil {
@@ -378,7 +381,7 @@ func TestConfigureDialer_SSRFMultiIPAllFail(t *testing.T) {
 	// A connection attempt to it will fail (refused or timeout) without any
 	// private-IP rejection, letting us exercise the lastErr return path.
 	client := &fasthttp.Client{ReadTimeout: 200 * time.Millisecond}
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	_, err := client.Dial("192.0.2.1:9")
 	if err == nil {
@@ -400,7 +403,7 @@ func TestConfigureDialer_DialError(t *testing.T) {
 		return nil, expectedErr
 	}
 
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -415,6 +418,56 @@ func TestConfigureDialer_DialError(t *testing.T) {
 		t.Fatal("expected error from failed proxy dial")
 	}
 	t.Logf("Got expected error: %v", err)
+}
+
+// TestConfigureDialer_ConnectTimeoutBoundsDial verifies that the dial budget
+// comes from ConnectTimeoutInSeconds, not from the request timeout (issue #5986).
+// 192.0.2.1 (TEST-NET-1) is documentation-only and never routed, so the SYN is
+// dropped and the dial can only end via timeout. With a large ReadTimeout and a
+// 1s connect timeout, the dial must fail in ~1s; before the fix it inherited
+// ReadTimeout and would hang here for the full 30s.
+func TestConfigureDialer_ConnectTimeoutBoundsDial(t *testing.T) {
+	client := &fasthttp.Client{ReadTimeout: 30 * time.Second}
+	ConfigureDialer(client, schemas.NetworkConfig{ConnectTimeoutInSeconds: 1})
+
+	start := time.Now()
+	_, err := client.Dial("192.0.2.1:81")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected dial to unroutable TEST-NET address to fail")
+	}
+	// Generous bound: anything near ReadTimeout means the connect timeout was ignored.
+	if elapsed > 10*time.Second {
+		t.Fatalf("dial took %v; connect timeout (1s) did not bound it", elapsed)
+	}
+	// Timeout-flavored dial errors must carry the sentinel so error
+	// classification points users at connect_timeout_in_seconds, not the
+	// request timeout. (Networks that reject TEST-NET with ICMP instead of
+	// dropping produce a non-timeout error, which legitimately skips the tag.)
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() && !errors.Is(err, ErrConnectTimeout) {
+		t.Errorf("timeout dial error not tagged with ErrConnectTimeout: %v", err)
+	}
+}
+
+// TestConfigureDialer_ZeroConnectTimeoutFallsBackToReadTimeout verifies the
+// backward-compat path: with no connect timeout configured, the dial budget
+// falls back to the client's ReadTimeout as before.
+func TestConfigureDialer_ZeroConnectTimeoutFallsBackToReadTimeout(t *testing.T) {
+	client := &fasthttp.Client{ReadTimeout: time.Second}
+	ConfigureDialer(client, schemas.NetworkConfig{})
+
+	start := time.Now()
+	_, err := client.Dial("192.0.2.1:81")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected dial to unroutable TEST-NET address to fail")
+	}
+	if elapsed > 10*time.Second {
+		t.Fatalf("dial took %v; ReadTimeout fallback (1s) did not bound it", elapsed)
+	}
 }
 
 // TestStaleConnectionRetryIfErr_WrappedErrors verifies behavior with wrapped errors.

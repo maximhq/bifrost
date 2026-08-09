@@ -117,7 +117,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		DisablePathNormalizing: true,
 	}
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	return &VertexProvider{

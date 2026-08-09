@@ -78,9 +78,17 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	config.CheckAndSetDefaults()
 
 	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
+	connectTimeout := time.Second * time.Duration(config.NetworkConfig.ConnectTimeoutInSeconds)
 
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy: http.ProxyFromEnvironment,
+		// Bound DNS + TCP dial separately from the request timeout so an
+		// unreachable endpoint fails fast instead of holding the request
+		// for the full request timeout.
+		DialContext: (&net.Dialer{
+			Timeout:   connectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
 		MaxConnsPerHost:       config.NetworkConfig.MaxConnsPerHost,
 		MaxIdleConns:          schemas.DefaultMaxIdleConnsPerHost,
 		MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
@@ -147,7 +155,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 	mantleFasthttpClient = providerUtils.ConfigureProxy(mantleFasthttpClient, config.ProxyConfig, logger)
-	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient, config.NetworkConfig.AllowPrivateNetwork)
+	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient, config.NetworkConfig)
 	mantleFasthttpClient = providerUtils.ConfigureTLS(mantleFasthttpClient, config.NetworkConfig, logger)
 	mantleStreamingFasthttpClient := providerUtils.BuildStreamingClient(mantleFasthttpClient)
 

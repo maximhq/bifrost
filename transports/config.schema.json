@@ -3755,6 +3755,11 @@
           "minimum": 1,
           "description": "Default request timeout in seconds"
         },
+        "connect_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "DNS + TCP dial timeout in seconds (default: 30). Bounds connection establishment separately from the request timeout so unreachable endpoints fail fast"
+        },
         "max_retries": {
           "type": "integer",
           "minimum": 0,
@@ -3835,6 +3840,11 @@
           "type": "integer",
           "minimum": 1,
           "description": "Default request timeout in seconds"
+        },
+        "connect_timeout_in_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "DNS + TCP dial timeout in seconds (default: 30). Bounds connection establishment separately from the request timeout so unreachable endpoints fail fast"
         },
         "max_retries": {
           "type": "integer",
