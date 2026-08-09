@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	deepseek "github.com/maximhq/bifrost/core/providers/deepseek"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -105,6 +107,55 @@ func TestResponsesAnthropicV4FlashRejectsCollapsedUsage(t *testing.T) {
 		t.Fatalf("collapsed usage produced a success response: %#v", resp)
 	}
 	assertUsageFidelityError(t, bifrostErr)
+}
+
+func TestAnthropicV4FlashLargeResponseSkipsTruncatedPreviewValidation(t *testing.T) {
+	largeResponse := `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"text","text":"` +
+		strings.Repeat("x", 70*1024) +
+		`"}],"stop_reason":"end_turn","usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":23,"prompt_tokens":121}}`
+
+	for _, tc := range []struct {
+		name string
+		call func(*schemas.BifrostContext, *deepseek.DeepSeekProvider) (any, *schemas.BifrostError)
+	}{
+		{
+			name: "chat",
+			call: func(ctx *schemas.BifrostContext, provider *deepseek.DeepSeekProvider) (any, *schemas.BifrostError) {
+				return provider.ChatCompletion(ctx, anthropicTestKey(), v4FlashChatRequest())
+			},
+		},
+		{
+			name: "responses",
+			call: func(ctx *schemas.BifrostContext, provider *deepseek.DeepSeekProvider) (any, *schemas.BifrostError) {
+				return provider.Responses(ctx, anthropicTestKey(), v4FlashResponsesRequest())
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, largeResponse)
+			}))
+			defer server.Close()
+
+			provider, err := newTestDeepSeekProvider(server.URL)
+			if err != nil {
+				t.Fatalf("NewDeepSeekProvider: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1))
+			resp, bifrostErr := tc.call(ctx, provider)
+			if reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser); ok {
+				t.Cleanup(func() { _ = reader.Close() })
+			}
+			if bifrostErr != nil {
+				t.Fatalf("large response returned fidelity error: %#v", bifrostErr)
+			}
+			if resp == nil {
+				t.Fatal("large response returned nil success response")
+			}
+		})
+	}
 }
 
 func TestResponsesAnthropicUsageGateIsExact(t *testing.T) {
@@ -271,7 +322,7 @@ func TestChatCompletionStreamAnthropicV4FlashRejectsCollapsedUsageFirst(t *testi
 func anthropicTestKey() schemas.Key {
 	return schemas.Key{
 		Value:                 schemas.SecretVar{Val: "test-api-key"},
-		UseAnthropicEndpoints: new(true),
+		UseAnthropicEndpoints: schemas.Ptr(true),
 	}
 }
 
@@ -280,10 +331,10 @@ func v4FlashResponsesRequest() *schemas.BifrostResponsesRequest {
 		Provider: schemas.DeepSeek,
 		Model:    "deepseek-v4-flash",
 		Input: []schemas.ResponsesMessage{{
-			Type: new(schemas.ResponsesMessageTypeMessage),
-			Role: new(schemas.ResponsesInputMessageRoleUser),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
 			Content: &schemas.ResponsesMessageContent{
-				ContentStr: new("hello"),
+				ContentStr: schemas.Ptr("hello"),
 			},
 		}},
 	}

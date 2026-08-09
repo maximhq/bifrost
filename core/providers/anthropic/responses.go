@@ -3961,9 +3961,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 
-		// DeepSeek rejects a forced tool_choice while thinking is on. Force thinking
-		// off when tool_choice pins a specific tool.
-		if bifrostReq.Provider == schemas.DeepSeek && anthropicReq.ToolChoice != nil &&
+		// DeepSeek models other than V4 Flash reject a forced tool_choice while
+		// thinking is on. Force thinking off when a specific tool is pinned; V4
+		// Flash omits thinking entirely above.
+		if bifrostReq.Provider == schemas.DeepSeek && !isDeepSeekV4FlashRequest(bifrostReq.Provider, capModel) && anthropicReq.ToolChoice != nil &&
 			anthropicReq.ToolChoice.Type == "tool" {
 			anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
 		}

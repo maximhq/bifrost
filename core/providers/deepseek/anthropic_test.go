@@ -178,7 +178,7 @@ func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 	}
 }
 
-func TestChatCompletion_DisablesThinkingForForcedToolChoice(t *testing.T) {
+func TestChatCompletion_V4FlashOmitsThinkingForForcedToolChoice(t *testing.T) {
 	t.Parallel()
 
 	var captured map[string]any
@@ -235,12 +235,8 @@ func TestChatCompletion_DisablesThinkingForForcedToolChoice(t *testing.T) {
 		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
 	}
 
-	thinking, ok := captured["thinking"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected thinking block in outbound body, got %#v", captured)
-	}
-	if got := thinking["type"]; got != "disabled" {
-		t.Fatalf("thinking.type = %v, want disabled", got)
+	if thinking, exists := captured["thinking"]; exists {
+		t.Fatalf("V4 Flash wire body gained unsupported thinking: %#v", thinking)
 	}
 }
 

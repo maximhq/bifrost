@@ -91,6 +91,25 @@ func TestValidateDeepSeekV4FlashStreamRejectsMalformedUsage(t *testing.T) {
 	}
 }
 
+func TestValidateDeepSeekV4FlashStreamRejectsOutOfOrderEvents(t *testing.T) {
+	t.Run("duplicate message_start", func(t *testing.T) {
+		state := &deepSeekStreamUsageState{sawMessageStart: true}
+		body := `{"type":"message_start","message":{"model":"deepseek-v4-flash","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}`
+		err := validateDeepSeekV4FlashStreamMetadata("message_start", []byte(body), state)
+		if err == nil || !strings.Contains(err.Error(), "duplicate message_start") {
+			t.Fatalf("error = %v, want duplicate message_start", err)
+		}
+	})
+
+	t.Run("event after message_stop", func(t *testing.T) {
+		state := &deepSeekStreamUsageState{sawMessageStart: true, sawMessageDelta: true, sawMessageStop: true}
+		err := validateDeepSeekV4FlashStreamMetadata("message_delta", []byte(`{"type":"message_delta","usage":{"output_tokens":1}}`), state)
+		if err == nil || !strings.Contains(err.Error(), "after message_stop") {
+			t.Fatalf("error = %v, want after message_stop", err)
+		}
+	})
+}
+
 func TestValidateDeepSeekV4FlashStreamComplete(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

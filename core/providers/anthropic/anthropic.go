@@ -528,19 +528,17 @@ func HandleAnthropicChatCompletionRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse, latency)
 	}
-	if shouldValidateDeepSeekV4FlashUsage(ctx, config.Provider, request.Model) {
-		metadataBody := responseBody
-		if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
-			preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
-			metadataBody = []byte(preview)
-		}
-		if err := validateDeepSeekV4FlashResponseMetadata(metadataBody); err != nil {
+	isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	// Large-response mode exposes only a prefix preview here; usage is normally
+	// trailing metadata, so validating the preview would reject valid payloads.
+	if shouldValidateDeepSeekV4FlashUsage(ctx, config.Provider, request.Model) && !isLargeResp {
+		if err := validateDeepSeekV4FlashResponseMetadata(responseBody); err != nil {
 			return nil, providerUtils.EnrichError(ctx, newDeepSeekUsageFidelityError(err), jsonBody, nil, config.ShouldSendBackRawRequest, false, latency)
 		}
 	}
 
 	// Large response mode: return lightweight response with metadata only.
-	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+	if isLargeResp {
 		return &schemas.BifrostChatResponse{
 			Model: request.Model,
 			ExtraFields: schemas.BifrostResponseExtraFields{
@@ -1004,6 +1002,7 @@ func HandleAnthropicChatCompletionStreaming(
 			}
 			if validateDeepSeekUsage {
 				if err := validateDeepSeekV4FlashStreamMetadata(eventType, eventDataBytes, deepSeekUsageState); err != nil {
+					normalizeUsage()
 					sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
 					return
 				}
@@ -1222,6 +1221,7 @@ func HandleAnthropicChatCompletionStreaming(
 		// to the client as a clean stop.
 		if validateDeepSeekUsage {
 			if err := validateDeepSeekV4FlashStreamComplete(deepSeekUsageState); err != nil {
+				normalizeUsage()
 				sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
 				return
 			}
@@ -1321,19 +1321,17 @@ func HandleAnthropicResponsesRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, config.ShouldSendBackRawRequest, config.ShouldSendBackRawResponse, latency)
 	}
-	if shouldValidateDeepSeekV4FlashUsage(ctx, config.Provider, request.Model) {
-		metadataBody := responseBody
-		if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
-			preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
-			metadataBody = []byte(preview)
-		}
-		if err := validateDeepSeekV4FlashResponseMetadata(metadataBody); err != nil {
+	isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	// Large-response mode exposes only a prefix preview here; usage is normally
+	// trailing metadata, so validating the preview would reject valid payloads.
+	if shouldValidateDeepSeekV4FlashUsage(ctx, config.Provider, request.Model) && !isLargeResp {
+		if err := validateDeepSeekV4FlashResponseMetadata(responseBody); err != nil {
 			return nil, providerUtils.EnrichError(ctx, newDeepSeekUsageFidelityError(err), jsonBody, nil, config.ShouldSendBackRawRequest, false, latency)
 		}
 	}
 
 	// Large response mode: return lightweight response with usage from the prefetch preview.
-	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+	if isLargeResp {
 		preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
 		return &schemas.BifrostResponsesResponse{
 			ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),

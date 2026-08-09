@@ -56,6 +56,60 @@ func TestDeepSeekV4FlashUsesOutputConfigEffort(t *testing.T) {
 		}
 		assertDeepSeekEffortOnly(t, req, effort)
 	})
+
+	t.Run("chat forced tool", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		effort := "medium"
+		req, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-flash",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort},
+				ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+					Type:     schemas.ChatToolChoiceTypeFunction,
+					Function: &schemas.ChatToolChoiceFunction{Name: "lookup"},
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicChatRequest: %v", err)
+		}
+		if req.ToolChoice == nil || req.ToolChoice.Type != "tool" || req.ToolChoice.Name != "lookup" {
+			t.Fatalf("forced tool choice not preserved: %#v", req.ToolChoice)
+		}
+		assertDeepSeekEffortOnly(t, req, effort)
+	})
+
+	t.Run("responses forced tool", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		effort := "medium"
+		req, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-flash",
+			Params: &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: &effort},
+				ToolChoice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: schemas.Ptr("lookup"),
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		if req.ToolChoice == nil || req.ToolChoice.Type != "tool" || req.ToolChoice.Name != "lookup" {
+			t.Fatalf("forced tool choice not preserved: %#v", req.ToolChoice)
+		}
+		assertDeepSeekEffortOnly(t, req, effort)
+	})
 }
 
 func TestDeepSeekV4FlashEffortGateIsExact(t *testing.T) {
