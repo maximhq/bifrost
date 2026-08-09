@@ -1066,3 +1066,56 @@ func TestSchemaLiveModelsSyncInterval(t *testing.T) {
 		})
 	}
 }
+
+// TestSchemaBudgetQuarterStartMonth pins the schema to the value range the Go
+// layer actually accepts. BudgetResetConfig.QuarterStartMonth is a plain int, so
+// an omitted quarter_start_month and an explicit 0 are indistinguishable after
+// unmarshal - validateBudget therefore has to treat 0 as "unset", and the schema
+// has to let that value through or config.json rejects a value the runtime
+// documents as valid and handles correctly.
+func TestSchemaBudgetQuarterStartMonth(t *testing.T) {
+	compiled := compileSchema(t)
+
+	budgetConfig := func(resetConfig string) string {
+		return `{
+			"governance": {
+				"budgets": [{
+					"id": "b-1",
+					"max_limit": 100,
+					"reset_duration": "1Q",
+					"reset_config": ` + resetConfig + `
+				}]
+			}
+		}`
+	}
+
+	t.Run("explicit zero is accepted as the unset value", func(t *testing.T) {
+		if err := validateConfig(t, compiled, budgetConfig(`{"quarter_start_month": 0}`)); err != nil {
+			t.Errorf("quarter_start_month 0 is documented as January and accepted by validateBudget, so the schema must accept it, got: %v", err)
+		}
+	})
+
+	t.Run("an omitted quarter start is accepted", func(t *testing.T) {
+		if err := validateConfig(t, compiled, budgetConfig(`{}`)); err != nil {
+			t.Errorf("an empty reset_config should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("the 1-12 range still validates", func(t *testing.T) {
+		for _, month := range []int{1, 4, 7, 10, 12} {
+			cfg := budgetConfig(fmt.Sprintf(`{"quarter_start_month": %d}`, month))
+			if err := validateConfig(t, compiled, cfg); err != nil {
+				t.Errorf("quarter_start_month %d should be valid, got: %v", month, err)
+			}
+		}
+	})
+
+	t.Run("out of range months are still rejected", func(t *testing.T) {
+		for _, month := range []int{-1, 13} {
+			cfg := budgetConfig(fmt.Sprintf(`{"quarter_start_month": %d}`, month))
+			if err := validateConfig(t, compiled, cfg); err == nil {
+				t.Errorf("quarter_start_month %d is outside 1-12 and must be rejected", month)
+			}
+		}
+	})
+}

@@ -263,13 +263,17 @@ type BulkRotateVirtualKeysRequest struct {
 type CreateBudgetRequest struct {
 	ID            string  `json:"id,omitempty"`
 	MaxLimit      float64 `json:"max_limit" validate:"required"`      // Maximum budget in dollars
-	ResetDuration string  `json:"reset_duration" validate:"required"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	ResetDuration string  `json:"reset_duration" validate:"required"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q"
+	// ResetConfig carries window settings the duration cannot express, currently
+	// the fiscal quarter start. Only valid on a quarterly reset duration.
+	ResetConfig *configstoreTables.BudgetResetConfig `json:"reset_config,omitempty"`
 }
 
 // UpdateBudgetRequest represents the request body for updating a budget
 type UpdateBudgetRequest struct {
-	MaxLimit      *float64 `json:"max_limit,omitempty"`
-	ResetDuration *string  `json:"reset_duration,omitempty"`
+	MaxLimit      *float64                             `json:"max_limit,omitempty"`
+	ResetDuration *string                              `json:"reset_duration,omitempty"`
+	ResetConfig   *configstoreTables.BudgetResetConfig `json:"reset_config,omitempty"`
 }
 
 // BudgetOverrideRequest replaces the active override on one budget.
@@ -348,11 +352,61 @@ func isBudgetRemovalRequest(req *UpdateBudgetRequest) bool {
 // budgetLastReset returns the appropriate LastReset for a new budget.
 // When calendarAligned is true it snaps to the start of the current calendar period
 // (e.g. midnight on the 1st of the month for "1M"), otherwise it returns time.Now().
-func budgetLastReset(calendarAligned bool, resetDuration string) time.Time {
-	if calendarAligned {
-		return configstoreTables.GetCalendarPeriodStart(resetDuration, time.Now())
+//
+// Takes the budget rather than a bare duration string so a quarterly window snaps
+// to the budget's own fiscal quarter. Passing only the duration would silently
+// produce January quarters for a budget configured to start in any other month.
+func budgetLastReset(calendarAligned bool, budget *configstoreTables.TableBudget) time.Time {
+	if calendarAligned && budget != nil {
+		return configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now(), budget.QuarterStartMonth())
 	}
 	return time.Now()
+}
+
+// newBudgetFromRequest builds a fresh budget row from a create request, snapping
+// LastReset to the owner's current calendar period when the owner is
+// calendar-aligned. The caller sets the owner FK on the returned value.
+//
+// Every reconciler shares this one constructor rather than repeating the struct
+// literal. Five near-identical literals is how a newly added field gets carried
+// at four sites and quietly dropped at the fifth, and for a budget that failure
+// is invisible: the row saves, the API returns it, and only the reset boundary
+// is wrong.
+func newBudgetFromRequest(req CreateBudgetRequest, calendarAligned bool) configstoreTables.TableBudget {
+	budget := configstoreTables.TableBudget{
+		ID:            uuid.NewString(),
+		MaxLimit:      req.MaxLimit,
+		ResetDuration: req.ResetDuration,
+		ResetConfig:   req.ResetConfig,
+		CurrentUsage:  0,
+	}
+	budget.LastReset = budgetLastReset(calendarAligned, &budget)
+	return budget
+}
+
+// applyResetConfigToExistingBudget copies a request's quarter definition onto an
+// existing budget and moves LastReset onto the new boundary when the definition
+// actually changed.
+//
+// The re-snap is required, not cosmetic: LastReset is compared against
+// WindowStart to decide whether a budget is due, so leaving it on a boundary
+// derived from the old quarter definition either fires an immediate spurious
+// reset or suppresses the next real one for up to three months.
+//
+// CurrentUsage is deliberately preserved. Whether changing the fiscal calendar
+// should also forgive accumulated spend is the operator's call, carried by the
+// reset_budget_usage flag, not something to infer from a settings edit.
+func applyResetConfigToExistingBudget(budget *configstoreTables.TableBudget, req CreateBudgetRequest, calendarAligned bool) {
+	previousQuarterStart := budget.ResetConfig.QuarterStart()
+	budget.ResetConfig = req.ResetConfig
+
+	if !calendarAligned || !configstoreTables.IsQuarterlyDuration(budget.ResetDuration) {
+		return
+	}
+	if budget.QuarterStartMonth() == previousQuarterStart {
+		return
+	}
+	budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now(), budget.QuarterStartMonth())
 }
 
 func resetBudgetUsageIfRequested(budget *configstoreTables.TableBudget, reset bool, calendarAligned bool) {
@@ -360,7 +414,7 @@ func resetBudgetUsageIfRequested(budget *configstoreTables.TableBudget, reset bo
 		return
 	}
 	budget.CurrentUsage = 0
-	budget.LastReset = budgetLastReset(calendarAligned, budget.ResetDuration)
+	budget.LastReset = budgetLastReset(calendarAligned, budget)
 }
 
 func compareBudgetRequestDurations(left, right CreateBudgetRequest) bool {
@@ -511,6 +565,7 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 		if found {
 			existing.MaxLimit = b.MaxLimit
 			existing.ResetDuration = b.ResetDuration
+			applyResetConfigToExistingBudget(&existing, b, mc.CalendarAligned)
 			if err := validateBudget(&existing); err != nil {
 				return err
 			}
@@ -520,14 +575,8 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 			reconciled = append(reconciled, existing)
 			matchedIDs[existing.ID] = true
 		} else {
-			budget := configstoreTables.TableBudget{
-				ID:            uuid.NewString(),
-				MaxLimit:      b.MaxLimit,
-				ResetDuration: b.ResetDuration,
-				LastReset:     budgetLastReset(mc.CalendarAligned, b.ResetDuration),
-				CurrentUsage:  0,
-				ModelConfigID: &mc.ID,
-			}
+			budget := newBudgetFromRequest(b, mc.CalendarAligned)
+			budget.ModelConfigID = &mc.ID
 			inheritUsageFromClosestShorterBudget(&budget, mc.Budgets, false)
 			if err := validateBudget(&budget); err != nil {
 				return err
@@ -579,6 +628,7 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 		if found {
 			existing.MaxLimit = b.MaxLimit
 			existing.ResetDuration = b.ResetDuration
+			applyResetConfigToExistingBudget(&existing, b, customer.CalendarAligned)
 			if err := validateBudget(&existing); err != nil {
 				return err
 			}
@@ -589,14 +639,8 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 			matchedIDs[existing.ID] = true
 		} else {
 			cid := customer.ID
-			budget := configstoreTables.TableBudget{
-				ID:            uuid.NewString(),
-				MaxLimit:      b.MaxLimit,
-				ResetDuration: b.ResetDuration,
-				LastReset:     budgetLastReset(customer.CalendarAligned, b.ResetDuration),
-				CurrentUsage:  0,
-				CustomerID:    &cid,
-			}
+			budget := newBudgetFromRequest(b, customer.CalendarAligned)
+			budget.CustomerID = &cid
 			inheritUsageFromClosestShorterBudget(&budget, customer.Budgets, false)
 			if err := validateBudget(&budget); err != nil {
 				return err
@@ -752,7 +796,6 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 			mc.RateLimit = &rl
 		}
 	}
-
 
 	// Resulting budget count: the desired set if provided, else the existing set.
 	finalBudgetCount := len(mc.Budgets)
@@ -2368,14 +2411,8 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 				return &badRequestError{err: fmt.Errorf("duplicate reset_duration in budgets: %s", b.ResetDuration)}
 			}
 			seenDurations[b.ResetDuration] = true
-			budget := configstoreTables.TableBudget{
-				ID:            uuid.NewString(),
-				MaxLimit:      b.MaxLimit,
-				ResetDuration: b.ResetDuration,
-				LastReset:     budgetLastReset(team.CalendarAligned, b.ResetDuration),
-				CurrentUsage:  0,
-				TeamID:        &team.ID,
-			}
+			budget := newBudgetFromRequest(b, team.CalendarAligned)
+			budget.TeamID = &team.ID
 			if err := validateBudget(&budget); err != nil {
 				return err
 			}
@@ -2516,6 +2553,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			for _, b := range req.Budgets {
 				if existing, found := existingByDuration[b.ResetDuration]; found {
 					existing.MaxLimit = b.MaxLimit
+					applyResetConfigToExistingBudget(&existing, b, team.CalendarAligned)
 					// LastReset / CurrentUsage are preserved on update; if calendar
 					// alignment was just enabled in this request, the post-reconciliation
 					// snap block below resets them.
@@ -2528,14 +2566,8 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 					reconciledBudgets = append(reconciledBudgets, existing)
 					matchedIDs[existing.ID] = true
 				} else {
-					budget := configstoreTables.TableBudget{
-						ID:            uuid.NewString(),
-						MaxLimit:      b.MaxLimit,
-						ResetDuration: b.ResetDuration,
-						LastReset:     budgetLastReset(team.CalendarAligned, b.ResetDuration),
-						CurrentUsage:  0,
-						TeamID:        &team.ID,
-					}
+					budget := newBudgetFromRequest(b, team.CalendarAligned)
+					budget.TeamID = &team.ID
 					if err := validateBudget(&budget); err != nil {
 						return err
 					}
@@ -2616,7 +2648,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
 					continue
 				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now, b.QuarterStartMonth())
 				b.CurrentUsage = 0
 				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
 					return fmt.Errorf("failed to snap team budget %s on calendar-align enable: %w", b.ID, err)
@@ -2626,12 +2658,12 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				rl := team.RateLimit
 				snapped := false
 				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now, configstoreTables.QuarterStartNotApplicable)
 					rl.TokenCurrentUsage = 0
 					snapped = true
 				}
 				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now, configstoreTables.QuarterStartNotApplicable)
 					rl.RequestCurrentUsage = 0
 					snapped = true
 				}
@@ -2988,7 +3020,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
 					continue
 				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now, b.QuarterStartMonth())
 				b.CurrentUsage = 0
 				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
 					return fmt.Errorf("failed to snap customer budget %s on calendar-align enable: %w", b.ID, err)
@@ -2998,12 +3030,12 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				rl := customer.RateLimit
 				snapped := false
 				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now, configstoreTables.QuarterStartNotApplicable)
 					rl.TokenCurrentUsage = 0
 					snapped = true
 				}
 				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now, configstoreTables.QuarterStartNotApplicable)
 					rl.RequestCurrentUsage = 0
 					snapped = true
 				}
@@ -3163,6 +3195,14 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 	}
 	if d, err := configstoreTables.ParseDuration(budget.ResetDuration); err != nil || d <= 0 {
 		return fmt.Errorf("invalid budget reset duration (must be a positive duration): %s", budget.ResetDuration)
+	}
+	if budget.ResetConfig != nil {
+		if !configstoreTables.IsQuarterlyDuration(budget.ResetDuration) {
+			return fmt.Errorf("reset_config is only valid on a quarterly reset duration, got: %s", budget.ResetDuration)
+		}
+		if month := budget.ResetConfig.QuarterStartMonth; month != 0 && (month < 1 || month > 12) {
+			return fmt.Errorf("quarter_start_month must be between 1 and 12, got: %d", month)
+		}
 	}
 	return nil
 }
@@ -3503,14 +3543,8 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 		// Create owned budgets (a model config may carry multiple).
 		for _, b := range req.Budgets {
-			budget := configstoreTables.TableBudget{
-				ID:            uuid.NewString(),
-				MaxLimit:      b.MaxLimit,
-				ResetDuration: b.ResetDuration,
-				LastReset:     budgetLastReset(mc.CalendarAligned, b.ResetDuration),
-				CurrentUsage:  0,
-				ModelConfigID: &mc.ID,
-			}
+			budget := newBudgetFromRequest(b, mc.CalendarAligned)
+			budget.ModelConfigID = &mc.ID
 			if err := validateBudget(&budget); err != nil {
 				return err
 			}
@@ -3936,7 +3970,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
 					continue
 				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now)
+				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now, b.QuarterStartMonth())
 				b.CurrentUsage = 0
 				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
 					return fmt.Errorf("failed to snap provider budget %s on calendar-align enable: %w", b.ID, err)
@@ -3946,12 +3980,12 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				rl := mc.RateLimit
 				snapped := false
 				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now)
+					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now, configstoreTables.QuarterStartNotApplicable)
 					rl.TokenCurrentUsage = 0
 					snapped = true
 				}
 				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now)
+					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now, configstoreTables.QuarterStartNotApplicable)
 					rl.RequestCurrentUsage = 0
 					snapped = true
 				}
