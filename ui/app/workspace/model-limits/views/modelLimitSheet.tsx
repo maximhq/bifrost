@@ -48,6 +48,7 @@ const formSchema = z
 					id: z.string().optional(),
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string().optional(),
+					reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 				}),
 			)
 			.optional(),
@@ -119,6 +120,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				id: b.id,
 				max_limit: b.max_limit,
 				reset_duration: b.reset_duration,
+				reset_config: b.reset_config,
 			})),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
@@ -152,6 +154,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					id: b.id,
 					max_limit: b.max_limit,
 					reset_duration: b.reset_duration,
+					reset_config: b.reset_config,
 				})),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
@@ -179,7 +182,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			// reconciled server-side; an empty array removes all budgets.
 			const budgetsPayload = (data.budgets ?? [])
 				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
-				.map((b) => ({ id: b.id, max_limit: b.max_limit as number, reset_duration: b.reset_duration || "1M" }));
+				.map((b) => ({
+					id: b.id,
+					max_limit: b.max_limit as number,
+					reset_duration: b.reset_duration || "1M",
+					reset_config: b.reset_config,
+				}));
 
 			if (isEditing && modelConfig) {
 				const hadRateLimit = !!modelConfig.rate_limit;
@@ -431,6 +439,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										id: b.id,
 										max_limit: b.max_limit,
 										reset_duration: b.reset_duration ?? "1M",
+										reset_config: b.reset_config,
 									}))}
 									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
 								/>

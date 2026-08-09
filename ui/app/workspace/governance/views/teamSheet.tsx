@@ -18,7 +18,8 @@ import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
+import QuarterStartSelect from "@/components/ui/quarterStartSelect";
+import { budgetResetDurationOptions, resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
 import { CreateTeamRequest, Team, UpdateTeamRequest } from "@/lib/types/governance";
 import { formatCurrency } from "@/lib/utils/governance";
@@ -45,6 +46,8 @@ interface TeamBudgetRow {
 	id: string;
 	maxLimit: number | undefined;
 	resetDuration: string;
+	/** Fiscal quarter definition; only meaningful when resetDuration is quarterly. */
+	resetConfig?: { quarter_start_month?: number };
 }
 
 interface TeamFormData {
@@ -72,6 +75,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 				id: b.id,
 				maxLimit: b.max_limit,
 				resetDuration: b.reset_duration,
+				resetConfig: b.reset_config,
 			})) ?? [],
 		// Rate Limit
 		tokenMaxLimit: team?.rate_limit?.token_max_limit ?? undefined,
@@ -204,17 +208,17 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 			// Rate limit validation - token limits
 			...(formData.tokenMaxLimit !== undefined && formData.tokenMaxLimit !== null
 				? [
-					Validator.minValue(tokenMaxLimitNum || 0, 1, "Token max limit must be at least 1"),
-					Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
-				]
+						Validator.minValue(tokenMaxLimitNum || 0, 1, "Token max limit must be at least 1"),
+						Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
+					]
 				: []),
 
 			// Rate limit validation - request limits
 			...(formData.requestMaxLimit !== undefined && formData.requestMaxLimit !== null
 				? [
-					Validator.minValue(requestMaxLimitNum || 0, 1, "Request max limit must be at least 1"),
-					Validator.required(formData.requestResetDuration, "Request reset duration is required"),
-				]
+						Validator.minValue(requestMaxLimitNum || 0, 1, "Request max limit must be at least 1"),
+						Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+					]
 				: []),
 		]);
 	}, [formData, tokenMaxLimitNum, requestMaxLimitNum]);
@@ -241,6 +245,8 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 			.map((r) => ({
 				max_limit: r.maxLimit as number,
 				reset_duration: r.resetDuration,
+				// Only quarterly windows may carry a quarter definition; the API rejects it elsewhere.
+				reset_config: r.resetDuration.endsWith("Q") ? r.resetConfig : undefined,
 			}));
 
 		try {
@@ -360,9 +366,9 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 										fallbackOption={
 											team?.customer_id
 												? {
-													value: team.customer_id,
-													label: team.customer?.name ?? team.customer_id,
-												}
+														value: team.customer_id,
+														label: team.customer?.name ?? team.customer_id,
+													}
 												: null
 										}
 										className="min-w-0 flex-1"
@@ -409,8 +415,14 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 												value={row.maxLimit}
 												selectValue={row.resetDuration}
 												onChangeNumber={(value) => updateBudgetRow(idx, { maxLimit: value })}
-												onChangeSelect={(value) => updateBudgetRow(idx, { resetDuration: value })}
-												options={resetDurationOptions}
+												onChangeSelect={(value) =>
+													updateBudgetRow(idx, {
+														resetDuration: value,
+														// Drop a stale definition when leaving a quarterly window.
+														resetConfig: value.endsWith("Q") ? row.resetConfig : undefined,
+													})
+												}
+												options={budgetResetDurationOptions}
 												dataTestId={`budget-max-limit-input-${idx}`}
 											/>
 										</div>
@@ -423,6 +435,13 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 											Remove
 										</button>
 									</div>
+									{row.resetDuration.endsWith("Q") && (
+										<QuarterStartSelect
+											data-testid={`team-budget-quarter-config-${idx}`}
+											value={row.resetConfig?.quarter_start_month}
+											onChange={(month) => updateBudgetRow(idx, { resetConfig: { quarter_start_month: month } })}
+										/>
+									)}
 								</div>
 							))}
 						</div>
@@ -570,7 +589,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 												<Badge
 													variant={
 														team.rate_limit.request_max_limit > 0 &&
-															team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit
+														team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit
 															? "destructive"
 															: "default"
 													}

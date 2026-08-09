@@ -310,7 +310,6 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								label="Budget Limits"
 								lines={formData.budgets}
 								onChange={(lines) => updateField("budgets", lines)}
-								options={resetDurationOptions}
 							/>
 
 							<NumberAndSelect
