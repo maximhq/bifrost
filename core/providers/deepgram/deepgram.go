@@ -204,6 +204,15 @@ func (provider *DeepgramProvider) Speech(ctx *schemas.BifrostContext, key schema
 	// 	return provider.soundGeneration(ctx, key, request)
 	// }
 
+	if request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	}
+
+	dgReq := ToDeepgramSpeechRequest(request)
+	if dgReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil)
+	}
+
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -213,16 +222,7 @@ func (provider *DeepgramProvider) Speech(ctx *schemas.BifrostContext, key schema
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	// withTimestampsRequest := request.Params != nil && request.Params.WithTimestamps != nil && *request.Params.WithTimestamps
-
-	var endpoint string
-	if request.Model == "" {
-    	return nil, providerUtils.NewBifrostOperationError("model is required", nil)
-	}
-
-	endpoint = "/v1/speak"
-
-	requestURL := provider.buildBaseSpeechRequestURL(ctx, key, endpoint, schemas.SpeechRequest, request)
+	requestURL := provider.buildBaseSpeechRequestURL(ctx, key, "/v1/speak", schemas.SpeechRequest, dgReq)
 	req.SetRequestURI(requestURL)
 
 	req.Header.SetMethod(http.MethodPost)
@@ -238,7 +238,7 @@ func (provider *DeepgramProvider) Speech(ctx *schemas.BifrostContext, key schema
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToDeepgramSpeechRequest(request), nil
+			return dgReq, nil
 		})
 
 	if bifrostErr != nil {
@@ -306,15 +306,17 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 		return nil, err
 	}
 
+	if request.Model == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
+	}
+
+	dgReq := ToDeepgramSpeechRequest(request)
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToDeepgramSpeechRequest(request), nil
+			return dgReq, nil
 		})
-	
-
-	
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -328,16 +330,12 @@ func (provider *DeepgramProvider) SpeechStream(ctx *schemas.BifrostContext, post
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	if request.Model == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
-	}
-
 	req.SetRequestURI(provider.buildBaseSpeechRequestURL(
 		ctx,
 		key,
 		"/v1/speak",
 		schemas.SpeechStreamRequest,
-		request,
+		dgReq,
 	))
 
 	req.Header.SetMethod(http.MethodPost)
@@ -602,7 +600,9 @@ func (provider *DeepgramProvider) Transcription(
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		response.ExtraFields.RawRequest = reqBody
+		rawReq := *reqBody
+		rawReq.File = nil
+		response.ExtraFields.RawRequest = rawReq
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -621,8 +621,10 @@ func writeTranscriptionMultipart(
 	reqBody *DeepgramTranscriptionRequest,
 ) *schemas.BifrostError {
 
-	if err := writer.WriteField("model", reqBody.Model); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write model field", err)
+	if reqBody.Model != "" {
+		if err := writer.WriteField("model", reqBody.Model); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write model field", err)
+		}
 	}
 
 	filename := reqBody.Filename
@@ -802,8 +804,9 @@ func (provider *DeepgramProvider) VideoRemix(_ *schemas.BifrostContext, _ schema
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
 }
 
-// buildSpeechRequestURL constructs the full request URL using the provider's configuration for speech.
-func (provider *DeepgramProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, key schemas.Key, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
+// buildBaseSpeechRequestURL constructs the full /v1/speak URL. TTS options from
+// dgReq are query parameters; the JSON body carries only text.
+func (provider *DeepgramProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, key schemas.Key, defaultPath string, requestType schemas.RequestType, dgReq *DeepgramSpeechRequest) string {
 	baseURL := provider.getBaseURL(key)
 	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
 
@@ -828,26 +831,26 @@ func (provider *DeepgramProvider) buildBaseSpeechRequestURL(ctx *schemas.Bifrost
 
 	q := u.Query()
 
-	dgReq := ToDeepgramSpeechRequest(request)
+	if dgReq != nil {
+		if dgReq.Model != "" {
+			q.Set("model", dgReq.Model)
+		}
 
-	if dgReq.Model != "" {
-		q.Set("model", dgReq.Model)
-	}
+		if dgReq.Encoding != "" {
+			q.Set("encoding", dgReq.Encoding)
+		}
 
-	if dgReq.Encoding != "" {
-		q.Set("encoding", dgReq.Encoding)
-	}
+		if dgReq.Container != "" {
+			q.Set("container", dgReq.Container)
+		}
 
-	if dgReq.Container != "" {
-		q.Set("container", dgReq.Container)
-	}
+		if dgReq.SampleRate != 0 {
+			q.Set("sample_rate", strconv.Itoa(dgReq.SampleRate))
+		}
 
-	if dgReq.SampleRate != 0 {
-		q.Set("sample_rate", strconv.Itoa(dgReq.SampleRate))
-	}
-
-	if dgReq.Speed != 0 {
-		q.Set("speed", strconv.FormatFloat(dgReq.Speed, 'f', -1, 64))
+		if dgReq.Speed != 0 {
+			q.Set("speed", strconv.FormatFloat(dgReq.Speed, 'f', -1, 64))
+		}
 	}
 
 	u.RawQuery = q.Encode()

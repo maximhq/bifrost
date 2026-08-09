@@ -3,14 +3,17 @@ package deepgram
 
 // SPEECH TYPES
 
+// DeepgramSpeechRequest is the POST /v1/speak body. Only text is serialized;
+// model/encoding/container/sample_rate/speed are query parameters (see
+// buildBaseSpeechRequestURL).
 type DeepgramSpeechRequest struct {
-	Model string `json:"model"`
-	Text  string `json:"text"`
+	Text string `json:"text"`
 
-	Encoding   string  `json:"encoding,omitempty"`
-	Container  string  `json:"container,omitempty"`
-	SampleRate int     `json:"sample_rate,omitempty"`
-	Speed      float64 `json:"speed,omitempty"`
+	Model      string  `json:"-"`
+	Encoding   string  `json:"-"`
+	Container  string  `json:"-"`
+	SampleRate int     `json:"-"`
+	Speed      float64 `json:"-"`
 
 	ExtraParams map[string]interface{} `json:"-"`
 }

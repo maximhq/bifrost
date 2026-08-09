@@ -130,7 +130,13 @@ func (h *WSListenHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	middlewareContextValues := snapshotRealtimeMiddlewareValues(ctx)
 
 	upgrader := ws.FastHTTPUpgrader{
-		CheckOrigin: func(_ *fasthttp.RequestCtx) bool { return true },
+		CheckOrigin: func(reqCtx *fasthttp.RequestCtx) bool {
+			origin := string(reqCtx.Request.Header.Peek("Origin"))
+			if origin == "" {
+				return true
+			}
+			return IsOriginAllowed(origin, h.config.ClientConfig.AllowedOrigins)
+		},
 	}
 	upgradeErr := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
@@ -257,6 +263,7 @@ func (h *WSListenHandler) runListenSession(
 
 	bifrostCtx, cancel := createBifrostContextFromAuth(h.handlerStore, auth)
 	if bifrostCtx == nil {
+		cancel()
 		logger.Warn("listen websocket: failed to create request context")
 		return
 	}
@@ -301,11 +308,16 @@ func (h *WSListenHandler) runListenSession(
 	accum := newListenSessionAccum(rawQuery)
 	startedAt := time.Now()
 
+	var proxyConfig *schemas.ProxyConfig
+	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(providerKey); cfgErr == nil && providerCfg != nil {
+		proxyConfig = providerCfg.ProxyConfig
+	}
+
 	upstream, err := h.pool.Get(bfws.PoolKey{
 		Provider: providerKey,
 		KeyID:    key.ID,
 		Endpoint: wsURL,
-	}, mapToHTTPHeader(headers))
+	}, mapToHTTPHeader(headers), proxyConfig)
 	if err != nil {
 		logger.Warn("listen websocket upstream dial failed for %s/%s: %v", providerKey, model, err)
 		h.finalizeListenSession(bifrostCtx, providerKey, model, rawQuery, accum, startedAt, newRealtimeWireBifrostError(502, "server_error", err.Error()))
