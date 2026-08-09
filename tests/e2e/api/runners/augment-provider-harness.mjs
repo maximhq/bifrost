@@ -7,6 +7,7 @@ import { buildTokenParityMatrix } from "./lib/token-parity-matrix.mjs";
 import { buildPromptCachingHitVerificationItems } from "./lib/prompt-caching-extension.mjs";
 import { buildMidConvSystemCacheParityFolder } from "./lib/midconv-system-cache-parity.mjs";
 import { buildCrossProviderCacheMatrixFolder } from "./lib/crossprovider-cache-matrix.mjs";
+import { buildDirectCacheParityFolder } from "./lib/direct-cache-parity.mjs";
 import { injectChainedBodyGuards } from "./lib/chained-vars.mjs";
 
 const args = Object.fromEntries(
@@ -332,6 +333,7 @@ const generatedFolders = [
   buildTokenParityMatrix(),
   buildMidConvSystemCacheParityFolder(),
   buildCrossProviderCacheMatrixFolder(),
+  buildDirectCacheParityFolder(),
 ];
 
 const findFolder = (items, name) => {

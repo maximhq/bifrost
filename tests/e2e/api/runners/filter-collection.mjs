@@ -14,6 +14,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
+import { buildHaystack } from "./lib/haystack.mjs";
 import { walkRequests, buildProducerIndex, bodyDependencies } from "./lib/chained-vars.mjs";
 
 const args = Object.fromEntries(
@@ -88,8 +89,7 @@ const PROVIDER_KEYWORDS = {
 // text (model names, prompts, folder names) never runs 40+ contiguous base64-alphabet chars.
 const stripBase64Blobs = (s) => s.replace(/[A-Za-z0-9+/]{40,}={0,2}/g, "");
 
-const buildHaystack = (item, ancestorNames) =>
-  stripBase64Blobs(JSON.stringify(item) + " " + ancestorNames.join(" ")).toLowerCase();
+
 
 // Structural keywords - matched against route shape, not name substring. Lets users
 // say FEATURE="cross-cut,structured output" and have it work for every row routed via
@@ -127,6 +127,7 @@ const FEATURE_ALIASES = {
   "cache-parity": [
     "cache-anchor",
     "prompt-cache matrix",
+    "prompt-cache parity",
     "prompt caching",
     "cache_control",
     "cachepoint",
