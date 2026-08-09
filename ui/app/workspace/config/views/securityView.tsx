@@ -13,25 +13,12 @@ import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } f
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
-import { validateOrigins } from "@/lib/utils/validation";
+import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-
-const PASSWORD_REQUIREMENTS = [
-	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
-	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
-	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
-	{ label: "one number", test: (password: string) => /\d/.test(password) },
-	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
-];
-
-const getPasswordPolicyFailures = (password?: string) => {
-	if (!password) return [];
-	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
-};
 
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -42,6 +29,7 @@ export default function SecurityView() {
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 	const showPasswordSection = !IS_ENTERPRISE || (!authTypeLoading && !authTypeError && authType?.type !== "sso");
 	const passwordInputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+	const passwordUnchangedRef = useRef(true);
 
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
@@ -80,6 +68,7 @@ export default function SecurityView() {
 			});
 		}
 		if (bifrostConfig?.auth_config) {
+			passwordUnchangedRef.current = true;
 			setAuthConfig(bifrostConfig.auth_config);
 		}
 	}, [config, bifrostConfig]);
@@ -177,7 +166,8 @@ export default function SecurityView() {
 
 	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		if (field === "admin_password") {
-			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value) : [];
+			passwordUnchangedRef.current = false;
+			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value, false) : [];
 			setPasswordError(passwordPolicyFailures.length > 0 ? `Password must include ${passwordPolicyFailures.join(", ")}.` : "");
 		}
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
@@ -197,7 +187,7 @@ export default function SecurityView() {
 			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
 			const passwordPolicyFailures =
 				showPasswordSection && authConfig.is_enabled && !authConfig.admin_password?.ref && authConfig.admin_password?.value
-					? getPasswordPolicyFailures(authConfig.admin_password.value)
+					? getPasswordPolicyFailures(authConfig.admin_password.value, passwordUnchangedRef.current)
 					: [];
 
 			if (passwordPolicyFailures.length > 0) {
