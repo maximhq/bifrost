@@ -2570,11 +2570,9 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		// Resolve team-level calendar alignment for this update:
 		//   - explicit team-level field wins (req.CalendarAligned != nil)
 		//   - else leave existing team.CalendarAligned untouched
-		wasCalendarAligned := team.CalendarAligned
 		if req.CalendarAligned != nil {
 			team.CalendarAligned = *req.CalendarAligned
 		}
-		calendarAlignmentJustEnabled := !wasCalendarAligned && team.CalendarAligned
 		// Snap-to-calendar-period happens after budget/rate-limit reconciliation
 		// below, so combined `calendar_aligned + budgets/rate_limit` updates see
 		// the final persisted state.
@@ -2691,44 +2689,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				team.RateLimit = &rateLimit
 			}
 		}
-		// Snap budgets and rate limit to the current calendar period when calendar
-		// alignment transitions false -> true in this request. Runs after budget/
-		// rate-limit reconciliation so both the standalone-toggle and the combined
-		// (toggle + budgets/rate_limit in the same request) cases are covered, and
-		// only fires once per transition.
-		if calendarAlignmentJustEnabled {
-			now := time.Now()
-			for i := range team.Budgets {
-				b := &team.Budgets[i]
-				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
-					continue
-				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now, b.QuarterStartMonth())
-				b.CurrentUsage = 0
-				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
-					return fmt.Errorf("failed to snap team budget %s on calendar-align enable: %w", b.ID, err)
-				}
-			}
-			if team.RateLimit != nil {
-				rl := team.RateLimit
-				snapped := false
-				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now, configstoreTables.QuarterStartNotApplicable)
-					rl.TokenCurrentUsage = 0
-					snapped = true
-				}
-				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now, configstoreTables.QuarterStartNotApplicable)
-					rl.RequestCurrentUsage = 0
-					snapped = true
-				}
-				if snapped {
-					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
-						return fmt.Errorf("failed to snap team rate limit on calendar-align enable: %w", err)
-					}
-				}
-			}
-		}
+
 		if err := h.configStore.UpdateTeam(ctx, team, tx); err != nil {
 			return err
 		}
@@ -2991,11 +2952,9 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		if req.Name != nil {
 			customer.Name = *req.Name
 		}
-		wasCalendarAligned := customer.CalendarAligned
 		if req.CalendarAligned != nil {
 			customer.CalendarAligned = *req.CalendarAligned
 		}
-		calendarAlignmentJustEnabled := !wasCalendarAligned && customer.CalendarAligned
 		// Handle budget updates: prefer Budgets slice; coerce legacy Budget if needed.
 		effectiveBudgets := req.Budgets
 		if effectiveBudgets == nil && req.Budget != nil {
@@ -3065,42 +3024,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				customer.RateLimit = &rateLimit
 			}
 		}
-		// Snap budgets and rate limit to the current calendar period when calendar
-		// alignment transitions false → true. Runs after reconciliation so combined
-		// "toggle + budgets" requests see the final reconciled state.
-		if calendarAlignmentJustEnabled {
-			now := time.Now()
-			for i := range customer.Budgets {
-				b := &customer.Budgets[i]
-				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
-					continue
-				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now, b.QuarterStartMonth())
-				b.CurrentUsage = 0
-				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
-					return fmt.Errorf("failed to snap customer budget %s on calendar-align enable: %w", b.ID, err)
-				}
-			}
-			if customer.RateLimit != nil {
-				rl := customer.RateLimit
-				snapped := false
-				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now, configstoreTables.QuarterStartNotApplicable)
-					rl.TokenCurrentUsage = 0
-					snapped = true
-				}
-				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now, configstoreTables.QuarterStartNotApplicable)
-					rl.RequestCurrentUsage = 0
-					snapped = true
-				}
-				if snapped {
-					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
-						return fmt.Errorf("failed to snap customer rate limit on calendar-align enable: %w", err)
-					}
-				}
-			}
-		}
+
 		if err := h.configStore.UpdateCustomer(ctx, customer, tx); err != nil {
 			return err
 		}
@@ -3911,11 +3835,9 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		var rateLimitIDToDelete string
 
 		// Apply CalendarAligned if provided.
-		wasCalendarAligned := mc.CalendarAligned
 		if req.CalendarAligned != nil {
 			mc.CalendarAligned = *req.CalendarAligned
 		}
-		calendarAlignmentJustEnabled := !wasCalendarAligned && mc.CalendarAligned
 
 		// Rate limit lifecycle (mc references it via RateLimitID, so resolve it before
 		// persisting the model config below).
@@ -4012,43 +3934,6 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		if !deleted && effectiveBudgets != nil {
 			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets, nil); err != nil {
 				return err
-			}
-		}
-
-		// Snap budgets and rate limit to the current calendar period when calendar
-		// alignment transitions false → true. Runs after reconciliation so combined
-		// "toggle + budgets" requests see the final reconciled state.
-		if !deleted && calendarAlignmentJustEnabled {
-			now := time.Now()
-			for i := range mc.Budgets {
-				b := &mc.Budgets[i]
-				if !configstoreTables.IsCalendarAlignableDuration(b.ResetDuration) {
-					continue
-				}
-				b.LastReset = configstoreTables.GetCalendarPeriodStart(b.ResetDuration, now, b.QuarterStartMonth())
-				b.CurrentUsage = 0
-				if err := h.configStore.UpdateBudget(ctx, b, tx); err != nil {
-					return fmt.Errorf("failed to snap provider budget %s on calendar-align enable: %w", b.ID, err)
-				}
-			}
-			if mc.RateLimit != nil {
-				rl := mc.RateLimit
-				snapped := false
-				if rl.TokenResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.TokenResetDuration) {
-					rl.TokenLastReset = configstoreTables.GetCalendarPeriodStart(*rl.TokenResetDuration, now, configstoreTables.QuarterStartNotApplicable)
-					rl.TokenCurrentUsage = 0
-					snapped = true
-				}
-				if rl.RequestResetDuration != nil && configstoreTables.IsCalendarAlignableDuration(*rl.RequestResetDuration) {
-					rl.RequestLastReset = configstoreTables.GetCalendarPeriodStart(*rl.RequestResetDuration, now, configstoreTables.QuarterStartNotApplicable)
-					rl.RequestCurrentUsage = 0
-					snapped = true
-				}
-				if snapped {
-					if err := h.configStore.UpdateRateLimit(ctx, rl, tx); err != nil {
-						return fmt.Errorf("failed to snap provider rate limit on calendar-align enable: %w", err)
-					}
-				}
 			}
 		}
 

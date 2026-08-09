@@ -3062,7 +3062,23 @@ func (m *mockCustomerStore) CreateBudget(_ context.Context, budget *configstoreT
 	m.createdBudgets = append(m.createdBudgets, budget)
 	return nil
 }
+
+// UpdateBudget mirrors RDBConfigStore.UpdateBudget's contract: usage accounting is
+// runtime-owned and is carried forward from the stored row, never authored by a
+// configuration write. Without this the mock promises something the real store
+// does not honour, and a handler test can assert a config write changed usage
+// while production silently discards it - which is exactly how the dead
+// calendar-alignment snap survived for so long.
 func (m *mockCustomerStore) UpdateBudget(_ context.Context, budget *configstoreTables.TableBudget, _ ...*gorm.DB) error {
+	for _, customer := range m.customers {
+		for i := range customer.Budgets {
+			if customer.Budgets[i].ID != budget.ID {
+				continue
+			}
+			budget.CurrentUsage = customer.Budgets[i].CurrentUsage
+			budget.LastReset = customer.Budgets[i].LastReset
+		}
+	}
 	m.updatedBudgets = append(m.updatedBudgets, budget)
 	return nil
 }
@@ -3163,36 +3179,36 @@ func TestCreateCustomer_CalendarAligned_False(t *testing.T) {
 	}
 }
 
-// TestUpdateCustomer_CalendarAligned_SnapsExistingBudget verifies that toggling
-// calendar_aligned from false to true snaps the existing budget's LastReset to the
-// start of the current calendar period and resets CurrentUsage.
-func TestUpdateCustomer_CalendarAligned_SnapsExistingBudget(t *testing.T) {
+// TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets verifies that enabling
+// calendar alignment leaves existing budgets alone.
+//
+// This replaces a test that asserted the opposite - that the toggle snapped
+// LastReset to the period start and zeroed CurrentUsage - and passed for years
+// while the behaviour never happened. It asserted on what the handler passed to
+// UpdateBudget, against a mock that simply recorded the argument. The real store
+// copies CurrentUsage and LastReset back from the stored row on every config
+// write (rdb.go:4758-4769), so both values were discarded one layer below the
+// mock. The mock below now carries them forward the same way, which is what
+// keeps this class of test honest.
+//
+// Alignment still takes effect: the budget aligns from its next period boundary.
+func TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newMockCustomerStore()
 
 	budgetID := "bud-snap"
-	budgetID2 := "bud-snap-2"
-	oldLastReset := time.Now().AddDate(0, -1, 0) // 1 month ago
+	oldLastReset := time.Now().AddDate(0, -1, 0)
 	store.customers["cust-snap"] = &configstoreTables.TableCustomer{
 		ID:              "cust-snap",
 		Name:            "Initech",
 		CalendarAligned: false,
-		Budgets: []configstoreTables.TableBudget{
-			{
-				ID:            budgetID,
-				MaxLimit:      200.0,
-				ResetDuration: "1M",
-				LastReset:     oldLastReset,
-				CurrentUsage:  99.0,
-			},
-			{
-				ID:            budgetID2,
-				MaxLimit:      500.0,
-				ResetDuration: "1Y",
-				LastReset:     oldLastReset,
-				CurrentUsage:  150.0,
-			},
-		},
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            budgetID,
+			MaxLimit:      200.0,
+			ResetDuration: "1M",
+			LastReset:     oldLastReset,
+			CurrentUsage:  99.0,
+		}},
 	}
 	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
 
@@ -3201,31 +3217,21 @@ func TestUpdateCustomer_CalendarAligned_SnapsExistingBudget(t *testing.T) {
 	ctx.Request.SetBody(body)
 	ctx.SetUserValue("customer_id", "cust-snap")
 
-	snapBefore := time.Now()
 	h.updateCustomer(ctx)
 
 	if ctx.Response.StatusCode() != 200 {
 		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	// UpdateBudget must have been called once per budget (both snap).
-	if len(store.updatedBudgets) != 2 {
-		t.Fatalf("expected 2 UpdateBudget calls for snap, got %d", len(store.updatedBudgets))
+	if got := store.customers["cust-snap"].CalendarAligned; !got {
+		t.Errorf("calendar_aligned should be enabled on the customer, got %v", got)
 	}
-	snappedIDs := make(map[string]bool, 2)
-	for _, snapped := range store.updatedBudgets {
-		snappedIDs[snapped.ID] = true
-		if snapped.LastReset.Equal(oldLastReset) {
-			t.Errorf("budget %s LastReset was not snapped: still equals old value", snapped.ID)
+	for _, b := range store.customers["cust-snap"].Budgets {
+		if !b.LastReset.Equal(oldLastReset) {
+			t.Errorf("budget %s LastReset moved to %v; enabling alignment must not re-anchor the window", b.ID, b.LastReset)
 		}
-		if snapped.LastReset.After(snapBefore) {
-			t.Errorf("budget %s snapped LastReset %v should be at the period start, not time.Now()", snapped.ID, snapped.LastReset)
+		if b.CurrentUsage != 99.0 {
+			t.Errorf("budget %s CurrentUsage changed to %v; enabling alignment must not clear usage", b.ID, b.CurrentUsage)
 		}
-		if snapped.CurrentUsage != 0 {
-			t.Errorf("budget %s expected CurrentUsage reset to 0, got %v", snapped.ID, snapped.CurrentUsage)
-		}
-	}
-	if !snappedIDs[budgetID] || !snappedIDs[budgetID2] {
-		t.Errorf("expected both %q and %q to be snapped, got IDs: %v", budgetID, budgetID2, snappedIDs)
 	}
 }
 

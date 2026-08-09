@@ -3,6 +3,7 @@ package governance
 import (
 	"strconv"
 	"testing"
+	"time"
 )
 
 // TestCustomerBudgetExceededWithMultipleVKs tests that customer level budgets are enforced across multiple VKs
@@ -334,4 +335,80 @@ func TestCustomerBudgetExceededWithMultipleTeams(t *testing.T) {
 
 	t.Fatalf("Made %d requests but never hit customer budget limit (consumed $%.6f / $%.2f) - budget not being enforced",
 		requestNum-1, consumedBudget, customerBudget)
+}
+
+// TestCustomerBudgetCalendarAlignmentAppliesFromNextPeriod mirrors the team case
+// for the customer snap site.
+//
+// The three sites - team, customer and provider governance - were identical in
+// shape and all discarded, but they persist through different store methods, so
+// each is pinned separately rather than by analogy.
+func TestCustomerBudgetCalendarAlignmentAppliesFromNextPeriod(t *testing.T) {
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	createResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/api/governance/customers",
+		Body: CreateCustomerRequest{
+			Name: "test-customer-calendar-align-" + generateRandomID(),
+			Budgets: []BudgetRequest{{
+				MaxLimit:      100,
+				ResetDuration: "1M",
+			}},
+		},
+	})
+	if createResp.StatusCode != 200 {
+		t.Fatalf("Failed to create customer: status %d, body %v", createResp.StatusCode, createResp.Body)
+	}
+	customerID := ExtractIDFromResponse(t, createResp)
+	testData.AddCustomer(customerID)
+
+	before := customerBudgetLastReset(t, customerID)
+
+	aligned := true
+	updateResp := MakeRequest(t, APIRequest{
+		Method: "PUT",
+		Path:   "/api/governance/customers/" + customerID,
+		Body:   UpdateCustomerRequest{CalendarAligned: &aligned},
+	})
+	if updateResp.StatusCode != 200 {
+		t.Fatalf("Failed to enable calendar alignment: status %d, body %v", updateResp.StatusCode, updateResp.Body)
+	}
+
+	after := customerBudgetLastReset(t, customerID)
+	if !after.Equal(before) {
+		t.Errorf("enabling calendar alignment moved last_reset from %s to %s; the current window must be left alone",
+			before.Format(time.RFC3339), after.Format(time.RFC3339))
+	}
+}
+
+// customerBudgetLastReset reads the first budget's last_reset off a customer.
+func customerBudgetLastReset(t *testing.T, customerID string) time.Time {
+	t.Helper()
+	resp := MakeRequest(t, APIRequest{Method: "GET", Path: "/api/governance/customers/" + customerID})
+	if resp.StatusCode != 200 {
+		t.Fatalf("Failed to read customer %s: status %d, body %v", customerID, resp.StatusCode, resp.Body)
+	}
+	customer, ok := resp.Body["customer"].(map[string]interface{})
+	if !ok {
+		customer = resp.Body
+	}
+	budgets, ok := customer["budgets"].([]interface{})
+	if !ok || len(budgets) == 0 {
+		t.Fatalf("customer %s has no budgets: %v", customerID, customer)
+	}
+	budget, ok := budgets[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("customer %s first budget is not an object: %v", customerID, budgets[0])
+	}
+	raw, ok := budget["last_reset"].(string)
+	if !ok {
+		t.Fatalf("customer %s budget has no last_reset string: %v", customerID, budget)
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("could not parse last_reset %q: %v", raw, err)
+	}
+	return parsed.UTC()
 }
