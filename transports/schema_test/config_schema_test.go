@@ -1118,4 +1118,86 @@ func TestSchemaBudgetQuarterStartMonth(t *testing.T) {
 			}
 		}
 	})
+
+	// $defs/budget_line is a second copy of the same shape, reached through
+	// customers, access profiles and provider configs. A budget written there
+	// deserializes into the same Go struct, so the two copies have to agree on
+	// which values they accept.
+	t.Run("the budget_line copy accepts the same range", func(t *testing.T) {
+		lineConfig := func(month string) string {
+			return `{
+				"governance": {
+					"customers": [{
+						"id": "c-1",
+						"name": "Acme",
+						"budgets": [{
+							"id": "b-1",
+							"max_limit": 100,
+							"reset_duration": "1Q",
+							"reset_config": {"quarter_start_month": ` + month + `}
+						}]
+					}]
+				}
+			}`
+		}
+
+		if err := validateConfig(t, compiled, lineConfig("0")); err != nil {
+			t.Errorf("quarter_start_month 0 must be accepted here exactly as it is under governance.budgets, got: %v", err)
+		}
+		if err := validateConfig(t, compiled, lineConfig("4")); err != nil {
+			t.Errorf("quarter_start_month 4 should be valid, got: %v", err)
+		}
+		if err := validateConfig(t, compiled, lineConfig("13")); err == nil {
+			t.Error("quarter_start_month 13 is outside 1-12 and must be rejected")
+		}
+	})
+}
+
+// TestSchemaResetConfigRequiresQuarterlyDuration pins the quarterly-only rule the
+// reset_config description already states. validateResetConfig rejects a quarter
+// definition on any non-quarterly duration, so without this constraint a
+// config.json passes schema validation and only fails later at reconciliation -
+// the slowest possible place to learn the file is wrong.
+func TestSchemaResetConfigRequiresQuarterlyDuration(t *testing.T) {
+	compiled := compileSchema(t)
+
+	// governance.budgets and $defs/budget_line are separate copies of the same
+	// shape, so both need the constraint and both are checked here.
+	scopes := map[string]func(string) string{
+		"governance.budgets": func(budget string) string {
+			return `{"governance": {"budgets": [` + budget + `]}}`
+		},
+		"$defs/budget_line via customers": func(budget string) string {
+			return `{"governance": {"customers": [{"id": "c-1", "name": "Acme", "budgets": [` + budget + `]}]}}`
+		},
+	}
+
+	for name, wrap := range scopes {
+		t.Run(name, func(t *testing.T) {
+			quarterly := `{"id": "b-1", "max_limit": 100, "reset_duration": "1Q", "reset_config": {"quarter_start_month": 4}}`
+			if err := validateConfig(t, compiled, wrap(quarterly)); err != nil {
+				t.Errorf("reset_config on a 1Q budget must stay valid, got: %v", err)
+			}
+
+			for _, duration := range []string{"1M", "1h", "1Y"} {
+				cfg := wrap(`{"id": "b-1", "max_limit": 100, "reset_duration": "` + duration + `", "reset_config": {"quarter_start_month": 4}}`)
+				if err := validateConfig(t, compiled, cfg); err == nil {
+					t.Errorf("reset_config with reset_duration %q must be rejected: validateResetConfig refuses it at reconciliation", duration)
+				}
+			}
+
+			// A quarter definition with no duration at all is the same mistake with
+			// the evidence missing, so it has to be rejected too.
+			orphan := wrap(`{"id": "b-1", "max_limit": 100, "reset_config": {"quarter_start_month": 4}}`)
+			if err := validateConfig(t, compiled, orphan); err == nil {
+				t.Error("reset_config with no reset_duration must be rejected")
+			}
+
+			// Budgets without a quarter definition are unaffected by the constraint.
+			plain := wrap(`{"id": "b-1", "max_limit": 100, "reset_duration": "1M"}`)
+			if err := validateConfig(t, compiled, plain); err != nil {
+				t.Errorf("a budget with no reset_config must stay valid on any duration, got: %v", err)
+			}
+		})
+	}
 }

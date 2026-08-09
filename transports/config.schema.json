@@ -558,6 +558,13 @@
             "additionalProperties": false,
             "allOf": [
               {
+                "if": { "required": ["reset_config"] },
+                "then": {
+                  "required": ["reset_duration"],
+                  "properties": { "reset_duration": { "const": "1Q" } }
+                }
+              },
+              {
                 "if": {
                   "not": {
                     "properties": { "override_mode": { "enum": ["cycles", "forever"] } },
@@ -6482,6 +6489,21 @@
     },
     "budget_line": {
       "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "required": ["reset_config"]
+          },
+          "then": {
+            "required": ["reset_duration"],
+            "properties": {
+              "reset_duration": {
+                "const": "1Q"
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -6501,9 +6523,9 @@
           "properties": {
             "quarter_start_month": {
               "type": "integer",
-              "minimum": 1,
+              "minimum": 0,
               "maximum": 12,
-              "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates."
+              "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted or 0 means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates."
             }
           },
           "additionalProperties": false

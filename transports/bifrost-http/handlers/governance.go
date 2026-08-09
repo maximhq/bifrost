@@ -385,28 +385,26 @@ func newBudgetFromRequest(req CreateBudgetRequest, calendarAligned bool) configs
 }
 
 // applyResetConfigToExistingBudget copies a request's quarter definition onto an
-// existing budget and moves LastReset onto the new boundary when the definition
-// actually changed.
+// existing budget. The quarter start is configuration, so the request wins,
+// exactly as it does for max_limit and reset_duration.
 //
-// The re-snap is required, not cosmetic: LastReset is compared against
-// WindowStart to decide whether a budget is due, so leaving it on a boundary
-// derived from the old quarter definition either fires an immediate spurious
-// reset or suppresses the next real one for up to three months.
+// It deliberately does NOT move LastReset onto the new fiscal boundary, for two
+// reasons. UpdateBudget cannot persist such a move: it carries CurrentUsage and
+// LastReset forward from the stored row on every config write, so that a
+// config.json force-sync cannot replay stale zeroes over live accounting. Any
+// boundary written here would be silently discarded, which is worse than not
+// writing it.
 //
-// CurrentUsage is deliberately preserved. Whether changing the fiscal calendar
-// should also forgive accumulated spend is the operator's call, carried by the
-// reset_budget_usage flag, not something to infer from a settings edit.
-func applyResetConfigToExistingBudget(budget *configstoreTables.TableBudget, req CreateBudgetRequest, calendarAligned bool) {
-	previousQuarterStart := budget.ResetConfig.QuarterStart()
+// And it is unnecessary, because the reset path converges on its own. A budget
+// is due when WindowStart(now) is after LastReset, and WindowStart already reads
+// the new quarter start the moment this config lands. Moving a January-start
+// budget to a February start on 9 August leaves LastReset on 1 July while
+// WindowStart becomes 1 August, so the next reset tick - at most ten seconds
+// later - resets it and stamps the new boundary through the runtime-owned path
+// that is allowed to move it. Usage is zeroed by that reset, which is the honest
+// outcome: under the new calendar the quarter genuinely began on 1 August.
+func applyResetConfigToExistingBudget(budget *configstoreTables.TableBudget, req CreateBudgetRequest) {
 	budget.ResetConfig = req.ResetConfig
-
-	if !calendarAligned || !configstoreTables.IsQuarterlyDuration(budget.ResetDuration) {
-		return
-	}
-	if budget.QuarterStartMonth() == previousQuarterStart {
-		return
-	}
-	budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now(), budget.QuarterStartMonth())
 }
 
 func resetBudgetUsageIfRequested(budget *configstoreTables.TableBudget, reset bool, calendarAligned bool) {
@@ -565,7 +563,7 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 		if found {
 			existing.MaxLimit = b.MaxLimit
 			existing.ResetDuration = b.ResetDuration
-			applyResetConfigToExistingBudget(&existing, b, mc.CalendarAligned)
+			applyResetConfigToExistingBudget(&existing, b)
 			if err := validateBudget(&existing); err != nil {
 				return err
 			}
@@ -628,7 +626,7 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 		if found {
 			existing.MaxLimit = b.MaxLimit
 			existing.ResetDuration = b.ResetDuration
-			applyResetConfigToExistingBudget(&existing, b, customer.CalendarAligned)
+			applyResetConfigToExistingBudget(&existing, b)
 			if err := validateBudget(&existing); err != nil {
 				return err
 			}
@@ -2553,7 +2551,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			for _, b := range req.Budgets {
 				if existing, found := existingByDuration[b.ResetDuration]; found {
 					existing.MaxLimit = b.MaxLimit
-					applyResetConfigToExistingBudget(&existing, b, team.CalendarAligned)
+					applyResetConfigToExistingBudget(&existing, b)
 					// LastReset / CurrentUsage are preserved on update; if calendar
 					// alignment was just enabled in this request, the post-reconciliation
 					// snap block below resets them.

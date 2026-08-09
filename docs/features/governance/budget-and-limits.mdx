@@ -196,7 +196,7 @@ Quarter boundaries repeat every three months, so `quarter_start_month` only chan
 
 `reset_config` is valid **only** on a quarterly `reset_duration`; the API rejects it on any other window rather than storing a setting that would do nothing. A quarterly budget that is **not** calendar-aligned ignores the fiscal calendar entirely and rolls on a 90-day window anchored to its creation time.
 
-Changing `quarter_start_month` on a live calendar-aligned budget moves `last_reset` onto the new boundary and **preserves current usage** - the accumulated spend carries into the new quarter. Zeroing it is a separate, explicit choice.
+Changing `quarter_start_month` on a live calendar-aligned budget takes effect on the next reset tick rather than instantly. The new definition is stored immediately, which moves where the current window starts; if that boundary has moved forward, the budget reads as due and resets shortly after, zeroing usage. That is the honest outcome - under the new calendar the current quarter genuinely began on a later date.
 
 ### Budget overrides
 

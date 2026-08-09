@@ -82990,7 +82990,7 @@
               "boolean",
               "null"
             ],
-            "description": "Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations that use day, week, month, quarter, or year suffixes (`d`, `w`, `M`, `Q`, `Y`); sub-day durations (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on an existing budget, current usage is reset to zero and last_reset snaps to the current period start. Changing quarter_start_month on a calendar-aligned quarterly budget moves last_reset onto the new fiscal boundary but preserves current usage.\n"
+            "description": "Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations that use day, week, month, quarter, or year suffixes (`d`, `w`, `M`, `Q`, `Y`); sub-day durations (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on an existing budget, current usage is reset to zero and last_reset snaps to the current period start. Changing quarter_start_month on a calendar-aligned quarterly budget does not move last_reset directly; the new definition shifts where the current window starts, so the budget converges onto the new fiscal boundary on the next reset tick.\n"
           }
         }
       },

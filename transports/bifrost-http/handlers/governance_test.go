@@ -3693,22 +3693,29 @@ func TestNewBudgetFromRequestSnapsToFiscalQuarter(t *testing.T) {
 	assert.False(t, rolling.LastReset.Equal(want))
 }
 
-// TestApplyResetConfigToExistingBudgetResnapsOnQuarterChange is the correctness
-// test for editing a fiscal calendar under a live budget.
+// TestApplyResetConfigToExistingBudgetIsConfigOnly pins what this helper is and
+// is not allowed to do.
 //
-// LastReset is compared against WindowStart to decide whether a budget is due.
-// Leaving it on a boundary derived from the old definition either fires a
-// spurious reset immediately or suppresses the next real one for up to three
-// months, so the boundary has to move with the setting.
-func TestApplyResetConfigToExistingBudgetResnapsOnQuarterChange(t *testing.T) {
-	staleReset := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
+// It copies the request's quarter definition onto the budget and touches nothing
+// else. It must specifically NOT move LastReset onto the new fiscal boundary,
+// even though that boundary has just changed: UpdateBudget carries LastReset and
+// CurrentUsage forward from the stored row on every config write, so a boundary
+// written here is silently discarded. An earlier version of this helper did move
+// it, passed this file's unit tests, and still failed end to end.
+//
+// Convergence is the reset path's job instead. WindowStart reads the new quarter
+// start as soon as this config lands, so a budget whose boundary has moved
+// forward reads as due and the next reset tick stamps the new boundary through
+// the runtime-owned path that is allowed to move it.
+func TestApplyResetConfigToExistingBudgetIsConfigOnly(t *testing.T) {
+	original := time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC)
 	budget := &configstoreTables.TableBudget{
 		ID:                "budget-1",
 		MaxLimit:          1000,
 		ResetDuration:     "1Q",
 		IsCalendarAligned: true,
 		CurrentUsage:      400,
-		LastReset:         staleReset,
+		LastReset:         original,
 		ResetConfig:       &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.January)},
 	}
 
@@ -3716,97 +3723,51 @@ func TestApplyResetConfigToExistingBudgetResnapsOnQuarterChange(t *testing.T) {
 		MaxLimit:      1000,
 		ResetDuration: "1Q",
 		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.February)},
-	}, true)
+	})
 
 	require.NotNil(t, budget.ResetConfig)
-	assert.Equal(t, int(time.February), budget.ResetConfig.QuarterStartMonth)
-
-	want := configstoreTables.GetCalendarPeriodStart("1Q", time.Now(), time.February)
-	assert.True(t, budget.LastReset.Equal(want), "boundary must move onto the new fiscal quarter")
-
-	// The budget must not read as due immediately after the re-snap.
-	assert.False(t, budget.WindowStart(time.Now()).After(budget.LastReset))
-
-	// Usage survives: forgiving accumulated spend is the operator's call, carried
-	// by reset_budget_usage, not something inferred from a settings edit.
-	assert.Equal(t, 400.0, budget.CurrentUsage)
+	assert.Equal(t, int(time.February), budget.ResetConfig.QuarterStartMonth, "the quarter definition is config: the request wins")
+	assert.True(t, budget.LastReset.Equal(original), "the config write must not move the reset boundary")
+	assert.Equal(t, 400.0, budget.CurrentUsage, "the config write must not touch usage")
 }
 
-// TestApplyResetConfigToExistingBudgetLeavesBoundaryAloneWhenNothingChanged
-// verifies an unchanged definition does not disturb LastReset. An unconditional
-// re-snap would silently extend every quarterly budget's window on every
-// unrelated edit, such as changing only max_limit.
-func TestApplyResetConfigToExistingBudgetLeavesBoundaryAloneWhenNothingChanged(t *testing.T) {
-	original := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
-
-	testCases := []struct {
-		name     string
-		existing *configstoreTables.BudgetResetConfig
-		incoming *configstoreTables.BudgetResetConfig
-	}{
-		{
-			name:     "same explicit month",
-			existing: &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.April)},
-			incoming: &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.April)},
-		},
-		{
-			// An absent config and an explicit January are the same window, so
-			// comparing raw values rather than normalised months would report a
-			// change here and move the boundary for nothing.
-			name:     "unset becomes explicit january",
-			existing: nil,
-			incoming: &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.January)},
-		},
-		{
-			name:     "explicit january becomes unset",
-			existing: &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.January)},
-			incoming: nil,
-		},
+// TestApplyResetConfigToExistingBudgetClearsDefinition verifies dropping the
+// quarter definition is propagated, so switching a budget off a quarterly window
+// cannot leave a stale fiscal calendar behind.
+func TestApplyResetConfigToExistingBudgetClearsDefinition(t *testing.T) {
+	budget := &configstoreTables.TableBudget{
+		ResetDuration: "1M",
+		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.April)},
 	}
-
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			budget := &configstoreTables.TableBudget{
-				ResetDuration:     "1Q",
-				IsCalendarAligned: true,
-				LastReset:         original,
-				ResetConfig:       testCase.existing,
-			}
-			applyResetConfigToExistingBudget(budget, CreateBudgetRequest{
-				ResetDuration: "1Q",
-				ResetConfig:   testCase.incoming,
-			}, true)
-			assert.True(t, budget.LastReset.Equal(original), "boundary must not move")
-		})
-	}
+	applyResetConfigToExistingBudget(budget, CreateBudgetRequest{ResetDuration: "1M"})
+	assert.Nil(t, budget.ResetConfig)
 }
 
-// TestApplyResetConfigToExistingBudgetSkipsNonAlignedAndNonQuarterly verifies the
-// re-snap is confined to budgets that actually have a fiscal boundary. A rolling
-// quarterly budget rides a CreatedAt lattice, so moving LastReset would shift its
-// window for no reason.
-func TestApplyResetConfigToExistingBudgetSkipsNonAlignedAndNonQuarterly(t *testing.T) {
-	original := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
-
-	rolling := &configstoreTables.TableBudget{
-		ResetDuration: "1Q",
-		LastReset:     original,
-		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.January)},
+// TestQuarterStartChangeMakesBudgetDue is the other half of the contract above:
+// having declined to move the boundary, the change still has to take effect.
+//
+// Moving a January-start budget to a February start on 9 August leaves LastReset
+// on 1 July while WindowStart becomes 1 August, so the budget reads as due and
+// the next reset tick converges it. Without this the config write would be inert
+// for up to three months.
+func TestQuarterStartChangeMakesBudgetDue(t *testing.T) {
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	budget := &configstoreTables.TableBudget{
+		ResetDuration:     "1Q",
+		IsCalendarAligned: true,
+		LastReset:         time.Date(2026, time.July, 1, 0, 0, 0, 0, time.UTC),
+		ResetConfig:       &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.January)},
 	}
-	applyResetConfigToExistingBudget(rolling, CreateBudgetRequest{
+	require.False(t, budget.WindowStart(now).After(budget.LastReset), "not due before the change")
+
+	applyResetConfigToExistingBudget(budget, CreateBudgetRequest{
 		ResetDuration: "1Q",
 		ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(time.February)},
-	}, false)
-	assert.True(t, rolling.LastReset.Equal(original), "a rolling budget has no fiscal boundary to move")
-	assert.Equal(t, int(time.February), rolling.ResetConfig.QuarterStartMonth, "the definition is still recorded")
+	})
 
-	monthly := &configstoreTables.TableBudget{
-		ResetDuration:     "1M",
-		IsCalendarAligned: true,
-		LastReset:         original,
-	}
-	applyResetConfigToExistingBudget(monthly, CreateBudgetRequest{ResetDuration: "1M"}, true)
-	assert.True(t, monthly.LastReset.Equal(original), "a monthly budget has no quarter to re-snap to")
+	assert.Equal(t, time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC), budget.WindowStart(now))
+	assert.True(t, budget.WindowStart(now).After(budget.LastReset),
+		"the budget must read as due so the reset path converges it onto the new fiscal boundary")
 }
 
 // TestBudgetLastResetUsesBudgetQuarterStart verifies the helper reads the
