@@ -675,7 +675,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		// Convert reasoning
 		if reasoningParams != nil {
-			if reasoningParams.MaxTokens != nil {
+			if isDeepSeekV4FlashRequest(bifrostReq.Provider, capModel) {
+				// DeepSeek V4 Flash's Anthropic-compatible surface accepts only
+				// output_config.effort. Never synthesize legacy Anthropic thinking,
+				// including when a neutral max_tokens value coexists.
+				if reasoningParams.Effort != nil && *reasoningParams.Effort != "none" {
+					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*reasoningParams.Effort))
+				}
+			} else if reasoningParams.MaxTokens != nil {
 				if IsAdaptiveOnlyThinkingModel(capModel) {
 					// Opus 4.7+ and Fable/Mythos: budget_tokens removed; adaptive thinking is the only thinking-on mode.
 					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}

@@ -44,7 +44,7 @@ func newTestDeepSeekProvider(baseURL string) (*deepseek.DeepSeekProvider, error)
 }
 
 func newAnthropicResponse() string {
-	return `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-chat","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	return validV4FlashResponse
 }
 
 func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
