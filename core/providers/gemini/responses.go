@@ -326,6 +326,24 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 	return bifrostResp
 }
 
+// thoughtTextParts renders a reasoning item's summary as Gemini thought parts.
+//
+// Gemini's thinking guide requires thought blocks to be resent unmodified, so
+// wherever a reasoning item's signature is taken its text has to travel with it.
+func thoughtTextParts(reasoning *schemas.ResponsesReasoning) []*Part {
+	if reasoning == nil {
+		return nil
+	}
+	var parts []*Part
+	for _, summaryBlock := range reasoning.Summary {
+		if summaryBlock.Text == "" {
+			continue
+		}
+		parts = append(parts, &Part{Text: summaryBlock.Text, Thought: true})
+	}
+	return parts
+}
+
 func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *GenerateContentResponse {
 	if bifrostResp == nil {
 		return nil
@@ -452,6 +470,8 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 
 				// Extract thought signature from CallID if present
 				var thoughtSignature []byte
+				// Thought text belonging to a reasoning item consumed for its signature below.
+				var consumedThoughtText []*Part
 				if msg.ResponsesToolMessage.CallID != nil {
 					callID := *msg.ResponsesToolMessage.CallID
 					// Check if the ID contains a thought signature (format: "ToolName_ts_base64signature")
@@ -486,12 +506,23 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 								part.ThoughtSignature = decodedSig
 								// Mark this reasoning message as consumed
 								consumedIndices[i+1] = true
+								// Consuming it takes its signature; its TEXT has
+								// to come along or the block reaches Gemini
+								// modified, which the thinking guide forbids
+								// ("You should NOT remove or modify thought
+								// blocks from the history"). Carried here rather
+								// than by leaving the message unconsumed,
+								// because the normal reasoning branch below also
+								// emits a signature-only part - that path would
+								// send the same signature twice.
+								consumedThoughtText = thoughtTextParts(nextMsg.ResponsesReasoning)
 							}
 						}
 					}
 				}
 
 				currentParts = append(currentParts, part)
+				currentParts = append(currentParts, consumedThoughtText...)
 			}
 
 			// Handle function responses (function call outputs)
@@ -3465,8 +3496,45 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	var pendingFunctionResponseParts []*Part
 
 	for i, msg := range messages {
-		// Skip standalone reasoning messages (they're handled as part of function calls)
+		// Standalone reasoning messages carry the model's thought blocks. Their
+		// SIGNATURE is picked up by the look-ahead on the preceding function
+		// call, so only the text is emitted here - sending the signature again
+		// would put the same value on the wire twice.
+		//
+		// Skipping these outright, as this did, meant reasoning text never
+		// reached Gemini on this path at all. The thinking guide is explicit
+		// that history must keep its thought blocks intact ("You MUST always
+		// resend all thought blocks exactly as they were received from the
+		// model", https://ai.google.dev/gemini-api/docs/thinking), and a block
+		// stripped to its signature is not the block that was received.
+		//
+		// A reasoning message with no text still has nothing to add here, so it
+		// keeps being skipped.
 		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning && msg.ResponsesReasoning != nil {
+			parts := thoughtTextParts(msg.ResponsesReasoning)
+
+			// The signature is carried by the PRECEDING function call's
+			// look-ahead - but only when there is one. A standalone signed
+			// reasoning item with no function call before it had nothing
+			// carrying its signature, so it was lost outright. Mirroring the
+			// look-ahead's own positional rule here is what keeps the value on
+			// the wire exactly once: emitted when nothing consumed it, omitted
+			// when the look-ahead already did.
+			consumedByLookAhead := i > 0 &&
+				messages[i-1].Type != nil &&
+				*messages[i-1].Type == schemas.ResponsesMessageTypeFunctionCall
+			if !consumedByLookAhead {
+				if sig := thoughtSignatureFromEncryptedContent(msg.ResponsesReasoning.EncryptedContent); sig != nil {
+					parts = append(parts, &Part{ThoughtSignature: sig})
+				}
+			}
+
+			if len(parts) > 0 {
+				contents = append(contents, Content{
+					Parts: parts,
+					Role:  "model",
+				})
+			}
 			continue
 		}
 

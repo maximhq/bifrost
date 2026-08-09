@@ -104,3 +104,120 @@ func responsesMessagesForThoughtPart(t *testing.T, part *Part) []schemas.Respons
 	}
 	return reasoning
 }
+
+// Gemini requires thought blocks back verbatim on replay: "You MUST always
+// resend all thought blocks exactly as they were received from the model" and
+// "You should NOT remove or modify thought blocks from the history"
+// (https://ai.google.dev/gemini-api/docs/thinking). Keeping a block's signature
+// while discarding its text IS modifying it.
+//
+// Both converters did exactly that, in two different ways.
+
+// Egress: a reasoning item that follows a function call is scanned for its
+// signature and then marked consumed, so the main loop skips it before its
+// summary text can be emitted as a thought part. A reasoning item carrying BOTH
+// text and a signature therefore reached Gemini as signature-only - and only
+// when it happened to sit after a function call, so the same item survived
+// intact in any other position.
+func TestEgressKeepsThoughtTextAlongsideSignature(t *testing.T) {
+	raw := []byte{0x11, 0x22, 0x33}
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	const summary = "I should call get_time for Tokyo."
+
+	resp := &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Name:      schemas.Ptr("get_time"),
+					CallID:    schemas.Ptr("call_1"),
+					Arguments: schemas.Ptr(`{"timezone":"Asia/Tokyo"}`),
+				},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary:          []schemas.ResponsesReasoningSummary{{Text: summary}},
+					EncryptedContent: &encoded,
+				},
+			},
+		},
+	}
+
+	out := ToGeminiResponsesResponse(resp)
+	require.NotNil(t, out)
+
+	// Counted, not just observed. A boolean would be satisfied by a converter
+	// that emits the text twice or the signature twice, and duplication is the
+	// specific hazard here: the reasoning branch further down emits its own
+	// signature-only part, so carrying the signature in both places would put
+	// the same value on the wire twice - which Gemini would see as a modified
+	// history just as surely as a missing one.
+	var signatures, thoughtTexts int
+	for _, cand := range out.Candidates {
+		if cand == nil || cand.Content == nil {
+			continue
+		}
+		for _, p := range cand.Content.Parts {
+			if p == nil {
+				continue
+			}
+			if len(p.ThoughtSignature) > 0 {
+				signatures++
+				require.Equal(t, raw, p.ThoughtSignature)
+			}
+			if p.Thought && p.Text == summary {
+				thoughtTexts++
+			}
+		}
+	}
+
+	require.Equal(t, 1, signatures, "the signature must appear exactly once, on the function call")
+	require.Equal(t, 1, thoughtTexts,
+		"the thought TEXT must appear exactly once - dropped means the block reached Gemini modified, duplicated means it was rewritten")
+}
+
+// Ingress: every standalone reasoning message was skipped outright, so reasoning
+// text never reached Gemini on this path at all - independent of any look-ahead,
+// and independent of whether a signature was present.
+func TestIngressSendsThoughtTextForStandaloneReasoning(t *testing.T) {
+	const summary = "Breaking the problem into two steps."
+	encoded := base64.StdEncoding.EncodeToString([]byte{0x44, 0x55})
+
+	contents, _, err := convertResponsesMessagesToGeminiContents([]schemas.ResponsesMessage{
+		{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Solve it.")},
+		},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary:          []schemas.ResponsesReasoningSummary{{Text: summary}},
+				EncryptedContent: &encoded,
+			},
+		},
+	}, "gemini-2.5-flash", schemas.Gemini)
+	require.NoError(t, err)
+
+	var thoughtTexts, signatures int
+	for _, c := range contents {
+		for _, p := range c.Parts {
+			if p == nil {
+				continue
+			}
+			if p.Thought && p.Text == summary {
+				thoughtTexts++
+			}
+			if len(p.ThoughtSignature) > 0 {
+				signatures++
+			}
+		}
+	}
+	require.Equal(t, 1, thoughtTexts,
+		"a standalone reasoning message must contribute its thought block exactly once")
+	// No function call precedes this item, so nothing else can be carrying its
+	// signature - dropping it here loses the value Gemini needs back.
+	require.Equal(t, 1, signatures,
+		"the standalone reasoning item's signature was lost: no preceding function call consumed it")
+}

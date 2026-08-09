@@ -1924,8 +1924,11 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %s\n' "Both write tmp/harness-cache-parity.md. Credentials reuse the same AWS_*/provider keys as the Round 33 token-parity matrix."; \
 		printf '  %s\n' "Selecting 'cache-parity' in the interactive menu does NOT drop the run to PARALLEL=0: those rows are pulled out of the main"; \
 		printf '  %s\n' "  pass (which keeps its per-provider parallelism) and replayed afterwards in one sequential newman, because they match every"; \
-		printf '  %s\n' "  provider fork and would otherwise run up to six times each. Driving them by hand with FEATURE=\"cache\" has no such"; \
-		printf '  %s\n' "  protection - add PARALLEL=0 yourself in that case."; \
+		printf '  %s\n' "  provider fork and would otherwise run up to six times each. A FEATURE whose comma-separated keywords include"; \
+		printf '  %s\n' "  'cache-parity' (matched case-insensitively, like FEATURE itself) gets the same treatment, and the whole FEATURE and"; \
+		printf '  %s\n' "  FOLDER predicate is forwarded to that pass so the scope still applies. RERUN_FAILED=1 does not defer, because the"; \
+		printf '  %s\n' "  failed-row selection comes from the main pass it would skip. A keyword that merely contains the key, such as"; \
+		printf '  %s\n' "  FEATURE=\"cache\", is not the key and has no such protection - add PARALLEL=0 yourself in that case."; \
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
 		printf '  %s\n' "make run-provider-harness-test                       # full provider sweep"; \
@@ -2146,10 +2149,16 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	done; \
 	if [ -n "$$PICKED_FEATURES" ]; then \
 		CACHE_PASS=$$PICK_SAW_DEFERRED; \
-	elif [ -z "$(RERUN_FAILED)" ] && [ -z "$(FOLDER)" ]; then \
+	elif [ -z "$(RERUN_FAILED)" ] && [ -z "$(FOLDER)" ] && [ -z "$(FEATURE)" ]; then \
 		CACHE_PASS=1; \
 	fi; \
 	if [ "$$CACHE_PASS" = "1" ] && [ -n "$$PICKED_FEATURES" ] && [ -z "$$MAIN_FEATURES" ]; then SKIP_MAIN=1; fi; \
+	FEATURE_TOKENS="$$(printf '%s' "$(FEATURE)" | tr 'A-Z,' 'a-z ')"; \
+	for d in $$DEFERRED_KEYS; do \
+		for t in $$FEATURE_TOKENS; do \
+			if [ "$$t" = "$$d" ] && [ -z "$(RERUN_FAILED)" ]; then CACHE_PASS=1; SKIP_MAIN=1; fi; \
+		done; \
+	done; \
 	EXCLUDE_FLAG=""; \
 	if [ "$$CACHE_PASS" = "1" ]; then \
 		EXCLUDE_FLAG="--exclude-feature-any cache-parity"; \
@@ -2345,6 +2354,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			--source tmp/harness-augmented.json \
 			--out tmp/harness-cache-filtered.json \
 			--feature-any cache-parity \
+			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$(if $(PROVIDER),--provider $(PROVIDER),) || { say "$(RED)Cache parity filter step failed$(NC)"; }; \
 		if [ -f tmp/harness-cache-filtered.json ]; then \
 			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
