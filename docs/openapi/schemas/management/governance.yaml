@@ -563,7 +563,10 @@ UpdateVirtualKeyRequest:
       type: boolean
     reset_budget_usage:
       type: boolean
-      description: When true, resets usage for virtual-key and provider-config budget records reconciled by this update.
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
     expires_at:
       type: string
       description: RFC3339 timestamp to set a new expiry (must be in the future), empty string to clear an existing expiry, omitted to leave it unchanged.
@@ -787,6 +790,12 @@ UpdateTeamRequest:
       description: Replacement set of budgets for this team; reset durations must be unique
       items:
         $ref: '#/CreateBudgetRequest'
+    reset_budget_usage:
+      type: boolean
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
 
 ListTeamsResponse:
   type: object
@@ -864,6 +873,12 @@ UpdateCustomerRequest:
       type: string
     budget:
       $ref: '#/UpdateBudgetRequest'
+    reset_budget_usage:
+      type: boolean
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
 
 ListCustomersResponse:
   type: object
@@ -1518,6 +1533,12 @@ UpdateModelConfigRequest:
     rate_limit:
       $ref: '#/UpdateRateLimitRequest'
       description: Rate limit configuration
+    reset_budget_usage:
+      type: boolean
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
 
 # Provider Governance
 
@@ -1593,6 +1614,12 @@ UpdateProviderGovernanceRequest:
       type: boolean
       nullable: true
       description: When true, all budgets reset at clean calendar boundaries. Omit to leave unchanged.
+    reset_budget_usage:
+      type: boolean
+      description: >
+        When true, zeroes current usage on the budgets reconciled by this update. The reset window is
+        left alone: last_reset only ever advances, and never as a side effect of a configuration write,
+        so the current window keeps its existing start and end.
 
 # Pricing Overrides
 

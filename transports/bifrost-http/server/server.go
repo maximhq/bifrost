@@ -101,10 +101,10 @@ type ServerCallbacks interface {
 	// Virtual key related callbacks
 	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	// ResetBudgetUsageInMemory clears usage for the given budgets in the governance
-	// store, leaving each reset boundary untouched. vkID identifies the owning
-	// virtual key so enterprise can address the cluster broadcast that propagates
-	// the reset to peers.
-	ResetBudgetUsageInMemory(ctx context.Context, vkID string, budgetIDs []string) error
+	// store, leaving each reset boundary untouched. owner identifies the entity that
+	// owns them so enterprise can address the cluster broadcast that propagates the
+	// reset to peers.
+	ResetBudgetUsageInMemory(ctx context.Context, owner handlers.BudgetUsageResetOwner, budgetIDs []string) error
 	RemoveVirtualKey(ctx context.Context, id string) error
 	// Provider related callbacks
 	GetModelsForProvider(provider schemas.ModelProvider) []string
@@ -482,7 +482,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 //
 // Missing budgets are not an error: a budget can legitimately have been deleted
 // in the same request that asked for the reset.
-func (s *BifrostHTTPServer) ResetBudgetUsageInMemory(ctx context.Context, vkID string, budgetIDs []string) error {
+func (s *BifrostHTTPServer) ResetBudgetUsageInMemory(ctx context.Context, owner handlers.BudgetUsageResetOwner, budgetIDs []string) error {
 	if len(budgetIDs) == 0 {
 		return nil
 	}

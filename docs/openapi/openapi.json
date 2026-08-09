@@ -82486,7 +82486,7 @@
           },
           "reset_budget_usage": {
             "type": "boolean",
-            "description": "When true, resets usage for virtual-key and provider-config budget records reconciled by this update."
+            "description": "When true, zeroes current usage on the budgets reconciled by this update. The reset window is left alone: last_reset only ever advances, and never as a side effect of a configuration write, so the current window keeps its existing start and end.\n"
           },
           "expires_at": {
             "type": "string",
@@ -82620,6 +82620,10 @@
             "items": {
               "$ref": "#/components/schemas/CreateBudgetRequest"
             }
+          },
+          "reset_budget_usage": {
+            "type": "boolean",
+            "description": "When true, zeroes current usage on the budgets reconciled by this update. The reset window is left alone: last_reset only ever advances, and never as a side effect of a configuration write, so the current window keeps its existing start and end.\n"
           }
         }
       },
@@ -82723,6 +82727,10 @@
           },
           "budget": {
             "$ref": "#/components/schemas/UpdateBudgetRequest"
+          },
+          "reset_budget_usage": {
+            "type": "boolean",
+            "description": "When true, zeroes current usage on the budgets reconciled by this update. The reset window is left alone: last_reset only ever advances, and never as a side effect of a configuration write, so the current window keeps its existing start and end.\n"
           }
         }
       },
@@ -84010,6 +84018,10 @@
           "rate_limit": {
             "$ref": "#/components/schemas/UpdateRateLimitRequest",
             "description": "Rate limit configuration"
+          },
+          "reset_budget_usage": {
+            "type": "boolean",
+            "description": "When true, zeroes current usage on the budgets reconciled by this update. The reset window is left alone: last_reset only ever advances, and never as a side effect of a configuration write, so the current window keeps its existing start and end.\n"
           }
         }
       },
@@ -84101,6 +84113,10 @@
             "type": "boolean",
             "nullable": true,
             "description": "When true, all budgets reset at clean calendar boundaries. Omit to leave unchanged."
+          },
+          "reset_budget_usage": {
+            "type": "boolean",
+            "description": "When true, zeroes current usage on the budgets reconciled by this update. The reset window is left alone: last_reset only ever advances, and never as a side effect of a configuration write, so the current window keeps its existing start and end.\n"
           }
         }
       },

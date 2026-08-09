@@ -49,8 +49,8 @@ type GovernanceManager interface {
 	ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error)
 	// ResetBudgetUsageInMemory clears usage for the given budgets in the store that
 	// enforces spend, leaving each reset boundary untouched. Enterprise also
-	// propagates the reset to cluster peers.
-	ResetBudgetUsageInMemory(ctx context.Context, vkID string, budgetIDs []string) error
+	// propagates the reset to cluster peers, which is what owner addresses.
+	ResetBudgetUsageInMemory(ctx context.Context, owner BudgetUsageResetOwner, budgetIDs []string) error
 	RemoveVirtualKey(ctx context.Context, id string) error
 	ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
@@ -65,6 +65,27 @@ type GovernanceManager interface {
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
 }
+
+// BudgetUsageResetOwner identifies the entity whose budgets had their usage reset.
+//
+// Enterprise needs this to address the cluster broadcast: a peer has to reload the
+// right entity and then apply the reset, because a plain reload deliberately
+// preserves that peer's cached usage. Kind deliberately uses the same strings as
+// the enterprise cluster entity types ("virtual_key", "team", "customer",
+// "model_config", "provider") so the mapping is a direct conversion rather than a
+// lookup table that can drift.
+type BudgetUsageResetOwner struct {
+	Kind string
+	ID   string
+}
+
+// Budget owner kinds, matching the enterprise cluster entity type values.
+const (
+	BudgetOwnerVirtualKey  = "virtual_key"
+	BudgetOwnerTeam        = "team"
+	BudgetOwnerCustomer    = "customer"
+	BudgetOwnerModelConfig = "model_config"
+)
 
 type complexityAnalyzerConfigReloader interface {
 	// HTTP server bridge signature: BifrostHTTPServer implements this and adapts
@@ -642,7 +663,7 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 // reconcileCustomerBudgets upserts the desired set of budgets owned by a customer
 // (via TableBudget.CustomerID), preserving usage on matched rows and deleting removed ones.
 // It mutates customer.Budgets to the reconciled set. Mirrors reconcileModelConfigBudgets.
-func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *gorm.DB, customer *configstoreTables.TableCustomer, requests []CreateBudgetRequest) error {
+func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *gorm.DB, customer *configstoreTables.TableCustomer, requests []CreateBudgetRequest, usageReset *budgetUsageReset) error {
 	seenDurations := make(map[string]bool, len(requests))
 	for _, b := range requests {
 		if b.MaxLimit < 0 {
@@ -674,6 +695,12 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 			}
 			if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
 				return err
+			}
+			if err := usageReset.apply(ctx, h.configStore, existing.ID, tx); err != nil {
+				return err
+			}
+			if usageReset != nil && usageReset.requested {
+				existing.CurrentUsage = 0
 			}
 			reconciled = append(reconciled, existing)
 			matchedIDs[existing.ID] = true
@@ -1071,6 +1098,9 @@ type UpdateTeamRequest struct {
 	Budgets         []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: replaces all team budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"` // Team-wide setting; nil means "leave unchanged"
+	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
+	// The reset boundary is left alone; only accumulated spend is cleared.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // CreateCustomerRequest represents the request body for creating a customer
@@ -1089,6 +1119,8 @@ type UpdateCustomerRequest struct {
 	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`  // Deprecated: use budgets
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // CreateModelConfigRequest represents the request body for creating a model config
@@ -1109,6 +1141,8 @@ type UpdateModelConfigRequest struct {
 	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means no change
 	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`  // Full desired set of budgets (reconciled against existing)
 	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // UpdateProviderGovernanceRequest represents the request body for updating provider governance
@@ -1117,6 +1151,8 @@ type UpdateProviderGovernanceRequest struct {
 	Budgets         *[]CreateBudgetRequest  `json:"budgets,omitempty"` // nil=no change, []=remove all
 	RateLimit       *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes current usage on the reconciled budgets when true.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
@@ -2189,7 +2225,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	// and deliberately carries the cached CurrentUsage forward, which would undo
 	// the reset. Enterprise additionally propagates this to cluster peers.
 	if len(usageReset.budgetIDs) > 0 {
-		if err := h.governanceManager.ResetBudgetUsageInMemory(ctx, vk.ID, usageReset.budgetIDs); err != nil {
+		if err := h.governanceManager.ResetBudgetUsageInMemory(ctx, BudgetUsageResetOwner{Kind: BudgetOwnerVirtualKey, ID: vk.ID}, usageReset.budgetIDs); err != nil {
 			logger.Error("failed to reset in-memory budget usage after update: %v", err)
 			SendError(ctx, 500, "Virtual key updated but budget usage reset did not take effect")
 			return
@@ -2541,6 +2577,10 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	// The operator's explicit "reset usage" choice. Carried into budget
+	// reconciliation and collected there, so the in-memory store can be cleared
+	// once the transaction commits.
+	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
 	// Fetching team from database
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
@@ -2607,14 +2647,22 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if existing, found := existingByDuration[b.ResetDuration]; found {
 					existing.MaxLimit = b.MaxLimit
 					applyResetConfigToExistingBudget(&existing, b)
-					// LastReset / CurrentUsage are preserved on update; if calendar
-					// alignment was just enabled in this request, the post-reconciliation
-					// snap block below resets them.
+					// LastReset is preserved on update: the reset boundary only ever
+					// moves forward, and never as a side effect of a config write.
+					// CurrentUsage is preserved too unless the operator explicitly
+					// asked for a reset, which UpdateBudget cannot carry and so goes
+					// through the store method that owns the column.
 					if err := validateBudget(&existing); err != nil {
 						return err
 					}
 					if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
 						return err
+					}
+					if err := usageReset.apply(ctx, h.configStore, existing.ID, tx); err != nil {
+						return err
+					}
+					if usageReset.requested {
+						existing.CurrentUsage = 0
 					}
 					reconciledBudgets = append(reconciledBudgets, existing)
 					matchedIDs[existing.ID] = true
@@ -2719,6 +2767,16 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		logger.Error("failed to reload team: %v", err)
 		preloadedTeam = team
+	}
+	// Clear usage in the store that enforces spend. This runs after the reload,
+	// which deliberately carries each budget's cached usage forward and would
+	// otherwise undo the reset. Enterprise propagates it to cluster peers.
+	if len(usageReset.budgetIDs) > 0 {
+		if err := h.governanceManager.ResetBudgetUsageInMemory(ctx, BudgetUsageResetOwner{Kind: BudgetOwnerTeam, ID: team.ID}, usageReset.budgetIDs); err != nil {
+			logger.Error("failed to reset in-memory budget usage for Team: %v", err)
+			SendError(ctx, 500, "Team updated but budget usage reset did not take effect")
+			return
+		}
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team updated successfully",
@@ -2858,7 +2916,7 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			return err
 		}
 		if len(budgetRequests) > 0 {
-			if err := h.reconcileCustomerBudgets(ctx, tx, &customer, budgetRequests); err != nil {
+			if err := h.reconcileCustomerBudgets(ctx, tx, &customer, budgetRequests, nil); err != nil {
 				return err
 			}
 		}
@@ -2930,6 +2988,10 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	// The operator's explicit "reset usage" choice. Carried into budget
+	// reconciliation and collected there, so the in-memory store can be cleared
+	// once the transaction commits.
+	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
 	if req.Budgets != nil && req.Budget != nil {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
@@ -2971,7 +3033,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		if effectiveBudgets != nil {
-			if err := h.reconcileCustomerBudgets(ctx, tx, customer, *effectiveBudgets); err != nil {
+			if err := h.reconcileCustomerBudgets(ctx, tx, customer, *effectiveBudgets, usageReset); err != nil {
 				return err
 			}
 		}
@@ -3050,6 +3112,16 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		logger.Error("failed to reload customer: %v", err)
 		preloadedCustomer = customer
+	}
+	// Clear usage in the store that enforces spend. This runs after the reload,
+	// which deliberately carries each budget's cached usage forward and would
+	// otherwise undo the reset. Enterprise propagates it to cluster peers.
+	if len(usageReset.budgetIDs) > 0 {
+		if err := h.governanceManager.ResetBudgetUsageInMemory(ctx, BudgetUsageResetOwner{Kind: BudgetOwnerCustomer, ID: customer.ID}, usageReset.budgetIDs); err != nil {
+			logger.Error("failed to reset in-memory budget usage for Customer: %v", err)
+			SendError(ctx, 500, "Customer updated but budget usage reset did not take effect")
+			return
+		}
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -3559,6 +3631,10 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	// The operator's explicit "reset usage" choice. Carried into budget
+	// reconciliation and collected there, so the in-memory store can be cleared
+	// once the transaction commits.
+	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
 	mc, err := h.configStore.GetModelConfigByID(ctx, mcID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -3584,7 +3660,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		// slice removes all budgets; omitting the field leaves them unchanged. Budgets
 		// are owned via ModelConfigID, so no model-config FK juggling is needed.
 		if req.Budgets != nil {
-			if err := h.reconcileModelConfigBudgets(ctx, tx, mc, req.Budgets, nil); err != nil {
+			if err := h.reconcileModelConfigBudgets(ctx, tx, mc, req.Budgets, usageReset); err != nil {
 				return err
 			}
 		}
@@ -3661,6 +3737,16 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 	if err != nil {
 		logger.Error("failed to reload model config in memory: %v", err)
 		updatedMC = mc
+	}
+	// Clear usage in the store that enforces spend. This runs after the reload,
+	// which deliberately carries each budget's cached usage forward and would
+	// otherwise undo the reset. Enterprise propagates it to cluster peers.
+	if len(usageReset.budgetIDs) > 0 {
+		if err := h.governanceManager.ResetBudgetUsageInMemory(ctx, BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: mc.ID}, usageReset.budgetIDs); err != nil {
+			logger.Error("failed to reset in-memory budget usage for Model config: %v", err)
+			SendError(ctx, 500, "Model config updated but budget usage reset did not take effect")
+			return
+		}
 	}
 	h.resolveModelConfigScopeName(ctx, updatedMC, map[string]string{})
 	SendJSON(ctx, map[string]interface{}{
@@ -3783,6 +3869,10 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	// The operator's explicit "reset usage" choice. Carried into budget
+	// reconciliation and collected there, so the in-memory store can be cleared
+	// once the transaction commits.
+	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
 	if req.Budget != nil && req.Budgets != nil {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
@@ -3932,7 +4022,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 		// Budget reconciliation (mc row exists at this point for create cases).
 		if !deleted && effectiveBudgets != nil {
-			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets, nil); err != nil {
+			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets, usageReset); err != nil {
 				return err
 			}
 		}
@@ -3969,6 +4059,20 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 			}
 		} else if r, ok := modelConfigToProviderGovernance(reloaded); ok {
 			resp = r
+		}
+	}
+	// Clear usage in the store that enforces spend. This runs after the reload,
+	// which deliberately carries each budget's cached usage forward and would
+	// otherwise undo the reset. Skipped when the governance was deleted outright,
+	// since there is nothing left to reset.
+	if !deleted && len(usageReset.budgetIDs) > 0 {
+		// Provider governance stores its budgets on a VK-agnostic model config, which
+		// is also what the reload above refreshes, so the reset is addressed to that
+		// model config rather than to the provider itself.
+		if err := h.governanceManager.ResetBudgetUsageInMemory(ctx, BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: mc.ID}, usageReset.budgetIDs); err != nil {
+			logger.Error("failed to reset in-memory budget usage for provider governance: %v", err)
+			SendError(ctx, 500, "Provider governance updated but budget usage reset did not take effect")
+			return
 		}
 	}
 	SendJSON(ctx, map[string]interface{}{
