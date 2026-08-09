@@ -48967,9 +48967,23 @@
                                           "1d",
                                           "1w",
                                           "1M",
+                                          "1Q",
                                           "1Y"
                                         ],
-                                        "description": "Reset duration for a budget or rate limit."
+                                        "description": "Reset duration for a budget."
+                                      },
+                                      "reset_config": {
+                                        "type": "object",
+                                        "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                        "properties": {
+                                          "quarter_start_month": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": 12,
+                                            "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                          }
+                                        },
+                                        "additionalProperties": false
                                       },
                                       "scope": {
                                         "type": "string",
@@ -49007,7 +49021,7 @@
                                         "1M",
                                         "1Y"
                                       ],
-                                      "description": "Reset duration for a budget or rate limit."
+                                      "description": "Reset duration for a rate limit."
                                     },
                                     "request_max_limit": {
                                       "type": "number",
@@ -49022,7 +49036,7 @@
                                         "1M",
                                         "1Y"
                                       ],
-                                      "description": "Reset duration for a budget or rate limit."
+                                      "description": "Reset duration for a rate limit."
                                     },
                                     "token_current_usage": {
                                       "type": "number",
@@ -49061,9 +49075,23 @@
                                     "1d",
                                     "1w",
                                     "1M",
+                                    "1Q",
                                     "1Y"
                                   ],
-                                  "description": "Reset duration for a budget or rate limit."
+                                  "description": "Reset duration for a budget."
+                                },
+                                "reset_config": {
+                                  "type": "object",
+                                  "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                  "properties": {
+                                    "quarter_start_month": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 12,
+                                      "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                    }
+                                  },
+                                  "additionalProperties": false
                                 },
                                 "scope": {
                                   "type": "string",
@@ -49101,7 +49129,7 @@
                                   "1M",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a rate limit."
                               },
                               "request_max_limit": {
                                 "type": "number",
@@ -49116,7 +49144,7 @@
                                   "1M",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a rate limit."
                               },
                               "token_current_usage": {
                                 "type": "number",
@@ -49308,9 +49336,23 @@
                                   "1d",
                                   "1w",
                                   "1M",
+                                  "1Q",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a budget."
+                              },
+                              "reset_config": {
+                                "type": "object",
+                                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                "properties": {
+                                  "quarter_start_month": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 12,
+                                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               "scope": {
                                 "type": "string",
@@ -49348,7 +49390,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "request_max_limit": {
                               "type": "number",
@@ -49363,7 +49405,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "token_current_usage": {
                               "type": "number",
@@ -49402,9 +49444,23 @@
                             "1d",
                             "1w",
                             "1M",
+                            "1Q",
                             "1Y"
                           ],
-                          "description": "Reset duration for a budget or rate limit."
+                          "description": "Reset duration for a budget."
+                        },
+                        "reset_config": {
+                          "type": "object",
+                          "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                          "properties": {
+                            "quarter_start_month": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 12,
+                              "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                            }
+                          },
+                          "additionalProperties": false
                         },
                         "scope": {
                           "type": "string",
@@ -49442,7 +49498,7 @@
                           "1M",
                           "1Y"
                         ],
-                        "description": "Reset duration for a budget or rate limit."
+                        "description": "Reset duration for a rate limit."
                       },
                       "request_max_limit": {
                         "type": "number",
@@ -49457,7 +49513,7 @@
                           "1M",
                           "1Y"
                         ],
-                        "description": "Reset duration for a budget or rate limit."
+                        "description": "Reset duration for a rate limit."
                       },
                       "token_current_usage": {
                         "type": "number",
@@ -49623,9 +49679,23 @@
                                         "1d",
                                         "1w",
                                         "1M",
+                                        "1Q",
                                         "1Y"
                                       ],
-                                      "description": "Reset duration for a budget or rate limit."
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
                                     },
                                     "scope": {
                                       "type": "string",
@@ -49663,7 +49733,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "request_max_limit": {
                                     "type": "number",
@@ -49678,7 +49748,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "token_current_usage": {
                                     "type": "number",
@@ -49717,9 +49787,23 @@
                                   "1d",
                                   "1w",
                                   "1M",
+                                  "1Q",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a budget."
+                              },
+                              "reset_config": {
+                                "type": "object",
+                                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                "properties": {
+                                  "quarter_start_month": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 12,
+                                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               "scope": {
                                 "type": "string",
@@ -49757,7 +49841,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "request_max_limit": {
                               "type": "number",
@@ -49772,7 +49856,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "token_current_usage": {
                               "type": "number",
@@ -49993,9 +50077,23 @@
                                         "1d",
                                         "1w",
                                         "1M",
+                                        "1Q",
                                         "1Y"
                                       ],
-                                      "description": "Reset duration for a budget or rate limit."
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
                                     },
                                     "scope": {
                                       "type": "string",
@@ -50033,7 +50131,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "request_max_limit": {
                                     "type": "number",
@@ -50048,7 +50146,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "token_current_usage": {
                                     "type": "number",
@@ -50087,9 +50185,23 @@
                                   "1d",
                                   "1w",
                                   "1M",
+                                  "1Q",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a budget."
+                              },
+                              "reset_config": {
+                                "type": "object",
+                                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                "properties": {
+                                  "quarter_start_month": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 12,
+                                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               "scope": {
                                 "type": "string",
@@ -50127,7 +50239,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "request_max_limit": {
                               "type": "number",
@@ -50142,7 +50254,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "token_current_usage": {
                               "type": "number",
@@ -50362,9 +50474,23 @@
                                   "1d",
                                   "1w",
                                   "1M",
+                                  "1Q",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a budget."
+                              },
+                              "reset_config": {
+                                "type": "object",
+                                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                "properties": {
+                                  "quarter_start_month": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 12,
+                                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               "scope": {
                                 "type": "string",
@@ -50402,7 +50528,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "request_max_limit": {
                               "type": "number",
@@ -50417,7 +50543,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "token_current_usage": {
                               "type": "number",
@@ -50456,9 +50582,23 @@
                             "1d",
                             "1w",
                             "1M",
+                            "1Q",
                             "1Y"
                           ],
-                          "description": "Reset duration for a budget or rate limit."
+                          "description": "Reset duration for a budget."
+                        },
+                        "reset_config": {
+                          "type": "object",
+                          "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                          "properties": {
+                            "quarter_start_month": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 12,
+                              "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                            }
+                          },
+                          "additionalProperties": false
                         },
                         "scope": {
                           "type": "string",
@@ -50500,7 +50640,7 @@
                               "1M",
                               "1Y"
                             ],
-                            "description": "Reset duration for a budget or rate limit."
+                            "description": "Reset duration for a rate limit."
                           },
                           "request_max_limit": {
                             "type": "number",
@@ -50515,7 +50655,7 @@
                               "1M",
                               "1Y"
                             ],
-                            "description": "Reset duration for a budget or rate limit."
+                            "description": "Reset duration for a rate limit."
                           },
                           "token_current_usage": {
                             "type": "number",
@@ -50684,9 +50824,23 @@
                                         "1d",
                                         "1w",
                                         "1M",
+                                        "1Q",
                                         "1Y"
                                       ],
-                                      "description": "Reset duration for a budget or rate limit."
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
                                     },
                                     "scope": {
                                       "type": "string",
@@ -50724,7 +50878,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "request_max_limit": {
                                     "type": "number",
@@ -50739,7 +50893,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "token_current_usage": {
                                     "type": "number",
@@ -50778,9 +50932,23 @@
                                   "1d",
                                   "1w",
                                   "1M",
+                                  "1Q",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a budget."
+                              },
+                              "reset_config": {
+                                "type": "object",
+                                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                "properties": {
+                                  "quarter_start_month": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 12,
+                                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               "scope": {
                                 "type": "string",
@@ -50818,7 +50986,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "request_max_limit": {
                               "type": "number",
@@ -50833,7 +51001,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "token_current_usage": {
                               "type": "number",
@@ -51112,9 +51280,23 @@
                                         "1d",
                                         "1w",
                                         "1M",
+                                        "1Q",
                                         "1Y"
                                       ],
-                                      "description": "Reset duration for a budget or rate limit."
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
                                     },
                                     "scope": {
                                       "type": "string",
@@ -51152,7 +51334,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "request_max_limit": {
                                     "type": "number",
@@ -51167,7 +51349,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "token_current_usage": {
                                     "type": "number",
@@ -51206,9 +51388,23 @@
                                   "1d",
                                   "1w",
                                   "1M",
+                                  "1Q",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a budget."
+                              },
+                              "reset_config": {
+                                "type": "object",
+                                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                "properties": {
+                                  "quarter_start_month": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 12,
+                                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               "scope": {
                                 "type": "string",
@@ -51246,7 +51442,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "request_max_limit": {
                               "type": "number",
@@ -51261,7 +51457,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "token_current_usage": {
                               "type": "number",
@@ -51471,9 +51667,23 @@
                                         "1d",
                                         "1w",
                                         "1M",
+                                        "1Q",
                                         "1Y"
                                       ],
-                                      "description": "Reset duration for a budget or rate limit."
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
                                     },
                                     "scope": {
                                       "type": "string",
@@ -51511,7 +51721,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "request_max_limit": {
                                     "type": "number",
@@ -51526,7 +51736,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "token_current_usage": {
                                     "type": "number",
@@ -51565,9 +51775,23 @@
                                   "1d",
                                   "1w",
                                   "1M",
+                                  "1Q",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a budget."
+                              },
+                              "reset_config": {
+                                "type": "object",
+                                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                "properties": {
+                                  "quarter_start_month": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 12,
+                                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               "scope": {
                                 "type": "string",
@@ -51605,7 +51829,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "request_max_limit": {
                               "type": "number",
@@ -51620,7 +51844,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "token_current_usage": {
                               "type": "number",
@@ -51851,9 +52075,23 @@
                                         "1d",
                                         "1w",
                                         "1M",
+                                        "1Q",
                                         "1Y"
                                       ],
-                                      "description": "Reset duration for a budget or rate limit."
+                                      "description": "Reset duration for a budget."
+                                    },
+                                    "reset_config": {
+                                      "type": "object",
+                                      "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                      "properties": {
+                                        "quarter_start_month": {
+                                          "type": "integer",
+                                          "minimum": 1,
+                                          "maximum": 12,
+                                          "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                        }
+                                      },
+                                      "additionalProperties": false
                                     },
                                     "scope": {
                                       "type": "string",
@@ -51891,7 +52129,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "request_max_limit": {
                                     "type": "number",
@@ -51906,7 +52144,7 @@
                                       "1M",
                                       "1Y"
                                     ],
-                                    "description": "Reset duration for a budget or rate limit."
+                                    "description": "Reset duration for a rate limit."
                                   },
                                   "token_current_usage": {
                                     "type": "number",
@@ -51945,9 +52183,23 @@
                                   "1d",
                                   "1w",
                                   "1M",
+                                  "1Q",
                                   "1Y"
                                 ],
-                                "description": "Reset duration for a budget or rate limit."
+                                "description": "Reset duration for a budget."
+                              },
+                              "reset_config": {
+                                "type": "object",
+                                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.",
+                                "properties": {
+                                  "quarter_start_month": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 12,
+                                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                                  }
+                                },
+                                "additionalProperties": false
                               },
                               "scope": {
                                 "type": "string",
@@ -51985,7 +52237,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "request_max_limit": {
                               "type": "number",
@@ -52000,7 +52252,7 @@
                                 "1M",
                                 "1Y"
                               ],
-                              "description": "Reset duration for a budget or rate limit."
+                              "description": "Reset duration for a rate limit."
                             },
                             "token_current_usage": {
                               "type": "number",
@@ -82497,7 +82749,20 @@
           },
           "reset_duration": {
             "type": "string",
-            "description": "Reset duration (e.g., \"30s\", \"5m\", \"1h\", \"1d\", \"1w\", \"1M\")"
+            "description": "Reset duration (e.g., \"30s\", \"5m\", \"1h\", \"1d\", \"1w\", \"1M\", \"1Q\")"
+          },
+          "reset_config": {
+            "type": "object",
+            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.\n",
+            "properties": {
+              "quarter_start_month": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12,
+                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1.\n"
+              }
+            },
+            "additionalProperties": false
           },
           "calendar_aligned": {
             "type": "boolean",
@@ -82677,10 +82942,23 @@
           "reset_duration": {
             "type": "string"
           },
+          "reset_config": {
+            "type": "object",
+            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.\n",
+            "properties": {
+              "quarter_start_month": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12,
+                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1.\n"
+              }
+            },
+            "additionalProperties": false
+          },
           "calendar_aligned": {
             "type": "boolean",
             "default": false,
-            "description": "When true, usage resets at the start of each calendar period in UTC instead of on a rolling window from last reset. Only valid with reset durations that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`). For example `1d` resets at midnight UTC; `1w` at Monday 00:00 UTC; `1M` on the first day of each month; `1Y` on January 1. Sub-day durations (e.g. `1h`) cannot use calendar alignment.\n"
+            "description": "When true, usage resets at the start of each calendar period in UTC instead of on a rolling window from last reset. Only valid with reset durations that use day, week, month, quarter, or year suffixes (`d`, `w`, `M`, `Q`, `Y`). For example `1d` resets at midnight UTC; `1w` at Monday 00:00 UTC; `1M` on the first day of each month; `1Q` on the first day of the fiscal quarter; `1Y` on January 1. Sub-day durations (e.g. `1h`) cannot use calendar alignment.\n"
           }
         }
       },
@@ -82694,12 +82972,25 @@
           "reset_duration": {
             "type": "string"
           },
+          "reset_config": {
+            "type": "object",
+            "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (`1Q`); the API rejects it on any other window.\n",
+            "properties": {
+              "quarter_start_month": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12,
+                "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1.\n"
+              }
+            },
+            "additionalProperties": false
+          },
           "calendar_aligned": {
             "type": [
               "boolean",
               "null"
             ],
-            "description": "Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations that use day, week, month, or year suffixes (`d`, `w`, `M`, `Y`); sub-day durations (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on an existing budget, current usage is reset to zero and last_reset snaps to the current period start.\n"
+            "description": "Set to true or false to enable or disable calendar-aligned resets. Only valid with reset durations that use day, week, month, quarter, or year suffixes (`d`, `w`, `M`, `Q`, `Y`); sub-day durations (e.g. `1h`, `30m`) are invalid with calendar alignment and the API rejects that combination. When enabling on an existing budget, current usage is reset to zero and last_reset snaps to the current period start. Changing quarter_start_month on a calendar-aligned quarterly budget moves last_reset onto the new fiscal boundary but preserves current usage.\n"
           }
         }
       },

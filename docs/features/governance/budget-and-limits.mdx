@@ -156,19 +156,47 @@ Budgets and rate limits support flexible reset durations:
 - `1d` - 1 day
 - `1w` - 1 week
 - `1M` - 1 month
+- `1Q` - 1 quarter (budgets only)
 - `1Y` - 1 year
 
 **Common Patterns:**
 - **Rate Limits**: `1m`, `1h`, `1d` for request throttling
-- **Budgets**: `1d`, `1w`, `1M`, `1Y` for cost control
+- **Budgets**: `1d`, `1w`, `1M`, `1Q`, `1Y` for cost control
+
+<Note>
+`1Q` is available on **budgets only**. Rate limits carry no quarter definition, so a quarterly token or request limit is not offered.
+</Note>
 
 ### Calendar-aligned budgets
 
 By default, a budget **rolls**: after `reset_duration` elapses since `last_reset`, usage resets. With **`calendar_aligned`: `true`**, the budget resets at the **start of each calendar period in UTC** instead (same instant for every customer of that configuration).
 
-**Supported `reset_duration` suffixes:** only day (`d`), week (`w`), month (`M`), and year (`Y`). Examples: `1d` → midnight UTC each day; `1w` → Monday 00:00 UTC each week; `1M` → first day of each month; `1Y` → January 1 each year. Sub-day durations (for example `1h`, `30m`) **cannot** use calendar alignment; the API rejects invalid combinations.
+**Supported `reset_duration` suffixes:** only day (`d`), week (`w`), month (`M`), quarter (`Q`), and year (`Y`). Examples: `1d` → midnight UTC each day; `1w` → Monday 00:00 UTC each week; `1M` → first day of each month; `1Q` → first day of the fiscal quarter; `1Y` → January 1 each year. Sub-day durations (for example `1h`, `30m`) **cannot** use calendar alignment; the API rejects invalid combinations.
 
 Calendar alignment applies to budgets on **customers**, **teams**, **virtual keys**, and **per–provider-config** budgets. You can set it when creating a budget (`calendar_aligned` on create) or toggle it on update (`calendar_aligned` on the budget in `PUT` requests). Turning calendar alignment **on** for an existing budget resets **current usage to zero** and snaps **`last_reset`** to the current period start.
+
+### Quarterly budgets and fiscal quarters
+
+A quarterly budget uses the same rule as a monthly one - it resets on the **1st of a month at 00:00 UTC** - and only differs in *which* 1st. By default that is January, April, July and October. Set `reset_config.quarter_start_month` to move the fiscal year:
+
+```json
+{
+  "id": "quarterly-spend",
+  "max_limit": 50000,
+  "reset_duration": "1Q",
+  "reset_config": { "quarter_start_month": 4 }
+}
+```
+
+With April as the start, the quarters are **Q1 Apr-Jun · Q2 Jul-Sep · Q3 Oct-Dec · Q4 Jan-Mar**.
+
+<Note>
+Quarter boundaries repeat every three months, so `quarter_start_month` only changes reset dates **modulo 3**. January, April, July and October all reset on the same days - which covers the UK and India (April), the US federal year (October) and Australia (July). For those, the setting changes only which quarter is labelled Q1, not when the budget resets. The eight other months genuinely move the boundaries: February, for example, gives Feb-Apr / May-Jul / Aug-Oct / Nov-Jan.
+</Note>
+
+`reset_config` is valid **only** on a quarterly `reset_duration`; the API rejects it on any other window rather than storing a setting that would do nothing. A quarterly budget that is **not** calendar-aligned ignores the fiscal calendar entirely and rolls on a 90-day window anchored to its creation time.
+
+Changing `quarter_start_month` on a live calendar-aligned budget moves `last_reset` onto the new boundary and **preserves current usage** - the accumulated spend carries into the new quarter. Zeroing it is a separate, explicit choice.
 
 ### Budget overrides
 

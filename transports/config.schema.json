@@ -6493,7 +6493,20 @@
         },
         "reset_duration": {
           "type": "string",
-          "description": "Reset window, e.g. \"1M\", \"1h\""
+          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\""
+        },
+        "reset_config": {
+          "type": "object",
+          "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+          "properties": {
+            "quarter_start_month": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12,
+              "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates."
+            }
+          },
+          "additionalProperties": false
         },
         "calendar_aligned": {
           "type": "boolean",
