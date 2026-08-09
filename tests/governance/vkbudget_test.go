@@ -404,3 +404,136 @@ func TestVKQuarterlyBudgetRejectsInvalidResetConfig(t *testing.T) {
 		})
 	}
 }
+
+// vkBudgetUsage reads the first budget's current usage off a virtual key's live
+// in-memory governance state, which is what actually enforces spend.
+func vkBudgetUsage(t *testing.T, vkID string) float64 {
+	t.Helper()
+	budget := budgetFromVK(t, vkID)
+	usage, ok := budget["current_usage"].(float64)
+	if !ok {
+		t.Fatalf("budget for VK %s has no current_usage: %v", vkID, budget)
+	}
+	return usage
+}
+
+// spendOnVirtualKey makes one small real completion so the budget has usage to
+// clear, and returns the usage the gateway recorded.
+//
+// One short request is enough: the assertions below care that usage is non-zero
+// and then zero, not about the amount, so there is no reason to spend more.
+func spendOnVirtualKey(t *testing.T, vkID, vkValue string) float64 {
+	t.Helper()
+	resp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/v1/chat/completions",
+		Body: ChatCompletionRequest{
+			Model:    "openai/gpt-4o",
+			Messages: []ChatMessage{{Role: "user", Content: "Reply with the single word: ok"}},
+		},
+		VKHeader: &vkValue,
+	})
+	if resp.StatusCode >= 400 {
+		t.Fatalf("failed to spend against VK %s: status %d, body %v", vkID, resp.StatusCode, resp.Body)
+	}
+
+	// Usage is recorded asynchronously relative to the response, so poll briefly.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if usage := vkBudgetUsage(t, vkID); usage > 0 {
+			return usage
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("VK %s recorded no budget usage after a successful completion", vkID)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// TestVKResetBudgetUsageClearsSpend is the full round trip for the operator's
+// Reset choice: HTTP request, through the database, into the in-memory store that
+// enforcement reads.
+//
+// This is the only layer that can catch the bug it guards. reset_budget_usage was
+// accepted by the API, documented, and sent by the UI for a long time while no
+// handler read it, and the value would have been discarded by UpdateBudget even if
+// one had. Both failures are invisible to a unit test with a mocked store.
+//
+// Not parallel: it issues writes and polls, which contends with the rest of the
+// suite on the default SQLite store.
+func TestVKResetBudgetUsageClearsSpend(t *testing.T) {
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	createResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/api/governance/virtual-keys",
+		Body: CreateVirtualKeyRequest{
+			Name:            "test-vk-reset-usage-" + generateRandomID(),
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets:         []BudgetRequest{{MaxLimit: 50, ResetDuration: "1M"}},
+		},
+	})
+	if createResp.StatusCode != 200 {
+		t.Fatalf("Failed to create VK: status %d, body %v", createResp.StatusCode, createResp.Body)
+	}
+	vkID := ExtractIDFromResponse(t, createResp)
+	testData.AddVirtualKey(vkID)
+	vkValue := createResp.Body["virtual_key"].(map[string]interface{})["value"].(string)
+
+	spent := spendOnVirtualKey(t, vkID, vkValue)
+	t.Logf("recorded $%.6f of usage before the reset", spent)
+
+	before := budgetFromVK(t, vkID)
+	lastResetBefore, err := time.Parse(time.RFC3339, before["last_reset"].(string))
+	if err != nil {
+		t.Fatalf("could not parse last_reset %q: %v", before["last_reset"], err)
+	}
+
+	// A budget edit WITHOUT the flag must leave the spend alone. Asserting this
+	// first matters: without it, a handler that always reset would still pass the
+	// positive case below and silently wipe usage on every unrelated edit.
+	preserveResp := MakeRequest(t, APIRequest{
+		Method: "PUT",
+		Path:   "/api/governance/virtual-keys/" + vkID,
+		Body: UpdateVirtualKeyRequest{
+			Budgets: []BudgetRequest{{MaxLimit: 60, ResetDuration: "1M"}},
+		},
+	})
+	if preserveResp.StatusCode != 200 {
+		t.Fatalf("Failed to update VK: status %d, body %v", preserveResp.StatusCode, preserveResp.Body)
+	}
+	if usage := vkBudgetUsage(t, vkID); usage != spent {
+		t.Errorf("an edit without reset_budget_usage changed usage from %v to %v; spend must be preserved", spent, usage)
+	}
+
+	// Now with the flag.
+	resetUsage := true
+	resetResp := MakeRequest(t, APIRequest{
+		Method: "PUT",
+		Path:   "/api/governance/virtual-keys/" + vkID,
+		Body: UpdateVirtualKeyRequest{
+			Budgets:          []BudgetRequest{{MaxLimit: 70, ResetDuration: "1M"}},
+			ResetBudgetUsage: &resetUsage,
+		},
+	})
+	if resetResp.StatusCode != 200 {
+		t.Fatalf("Failed to reset budget usage: status %d, body %v", resetResp.StatusCode, resetResp.Body)
+	}
+
+	if usage := vkBudgetUsage(t, vkID); usage != 0 {
+		t.Errorf("reset_budget_usage did not clear spend: usage is still %v", usage)
+	}
+
+	// The reset clears usage only. Moving the boundary is ruled out by the
+	// forward-only invariant that keeps cluster nodes agreeing on the open window.
+	after := budgetFromVK(t, vkID)
+	lastResetAfter, err := time.Parse(time.RFC3339, after["last_reset"].(string))
+	if err != nil {
+		t.Fatalf("could not parse last_reset %q: %v", after["last_reset"], err)
+	}
+	if !lastResetAfter.Equal(lastResetBefore) {
+		t.Errorf("resetting usage moved last_reset from %s to %s; the window must be left alone",
+			lastResetBefore.Format(time.RFC3339), lastResetAfter.Format(time.RFC3339))
+	}
+}

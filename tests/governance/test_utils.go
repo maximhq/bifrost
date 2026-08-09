@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -88,9 +89,22 @@ type APIResponse struct {
 }
 
 // MakeRequest makes an HTTP request to the Bifrost API
+// baseURL is the gateway the governance suite exercises.
+//
+// Overridable so a run can target a gateway other than the default dev one, for
+// example an instance started with provider credentials in scope while a
+// developer's own gateway keeps port 8080. Defaults to the historical value, so
+// nothing changes for an unconfigured run.
+func baseURL() string {
+	if override := os.Getenv("BIFROST_TEST_BASE_URL"); override != "" {
+		return strings.TrimSuffix(override, "/")
+	}
+	return "http://localhost:8080"
+}
+
 func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 	client := &http.Client{}
-	url := fmt.Sprintf("http://localhost:8080%s", req.Path)
+	url := fmt.Sprintf("%s%s", baseURL(), req.Path)
 
 	var body io.Reader
 	if req.Body != nil {
@@ -144,7 +158,7 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 // Use this when you need to test specific header formats (e.g., Authorization, x-api-key)
 func MakeRequestWithCustomHeaders(t *testing.T, req APIRequest, customHeaders map[string]string) *APIResponse {
 	client := &http.Client{}
-	url := fmt.Sprintf("http://localhost:8080%s", req.Path)
+	url := fmt.Sprintf("%s%s", baseURL(), req.Path)
 
 	var body io.Reader
 	if req.Body != nil {
@@ -289,6 +303,8 @@ type UpdateVirtualKeyRequest struct {
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // UpdateTeamRequest represents a request to update a team
