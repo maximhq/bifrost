@@ -83,31 +83,126 @@ fi
 
 harness_start_gateway "$APP_DIR" "$PORT" "$SERVER_LOG"
 
-echo ""
-echo "🧪 Running provider harness (full sweep, parallel per provider)..."
+# Retry policy. test-core is a required release gate, so a genuinely flaky cell
+# (a provider timeout, a 429 that outlived its backoff) must not sink a release
+# on its own - but neither should a real regression be retried into a green.
+#
+# RERUN_FAILED=1 re-runs ONLY the items that failed in the previous attempt,
+# read from tmp/newman-report.json (see filter-collection.mjs --rerun-failed).
+# So a retry is cheap - it re-runs the handful that failed, not the full sweep -
+# and a persistent failure still fails, just three times over.
+RERUN_ATTEMPTS="${RERUN_ATTEMPTS:-2}"
+
+ATTEMPT_DIR="$REPO_ROOT/tmp/harness-attempts"
+# NOT tmp/newman-report-<n>.json: the Makefile's parallel path globs
+# tmp/newman-report-*.json to merge the per-provider reports, so an archived
+# attempt sitting at that name would be merged into the next attempt's results.
+# A subdirectory keeps the archive clear of that glob entirely.
+mkdir -p "$ATTEMPT_DIR"
+
+# archive_attempt <n> snapshots the artifacts an attempt produced, since the
+# next attempt overwrites them in place. Without this a run that passes on
+# retry 2 leaves no record of what failed on attempts 0 and 1, which is exactly
+# the evidence needed to tell a flake from a degradation.
+archive_attempt() {
+  # Two statements, not `local n=.. dest=..$n`: in a single `local`, the later
+  # value is expanded before `local` binds the earlier name, so $n would resolve
+  # against the enclosing scope and trip `set -u`.
+  local n="$1"
+  local dest="$ATTEMPT_DIR/attempt-$n"
+  mkdir -p "$dest"
+  for artifact in newman-report.json harness-failures.md newman-cli.log; do
+    if [ -f "$REPO_ROOT/tmp/$artifact" ]; then
+      cp "$REPO_ROOT/tmp/$artifact" "$dest/$artifact" 2>/dev/null || true
+    fi
+  done
+  # Per-provider newman logs from the parallel path.
+  cp "$REPO_ROOT"/tmp/newman-cli-*.log "$dest/" 2>/dev/null || true
+}
+
+# item_failure_count reports how many item-level failures the last run recorded.
+#
+# This is the guard that stops a retry from manufacturing a false green. A run
+# can exit non-zero for reasons that are not item failures at all - the gateway
+# dying, newman itself crashing - and in that case the report lists zero failed
+# items. RERUN_FAILED would then filter the collection down to nothing, the
+# Makefile would skip an empty run, and the retry would exit 0 having verified
+# precisely nothing. Newman's own stats are used rather than re-deriving the
+# failed set, because the question here is only "were there item failures at
+# all", not "which ones" - that part stays filter-collection.mjs's job.
+item_failure_count() {
+  local report="$REPO_ROOT/tmp/newman-report.json"
+  [ -f "$report" ] || { echo 0; return; }
+  jq -r '((.run.stats.assertions.failed // 0) + (.run.stats.requests.failed // 0))' "$report" 2>/dev/null || echo 0
+}
+
 # USE_INFISICAL=0 makes the Makefile's EXPOSE_ENV fall through to ./.env, which
 # does not exist on a runner - so it is a no-op and newman inherits the job's
 # environment, i.e. the GitHub Actions secrets, directly.
+run_harness() {
+  local rerun="$1" rc=0
+  make run-provider-harness-test \
+    CI=1 \
+    USE_INFISICAL=0 \
+    PARALLEL=1 \
+    BASE_URL="$BASE_URL" \
+    APP_DIR="$APP_DIR_REL" \
+    ${rerun:+RERUN_FAILED=1} || rc=$?
+  return $rc
+}
+
+echo ""
+echo "🧪 Running provider harness (full sweep, parallel per provider)..."
 HARNESS_EXIT=0
-make run-provider-harness-test \
-  CI=1 \
-  USE_INFISICAL=0 \
-  PARALLEL=1 \
-  BASE_URL="$BASE_URL" \
-  APP_DIR="$APP_DIR_REL" || HARNESS_EXIT=$?
+run_harness "" || HARNESS_EXIT=$?
+archive_attempt 0
+FINAL_ATTEMPT=0
+
+attempt=1
+while [ "$HARNESS_EXIT" -ne 0 ] && [ "$attempt" -le "$RERUN_ATTEMPTS" ]; do
+  failed_items=$(item_failure_count)
+  if [ "$failed_items" -eq 0 ]; then
+    echo ""
+    echo "❌ Harness exited $HARNESS_EXIT but the report shows no item-level failures."
+    echo "   That is an infrastructure failure (gateway down, newman crash), not a flaky cell,"
+    echo "   so RERUN_FAILED would re-run an empty collection and pass without verifying anything."
+    echo "   Failing now rather than retrying. See tmp/newman-cli*.log and tmp/bifrost-dev.log."
+    break
+  fi
+
+  echo ""
+  echo "🔁 Attempt $attempt of $RERUN_ATTEMPTS: re-running only the $failed_items failed item(s) (RERUN_FAILED=1)..."
+  HARNESS_EXIT=0
+  run_harness 1 || HARNESS_EXIT=$?
+  archive_attempt "$attempt"
+  FINAL_ATTEMPT="$attempt"
+  attempt=$((attempt + 1))
+done
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$REPO_ROOT/tmp/harness-failures.md" ]; then
   {
     echo "## Provider harness failure breakdown"
     echo ""
+    if [ "$FINAL_ATTEMPT" -gt 0 ]; then
+      echo "> Ran $((FINAL_ATTEMPT + 1)) attempt(s); attempts after the first re-ran only the previously failed items."
+      echo "> Per-attempt artifacts are under \`tmp/harness-attempts/\`."
+      echo ""
+    fi
     cat "$REPO_ROOT/tmp/harness-failures.md"
     echo ""
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 
 if [ "$HARNESS_EXIT" -ne 0 ]; then
-  echo "❌ Provider harness failed (exit $HARNESS_EXIT). See tmp/harness-failures.md and tmp/newman-cli-*.log"
+  echo "❌ Provider harness failed after $((FINAL_ATTEMPT + 1)) attempt(s) (exit $HARNESS_EXIT)."
+  echo "   See tmp/harness-failures.md, tmp/newman-cli-*.log, and tmp/harness-attempts/ for the per-attempt history."
   exit "$HARNESS_EXIT"
 fi
 
-echo "✅ Provider harness completed successfully"
+if [ "$FINAL_ATTEMPT" -gt 0 ]; then
+  # Loud on purpose. A pass that needed retries is not the same as a clean pass,
+  # and burying that turns a slow degradation into an invisible one.
+  echo "::warning::Provider harness passed only on retry $FINAL_ATTEMPT of $RERUN_ATTEMPTS - the first attempt had failures. See tmp/harness-attempts/attempt-0/harness-failures.md."
+fi
+
+echo "✅ Provider harness completed successfully (attempts: $((FINAL_ATTEMPT + 1)))"

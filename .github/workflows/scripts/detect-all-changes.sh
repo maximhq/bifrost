@@ -14,10 +14,75 @@ BIFROST_HTTP_NEEDS_RELEASE="false"
 DOCKER_NEEDS_RELEASE="false"
 CHANGED_PLUGINS="[]"
 
+# Every version read here is echoed into GITHUB_OUTPUT and then interpolated with
+# ${{ }} into `run:` blocks throughout the release pipeline. GitHub expands ${{ }}
+# TEXTUALLY, before the shell parses the line, so quoting at the call site cannot
+# contain a value carrying command substitution - "$(id)" still runs. Validating once
+# here, where the value enters the pipeline, is what makes every downstream
+# interpolation safe; there are dozens of them and guarding each is neither reliable
+# nor reviewable.
+validate_version() {
+  local value="$1"
+  local name="$2"
+  # Anchored, and a regex rather than a glob: a `case` pattern like
+  # [0-9]*.[0-9]*.[0-9]* looks structural but is not, because each `*` matches
+  # anything - it accepted 1x.2.3, 1.2.3rc1 and 1.2.3.4. Three numeric components are
+  # required, and a suffix is permitted only after PATCH and only when introduced by
+  # `-` or `+`. The suffix quantifier is `+`, not `*`: a separator introducing nothing
+  # (1.2.3- / 1.2.3+) is malformed per Semantic Versioning 2.0.0 clauses 9 and 10,
+  # which both require that identifiers MUST NOT be empty - and it is the shape a
+  # truncated version file takes, which is worth catching here rather than at tag time.
+  if [[ ! "$value" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.+_-]+)?$ ]]; then
+    echo "::error::refusing malformed $name version: '$value' (expected MAJOR.MINOR.PATCH, optionally v-prefixed, with an optional -suffix)" >&2
+    return 1
+  fi
+  # A second, independent check on the character set. The regex above already implies
+  # it, so this is belt-and-braces: it is what keeps a future loosening of the shape
+  # pattern from silently re-admitting shell metacharacters. The set is deliberately wide
+  # enough for the prerelease shapes this repo actually ships - v2.0.0-prerelease1,
+  # and multi-hyphen forms like v1.5.0-prerelease3-ajhfix-base - because a guard that
+  # false-rejects blocks a release, and every character admitted here is inert to a
+  # shell.
+  case "$value" in
+    *[!v0-9.A-Za-z_+-]*)
+      echo "::error::refusing $name version with unexpected characters: '$value'" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Plugin names travel the same way and by a sharper edge: they are collected into the
+# changed-plugins JSON and interpolated as '${{ ... }}' inside single quotes at the
+# release-all-plugins.sh call site. jq -R escapes double quotes and backslashes when
+# building that JSON but leaves single quotes alone, so a name containing one closes
+# the shell string. A plugin name is a directory name - it has no business containing
+# anything but the characters below.
+validate_plugin_name() {
+  local value="$1"
+  case "$value" in
+    "")
+      echo "::error::refusing empty plugin name" >&2
+      return 1
+      ;;
+    *[!A-Za-z0-9._-]*)
+      echo "::error::refusing plugin name with unexpected characters: '$value'" >&2
+      return 1
+      ;;
+    *..*)
+      echo "::error::refusing plugin name containing '..': '$value'" >&2
+      return 1
+      ;;
+  esac
+}
+
 # Get current versions
 CORE_VERSION=$(cat core/version)
 FRAMEWORK_VERSION=$(cat framework/version)
 TRANSPORT_VERSION=$(cat transports/version)
+
+validate_version "$CORE_VERSION" "core"
+validate_version "$FRAMEWORK_VERSION" "framework"
+validate_version "$TRANSPORT_VERSION" "transport"
 
 echo "📦 Current versions:"
 echo "   Core: $CORE_VERSION"
@@ -135,6 +200,7 @@ for plugin_dir in plugins/*/; do
   fi
 
   plugin_name=$(basename "$plugin_dir")
+  validate_plugin_name "$plugin_name"
   version_file="${plugin_dir}version"
 
   if [ ! -f "$version_file" ]; then
@@ -147,6 +213,11 @@ for plugin_dir in plugins/*/; do
     echo "   ⚠️ Empty version file for: $plugin_name"
     continue
   fi
+  # A missing or empty version file means "this plugin is not versioned" and is skipped
+  # above. A version file that exists and holds something malformed is a different
+  # thing - a repo error - so it stops the run rather than silently dropping the plugin
+  # from the release, which would be far harder to notice.
+  validate_version "$current_version" "plugin $plugin_name"
 
   tag_name="plugins/${plugin_name}/v${current_version}"
   echo "   📦 Plugin: $plugin_name (v$current_version)"

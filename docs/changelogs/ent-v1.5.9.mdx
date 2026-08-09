@@ -1,50 +1,37 @@
 ---
-title: "v1.5.8"
-description: "v1.5.8 changelog - 2026-08-05"
+title: "v1.5.9"
+description: "v1.5.9 changelog - 2026-08-07"
 ---
 
-<Update label="Bifrost Enterprise" description="v1.5.8">
-
-<Warning>
-    v1.5.8 has an SSE heartbeat parsing issue that affects certain SDK versions (LangChain, OpenAI Go). Upgrade to v1.5.9.
-</Warning>
+<Update label="Bifrost Enterprise" description="v1.5.9">
 
 ## Changelog
 
-This release adds JIT provisioning for first-time SSO users hitting inference endpoints directly, an `order` role-resolution strategy for SCIM/OIDC role mapping conflicts, and AWS ALB as a selectable Identity-Aware Proxy option in the SCIM wizard. It also fixes access-profile budget propagation gaps (calendar-aligned resets, large profiles), a soft-deleted-user reactivation inconsistency between the proxy and OAuth login paths, and isolates cluster peer-liveness tracking from bulk sync backlog.
-
-## ✨ Features
-
-- **Inference JIT Provisioning for First-Time SSO Users** - A first-time SSO user hitting an inference endpoint directly (no prior interactive login) is now JIT-provisioned from their IdP bearer JWT instead of receiving a flat 401, with claims enriched from the provider's userinfo endpoint so group/role mappings resolve the same way they would through the login flow. Resurrection of a deliberately deprovisioned identity is blocked; a user with no matching role mapping is denied with a 403.
-- **`order` Role-Resolution Strategy for SCIM/OIDC** - When a user matches multiple attribute-role mappings at once, admins can now choose `order` (first-listed mapping wins, by list position) as an alternative to the default `highestPermissionCount`. Role sync from SCIM group and attribute pushes is also unified into a single `RecomputeUserRole` path, so a role granted by one signal (e.g. a group) is no longer cleared by an unrelated push that only carries a different signal (e.g. an attribute).
-- **AWS ALB as a Selectable IAP Option** - AWS ALB is now exposed as a selectable Identity-Aware Proxy provider in the SCIM setup wizard, alongside Cloudflare Access and Generic OIDC.
-- **Configurable Outbound HTTP Buffer Sizes** - `ClientReadBufferSize` and `ClientWriteBufferSize` in the `config.json` server block now control the outbound HTTP client's fasthttp buffer sizes, for workloads that need to tune beyond the 64KB default.
-- **AP-Managed VK Quota Visibility Without Access-Profile Permission** - The managed-virtual-key notice now renders for users without access-profile view permissions, using a dedicated `isManagedByProfile` signal instead of depending on the full profile object. The underlying VK quota endpoint also now surfaces the access profile's rate limit alongside its budgets, so AP-managed keys no longer show stale or zeroed-out rate limit data.
+This release rebases Bifrost Enterprise on OSS transports `v1.6.9`. It brings opt-in HTTP/2 PING keepalives for Bedrock streams, tenant-aware OTEL metric attributes (team, customer, business unit, service instance), and a large batch of streaming and provider-fidelity fixes, including two SSE heartbeat regressions that could corrupt or abort raw passthrough streams. There are no enterprise-only feature changes in this release.
 
 ## 🌎 Open Source Features
 
-- **WebSocket Proxy Support** - Realtime and Responses WebSocket connections now route through the configured provider-level proxy (HTTP, SOCKS5, env-based) instead of always dialing direct.
-- **Configurable SCIM Buffer Sizes** - `WithFasthttpBufferSizes` on the HTTP client factory lets IdP token endpoints returning headers larger than the 4KB default work without failing SCIM/OAuth clients.
+- **Bedrock HTTP/2 PING Keepalives** - The Bedrock provider can now send HTTP/2 PING frames on idle connections through the new `http2_ping_interval_in_seconds` config key (0 disables it), so quiet streams survive intermediaries that cut idle connections. [Docs](https://docs.getbifrost.ai/providers/supported-providers/bedrock)
+- **Tenant Attributes on OTEL Metrics** - Exported metrics now carry a service instance id plus team, customer, and business-unit ids and names, so series can be sliced per tenant without post-processing. Attribute values are also normalized and whitespace-trimmed on export. [Docs](https://docs.getbifrost.ai/features/observability/otel)
+- **Adaptive Thinking on Raw Passthrough** - For adaptive-only Anthropic models (Opus 4.7+, Opus 4.8, Opus 5, Sonnet 5, Fable 5, Mythos 5), a legacy `thinking.type: "enabled"` block is now rewritten to the adaptive form on the raw passthrough body, not just on the typed request path.
 
 ## 🐞 Fixed
 
-- **Calendar-Aligned Budget Resets Not Reaching Existing Users** - Toggling `calendar_aligned` on an access profile now propagates to user copies that already exist, not just newly assigned users. Previously, existing users' budgets kept resetting on a rolling 30-day window instead of the calendar boundary, permanently, with no self-healing restart or re-save.
-- **Access-Profile Propagation Failing on Large Profiles** - Propagating changes from an access profile template to its user copies no longer fails when the profile is large.
-- **Soft-Deleted User Reactivation via Proxy/Inference JWT** - The auth-proxy and inference bearer-JWT paths now reactivate a soft-deleted user when their claims resolve to a valid role, matching the existing behavior of the interactive OAuth login flow instead of permanently blocking with a deprovisioned error.
-- **SCIM Provisioning vs. Periodic Role/Team Sync** - The periodic OIDC pull-based role/team sync now skips itself when SCIM provisioning is configured, since the IdP is already pushing changes in real time; the Okta API token field (only used by the pull sync) is hidden from the wizard in that mode.
-- **Cluster Peer Liveness Isolated from Bulk Sync Backlog** - Peer liveness pings now travel on a dedicated gRPC stream, separate from the bulk config-sync stream, so a slow or backed-up sync no longer delays or masks whether a peer is actually reachable.
-- **Role Conflict Resolution Copy** - Clarified the "order" strategy's label and hint text in the SCIM role-mapping UI.
-- **Proactive SSE Disconnect Detection** - SSE heartbeat handling now detects a client disconnect during streaming proactively instead of only when a producer loop attempts a write, fixing false-success logging on fast/bursty upstreams like Vertex.
-- **Closed Channel Panic on Stream Shutdown** - Fixed a race where a heartbeat goroutine mid-send on the event channel at shutdown could panic with "send on closed channel".
-- **Budget Pruning Crash with `config.json` Source of Truth** - Budget/config pruning now tolerates a not-found error on cascade-deleted rows, fixing a startup crash for API-created model configs absent from `config.json`.
-- **Bedrock Header Signing Denylist** - Caller headers stored for Anthropic OAuth passthrough are no longer forwarded to other providers, preventing SigV4 signature mismatches on Bedrock.
-- **Deterministic Bedrock Tool Ordering** - Fixed non-deterministic tool ordering in `toolConfig` caused by map iteration, which was breaking Bedrock prompt-cache hits.
-- **Bedrock `cache_control` Translation** - `cache_control` markers on Anthropic-format content blocks, system blocks, and tools are now correctly translated through the Bedrock invoke and Converse paths instead of being silently dropped.
-- **Bedrock Adaptive Thinking Fixes** - Reasoning/thinking `max_tokens` validation errors now return HTTP 400 instead of 500; `tool.defer_loading` is gated on its own beta header; Nova2 web search and code execution tools are handled correctly.
-- **Encrypted Reasoning Content Mismatch** - Replaying OpenAI Responses API reasoning items through the Anthropic surface no longer mints a fresh item id while forwarding the original encrypted content, which OpenAI was rejecting.
-- **Bedrock Invoke Content Retention** - Bedrock's InvokeModel route now correctly decodes Anthropic's type-discriminated image/tool_use/tool_result blocks instead of silently dropping them.
-- **Bedrock Document Message Placeholder** - Messages containing a document block without accompanying text no longer get rejected by Bedrock's Converse API.
-- **VK Provider Bulk Replace** - Virtual key provider config replacement is now a single bulk operation instead of per-provider round trips, fixing a hot-path slowdown at scale.
+- **SSE Heartbeat Mid-Line Corruption** - The stream reader now tracks line boundaries under a mutex and will not emit a heartbeat mid-line, fixing corrupted `data:` payloads on raw passthrough streams.
+- **SSE Heartbeat Frame Compatibility** - The heartbeat comment frame no longer carries a trailing blank line, so non-conforming SSE decoders (openai-go ssestream before v3.43.0) stop dispatching an empty event and aborting mid-stream.
+- **Lost Log Rows on Shared Trace IDs** - Concurrent requests that inherit the same W3C trace id no longer overwrite each other's pending log entry; the join now uses the per-request internal trace id.
+- **Budget Counters Reset on Force-Sync** - `config.json` force-sync no longer overwrites live `current_usage`, `last_reset`, and the token/request rate-limit counters with file values.
+- **Transcription Filename Dropped** - The client's multipart filename is carried through transcription ingress, so non-WAV containers are no longer relabelled `audio.mp3` and rejected upstream.
+- **Anthropic Mid-Conversation System Messages** - A `role:"system"` turn that cannot be forwarded natively is inlined as a user turn instead of being dropped, and Bedrock's system-reminder converter keeps its `cache_control` marker.
+- **Bedrock Streaming Correctness** - `ConverseStream` now reports `stopReason: tool_use` for tool-use turns, `message_start` carries an all-zero `usage` object when figures are unknown so `@ai-sdk/anthropic` accepts the frame, and encrypted reasoning is preserved as a replay signature when translating Responses history.
+- **Encrypted Reasoning Fail-Soft** - An upstream 400 caused by unverifiable replayed `encrypted_content` now strips the reasoning content and retries once instead of failing the request.
+- **Server-Side Tool Search** - `tool_search_tool_*` types are normalized on the Responses path, and `include_server_side_tool_invocations` now reaches the Gemini declaration-drop gate.
+- **DeepSeek Thinking on Multi-Turn** - Thinking is no longer silently disabled for ordinary multi-turn conversations through the OpenAI-compatible surface. [Docs](https://docs.getbifrost.ai/providers/supported-providers/deepseek)
+- **Vertex and Gemini Response Fidelity** - `generateContent` keeps `candidates[0].safetyRatings` and `avgLogprobs`, and Vertex cached-content methods honour API-key or context-header auth instead of overwriting `Authorization`.
+- **Custom Provider Base Resolution** - OpenAI models served through a custom provider now resolve to their built-in base provider before deciding reasoning item-id embedding.
+- **MCP Tool Errors Replayed as Success** - Failed MCP tool executions are marked as errors instead of being replayed to the model as successful results, covering agent-loop failures, the MCP `isError` flag, and CodeMode lookup/sandbox failures.
+- **Tool-Result Document Blocks** - `document` blocks in tool results survive the Anthropic to Responses conversion with a synthesized filename, and `FileURL`/`FileType` propagate through all three chat/responses conversion paths.
+- **Stream Termination Edge Cases** - A nil delta paired with a non-nil finish reason no longer aborts the stream, and GPT-5-series detection tolerates prefixed model names when resolving reasoning-effort support.
 
 ## 🗄️ Database Migrations
 
@@ -52,12 +39,24 @@ No new database migrations in this release, in either the OSS transports layer o
 
 ## 🐙 Closed OSS Issues
 
-- [#5010](https://github.com/maximhq/bifrost/issues/5010) - Server-side SSE keepalive (comment heartbeat) to keep long-idle streams alive through intermediaries
-- [#5186](https://github.com/maximhq/bifrost/issues/5186) - Anthropic-surface replay of OpenAI encrypted reasoning mints a fresh item id, OpenAI 400s with "Encrypted content item_id did not match the target item id"
+- [#5206](https://github.com/maximhq/bifrost/issues/5206) - Bedrock ConverseStream egress reports stopReason=end_turn for tool-use turns (should be tool_use)
+- [#5211](https://github.com/maximhq/bifrost/issues/5211) - Bedrock streaming can drop with "unexpected EOF" when an intermediary idle timeout severs a quiet stream
+- [#5256](https://github.com/maximhq/bifrost/issues/5256) - Concurrent HTTP requests sharing a W3C trace ID lose LLM log rows
+- [#5279](https://github.com/maximhq/bifrost/issues/5279) - OpenAI /v1/responses to Anthropic drops the tool_search_tool_regex type, so server-side tool_search never runs
+- [#5670](https://github.com/maximhq/bifrost/issues/5670) - Transcription drops the client's multipart filename, so non-WAV containers are relabelled audio.mp3 and rejected
+- [#5679](https://github.com/maximhq/bifrost/issues/5679) - Anthropic Messages does not propagate Gemini mixed server/client tool opt-in
+- [#5843](https://github.com/maximhq/bifrost/issues/5843) - generateContent (Gemini format) drops `candidates[0].safetyRatings` and `avgLogprobs` on Vertex AI responses
+- [#5874](https://github.com/maximhq/bifrost/issues/5874) - SSE heartbeat frame aborts streams for openai-go ssestream consumers (< v3.43.0) with "unexpected end of JSON input"
+- [#5885](https://github.com/maximhq/bifrost/issues/5885) - v1.6.8 omits message_start.message.usage on Bedrock-backed providers, breaking @ai-sdk/anthropic streaming
+- [#5887](https://github.com/maximhq/bifrost/issues/5887) - DeepSeek thinking silently lost on ALL multi-turn requests via OpenAI-compat inbound
+- [#5890](https://github.com/maximhq/bifrost/issues/5890) - chat completions surface drops tool_result `is_error`, so failed tool calls replay to the model as successful
+- [#5902](https://github.com/maximhq/bifrost/issues/5902) - service_tier silently dropped for gpt-5.4 family, priority/fast requests downgrade to default
+- [#5905](https://github.com/maximhq/bifrost/issues/5905) - v1.6.8 raw passthrough heartbeat can split SSE data lines and corrupt JSON
+- [#5925](https://github.com/maximhq/bifrost/issues/5925) - config.json force-sync overwrites budget current_usage and last_reset on startup
 
 ## 📀 Base OSS version
 
-`transports/v1.6.8`
+`transports/v1.6.9`
 
 ## 🔌 If you are compiling plugin against this release - use following deps
 
@@ -92,13 +91,13 @@ require (
 	github.com/hashicorp/memberlist v0.5.4
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/klauspost/compress v1.18.6
-	github.com/maximhq/bifrost/core v1.7.6
-	github.com/maximhq/bifrost/framework v1.5.6
-	github.com/maximhq/bifrost/plugins/governance v1.6.10
-	github.com/maximhq/bifrost/plugins/logging v1.6.6
-	github.com/maximhq/bifrost/plugins/prompts v1.0.33
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.33
-	github.com/maximhq/bifrost/transports v1.6.8
+	github.com/maximhq/bifrost/core v1.7.7
+	github.com/maximhq/bifrost/framework v1.5.7
+	github.com/maximhq/bifrost/plugins/governance v1.6.11
+	github.com/maximhq/bifrost/plugins/logging v1.6.7
+	github.com/maximhq/bifrost/plugins/prompts v1.0.34
+	github.com/maximhq/bifrost/plugins/semanticcache v1.5.34
+	github.com/maximhq/bifrost/transports v1.6.9
 	github.com/nakabonne/tstorage v0.3.6
 	github.com/segmentio/kafka-go v0.4.47
 	github.com/stretchr/testify v1.11.1
@@ -311,12 +310,12 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/compat v0.1.32 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.6.33 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.33 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.14 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.4.5 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.33 // indirect
+	github.com/maximhq/bifrost/plugins/compat v0.1.33 // indirect
+	github.com/maximhq/bifrost/plugins/maxim v1.6.34 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.34 // indirect
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.15 // indirect
+	github.com/maximhq/bifrost/plugins/otel v1.4.6 // indirect
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.34 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect

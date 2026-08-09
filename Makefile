@@ -1772,7 +1772,33 @@ test-cli: install-gotestsum ## Run CLI tests
 		--junitfile=../$(TEST_REPORTS_DIR)/cli.xml \
 		-- ./...
 
-run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Live mirror on by default. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [QUIET=1]
+# The CLI harness always runs `go test -v`, because without it `go test` buffers
+# the whole package's stdout AND stderr and discards it when the package passes -
+# which would swallow the harness's own per-cell RUNNING/PASS/FAIL lines and its
+# progress table, leaving a multi-minute run with no output at all.
+#
+# -v then emits its own per-subtest scaffolding, which for this matrix is three
+# lines (=== RUN / PAUSE / CONT) per cell plus a skip line per gated scenario -
+# far more volume than the results themselves. This strips exactly that, leaving
+# every diagnostic (t.Fatal bodies, panics, build errors) intact. The two skip
+# messages matched here are the harness's own strings from clis_test.go, not
+# go test's, so this cannot drift out from under a Go release.
+#
+# awk rather than grep: awk exits 0 even when it emits nothing (grep exits 1,
+# which `set -o pipefail` would turn into a spurious failure), and fflush keeps
+# the stream line-buffered so results appear as cells finish rather than in one
+# dump at the end. VERBOSE=1 bypasses the filter entirely.
+# The `--- PASS/FAIL/SKIP` summary is emitted once per nesting level and indented
+# to match, so the pattern allows leading whitespace - anchoring at column 0
+# would strip only the outermost line and leave the rest of the tree.
+#
+# The package-result line is `FAIL<TAB>pkg<TAB>0.13s`, matched on the TAB
+# specifically: the harness's own status column is space-padded ("FAIL" then
+# spaces), so a `^FAIL[ \t]` pattern would swallow every failed cell's result -
+# the single most important line in the output.
+CLI_HARNESS_FILTER = awk '/^=== /||/^[ \t]*--- (PASS|FAIL|SKIP)[: ]/||/^(PASS|FAIL)$$/||/^ok[ \t]/||/^FAIL\t/||/unsupported for /||/not configured in bifrost/{next} {print; fflush()}'
+
+run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non-interactive, multi-turn JSON streams). Prints one line per cell plus a progress table; MIRROR=1 adds the raw CLI stream, VERBOSE=1 adds go test -v. Usage: make run-cli-harness-test [TESTCASE='TestCLIs/...'] [CLI=claude|codex|opencode] [PROVIDER=openai|anthropic|azure|gemini|bedrock|vertex] [MODEL=<id-substring>] [SCENARIO=simple-chat|conversation-memory|...] [PARALLEL=4] [BASE_URL=http://localhost:8080] [API_KEY=...] [TIMEOUT=60m] [MIRROR=1] [VERBOSE=1] [QUIET=1]
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Running CLI harness E2E tests...$(NC)"; \
 	BASE_URL_VAL="$${BASE_URL:-$(BASE_URL)}"; BASE_URL_VAL="$${BASE_URL_VAL:-http://localhost:8080}"; \
@@ -1791,7 +1817,7 @@ run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non
 		exit 1; \
 	fi; \
 	for bin in claude codex opencode; do \
-		if [ "$(CLI)" = "" ] || [ "$(CLI)" = "$$bin" ]; then \
+		if [ "$(CLI)" = "" ] || [ "$(CLI)" = "$$bin" ] || { [ "$$bin" = opencode ] && [ "$(CLI)" = opencode-responses ]; }; then \
 			if ! command -v $$bin >/dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Warning: $$bin not on PATH; matrix cells for $$bin will fail.$(NC)"; \
 				$(ECHO) "$(YELLOW)  Install: npm i -g $$( [ $$bin = claude ] && echo @anthropic-ai/claude-code || { [ $$bin = codex ] && echo @openai/codex || echo opencode-ai; } )$(NC)"; \
@@ -1809,18 +1835,20 @@ run-cli-harness-test: ## Run the Claude Code + Codex + OpenCode E2E harness (non
 	fi; \
 	$(ECHO) "$(CYAN)  Filter:   $$RUN_PARTS$(NC)"; \
 	if [ -n "$(MODEL)" ]; then $(ECHO) "$(CYAN)  Model:    $(MODEL) (substring filter)$(NC)"; fi; \
+	set -o pipefail; \
 	cd tests/e2e/clis && \
 		BIFROST_BASE_URL="$$BASE_URL_VAL" \
 		BIFROST_API_KEY="$${API_KEY:-$(API_KEY)}" \
 		BIFROST_E2E_CLIS_QUIET="$(QUIET)" \
+		BIFROST_E2E_CLIS_MIRROR="$(MIRROR)" \
 		MODEL="$(MODEL)" \
 		GOWORK=off go test \
 			-count=1 \
 			-timeout=$${TIMEOUT:-$(if $(TIMEOUT),$(TIMEOUT),60m)} \
 			-parallel="$$PARALLEL_VAL" \
 			-run "^$$RUN_PARTS$$" \
-			$(if $(QUIET),,-v) \
-			./...
+			-v \
+			./... $(if $(VERBOSE),,| $(CLI_HARNESS_FILTER))
 
 cli-harness-report: ## Regenerate tests/e2e/clis/reports/index.html from existing reports/*.json, without running any tests (free, instant). Usage: make cli-harness-report
 	@$(ECHO) "$(GREEN)Rendering CLI harness report from existing reports/*.json...$(NC)"
@@ -1831,10 +1859,18 @@ cli-harness-report: ## Regenerate tests/e2e/clis/reports/index.html from existin
 NEWMAN_VERSION ?= 6.2.1
 NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 
+# Every provider fork the harness knows how to run. Also the provider set the
+# status table lists, including the deferred cache-parity pass, so it lives in
+# one place rather than being restated per newman invocation.
+HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough openrouter
+
+# Echoes are suppressed under CI so run-provider-harness-test, which takes this
+# as a prerequisite, really does emit nothing but its status table. Install
+# failures still surface: npm's own stderr is untouched and the recipe still fails.
 install-newman: ## Install newman + htmlextra reporter if not already installed (pinned via NEWMAN_VERSION / NEWMAN_HTMLEXTRA_VERSION)
-	@$(USE_NODE); which newman > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman@$(NEWMAN_VERSION)...$(NC)" && npm install -g newman@$(NEWMAN_VERSION))
-	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ($(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)" && npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
-	@$(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
+	@$(USE_NODE); which newman > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman@$(NEWMAN_VERSION)...$(NC)"; npm install -g newman@$(NEWMAN_VERSION))
+	@$(USE_NODE); npm list -g newman-reporter-htmlextra > /dev/null 2>&1 || ([ -n "$$CI" ] || $(ECHO) "$(YELLOW)Installing newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION)...$(NC)"; npm install -g newman-reporter-htmlextra@$(NEWMAN_HTMLEXTRA_VERSION))
+	@[ -n "$$CI" ] || $(ECHO) "$(GREEN)Newman + htmlextra are ready$(NC)"
 
 run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost provider-harness Postman collection. HELP=1 prints full parameter docs. Filter via PROVIDER=openai|anthropic|bedrock|gemini|vertex|azure|passthrough|openrouter, FEATURE="<kw>" or FEATURE="<kw1>,<kw2>" (AND across substrings; matches request name/URL/body), RERUN_FAILED=1 (re-run only items that failed last run). INCLUDE_PREVIEW=1 to run [PREVIEW]-tagged account/region-scoped cases. SKIP_STREAM_CANCEL=1 skips stream cancellation probes. USE_INFISICAL=1 to source from Infisical (Usage: make run-provider-harness-test [HELP=1] [PROVIDER=anthropic] [FEATURE="web search"] [FEATURE="cross-cut,structured output"] [RERUN_FAILED=1] [INCLUDE_PREVIEW=1] [BASE_URL=...] [FOLDER="..."] [ENV_FILE=...] [VIEWER_PORT=8090] [CI=1])
 	@if [ -n "$(HELP)" ]; then \
@@ -1857,7 +1893,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  in that folder are skipped cleanly instead of forked-then-failed - use with PROVIDER=<one> to run a single fork."; \
 		printf '  %-18s %s\n' "ENV_FILE=<path>" "Postman environment JSON with real keys (kept out of git)."; \
 		printf '  %-18s %s\n' "VIEWER_PORT=N"   "Port for the interactive HTML viewer (default: 8090). Ignored if CI=1."; \
-		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only."; \
+		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only. Prints NOTHING but the provider status table"; \
+		printf '  %-18s %s\n' ""                "  (provider x total/pass/failed), reprinted every MONITOR_INTERVAL seconds. Everything the run would"; \
+		printf '  %-18s %s\n' ""                "  otherwise have echoed goes to tmp/harness-quiet.log; newman's own output goes to tmp/newman-cli*.log."; \
+		printf '  %-18s %s\n' "MONITOR_INTERVAL=N" "Seconds between status-table reprints in CI mode (default 5, clamped to 5..2700)."; \
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
@@ -1900,6 +1939,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '\n%s\n' "$(YELLOW)ARTIFACTS$(NC)"; \
 		printf '  %-30s %s\n' "tmp/newman-report.json"      "Machine-readable run report (used by RERUN_FAILED and the analyzer)."; \
 		printf '  %-30s %s\n' "tmp/newman-cli.log"          "Captured newman CLI output (stdout+stderr)."; \
+		printf '  %-30s %s\n' "tmp/newman-cli-cache-parity.log" "Newman CLI output of the deferred sequential cache-parity pass (also appended to tmp/newman-cli.log)."; \
+		printf '  %-30s %s\n' "tmp/harness-quiet.log"       "Everything the target would have echoed, when CI=1 suppressed it in favour of the status table."; \
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
@@ -1920,19 +1961,53 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		exit 0; \
 	fi
 	@if [ -n "$(HELP)" ]; then exit 0; fi; \
+	HARNESS_QUIET=0; \
+	if [ -n "$$CI" ] || [ -n "$(CI)" ]; then HARNESS_QUIET=1; fi; \
+	HARNESS_MONITORED=0; \
+	mkdir -p tmp; \
+	QUIET_LOG="$(CURDIR)/tmp/harness-quiet.log"; \
+	: > "$$QUIET_LOG"; \
+	say() { [ "$$HARNESS_QUIET" = "1" ] || printf '%b\n' "$$@"; }; \
+	run_quiet() { \
+		if [ "$$HARNESS_QUIET" = "1" ]; then "$$@" >> "$$QUIET_LOG" 2>&1; \
+		else "$$@"; fi; \
+	}; \
+	start_monitor() { \
+		if [ "$$HARNESS_QUIET" != "1" ] && [ ! -t 1 ]; then return 0; fi; \
+		$(USE_NODE); \
+		if [ "$$HARNESS_QUIET" = "1" ]; then \
+			node tests/e2e/api/runners/harness-monitor.mjs \
+				--mode "$$1" --providers "$$2" --tmp-dir tmp --log "$$3" --collection "$$4" \
+				--ci --ci-interval "$(or $(MONITOR_INTERVAL),5)" < /dev/null & \
+		else \
+			node tests/e2e/api/runners/harness-monitor.mjs \
+				--mode "$$1" --providers "$$2" --tmp-dir tmp --log "$$3" --collection "$$4" \
+				< /dev/null > /dev/tty 2>&1 & \
+		fi; \
+		echo $$! > tmp/harness-monitor.pid; \
+		HARNESS_MONITORED=1; \
+	}; \
+	stop_monitor() { \
+		if [ -f tmp/harness-monitor.pid ]; then \
+			MPID=$$(cat tmp/harness-monitor.pid); \
+			kill -TERM $$MPID 2>/dev/null; \
+			wait $$MPID 2>/dev/null || true; \
+			rm -f tmp/harness-monitor.pid; \
+		fi; \
+	}; \
 	if [ "$(COMPAT)" = "both" ]; then \
 		mkdir -p tmp; \
-		$(ECHO) "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
+		say "$(CYAN)COMPAT=both: running harness with compat OFF then ON (sub-runs forced CI=1 to skip the interactive viewer)...$(NC)"; \
 		for mode in off on; do \
-			$(ECHO) "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
+			say "$(CYAN)=== Harness run: compat $$mode ===$(NC)"; \
 			$(MAKE) run-provider-harness-test COMPAT=$$mode CI=1; \
 			RC=$$?; \
 			mv -f tmp/newman-report.json "tmp/newman-report-compat-$$mode.json" 2>/dev/null || true; \
 			mv -f tmp/newman-report.html "tmp/newman-report-compat-$$mode.html" 2>/dev/null || true; \
 			mv -f tmp/harness-failures.md "tmp/harness-failures-compat-$$mode.md" 2>/dev/null || true; \
-			if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)compat $$mode run failed (exit $$RC)$(NC)"; BOTH_RC=$$RC; fi; \
+			if [ "$$RC" -ne 0 ]; then say "$(RED)compat $$mode run failed (exit $$RC)$(NC)"; BOTH_RC=$$RC; fi; \
 		done; \
-		$(ECHO) "$(GREEN)COMPAT=both complete. Reports: tmp/newman-report-compat-{off,on}.{json,html}, tmp/harness-failures-compat-{off,on}.md$(NC)"; \
+		say "$(GREEN)COMPAT=both complete. Reports: tmp/newman-report-compat-{off,on}.{json,html}, tmp/harness-failures-compat-{off,on}.md$(NC)"; \
 		exit $${BOTH_RC:-0}; \
 	fi; \
 	$(EXPOSE_ENV); \
@@ -1944,11 +2019,11 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
 		E2E_DEPS_READY=1; \
 	else \
-		$(ECHO) "$(YELLOW)Installing e2e reporter deps (dbverify, token-parity)...$(NC)"; \
-		if (cd tests/e2e/api && npm install --silent); then \
+		say "$(YELLOW)Installing e2e reporter deps (dbverify, token-parity)...$(NC)"; \
+		if (cd tests/e2e/api && run_quiet npm install --silent); then \
 			E2E_DEPS_READY=1; \
 		else \
-			$(ECHO) "$(YELLOW)e2e reporter dep install failed; dbverify cost checks and the token-parity reporter are disabled for this run$(NC)"; \
+			say "$(YELLOW)e2e reporter dep install failed; dbverify cost checks and the token-parity reporter are disabled for this run$(NC)"; \
 		fi; \
 	fi; \
 	if [ "$$E2E_DEPS_READY" = "1" ]; then \
@@ -1960,7 +2035,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		LOGS_DB_VAL="$${BIFROST_LOGS_DB_URL:-sqlite://$(CURDIR)/$$APP_DIR_VAL/logs.db}"; \
 		export BIFROST_LOGS_DB_URL="$$LOGS_DB_VAL"; \
 		DBVERIFY_ARGS="--reporter-dbverify-config $$APP_DIR_VAL/config.json"; \
-		$(ECHO) "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
+		say "$(CYAN)dbverify reporter enabled (logs DB: $$LOGS_DB_VAL). Set DB_VERIFY=0 to disable.$(NC)"; \
 	fi; \
 	TOKEN_PARITY_REPORTER=""; \
 	CACHE_PARITY_REPORTER=""; \
@@ -1973,13 +2048,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	if command -v gcloud > /dev/null 2>&1; then \
 		VERTEX_ACCESS_TOKEN_VAL="$$(gcloud auth print-access-token 2>/dev/null)"; \
 		if [ -n "$$VERTEX_ACCESS_TOKEN_VAL" ]; then \
-			$(ECHO) "$(CYAN)Vertex direct-call access token minted via gcloud (expires in ~1h).$(NC)"; \
+			say "$(CYAN)Vertex direct-call access token minted via gcloud (expires in ~1h).$(NC)"; \
 		else \
-			$(ECHO) "$(YELLOW)gcloud present but 'gcloud auth print-access-token' failed - Vertex direct-provider parity cells will 401 (run 'gcloud auth login' to fix).$(NC)"; \
+			say "$(YELLOW)gcloud present but 'gcloud auth print-access-token' failed - Vertex direct-provider parity cells will 401 (run 'gcloud auth login' to fix).$(NC)"; \
 		fi; \
 	else \
 		VERTEX_ACCESS_TOKEN_VAL=""; \
-		$(ECHO) "$(YELLOW)gcloud not found - Vertex direct-provider parity cells will 401 (install the gcloud CLI and auth to enable them).$(NC)"; \
+		say "$(YELLOW)gcloud not found - Vertex direct-provider parity cells will 401 (install the gcloud CLI and auth to enable them).$(NC)"; \
 	fi; \
 	STARTED_BY_US=0; \
 	cleanup() { \
@@ -1995,7 +2070,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 		if [ "$$STARTED_BY_US" = "1" ] && [ -f tmp/bifrost-dev.pid ]; then \
 			BPID=$$(cat tmp/bifrost-dev.pid); \
-			$(ECHO) "$(YELLOW)Stopping Bifrost (pid $$BPID) - we started it...$(NC)"; \
+			say "$(YELLOW)Stopping Bifrost (pid $$BPID) - we started it...$(NC)"; \
 			kill $$BPID 2>/dev/null; \
 			pkill -P $$BPID 2>/dev/null; \
 			rm -f tmp/bifrost-dev.pid; \
@@ -2005,14 +2080,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		if [ -f tmp/harness-viewer.pid ]; then \
 			OLD=$$(cat tmp/harness-viewer.pid); \
 			if kill -0 $$OLD 2>/dev/null; then \
-				$(ECHO) "$(YELLOW)Killing orphaned viewer pid $$OLD from a prior run...$(NC)"; \
+				say "$(YELLOW)Killing orphaned viewer pid $$OLD from a prior run...$(NC)"; \
 				kill $$OLD 2>/dev/null; sleep 1; \
 			fi; \
 			rm -f tmp/harness-viewer.pid; \
 		fi; \
 		pkill -f "tests/e2e/api/runners/harness-viewer.mjs" 2>/dev/null || true; \
 		if command -v lsof > /dev/null 2>&1 && lsof -ti tcp:$$VIEWER_PORT_VAL > /dev/null 2>&1; then \
-			$(ECHO) "$(YELLOW)Port $$VIEWER_PORT_VAL still in use - freeing it...$(NC)"; \
+			say "$(YELLOW)Port $$VIEWER_PORT_VAL still in use - freeing it...$(NC)"; \
 			lsof -ti tcp:$$VIEWER_PORT_VAL | xargs kill 2>/dev/null || true; \
 			sleep 1; \
 		fi; \
@@ -2027,39 +2102,39 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		PICK_RC=$$?; \
 		case $$PICK_RC in \
 			0) ;; \
-			1) $(ECHO) "$(YELLOW)Cancelled.$(NC)"; exit 1 ;; \
+			1) say "$(YELLOW)Cancelled.$(NC)"; exit 1 ;; \
 			2) ;; \
 			*) exit $$PICK_RC ;; \
 		esac; \
 		if [ -n "$$PICKED_FEATURES" ]; then \
-			$(ECHO) "$(GREEN)Modalities: $$PICKED_FEATURES$(NC)"; \
+			say "$(GREEN)Modalities: $$PICKED_FEATURES$(NC)"; \
 		else \
-			$(ECHO) "$(GREEN)Modalities: all (no filter)$(NC)"; \
+			say "$(GREEN)Modalities: all (no filter)$(NC)"; \
 		fi; \
 	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
-		$(ECHO) "$(GREEN)Bifrost already running at $$BASE_URL_VAL$(NC)"; \
+		say "$(GREEN)Bifrost already running at $$BASE_URL_VAL$(NC)"; \
 	else \
-		$(ECHO) "$(YELLOW)Bifrost not running - launching 'make dev' (APP_DIR=$$APP_DIR_VAL) in background...$(NC)"; \
+		say "$(YELLOW)Bifrost not running - launching 'make dev' (APP_DIR=$$APP_DIR_VAL) in background...$(NC)"; \
 		$(MAKE) dev APP_DIR="$$APP_DIR_VAL" > tmp/bifrost-dev.log 2>&1 & \
 		echo $$! > tmp/bifrost-dev.pid; \
 		STARTED_BY_US=1; \
-		$(ECHO) "$(CYAN)Waiting for Bifrost /health to respond (up to 60s)...$(NC)"; \
+		say "$(CYAN)Waiting for Bifrost /health to respond (up to 60s)...$(NC)"; \
 		for i in $$(seq 1 30); do \
 			if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
-				$(ECHO) "$(GREEN)Bifrost is up$(NC)"; break; \
+				say "$(GREEN)Bifrost is up$(NC)"; break; \
 			fi; \
 			sleep 2; \
 		done; \
 		if ! curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
-			$(ECHO) "$(RED)Bifrost did not become healthy. See tmp/bifrost-dev.log$(NC)"; \
+			say "$(RED)Bifrost did not become healthy. See tmp/bifrost-dev.log$(NC)"; \
 			exit 1; \
 		fi; \
 	fi; \
-	$(ECHO) "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
-	$(USE_NODE); node tests/e2e/api/runners/augment-provider-harness.mjs \
+	say "$(CYAN)Augmenting provider harness with generated streaming/thinking cases...$(NC)"; \
+	$(USE_NODE); run_quiet node tests/e2e/api/runners/augment-provider-harness.mjs \
 		--source tests/e2e/api/collections/provider-harness.json \
-		--out tmp/harness-augmented.json || { $(ECHO) "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
+		--out tmp/harness-augmented.json || { say "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
 	COLLECTION_FILE="tmp/harness-augmented.json"; \
 	DEFERRED_KEYS="cache-parity"; \
 	MAIN_FEATURES=""; CACHE_PASS=0; SKIP_MAIN=0; PICK_SAW_DEFERRED=0; \
@@ -2078,13 +2153,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	EXCLUDE_FLAG=""; \
 	if [ "$$CACHE_PASS" = "1" ]; then \
 		EXCLUDE_FLAG="--exclude-feature-any cache-parity"; \
-		$(ECHO) "$(CYAN)cache-parity deferred to a sequential pass after the main run (its rows match every provider fork, so running them in the parallel pass would repeat each request once per fork).$(NC)"; \
+		say "$(CYAN)cache-parity deferred to a sequential pass after the main run (its rows match every provider fork, so running them in the parallel pass would repeat each request once per fork).$(NC)"; \
 	fi; \
 	FEATURE_ANY_FLAG=""; \
 	if [ -n "$$MAIN_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$MAIN_FEATURES"; fi; \
 	if [ "$$SKIP_MAIN" != "1" ] && { [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$MAIN_FEATURES" ] || [ -n "$$EXCLUDE_FLAG" ]; }; then \
-		$(ECHO) "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
-		$(USE_NODE); node tests/e2e/api/runners/filter-collection.mjs \
+		say "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
 			--source "$$COLLECTION_FILE" \
 			--out tmp/harness-filtered.json \
 			$(if $(PROVIDER),--provider $(PROVIDER),) \
@@ -2092,20 +2167,20 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$$FEATURE_ANY_FLAG \
 			$$EXCLUDE_FLAG \
-			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { $(ECHO) "$(RED)Filter step failed$(NC)"; exit 1; }; \
+			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { say "$(RED)Filter step failed$(NC)"; exit 1; }; \
 		COLLECTION_FILE="tmp/harness-filtered.json"; \
 	fi; \
-	$(ECHO) "$(YELLOW)Running newman against $$BASE_URL_VAL using $$COLLECTION_FILE...$(NC)"; \
+	say "$(YELLOW)Running newman against $$BASE_URL_VAL using $$COLLECTION_FILE...$(NC)"; \
 	set -o pipefail; \
 	$(USE_NODE); \
 	PARALLEL_VAL="$(or $(PARALLEL),1)"; \
 	if [ "$$SKIP_MAIN" = "1" ]; then \
-		$(ECHO) "$(CYAN)cache-parity was the only selection - skipping the main pass and going straight to the sequential cache pass.$(NC)"; \
+		say "$(CYAN)cache-parity was the only selection - skipping the main pass and going straight to the sequential cache pass.$(NC)"; \
 		printf '%s' '{"collection":{},"environment":{},"run":{"executions":[],"failures":[],"stats":{"iterations":{"total":1,"pending":0,"failed":0},"items":{"total":0},"requests":{"total":0,"failed":0}},"timings":{}}}' > tmp/newman-report.json; \
 		: > tmp/newman-cli.log; \
 		NEWMAN_EXIT=0; \
 	elif [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
-		$(ECHO) "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter). Set PARALLEL=0 to disable.$(NC)"; \
+		say "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter). Set PARALLEL=0 to disable.$(NC)"; \
 		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status; \
 		: > tmp/parallel-pids; \
 		: > tmp/parallel-status; \
@@ -2119,13 +2194,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--provider "$$p" \
 				$(if $(FEATURE),--feature "$(FEATURE)",) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) > /dev/null 2>&1; then \
-				$(ECHO) "$(YELLOW)[$$p] filter step failed - skipping$(NC)"; \
+				say "$(YELLOW)[$$p] filter step failed - skipping$(NC)"; \
 				continue; \
 			fi; \
 			P_ITEM_COUNT=$$(grep -c '"request":' "tmp/harness-filtered-$$p.json" 2>/dev/null); \
 			P_ITEM_COUNT=$${P_ITEM_COUNT:-0}; \
 			if [ "$$P_ITEM_COUNT" -eq 0 ]; then \
-				$(ECHO) "$(YELLOW)[$$p] filter produced no items - skipping$(NC)"; \
+				say "$(YELLOW)[$$p] filter produced no items - skipping$(NC)"; \
 				continue; \
 			fi; \
 			( \
@@ -2156,22 +2231,20 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			BG_PID=$$!; \
 			LAUNCHED=$$((LAUNCHED+1)); \
 			echo "$$BG_PID:$$p" >> tmp/parallel-pids; \
-			$(ECHO) "$(GREEN)[$$p] launched (pid $$BG_PID)$(NC)"; \
+			say "$(GREEN)[$$p] launched (pid $$BG_PID)$(NC)"; \
 		done; \
 		if [ "$$LAUNCHED" -eq 0 ]; then \
-			$(ECHO) "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
+			say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
 			exit 1; \
 		fi; \
-		MONITOR_CI=0; \
-		if [ -n "$$CI" ] || [ -n "$(CI)" ]; then \
-			MONITOR_CI=1; \
+		if [ "$$HARNESS_QUIET" = "1" ]; then \
 			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
 				--mode parallel \
 				--providers "$$PROVIDERS" \
 				--tmp-dir tmp \
 				--status-file tmp/parallel-status \
 				--launched $$LAUNCHED \
-				--ci --ci-interval "$(or $(MONITOR_INTERVAL),30)" \
+				--ci --ci-interval "$(or $(MONITOR_INTERVAL),5)" \
 				< /dev/null & \
 			echo $$! > tmp/harness-monitor.pid; \
 		elif [ -t 1 ]; then \
@@ -2184,58 +2257,51 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				< /dev/null > /dev/tty 2>&1 & \
 			echo $$! > tmp/harness-monitor.pid; \
 		fi; \
+		if [ -f tmp/harness-monitor.pid ]; then HARNESS_MONITORED=1; fi; \
 		PFAILED=0; \
 		while read pidp; do \
 			pid="$${pidp%%:*}"; \
 			p="$${pidp#*:}"; \
 			if wait "$$pid"; then \
 				echo "$$p:pass" >> tmp/parallel-status; \
-				if [ ! -f tmp/harness-monitor.pid ] || [ "$$MONITOR_CI" = "1" ]; then $(ECHO) "$(GREEN)[$$p] passed$(NC)"; fi; \
+				PVERDICT="$(GREEN)[$$p] passed$(NC)"; \
 			else \
 				echo "$$p:fail" >> tmp/parallel-status; \
-				if [ ! -f tmp/harness-monitor.pid ] || [ "$$MONITOR_CI" = "1" ]; then $(ECHO) "$(RED)[$$p] failed$(NC)"; fi; \
+				PVERDICT="$(RED)[$$p] failed$(NC)"; \
 				PFAILED=$$((PFAILED+1)); \
 			fi; \
-			if [ ! -f tmp/harness-monitor.pid ] || [ "$$MONITOR_CI" = "1" ]; then tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; fi; \
+			if [ ! -f tmp/harness-monitor.pid ]; then \
+				say "$$PVERDICT"; \
+				tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; \
+			fi; \
 		done < tmp/parallel-pids; \
-		if [ -f tmp/harness-monitor.pid ]; then \
-			MPID=$$(cat tmp/harness-monitor.pid); \
-			kill -TERM $$MPID 2>/dev/null; \
-			wait $$MPID 2>/dev/null || true; \
-			rm -f tmp/harness-monitor.pid; \
-		fi; \
-		$(ECHO) "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
+		stop_monitor; \
+		say "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
 		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
-			jq -s -f tmp/newman-merge.jq tmp/newman-report-*.json > tmp/newman-report.json || $(ECHO) "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
+			jq -s -f tmp/newman-merge.jq tmp/newman-report-*.json > tmp/newman-report.json || say "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
 			rm -f tmp/.newman-report.slim.json; \
 			cat tmp/newman-cli-*.log > tmp/newman-cli.log 2>/dev/null || true; \
 		else \
-			$(ECHO) "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
+			say "$(YELLOW)jq not found or no reports produced; skipping merge. See tmp/newman-report-*.json$(NC)"; \
 		fi; \
-		$(ECHO) "$(CYAN)Parallel summary:$(NC)"; \
-		while read sp; do \
-			pname="$${sp%%:*}"; \
-			pstat="$${sp#*:}"; \
-			if [ "$$pstat" = "pass" ]; then \
-				$(ECHO) "  $(GREEN)✓ $$pname$(NC)"; \
-			else \
-				$(ECHO) "  $(RED)✗ $$pname$(NC)"; \
-			fi; \
-		done < tmp/parallel-status; \
+		if [ "$$HARNESS_MONITORED" != "1" ]; then \
+			say "$(CYAN)Parallel summary:$(NC)"; \
+			while read sp; do \
+				pname="$${sp%%:*}"; \
+				pstat="$${sp#*:}"; \
+				if [ "$$pstat" = "pass" ]; then \
+					say "  $(GREEN)✓ $$pname$(NC)"; \
+				else \
+					say "  $(RED)✗ $$pname$(NC)"; \
+				fi; \
+			done < tmp/parallel-status; \
+		fi; \
 		NEWMAN_EXIT=$$PFAILED; \
 	else \
-		SEQ_PROVIDERS="$(PROVIDER)"; \
-		if [ -z "$$SEQ_PROVIDERS" ]; then SEQ_PROVIDERS="openai anthropic bedrock gemini vertex azure passthrough openrouter"; fi; \
-		if [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ]; then \
-			: > tmp/newman-cli.log; \
-			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
-				--mode sequential \
-				--providers "$$SEQ_PROVIDERS" \
-				--tmp-dir tmp \
-				--log tmp/newman-cli.log \
-				< /dev/null > /dev/tty 2>&1 & \
-			echo $$! > tmp/harness-monitor.pid; \
-			newman run "$$COLLECTION_FILE" \
+		SEQ_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
+		: > tmp/newman-cli.log; \
+		start_monitor sequential "$$SEQ_PROVIDERS" tmp/newman-cli.log "$$COLLECTION_FILE"; \
+		newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
@@ -2261,58 +2327,29 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--reporter-htmlextra-export tmp/newman-report.html \
 				--reporter-htmlextra-title "Bifrost Provider Harness" \
 				--reporter-htmlextra-darkTheme > tmp/newman-cli.log 2>&1; \
-			NEWMAN_EXIT=$$?; \
-			if [ -f tmp/harness-monitor.pid ]; then \
-				MPID=$$(cat tmp/harness-monitor.pid); \
-				kill -TERM $$MPID 2>/dev/null; \
-				wait $$MPID 2>/dev/null || true; \
-				rm -f tmp/harness-monitor.pid; \
-			fi; \
-		else \
-			newman run "$$COLLECTION_FILE" \
-				--env-var "baseUrl=$$BASE_URL_VAL" \
-				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
-				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
-				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
-				$${BEDROCK_GUARDRAIL_IDENTIFIER:+--env-var "bedrockGuardrailIdentifier=$$BEDROCK_GUARDRAIL_IDENTIFIER"} \
-				$${BEDROCK_GUARDRAIL_VERSION:+--env-var "bedrockGuardrailVersion=$$BEDROCK_GUARDRAIL_VERSION"} \
-				$${VERTEX_GCS_BUCKET:+--env-var "vertexGcsBucket=$$VERTEX_GCS_BUCKET"} \
-				$${VERTEX_GCS_PREFIX:+--env-var "vertexGcsPrefix=$$VERTEX_GCS_PREFIX"} \
-				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
-				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
-				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
-				$${AWS_ACCESS_KEY_ID:+--env-var "bedrockDirectAccessKeyId=$$AWS_ACCESS_KEY_ID"} \
-				$${AWS_SECRET_ACCESS_KEY:+--env-var "bedrockDirectSecretAccessKey=$$AWS_SECRET_ACCESS_KEY"} \
-				$${AWS_REGION:+--env-var "bedrockDirectRegion=$$AWS_REGION"} \
-				$${VERTEX_PROJECT_ID:+--env-var "vertexProject=$$VERTEX_PROJECT_ID"} \
-				$${GOOGLE_LOCATION:+--env-var "vertexLocation=$$GOOGLE_LOCATION"} \
-				$${VERTEX_ACCESS_TOKEN_VAL:+--env-var "vertexAccessToken=$$VERTEX_ACCESS_TOKEN_VAL"} \
-				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
-				$(if $(FOLDER),--folder "$(FOLDER)",) \
-				--reporters cli,json,htmlextra$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
-				$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-sequential.json"} \
-				--reporter-json-export tmp/newman-report.json \
-				--reporter-htmlextra-export tmp/newman-report.html \
-				--reporter-htmlextra-title "Bifrost Provider Harness" \
-				--reporter-htmlextra-darkTheme 2>&1 | tee tmp/newman-cli.log; \
-			NEWMAN_EXIT=$$?; \
-		fi; \
+		NEWMAN_EXIT=$$?; \
+		stop_monitor; \
+		if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli.log; fi; \
 		if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report.json ]; then \
-			$(ECHO) "$(CYAN)Sanitizing tmp/newman-report.json (newman embeds the whole parent folder in every failure)...$(NC)"; \
+			say "$(CYAN)Sanitizing tmp/newman-report.json (newman embeds the whole parent folder in every failure)...$(NC)"; \
 			jq -s -f tmp/newman-merge.jq tmp/newman-report.json > tmp/.newman-report-sanitized.json \
 				&& mv -f tmp/.newman-report-sanitized.json tmp/newman-report.json \
 				&& rm -f tmp/.newman-report.slim.json \
-				|| { rm -f tmp/.newman-report-sanitized.json; $(ECHO) "$(YELLOW)Report sanitize failed; tmp/newman-report.json left as-is (may exceed the viewer's 512MB parse limit).$(NC)"; }; \
+				|| { rm -f tmp/.newman-report-sanitized.json; say "$(YELLOW)Report sanitize failed; tmp/newman-report.json left as-is (may exceed the viewer's 512MB parse limit).$(NC)"; }; \
 		fi; \
 	fi; \
 	if [ "$$CACHE_PASS" = "1" ]; then \
-		$(ECHO) "$(CYAN)Cache parity pass (sequential, single newman - these rows match every provider fork)...$(NC)"; \
-		$(USE_NODE); node tests/e2e/api/runners/filter-collection.mjs \
+		say "$(CYAN)Cache parity pass (sequential, single newman - these rows match every provider fork)...$(NC)"; \
+		rm -f tmp/harness-cache-filtered.json; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
 			--source tmp/harness-augmented.json \
 			--out tmp/harness-cache-filtered.json \
 			--feature-any cache-parity \
-			$(if $(PROVIDER),--provider $(PROVIDER),) || { $(ECHO) "$(RED)Cache parity filter step failed$(NC)"; }; \
+			$(if $(PROVIDER),--provider $(PROVIDER),) || { say "$(RED)Cache parity filter step failed$(NC)"; }; \
 		if [ -f tmp/harness-cache-filtered.json ]; then \
+			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
+			: > tmp/newman-cli-cache-parity.log; \
+			start_monitor sequential "$$CACHE_PROVIDERS" tmp/newman-cli-cache-parity.log tmp/harness-cache-filtered.json; \
 			newman run tmp/harness-cache-filtered.json \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
@@ -2330,55 +2367,59 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 				--reporters cli,json$$CACHE_PARITY_REPORTER \
 				$${CACHE_PARITY_REPORTER:+--reporter-cache-parity-out "tmp/harness-cache-parity-pass.json"} \
-				--reporter-json-export tmp/newman-report-cache-parity.json 2>&1 | tee -a tmp/newman-cli.log; \
+				--reporter-json-export tmp/newman-report-cache-parity.json > tmp/newman-cli-cache-parity.log 2>&1; \
 			CACHE_EXIT=$$?; \
+			stop_monitor; \
+			cat tmp/newman-cli-cache-parity.log >> tmp/newman-cli.log 2>/dev/null || true; \
+			if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli-cache-parity.log; fi; \
 			if [ "$$CACHE_EXIT" -ne 0 ]; then NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); fi; \
 			if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report-cache-parity.json ]; then \
 				jq -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-cache-parity.json > tmp/newman-report-combined.json \
 					&& mv tmp/newman-report-combined.json tmp/newman-report.json \
-					|| $(ECHO) "$(YELLOW)Cache pass report merge failed; it remains at tmp/newman-report-cache-parity.json$(NC)"; \
+					|| say "$(YELLOW)Cache pass report merge failed; it remains at tmp/newman-report-cache-parity.json$(NC)"; \
 			fi; \
 		fi; \
 	fi; \
-	$(ECHO) "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
+	say "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
 	STREAM_CANCEL_EXIT=0; \
 	if [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
-		$(ECHO) "$(CYAN)Running stream cancellation probes...$(NC)"; \
+		say "$(CYAN)Running stream cancellation probes...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/run-stream-cancellation.mjs \
 			--base-url "$$BASE_URL_VAL" \
 			$(if $(PROVIDER),--provider "$(PROVIDER)",) \
-			--out tmp/stream-cancel-report.json 2>&1 | tee tmp/stream-cancel-cli.log; \
+			--out tmp/stream-cancel-report.json > tmp/stream-cancel-cli.log 2>&1; \
 		STREAM_CANCEL_EXIT=$$?; \
+		if [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/stream-cancel-cli.log; fi; \
 	else \
-		$(ECHO) "$(YELLOW)Skipping stream cancellation probes (SKIP_STREAM_CANCEL/RERUN_FAILED/FOLDER filter).$(NC)"; \
+		say "$(YELLOW)Skipping stream cancellation probes (SKIP_STREAM_CANCEL/RERUN_FAILED/FOLDER filter).$(NC)"; \
 	fi; \
-	$(ECHO) "$(CYAN)Analyzing failures...$(NC)"; \
-	$(USE_NODE); node tests/e2e/api/runners/analyze-failures.mjs \
+	say "$(CYAN)Analyzing failures...$(NC)"; \
+	$(USE_NODE); run_quiet node tests/e2e/api/runners/analyze-failures.mjs \
 		--report tmp/newman-report.json \
 		--bifrost-log tmp/bifrost-dev.log \
 		--out tmp/harness-failures.md || true; \
-	$(ECHO) "$(GREEN)Failure breakdown: tmp/harness-failures.md$(NC)"; \
+	say "$(GREEN)Failure breakdown: tmp/harness-failures.md$(NC)"; \
 	if ls tmp/harness-token-parity-*.json >/dev/null 2>&1; then \
-		$(ECHO) "$(CYAN)Rendering token parity report...$(NC)"; \
-		$(USE_NODE); node tests/e2e/api/runners/render-token-parity-report.mjs \
+		say "$(CYAN)Rendering token parity report...$(NC)"; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/render-token-parity-report.mjs \
 			--glob "tmp/harness-token-parity-*.json" \
 			--out tmp/harness-token-parity.md \
 			--html tmp/newman-report.html || true; \
-		$(ECHO) "$(GREEN)Token parity report: tmp/harness-token-parity.md (also injected into tmp/newman-report.html when present - sequential mode / PARALLEL=0 only)$(NC)"; \
+		say "$(GREEN)Token parity report: tmp/harness-token-parity.md (also injected into tmp/newman-report.html when present - sequential mode / PARALLEL=0 only)$(NC)"; \
 	fi; \
 	if ls tmp/harness-cache-parity-*.json >/dev/null 2>&1; then \
-		$(ECHO) "$(CYAN)Rendering cache parity report...$(NC)"; \
-		$(USE_NODE); node tests/e2e/api/runners/render-cache-parity-report.mjs \
+		say "$(CYAN)Rendering cache parity report...$(NC)"; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/render-cache-parity-report.mjs \
 			--glob "tmp/harness-cache-parity-*.json" \
 			--out tmp/harness-cache-parity.md \
 			--html tmp/newman-report.html || true; \
-		$(ECHO) "$(GREEN)Cache parity report: tmp/harness-cache-parity.md$(NC)"; \
+		say "$(GREEN)Cache parity report: tmp/harness-cache-parity.md$(NC)"; \
 	fi; \
 	if [ -n "$(CI)" ] || [ -n "$$CI" ]; then \
-		$(ECHO) "$(CYAN)CI mode - skipping interactive viewer. Upload tmp/newman-report.html, tmp/harness-failures.md, and tmp/bifrost-dev.log as workflow artifacts.$(NC)"; \
+		say "$(CYAN)CI mode - skipping interactive viewer. Upload tmp/newman-report.html, tmp/harness-failures.md, and tmp/bifrost-dev.log as workflow artifacts.$(NC)"; \
 	else \
 		preempt_viewer_port; \
-		$(ECHO) "$(CYAN)Launching interactive viewer on http://localhost:$$VIEWER_PORT_VAL (Bifrost stays up for resend)...$(NC)"; \
+		say "$(CYAN)Launching interactive viewer on http://localhost:$$VIEWER_PORT_VAL (Bifrost stays up for resend)...$(NC)"; \
 		$(USE_NODE); node tests/e2e/api/runners/harness-viewer.mjs --report tmp/newman-report.json --port $$VIEWER_PORT_VAL & \
 		VIEWER_PID=$$!; \
 		echo $$VIEWER_PID > tmp/harness-viewer.pid; \
@@ -2386,9 +2427,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		VIEWER_EXIT=$$?; \
 		rm -f tmp/harness-viewer.pid; \
 		if [ $$VIEWER_EXIT -ne 0 ]; then \
-			$(ECHO) "$(RED)Viewer exited with code $$VIEWER_EXIT (see message above).$(NC)"; \
+			say "$(RED)Viewer exited with code $$VIEWER_EXIT (see message above).$(NC)"; \
 		else \
-			$(ECHO) "$(GREEN)Viewer closed.$(NC)"; \
+			say "$(GREEN)Viewer closed.$(NC)"; \
 		fi; \
 	fi; \
 	if [ "$$NEWMAN_EXIT" -ne 0 ]; then exit $$NEWMAN_EXIT; fi; \

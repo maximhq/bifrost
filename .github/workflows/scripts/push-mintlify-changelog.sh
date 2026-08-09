@@ -42,6 +42,110 @@ description: \"$VERSION changelog - $CURRENT_DATE\"
 </Tabs>
 "
 
+# Test reports table.
+#
+# Sits directly after the upgrade instructions and before the per-module
+# changelog sections: what shipped is only half the question, and "was it
+# verified, against which CLI versions" is the other half.
+#
+# The URLs are derived from the version alone - test-core and test-cli-harness
+# publish to test-reports/v<version>/<label>/ (see
+# upload-test-reports-to-r2.sh), so no job outputs have to be threaded through
+# the release graph to get here.
+#
+# TEST_REPORTS_BASE_URL is the public origin serving the R2 bucket. It is
+# deliberately not hardcoded: publishing a guessed domain into public release
+# notes would ship dead links on every release. With it unset the table is
+# skipped entirely rather than emitted with broken hrefs.
+# One row per CLI harness leg that actually ran.
+#
+# The legs are not always latest/latest-1/latest-2. When npm resolution fails,
+# resolve-cli-versions.sh degrades to a single leg labelled "pinned", and
+# test-cli-harness then publishes to test-reports/v<version>/cli-harness-pinned/.
+# Hardcoding the three normal labels would ship three links to objects that do
+# not exist in exactly that run - the same dead-link outcome the
+# TEST_REPORTS_BASE_URL guard below exists to avoid. So the labels are passed in
+# from the resolve step's matrix, and the rows are generated from them.
+#
+# The default keeps the script usable standalone; CI always supplies the real
+# labels.
+cli_harness_rows () {
+  local base=$1
+  # ${VAR:-default} treats an explicitly EMPTY value as unset. That is wrong
+  # here: empty means the resolver produced no legs (it was skipped), and
+  # falling back to the three standard labels would publish links to reports
+  # that never ran. Only a genuinely unset variable takes the default, which is
+  # what keeps the script usable standalone.
+  local labels
+  if [ -n "${CLI_HARNESS_LABELS+set}" ]; then
+    labels=$CLI_HARNESS_LABELS
+  else
+    labels="latest latest-1 latest-2"
+  fi
+  local label what n
+  for label in $labels; do
+    case "$label" in
+      latest)
+        what="Claude Code, Codex and OpenCode at their newest releases"
+        ;;
+      latest-1)
+        what="The same suite one CLI release back"
+        ;;
+      latest-*)
+        n=${label#latest-}
+        what="The same suite $n CLI releases back"
+        ;;
+      pinned)
+        what="Claude Code, Codex and OpenCode at pinned fallback versions - npm resolution failed, so three-version coverage was NOT in effect"
+        ;;
+      *)
+        what="The same suite at $label"
+        ;;
+    esac
+    echo "| CLI harness ($label) | $what | [conversations]($base/cli-harness-$label/index.html) |"
+  done
+}
+
+if [ -n "${TEST_REPORTS_BASE_URL:-}" ]; then
+  REPORTS_BASE="${TEST_REPORTS_BASE_URL%/}/test-reports/$VERSION"
+  CLI_HARNESS_ROWS=$(cli_harness_rows "$REPORTS_BASE")
+  # The claim below has to match the legs that ran, for the same reason the rows
+  # do: on the fallback path there is one pinned leg, not three CLI releases.
+  # Keyed off the LABELS, not the row count. A row count of one only means one
+  # leg ran; it says nothing about which, so a manual CLI_HARNESS_LABELS=latest
+  # run would have been described as "pinned".
+  case "${CLI_HARNESS_LABELS-latest latest-1 latest-2}" in
+    "")
+      CLI_HARNESS_INTRO="The CLI harness did not run for this release."
+      ;;
+    *pinned*)
+      CLI_HARNESS_INTRO="The CLI harness ran a single pinned leg for this release - npm version resolution failed, so three-version coverage was not in effect."
+      ;;
+    *" "*)
+      CLI_HARNESS_INTRO="The CLI harness runs against the three most recent releases of each coding CLI, so the table below is also the compatibility record for this version."
+      ;;
+    *)
+      CLI_HARNESS_INTRO="The CLI harness ran a single leg (\`${CLI_HARNESS_LABELS}\`) for this release."
+      ;;
+  esac
+  CHANGELOG_BODY+="
+## Test reports
+
+Every release is gated on the provider harness and the CLI harness.
+$CLI_HARNESS_INTRO
+
+| Suite | What it covers | Report |
+| --- | --- | --- |
+| Provider harness | Every provider × modality through a live gateway | [failure breakdown]($REPORTS_BASE/provider-harness/harness-failures.md) |
+$CLI_HARNESS_ROWS
+
+The CLI harness reports include the full conversation for every scenario - each
+prompt sent and each response received, turn by turn.
+"
+else
+  echo "⚠️  TEST_REPORTS_BASE_URL unset - omitting the test reports table from $VERSION"
+fi
+
 # Array to track cleaned changelog files
 CLEANED_CHANGELOG_FILES=()
 

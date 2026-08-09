@@ -63,7 +63,126 @@ func cellWasInterrupted(runErr error) bool {
 // activeCommands tracks every running CLI subprocess so the SIGINT handler
 // in TestMain can reap them. Sequential cells means there's at most one at
 // a time today, but the sync.Map keeps us future-proof.
-var activeCommands sync.Map // *exec.Cmd -> struct{}
+var activeCommands sync.Map // *exec.Cmd -> *trackedCmd
+
+// trackedCmd carries the lifecycle state the signal handler needs before it may
+// signal a command.
+//
+// The pgid is captured at Start rather than looked up at kill time. A lookup
+// takes the pid of a command that may already have been reaped, and the kernel
+// is free to have recycled that pid; the value captured while the child is
+// certainly still ours cannot drift.
+type trackedCmd struct {
+	pgid int
+
+	mu     sync.Mutex
+	reaped bool
+}
+
+// trackCmd registers cmd as signallable. Call it immediately after cmd.Start.
+func trackCmd(cmd *exec.Cmd) {
+	activeCommands.Store(cmd, &trackedCmd{pgid: processGroupID(cmd)})
+}
+
+// untrackCmd marks cmd reaped and unregisters it. Call it after cmd.Wait has
+// returned, at which point the pid is no longer ours to signal.
+func untrackCmd(cmd *exec.Cmd) {
+	if v, ok := activeCommands.Load(cmd); ok {
+		if tc, ok := v.(*trackedCmd); ok {
+			tc.mu.Lock()
+			tc.reaped = true
+			tc.mu.Unlock()
+		}
+	}
+	activeCommands.Delete(cmd)
+}
+
+// killIfLive terminates cmd's process group on behalf of the signal handler,
+// unless cmd has already been reaped.
+//
+// The reaped check is the point of this function. sync.Map.Range may hand the
+// handler an entry whose deferred Delete has not run yet, and cmd.Wait has by
+// then returned the pid to the kernel's pool. Signalling it means aiming
+// SIGKILL at a process group that may now belong to something else entirely -
+// and syscall.Kill on a negative pid carries none of os.Process.Kill's
+// ErrProcessDone protection, so nothing downstream would catch the mistake.
+//
+// Holding the mutex across the check and the kill is what makes the pair
+// atomic against untrackCmd. It cannot shrink the window between wait4
+// returning inside cmd.Wait and untrackCmd taking the lock - no userspace code
+// can, since pid recycling is the kernel's to schedule - but it does mean the
+// handler and the reaper can never interleave halfway through.
+func killIfLive(cmd *exec.Cmd, tc *trackedCmd) {
+	if cmd.Process == nil || tc == nil {
+		return
+	}
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.reaped {
+		return
+	}
+	// Record before killing: the cell reads this to prove the kill was ours
+	// rather than a coincident genuine failure.
+	markKilled(cmd)
+	// Group kill, not Process.Kill: these CLIs spawn servers and helpers of
+	// their own, and orphaning those on Ctrl-C leaves them billing tokens
+	// against the user's keys long after the harness has exited.
+	_ = killCmdGroup(cmd, tc.pgid)
+}
+
+// cmdWaitDelay bounds how long cmd.Wait may keep blocking after the process is
+// gone or its context has been cancelled.
+//
+// Without it a cell can hang unboundedly, and the timeouts already in this file
+// are powerless to stop it. The drivers hand exec an ordinary io.Writer for
+// Stdout/Stderr rather than an *os.File, so exec allocates an os.Pipe and a
+// copying goroutine, and Wait blocks until that goroutine sees EOF -- which
+// needs *every* holder of the write end to close it. A CLI that spawned a
+// server child (opencode always does) leaves that grandchild holding the fd, so
+// killing the direct child on deadline achieves nothing: Wait never returns,
+// the cell never records a result, and because the model subtest is serial
+// while only its scenarios are parallel, the entire remaining matrix stalls
+// behind it. isolateProcessGroup removes the usual cause; WaitDelay is the
+// backstop for whatever the group kill misses, converting a wedged suite into
+// an ordinary reported failure.
+//
+// 15s is generous relative to pipe drain (milliseconds) and short relative to
+// any turn timeout, so it never truncates a healthy cell.
+const cmdWaitDelay = 15 * time.Second
+
+// waitErr normalizes the error cmd.Wait returns, clearing the one case that is
+// not a failure of the turn.
+//
+// cmdWaitDelay exists because a CLI's background server child keeps the
+// inherited stdout pipe open after the CLI itself exits, so exec's copying
+// goroutine never sees EOF. That is the normal shutdown of a healthy turn, not
+// a fault: the process exited 0 and its output was fully captured, and only the
+// orphaned writer is late. Left unhandled, Wait's ErrWaitDelay turns every such
+// turn into a reported failure - most often on opencode, which always spawns
+// that child.
+//
+// os/exec returns ErrWaitDelay "instead of nil", so an ExitError outranks it and
+// a genuinely failing turn (including one killed by a signal) still surfaces as
+// its exit status. The ExitCode check is therefore belt-and-braces rather than
+// load-bearing, kept so the suppression cannot widen if that ordering ever
+// changes. TestWaitErrPreservesNonZeroExitUnderWaitDelay pins the ordering.
+func waitErr(cmd *exec.Cmd, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+		return nil
+	}
+	return err
+}
+
+// prepareCmd applies the two guards every CLI subprocess in this harness needs.
+// Call it between exec.CommandContext and cmd.Start.
+func prepareCmd(cmd *exec.Cmd) *exec.Cmd {
+	cmd.WaitDelay = cmdWaitDelay
+	isolateProcessGroup(cmd)
+	return cmd
+}
 
 // Turn is one user→model exchange in a scenario.
 //
@@ -130,7 +249,7 @@ func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, tur
 	}
 
 	args := cli.SingleTurnArgs(model, turn.Send, extra)
-	cmd := exec.CommandContext(cctx, cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, cli.Binary, args...))
 	cmd.Env = append(os.Environ(), env...)
 
 	var combined bytes.Buffer
@@ -140,10 +259,10 @@ func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, tur
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start %s: %w", cli.Binary, err)
 	}
-	activeCommands.Store(cmd, struct{}{})
-	defer activeCommands.Delete(cmd)
+	trackCmd(cmd)
+	defer untrackCmd(cmd)
 
-	if err := cmd.Wait(); err != nil {
+	if err := waitErr(cmd, cmd.Wait()); err != nil {
 		// Treat non-zero exit as a soft failure so the assertion path can
 		// still inspect what we got. Include the buffer tail in the error
 		// message so a t.Fatal report shows what the CLI actually printed,
@@ -194,7 +313,7 @@ func (d *claudeStreamJSON) Start(ctx context.Context, t *testing.T, cli CLI, mod
 		args = append(args, "--model", model)
 	}
 
-	cmd := exec.CommandContext(cctx, cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, cli.Binary, args...))
 	cmd.Env = append(os.Environ(), env...)
 
 	stdinPipe, err := cmd.StdinPipe()
@@ -210,7 +329,7 @@ func (d *claudeStreamJSON) Start(ctx context.Context, t *testing.T, cli CLI, mod
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", cli.Binary, err)
 	}
-	activeCommands.Store(cmd, struct{}{})
+	trackCmd(cmd)
 
 	d.cmd = cmd
 	d.stdin = stdinPipe
@@ -314,7 +433,7 @@ func (d *claudeStreamJSON) Close() {
 	}
 	if d.cmd != nil {
 		_ = d.cmd.Wait()
-		activeCommands.Delete(d.cmd)
+		untrackCmd(d.cmd)
 	}
 }
 
@@ -506,15 +625,26 @@ func codexResumeDriver() multiTurnDriver { return &codexResume{} }
 
 func (d *codexResume) Start(ctx context.Context, t *testing.T, cli CLI, model string, env []string, mirror io.Writer) error {
 	t.Helper()
-	tempHome, err := os.MkdirTemp("", "bifrost-clis-codex-home-*")
-	if err != nil {
-		return fmt.Errorf("create temp codex home: %w", err)
+	// codexPreLaunch already minted a per-cell CODEX_HOME and wrote the Bifrost
+	// provider config into it; reuse that directory so `resume --last` reads the
+	// same config and session store. Minting a second one here would shadow the
+	// config (os/exec keeps the last occurrence of a duplicated env key), sending
+	// codex back to api.openai.com. The fallback branch only runs if a caller
+	// wires this driver up without the prelaunch.
+	tempHome, ok := envValue(env, "CODEX_HOME")
+	if !ok {
+		var err error
+		tempHome, err = os.MkdirTemp("", "bifrost-clis-codex-home-*")
+		if err != nil {
+			return fmt.Errorf("create temp codex home: %w", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(tempHome) })
+		env = append(env, "CODEX_HOME="+tempHome)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(tempHome) })
 
 	d.cli = cli
 	d.model = model
-	d.envBase = append(env, "CODEX_HOME="+tempHome)
+	d.envBase = env
 	d.mirror = mirror
 	d.tempHome = tempHome
 	d.ctx = ctx
@@ -541,7 +671,7 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 	}
 	d.turnIndex++
 
-	cmd := exec.CommandContext(cctx, d.cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, d.cli.Binary, args...))
 	cmd.Env = append(os.Environ(), d.envBase...)
 
 	var stdout bytes.Buffer
@@ -551,10 +681,10 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start codex turn %d: %w", d.turnIndex, err)
 	}
-	activeCommands.Store(cmd, struct{}{})
-	defer activeCommands.Delete(cmd)
+	trackCmd(cmd)
+	defer untrackCmd(cmd)
 
-	if err := cmd.Wait(); err != nil {
+	if err := waitErr(cmd, cmd.Wait()); err != nil {
 		out := stdout.String()
 		return out, annotateIfKilled(cmd, fmt.Errorf("codex turn %d exit: %w; output tail:\n%s",
 			d.turnIndex, err, tailStr(out, 600)))
@@ -563,7 +693,8 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 }
 
 func (d *codexResume) Close() {
-	// CODEX_HOME cleanup is registered via t.Cleanup in Start.
+	// CODEX_HOME cleanup belongs to whoever created the directory: codexPreLaunch
+	// (via runCell's t.Cleanup) normally, or Start's fallback branch otherwise.
 }
 
 // ---- OpenCode: chained `run` + `run --continue` ----
@@ -609,7 +740,9 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 	cctx, cancel := context.WithTimeout(d.ctx, timeout)
 	defer cancel()
 
-	args := []string{"run", "--dangerously-skip-permissions", "--format", "json"}
+	// See the SingleTurnArgs comment in matrix_test.go for why no
+	// permission-bypass flag is passed here.
+	args := []string{"run", "--format", "json"}
 	if d.turnIndex > 0 {
 		args = append(args, "--continue")
 	}
@@ -619,7 +752,7 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 	args = append(args, prompt)
 	d.turnIndex++
 
-	cmd := exec.CommandContext(cctx, d.cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, d.cli.Binary, args...))
 	cmd.Env = append(os.Environ(), d.envBase...)
 
 	var stdout bytes.Buffer
@@ -629,10 +762,10 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start opencode turn %d: %w", d.turnIndex, err)
 	}
-	activeCommands.Store(cmd, struct{}{})
-	defer activeCommands.Delete(cmd)
+	trackCmd(cmd)
+	defer untrackCmd(cmd)
 
-	if err := cmd.Wait(); err != nil {
+	if err := waitErr(cmd, cmd.Wait()); err != nil {
 		out := stdout.String()
 		return out, annotateIfKilled(cmd, fmt.Errorf("opencode turn %d exit: %w; output tail:\n%s",
 			d.turnIndex, err, tailStr(out, 600)))

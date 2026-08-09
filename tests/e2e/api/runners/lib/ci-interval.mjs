@@ -4,7 +4,7 @@
 // has top-level side effects (arg validation, process.exit, timers) and cannot
 // be imported from a test.
 
-export const CI_INTERVAL_DEFAULT_SECONDS = 30;
+export const CI_INTERVAL_DEFAULT_SECONDS = 5;
 export const CI_INTERVAL_MIN_SECONDS = 5;
 export const CI_INTERVAL_MAX_SECONDS = 45 * 60;
 

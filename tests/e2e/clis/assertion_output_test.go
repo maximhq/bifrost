@@ -79,6 +79,104 @@ func TestSemanticValidatorsAcceptMeaningfulAnswers(t *testing.T) {
 	if err := validateOceanDesertPoem(poem); err != nil {
 		t.Fatalf("poem validator rejected valid answer: %v", err)
 	}
+
+	// reasoning turns 2 and 3.
+	if err := validateReasoningDistanceFromA("The meeting point is 192 km from station A."); err != nil {
+		t.Fatalf("distance validator rejected valid answer: %v", err)
+	}
+	if err := validateReasoningDistanceFromA("About 200 km from station A."); err == nil {
+		t.Fatal("distance validator accepted a wrong answer")
+	}
+	if err := validateReasoningSimultaneousDeparture("They would meet at 11:48 AM."); err != nil {
+		t.Fatalf("simultaneous-departure validator rejected valid answer: %v", err)
+	}
+	if err := validateReasoningSimultaneousDeparture("They would meet at 12:12 PM."); err == nil {
+		t.Fatal("simultaneous-departure validator accepted turn 1's answer")
+	}
+
+	// reasoning-replay: the chain is 56 boxes -> 672 items -> 2 trips / 172
+	// left -> $120. Each validator must accept prose and thousands separators
+	// but reject a neighbouring-but-wrong number.
+	if err := validateNumber(56, "total boxes")("There are 56 boxes in total."); err != nil {
+		t.Errorf("boxes validator rejected a correct answer: %v", err)
+	}
+	if err := validateNumber(672, "total items")("That gives 672 items."); err != nil {
+		t.Errorf("items validator rejected a correct answer: %v", err)
+	}
+	if err := validateNumber(1234, "grouped")("A total of 1,234 units."); err != nil {
+		t.Errorf("validator should accept thousands separators: %v", err)
+	}
+	// 560 contains "56" but is not 56 -- the word boundaries are what stop a
+	// substring match from passing a wrong answer.
+	if err := validateNumber(56, "total boxes")("There are 560 boxes."); err == nil {
+		t.Error("boxes validator accepted 560 as 56")
+	}
+	if err := validateTripSplit("2 full trips with 172 items left over"); err != nil {
+		t.Errorf("trip validator rejected a correct answer: %v", err)
+	}
+	// Half an answer is not an answer: the leftover count is the part that
+	// proves the division was actually carried out.
+	if err := validateTripSplit("It can make 2 full trips."); err == nil {
+		t.Error("trip validator accepted a reply missing the leftover count")
+	}
+	if err := validateReplayRecall("56 boxes, 672 items, 172 left over, $120"); err != nil {
+		t.Errorf("recall validator rejected a correct answer: %v", err)
+	}
+	if err := validateReplayRecall("56 boxes, 672 items, 172 left over"); err == nil {
+		t.Error("recall validator accepted a reply missing the cost")
+	}
+
+	// web-search turn 3 accepts every reasonable Fahrenheit phrasing, but a
+	// bare mention of the unit with no reading is not an answer.
+	// "38F" with no separator is common model output. It is the case a
+	// zero-width \s* plus \bF\b cannot match, because the position between a
+	// digit and an F is not a word boundary.
+	for _, ok := range []string{"38 F", "38F", "38.5°F", "It is 38 degrees Fahrenheit.", "-4 F right now", "38 º F", "-4.5F"} {
+		if err := validateFahrenheitReading(ok); err != nil {
+			t.Errorf("Fahrenheit validator rejected %q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"I could not convert it to Fahrenheit.", "Fahrenheit", "38 degrees Celsius"} {
+		if err := validateFahrenheitReading(bad); err == nil {
+			t.Errorf("Fahrenheit validator accepted %q, which reports no reading", bad)
+		}
+	}
+}
+
+// A small integer on its own proves nothing: CLI output is full of them, in
+// timings, token counts, turn indices and JSON fields. Each numeric assertion
+// has to be bound to the quantity it claims to be checking, or the turn passes
+// on output that never answered the question.
+func TestNumericAssertionsAreBoundToTheirQuantity(t *testing.T) {
+	// file-read turn 2 asks for the square root of 144. The verification token
+	// the model is quoting from turn 1 is FILE_FIXTURE_73129 -- and "12" is a
+	// substring of "73129". A raw substring assertion is therefore satisfied by
+	// the model echoing the token it already had, having answered nothing.
+	turn := fileReadScenario().Turns[1]
+	if err := assertTurn(turn, "The file said FILE_FIXTURE_73129."); err == nil {
+		t.Error("file-read turn 2 accepted a reply that only echoes the fixture token")
+	}
+	if err := assertTurn(turn, "12"); err != nil {
+		t.Errorf("file-read turn 2 rejected the correct answer: %v", err)
+	}
+	if err := assertTurn(turn, "The square root of 144 is 12."); err != nil {
+		t.Errorf("file-read turn 2 rejected the correct answer in prose: %v", err)
+	}
+
+	// validateTripSplit's 172 check is strict enough that only the trip count
+	// is loose, so a run where 172 is answered and the 2 comes from unrelated
+	// output slips through.
+	if err := validateTripSplit("172 items remain after 2 seconds of processing"); err == nil {
+		t.Error("trip validator accepted a 2 that names no trips")
+	}
+	for _, ok := range []string{
+		"2 full trips with 172 items left over",
+		"It needs 172 items split across 2 trips",
+	} {
+		if err := validateTripSplit(ok); err != nil {
+			t.Errorf("trip validator rejected %q: %v", ok, err)
+		}
+	}
 }
 
 func TestCaseInsensitiveAssertions(t *testing.T) {

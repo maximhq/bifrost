@@ -15,11 +15,18 @@ function test(name, fn) {
   console.log(`  ok - ${name}`);
 }
 
-test("uses the 30s default when the flag is absent", () => {
+test("uses the default when the flag is absent", () => {
   assert.strictEqual(
     resolveCiIntervalMs(undefined),
     CI_INTERVAL_DEFAULT_SECONDS * 1000
   );
+});
+
+// The harness prints nothing but the status table, so the interval is the only
+// thing controlling how current that table is. Pinned rather than left to the
+// constant so a bump back to a coarse 30s snapshot cadence is a deliberate edit.
+test("the default is a 5s table refresh", () => {
+  assert.strictEqual(CI_INTERVAL_DEFAULT_SECONDS, 5);
 });
 
 test("honours a valid interval", () => {

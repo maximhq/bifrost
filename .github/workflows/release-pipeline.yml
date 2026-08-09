@@ -178,11 +178,13 @@ jobs:
           # are the service-account token exchange for the Vertex parity cells.
           allowed-endpoints: >
             127.0.0.1:8080
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
@@ -193,6 +195,8 @@ jobs:
             api.perplexity.ai:443
             api.replicate.com:443
             api.x.ai:443
+            azure.archive.ubuntu.com:80
+            esm.ubuntu.com:443
             bifrost-gateway-resource.openai.azure.com:443
             bedrock-mantle.us-east-1.api.aws:443
             bedrock-runtime.us-east-1.amazonaws.com:443
@@ -203,6 +207,8 @@ jobs:
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             generativelanguage.googleapis.com:443
+            files.pythonhosted.org:443
+            pypi.org:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
@@ -278,6 +284,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
@@ -312,11 +319,41 @@ jobs:
             tmp/harness-token-parity.md
             tmp/stream-cancel-report.json
             tmp/bifrost-dev.log
+            # Per-attempt snapshots, written when a run needed RERUN_FAILED
+            # retries. The files above only reflect the LAST attempt, so this is
+            # the only record of what the first attempt actually failed on.
+            tmp/harness-attempts/
           retention-days: 30
 
-  # Approval gate for flaky test-core failures
-  # If test-core fails (often due to flaky provider API calls), this job waits for manual approval
-  # to continue the release pipeline without requiring a full re-run
+      # Publishes the provider harness's failure breakdown to R2 for the release
+      # notes. Note this is markdown, not HTML: the CI run is PARALLEL=1, and the
+      # htmlextra report is only produced in sequential mode, so there is no HTML
+      # report to publish here. newman-report.json is deliberately excluded - it
+      # routinely exceeds 500MB (see tests/e2e/api/runners/lib/read-report.mjs).
+      - name: Publish provider harness report
+        if: ${{ !cancelled() }}
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          chmod +x ./.github/workflows/scripts/configure-r2.sh ./.github/workflows/scripts/upload-test-reports-to-r2.sh
+          ./.github/workflows/scripts/configure-r2.sh || { echo "::warning::R2 not configured; skipping report publish"; exit 0; }
+          mkdir -p tmp/provider-harness-report
+          cp tmp/harness-failures.md tmp/harness-token-parity.md tmp/provider-harness-report/ 2>/dev/null || true
+          ./.github/workflows/scripts/upload-test-reports-to-r2.sh \
+            "${{ needs.detect-changes.outputs.transport-version }}" \
+            "provider-harness" \
+            tmp/provider-harness-report
+
+  # Break-glass for a test-core failure that survived its retries.
+  #
+  # test-core already re-runs its failed items twice via RERUN_FAILED (see
+  # test-provider-harness.sh), so reaching this job means three attempts failed
+  # - a flaky provider call has largely been ruled out by then. This exists for
+  # the case retries cannot fix, e.g. a provider-side outage lasting the whole
+  # run. Approving still releases on a red test-core, so prefer fixing forward.
   approve-flaky-test-core:
     needs: [check-skip, detect-changes, test-core]
     if: |
@@ -340,19 +377,24 @@ jobs:
 
       - name: Display failed test info
         run: |
-          echo "::warning::test-core failed. Review the logs to determine if this is a flaky test."
-          echo "If this is a known flaky test (e.g., provider API timeout), approve to continue."
-          echo "If this is a real failure, reject and fix the issue."
+          echo "::warning::test-core failed after all RERUN_FAILED retries (3 attempts: 1 full sweep + 2 failed-item re-runs)."
+          echo "A transient flake would normally have cleared on retry, so treat this as a real failure by default."
+          echo "Check tmp/harness-attempts/ in the provider-harness-reports artifact: if the same items failed on"
+          echo "every attempt, it is a regression - reject and fix. Approve only for something retries cannot fix,"
+          echo "such as a provider-side outage spanning the whole run."
       - name: Mark as approved
         id: approve
         run: echo "approved=true" >> $GITHUB_OUTPUT
 
-  # CLI harness - installs the real Claude Code and Codex CLIs and drives them
-  # as subprocesses against a live Bifrost, asserting on their non-interactive
-  # stream-JSON output (tests/e2e/clis). Scope is deliberately narrow: one model
-  # per CLI and a core scenario set. See test-cli-harness.sh for why, and to
-  # widen it.
-  test-cli-harness:
+  # Resolves the three most recent published versions of each coding CLI, fresh
+  # on every run - nothing is pinned in the repo. Its output fans out into
+  # test-cli-harness's matrix below.
+  #
+  # This exists as its own job so all three legs share ONE npm snapshot. Were
+  # each leg to resolve independently, a release landing mid-run would make one
+  # leg's latest-1 equal to another's latest, and the run would test the same
+  # version twice while reporting three-version coverage.
+  resolve-cli-versions:
     needs: [check-skip, detect-changes]
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
@@ -362,11 +404,96 @@ jobs:
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
       )
     runs-on: ubuntu-latest
-    # The two run_cases invocations in test-cli-harness.sh each pass TIMEOUT=25m,
-    # so the Go suites alone can take 50m on top of the CLI installs, the UI
-    # build and the gateway build. A job timeout cancels the run, and the report
-    # upload is `if: !cancelled()`, so a cancel loses the harness artifacts too.
-    timeout-minutes: 90
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            azure.archive.ubuntu.com:80
+            esm.ubuntu.com:443
+            github.com:443
+            iojs.org:443
+            nodejs.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Resolve CLI versions
+        id: resolve
+        run: |
+          chmod +x ./.github/workflows/scripts/resolve-cli-versions.sh
+          ./.github/workflows/scripts/resolve-cli-versions.sh
+
+  # CLI harness - installs the real Claude Code, Codex and OpenCode CLIs and
+  # drives them as subprocesses against a live Bifrost, asserting on their
+  # non-interactive stream-JSON output (tests/e2e/clis). Scope is deliberately
+  # narrow: one model per CLI and a core scenario set. See test-cli-harness.sh
+  # for why, and to widen it.
+  #
+  # Four suites, not three: OpenCode runs twice, once per wire format. The
+  # `opencode` suite is chat/completions and the `opencode-responses` suite is
+  # /v1/responses against Anthropic-on-Bedrock. Bifrost converts requests
+  # separately per wire format, and the Responses conversion had NO coverage
+  # until that suite existed - codex is the only other Responses client and it
+  # is gated to openai. A reasoning-replay conversion defect shipped on that
+  # uncovered path while this job was green.
+  #
+  # Runs once per CLI version generation (latest, latest-1, latest-2), each an
+  # independent job over its own version triple, so a regression can be pinned
+  # to a specific upstream release rather than just "the CLIs changed".
+  # fail-fast is off: an upstream break in the newest claude must not cancel the
+  # legs that would have shown latest-1 and latest-2 still passing.
+  #
+  # Note that codex floats here too, while tests/e2e/clis/matrix_test.go
+  # documents its --image and model_reasoning_effort assertions specifically
+  # against rust-v0.145.0. A codex leg failing on those is the signal to go
+  # re-check those comments against the newer release.
+  #
+  # The console shows a progress table refreshed every 10s (one row per CLI:
+  # total/done/pass/fail); each suite's verbose output is redirected to
+  # tmp/cli-harness-<cli>.log and uploaded with the reports below.
+  test-cli-harness:
+    needs: [check-skip, detect-changes, resolve-cli-versions]
+    if: |
+      needs.check-skip.outputs.should-skip != 'true' &&
+      needs.check-skip.outputs.skip-tests != 'true' &&
+      (
+        needs.detect-changes.outputs.core-needs-release == 'true' ||
+        needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
+      )
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve-cli-versions.outputs.matrix) }}
+    name: test-cli-harness (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    # The four run_cases invocations in test-cli-harness.sh each pass
+    # TIMEOUT=25m, so the Go suites alone can take 100m on top of the CLI
+    # installs, the UI build and the gateway build. A job timeout cancels the
+    # run, and the report upload is `if: !cancelled()`, so a cancel loses the
+    # harness artifacts too. Raised twice: 90 -> 120 when the opencode suite was
+    # added and the core scenarios went multi-turn, 120 -> 150 for the
+    # opencode-responses suite.
+    timeout-minutes: 150
     permissions:
       contents: read
     steps:
@@ -379,16 +506,34 @@ jobs:
           # gateway's own upstream calls. statsig.anthropic.com and
           # o33249.ingest.sentry.io are Claude Code's telemetry endpoints - it
           # sets CLAUDE_CODE_DISABLE_TELEMETRY=1 but still resolves them on boot.
+          #
+          # models.dev is OpenCode's provider/model catalog
+          # (https://opencode.ai/docs/models/), fetched at startup and cached
+          # under XDG_CACHE_HOME - which the harness points at a fresh temp dir
+          # per cell (opencodeResume.Start), so every cell re-fetches it rather
+          # than hitting a warm cache. OpenCode also resolves its provider SDK,
+          # @ai-sdk/openai-compatible, from registry.npmjs.org at runtime (see
+          # opencodePreLaunch and https://opencode.ai/docs/providers/); that
+          # host is already allowed for the npm installs.
           allowed-endpoints: >
             127.0.0.1:8080
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             api.anthropic.com:443
             api.github.com:443
             api.openai.com:443
+            azure.archive.ubuntu.com:80
+            esm.ubuntu.com:443
+            bedrock-runtime.us-east-1.amazonaws.com:443
+            bedrock.us-east-1.amazonaws.com:443
+            bifrost-gateway-resource.openai.azure.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
             getbifrost.ai:443
             github.com:443
             iojs.org:443
+            files.pythonhosted.org:443
+            pypi.org:443
+            models.dev:443
             nodejs.org:443
             o33249.ingest.sentry.io:443
             proxy.golang.org:443
@@ -424,7 +569,34 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Azure serves both the GPT and the Claude legs of the matrix from one
+          # AIServices resource: Bifrost routes OpenAI-family models to
+          # /openai/deployments/<name>/chat/completions and Anthropic-family
+          # models to /anthropic/v1/messages off the same AZURE_ENDPOINT host
+          # (core/providers/azure/azure.go). One endpoint, one key, both wire
+          # formats - so no second secret is needed for the claude/azure cells.
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+          AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+          # Bedrock, for the opencode-responses suite. The harness gateway seeds
+          # from tests/integrations/python/config.json, whose bedrock_key_config
+          # reads exactly these env vars (the session token matters when the
+          # credentials are temporary STS ones). Without them the provider is
+          # unconfigured and TestCLIs SKIPS every bedrock cell - silently, and
+          # with a green suite, which is the failure mode that let the reported
+          # Responses defect ship in the first place.
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          # Resolved fresh by resolve-cli-versions on every run; the constants
+          # in test-cli-harness.sh only apply if that job had to fall back.
+          CLAUDE_CODE_VERSION: ${{ matrix.claude }}
+          CODEX_VERSION: ${{ matrix.codex }}
+          OPENCODE_VERSION: ${{ matrix.opencode }}
+          # Distinguishes this leg's section of the shared job summary.
+          CLI_VERSION_LABEL: ${{ matrix.label }}
         run: |
           chmod +x ./.github/workflows/scripts/test-cli-harness.sh
           ./.github/workflows/scripts/test-cli-harness.sh
@@ -433,11 +605,39 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: cli-harness-reports
+          # Per-leg name: upload-artifact rejects a duplicate name outright, so
+          # a shared one would fail every leg after the first.
+          name: cli-harness-reports-${{ matrix.label }}
           path: |
             tests/e2e/clis/reports/
             tmp/bifrost-cli-harness.log
+            tmp/cli-harness-claude.log
+            tmp/cli-harness-codex.log
+            tmp/cli-harness-opencode.log
+            tmp/cli-harness-opencode-responses.log
+            # Per-attempt snapshots, written when a suite needed retries. The
+            # reports above are overwritten in place by each rerun, so this is
+            # the only record of what the first attempt failed on.
+            tmp/cli-harness-attempts/
           retention-days: 30
+
+      # Publishes the same report to R2 so the Mintlify release notes can link
+      # it. The artifact above needs a GitHub login and expires; R2 does not.
+      # Never fails the job - see the script's header.
+      - name: Publish CLI harness report
+        if: ${{ !cancelled() }}
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          chmod +x ./.github/workflows/scripts/configure-r2.sh ./.github/workflows/scripts/upload-test-reports-to-r2.sh
+          ./.github/workflows/scripts/configure-r2.sh || { echo "::warning::R2 not configured; skipping report publish"; exit 0; }
+          ./.github/workflows/scripts/upload-test-reports-to-r2.sh \
+            "${{ needs.detect-changes.outputs.transport-version }}" \
+            "cli-harness-${{ matrix.label }}" \
+            tests/e2e/clis/reports
 
   test-framework:
     needs: [check-skip, detect-changes]
@@ -836,6 +1036,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -922,6 +1123,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
@@ -1370,6 +1572,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -1380,7 +1583,7 @@ jobs:
         test-docker-image-amd64,
         test-docker-image-arm64,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.core-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1472,6 +1675,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -1483,7 +1687,7 @@ jobs:
         test-docker-image-arm64,
         core-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.framework-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1585,6 +1789,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -1597,7 +1802,7 @@ jobs:
         core-release,
         framework-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.plugins-need-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1717,6 +1922,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -1730,7 +1936,7 @@ jobs:
         framework-release,
         plugins-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-api-integrations.result == 'success' || needs.test-api-integrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1978,6 +2184,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -1991,7 +2198,7 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -2092,6 +2299,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -2105,7 +2313,7 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
@@ -2252,6 +2460,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -2265,7 +2474,7 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -2370,6 +2579,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -2383,7 +2593,7 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && needs.detect-changes.outputs.docker-needs-release == 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
@@ -2534,6 +2744,7 @@ jobs:
         detect-changes,
         test-core,
         approve-flaky-test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
@@ -2547,7 +2758,7 @@ jobs:
         plugins-release,
         bifrost-http-release,
       ]
-    if: "always() && needs.check-skip.outputs.should-skip != 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
+    if: "always() && needs.check-skip.outputs.should-skip != 'true' && (needs.test-core.result == 'success' || needs.test-core.result == 'skipped' || (needs.test-core.result == 'failure' && needs.approve-flaky-test-core.result == 'success')) && (needs.test-cli-harness.result == 'success' || needs.test-cli-harness.result == 'skipped') && (needs.resolve-cli-versions.result == 'success' || needs.resolve-cli-versions.result == 'skipped') && (needs.test-framework.result == 'success' || needs.test-framework.result == 'skipped') && (needs.test-plugins.result == 'success' || needs.test-plugins.result == 'skipped') && (needs.test-bifrost-http.result == 'success' || needs.test-bifrost-http.result == 'skipped') && (needs.test-migrations.result == 'success' || needs.test-migrations.result == 'skipped') && (needs.test-cost-accuracy.result == 'success' || needs.test-cost-accuracy.result == 'skipped') && (needs.test-docker-image-amd64.result == 'success' || needs.test-docker-image-amd64.result == 'skipped') && (needs.test-docker-image-arm64.result == 'success' || needs.test-docker-image-arm64.result == 'skipped') && (needs.detect-changes.outputs.core-needs-release == 'false' || needs.core-release.result == 'success' || needs.core-release.result == 'skipped') && (needs.detect-changes.outputs.framework-needs-release == 'false' || needs.framework-release.result == 'success' || needs.framework-release.result == 'skipped') && (needs.detect-changes.outputs.plugins-need-release == 'false' || needs.plugins-release.result == 'success' || needs.plugins-release.result == 'skipped') && (needs.detect-changes.outputs.bifrost-http-needs-release == 'false' || needs.bifrost-http-release.result == 'success' || needs.bifrost-http-release.result == 'skipped')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -2567,6 +2778,24 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Push Mintlify changelog
+        env:
+          # Public origin serving the R2 bucket that test-core and
+          # test-cli-harness publish their reports to. Unset means the changelog
+          # simply omits the test-reports table - see the script for why it is
+          # not hardcoded.
+          TEST_REPORTS_BASE_URL: ${{ vars.TEST_REPORTS_BASE_URL }}
+          # The CLI harness legs that actually ran. Normally latest/latest-1/
+          # latest-2, but resolve-cli-versions degrades to a single "pinned" leg
+          # when npm resolution fails - and the report objects are named after
+          # whichever labels it emitted, so the changelog table has to follow
+          # them rather than assume the three.
+          # Guarded: this job's `if:` accepts resolve-cli-versions being skipped,
+          # and a skipped job's output is the empty string - fromJSON('') is a
+          # workflow-level error that fails the step before the script runs. An
+          # empty value here is meaningful rather than missing: it tells the
+          # script no CLI legs ran, so it emits no rows instead of defaulting to
+          # the three standard labels and linking reports that do not exist.
+          CLI_HARNESS_LABELS: ${{ needs.resolve-cli-versions.outputs.matrix && join(fromJSON(needs.resolve-cli-versions.outputs.matrix).*.label, ' ') || '' }}
         run: |
           ./.github/workflows/scripts/push-mintlify-changelog.sh "${{ needs.detect-changes.outputs.transport-version }}"
 
@@ -2577,6 +2806,7 @@ jobs:
         check-skip,
         detect-changes,
         test-core,
+        resolve-cli-versions,
         test-cli-harness,
         test-framework,
         test-plugins,
