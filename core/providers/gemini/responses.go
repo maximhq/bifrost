@@ -15,6 +15,30 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// thoughtSignatureFromEncryptedContent converts a Responses-API
+// encrypted_content value into the raw bytes Part.ThoughtSignature expects.
+//
+// The decode is required, not cosmetic. encrypted_content is already a base64
+// STRING, while ThoughtSignature is a []byte that Part.MarshalJSON base64s on
+// the way out -- so assigning []byte(encryptedContent) directly ships
+// base64(base64(signature)) and Gemini cannot verify it. The non-streaming
+// converters always decoded first; the streaming one did not, which meant the
+// two paths silently disagreed about the encoding for the same conversation.
+//
+// Returns nil when there is nothing usable, so callers can skip the part
+// entirely rather than emit an empty signature: a malformed value is dropped
+// rather than corrupted onwards.
+func thoughtSignatureFromEncryptedContent(encryptedContent *string) []byte {
+	if encryptedContent == nil || *encryptedContent == "" {
+		return nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(*encryptedContent)
+	if err != nil || len(decoded) == 0 {
+		return nil
+	}
+	return decoded
+}
+
 func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
 	if request == nil {
 		return nil
@@ -522,8 +546,8 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 					}
 				}
 				if msg.ResponsesReasoning.EncryptedContent != nil {
-					decodedSig, err := base64.StdEncoding.DecodeString(*msg.ResponsesReasoning.EncryptedContent)
-					if err == nil {
+					decodedSig := thoughtSignatureFromEncryptedContent(msg.ResponsesReasoning.EncryptedContent)
+					if decodedSig != nil {
 						currentParts = append(currentParts, &Part{
 							ThoughtSignature: decodedSig,
 						})
@@ -849,10 +873,10 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		// Already handled via deltas, skip
 		return nil
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.EncryptedContent != nil {
-			candidate.Content.Parts = append(candidate.Content.Parts, &Part{
-				ThoughtSignature: []byte(*bifrostResp.Item.ResponsesReasoning.EncryptedContent),
-			})
+		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesReasoning != nil {
+			if sig := thoughtSignatureFromEncryptedContent(bifrostResp.Item.ResponsesReasoning.EncryptedContent); sig != nil {
+				candidate.Content.Parts = append(candidate.Content.Parts, &Part{ThoughtSignature: sig})
+			}
 		}
 		// Track function call metadata for later use in FunctionCallArgumentsDone
 		if bifrostResp.Item != nil && bifrostResp.Item.Type != nil &&
@@ -2662,19 +2686,42 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			// Handle different types of parts
 			switch {
 			case part.Thought:
-				// Thinking/reasoning message
-				if part.Text != "" {
+				// Thinking/reasoning message.
+				//
+				// The signature has to come across with the text. Gemini 3 puts
+				// thoughtSignature on the thought part itself, and requires it back
+				// on replay -- there is a dedicated finish reason for its absence
+				// (FinishReasonMissingThoughtSignature). Reading only part.Text
+				// dropped it on the floor, so a client could never send it back.
+				//
+				// Emitted even when the text is empty: a signature-only thought
+				// part is a real Gemini shape, and skipping it loses the one field
+				// the next turn actually needs.
+				if part.Text != "" || len(part.ThoughtSignature) > 0 {
+					text := part.Text
 					msg := schemas.ResponsesMessage{
 						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-									Text: &part.Text,
+									Text: &text,
 								},
 							},
 						},
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					}
+					if len(part.ThoughtSignature) > 0 {
+						// Stored base64-encoded, which is the form
+						// encrypted_content carries on the wire and the form
+						// thoughtSignatureFromEncryptedContent decodes on the way
+						// back out -- so the round trip is symmetric by construction.
+						encoded := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+						msg.ResponsesReasoning = &schemas.ResponsesReasoning{
+							Summary:          []schemas.ResponsesReasoningSummary{},
+							EncryptedContent: &encoded,
+						}
+						msg.Content.ContentBlocks[0].Signature = &encoded
 					}
 					messages = append(messages, msg)
 				}

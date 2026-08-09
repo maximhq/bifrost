@@ -48638,6 +48638,243 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "42. Cohere Encrypted Reasoning Round-Trip (PR #5982)",
+      "description": "Regression coverage for the Cohere half of PR #5982. Cohere's API has no encrypted-reasoning field, so a replay token travels out inside a thinking block marked '[ENCRYPTED_REASONING: ...]'. That was only half a round trip: egress wrote the marker, and nothing on ingress read it back, so every thinking block - marker included - was mapped to ordinary reasoning text. The token never reached ResponsesReasoning.EncryptedContent, and the marker itself leaked to clients as visible model reasoning, then got replayed as if it were content. Case 1 pins that reasoning comes back as a reasoning item and captures the turn; case 2 replays it and asserts both that the replay is accepted and that the transport marker never appears in the response.",
+      "item": [
+        {
+          "name": "cohere/command-a-reasoning /v1/responses returns reasoning + captures replay input - PR #5982",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Cohere reasoning returned as a reasoning output item', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = j.output.filter(function (o) { return o.type === 'reasoning'; });",
+                  "  pm.expect(reasoning.length, 'expected at least one reasoning output item').to.be.above(0);",
+                  "  // The replay row checks this too, but only that row - a capture response",
+                  "  // that leaked the marker would slip through whenever the replay response",
+                  "  // happened to carry no reasoning item.",
+                  "  pm.expect(pm.response.text(), 'the transport marker leaked into the capture response')",
+                  "    .to.not.include('ENCRYPTED_REASONING');",
+                  "});",
+                  "// Capture the exact turn to replay: the original user message plus the",
+                  "// assistant output echoed verbatim. Echoing verbatim is the point - it is",
+                  "// what carries any encrypted_content back out to the provider.",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  if (body.output && body.output.length) {",
+                  "    var input = [{ type: 'message', role: 'user', content: \"Work out 17 * 23 step by step, then give just the number.\" }]",
+                  "      .concat(body.output);",
+                  "    pm.collectionVariables.set('cohereReasoningReplayInput5982', JSON.stringify(input));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cohere/command-a-reasoning-08-2025\", \"input\": \"Work out 17 * 23 step by step, then give just the number.\", \"reasoning\": {\"effort\": \"medium\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cohere/command-a-reasoning /v1/responses replay preserves encrypted reasoning - PR #5982",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step did not run: the body placeholder stays\n// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Replayed Cohere reasoning is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "// The regression this folder exists for. Cohere has no encrypted-reasoning",
+                  "// field, so Bifrost smuggles the replay token out inside a marked thinking",
+                  "// block. Pre-fix nothing decoded that marker on the way back in, so it",
+                  "// surfaced to the client as ordinary reasoning TEXT - the model appearing to",
+                  "// have literally thought '[ENCRYPTED_REASONING: ...]', and the token that was",
+                  "// meant to land in encrypted_content lost.",
+                  "pm.test('Transport marker never surfaces as visible reasoning text', function () {",
+                  "  pm.expect(pm.response.text(), 'the [ENCRYPTED_REASONING: ...] transport marker leaked to the client')",
+                  "    .to.not.include('ENCRYPTED_REASONING');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cohere/command-a-reasoning-08-2025\", \"input\": {{cohereReasoningReplayInput5982}}, \"reasoning\": {\"effort\": \"medium\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "43. Gemini Reasoning Signature Replay (PR #5982)",
+      "description": "Multi-turn reasoning replay for Gemini through /v1/responses. Gemini returns a thought signature on reasoning that accompanies a function call, and requires it back unmodified when the tool result is sent - a dropped or rewritten signature is rejected on the continuation, so a converter that keeps only part of a reasoning item fails here and nowhere else. The harness had 71 reasoning rows and not one that replayed reasoning back on a second turn, which is the only shape that exercises this. Case 1 captures a reasoning + function_call turn; case 2 replays it with the tool result.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses reasoning + tool call captures replay input - PR #5982",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini returns reasoning alongside the tool call', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+                  "  // Asserted, not merely hoped for: the replay row skips when the capture",
+                  "  // stored nothing, so without this a run where Gemini did not call the",
+                  "  // tool passes green having tested no signature preservation at all.",
+                  "  var kinds = j.output.map(function (o) { return o.type; });",
+                  "  pm.expect(kinds, 'no function_call came back, so the replay row would silently skip').to.include('function_call');",
+                  "  pm.expect(kinds, 'no reasoning item came back, so there is no thought signature to preserve').to.include('reasoning');",
+                  "});",
+                  "// Only capture when a function call came back: the replay case is about a",
+                  "// reasoning item sitting next to a function_call, which is the shape whose",
+                  "// thought signature has to survive. Without one there is nothing to pin, so",
+                  "// the replay skips rather than false-failing.",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  var fc = (body.output || []).filter(function (o) { return o.type === 'function_call'; })[0];",
+                  "  if (fc && fc.call_id) {",
+                  "    var input = [{ type: 'message', role: 'user', content: \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\" }]",
+                  "      .concat(body.output)",
+                  "      .concat([{ type: 'function_call_output', call_id: fc.call_id, output: '{\"time\": \"21:00 JST\"}' }]);",
+                  "    pm.collectionVariables.set('geminiReasoningReplayInput5982', JSON.stringify(input));",
+                  "    var reasoning = (body.output || []).filter(function (o) { return o.type === 'reasoning'; });",
+                  "    pm.collectionVariables.set('geminiReasoningCount5982', String(reasoning.length));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-2.5-flash\", \"input\": \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\", \"tools\": [{\"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"tool_choice\": {\"type\": \"function\", \"name\": \"get_time\"}, \"reasoning\": {\"effort\": \"low\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses replay preserves thought signature - PR #5982",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step did not run: the body placeholder stays\n// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Replayed Gemini reasoning + tool call is accepted', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Gemini rejected the replayed turn - the thought signature did not survive the round trip')",
+                  "    .to.not.include('thought_signature');",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-2.5-flash\", \"input\": {{geminiReasoningReplayInput5982}}, \"tools\": [{\"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"reasoning\": {\"effort\": \"low\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -8,8 +8,9 @@
 // Usage:
 //   node harness-viewer.mjs --report tmp/newman-report.json [--port 8090]
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
+import { redactItemsForPublic } from "./lib/redact-report.mjs";
 import { createServer } from "node:http";
 import { URL } from "node:url";
 
@@ -263,8 +264,14 @@ const filterInput = document.getElementById('filter');
 const onlyFailed = document.getElementById('only-failed');
 
 async function load() {
-  const r = await fetch('/api/report');
-  items = await r.json();
+  // Static mode inlines the report instead of serving it, so the same page
+  // works as a CI artifact opened from disk with no server behind it.
+  if (window.__STATIC_REPORT__) {
+    items = window.__STATIC_REPORT__;
+  } else {
+    const r = await fetch('/api/report');
+    items = await r.json();
+  }
   document.getElementById('meta').textContent = items.length + ' requests';
   renderSummary();
   render();
@@ -324,11 +331,18 @@ function render() {
       '</div>' +
       '<div class="req-body">' +
         '<div class="panel"><h3>Assertions</h3>' + (assertions || '<em>(none)</em>') + '</div>' +
-        '<div class="panel resend-row">' +
-          '<button class="primary" onclick="resend(' + i.idx + ', this)">Resend</button>' +
-          '<button onclick="copyCurl(' + i.idx + ', this)">Copy curl</button>' +
-          '<span class="resend-status" id="resend-status-' + i.idx + '"></span>' +
-        '</div>' +
+        // Resend proxies through this process, so it cannot work in static
+        // mode. Copy curl is pure client-side and stays useful offline.
+        (window.__STATIC_REPORT__
+          ? '<div class="panel resend-row">' +
+              '<button onclick="copyCurl(' + i.idx + ', this)">Copy curl</button>' +
+              '<span class="resend-status">Resend needs the live viewer: make run-provider-harness-test</span>' +
+            '</div>'
+          : '<div class="panel resend-row">' +
+              '<button class="primary" onclick="resend(' + i.idx + ', this)">Resend</button>' +
+              '<button onclick="copyCurl(' + i.idx + ', this)">Copy curl</button>' +
+              '<span class="resend-status" id="resend-status-' + i.idx + '"></span>' +
+            '</div>') +
         '<div class="row">' +
           '<div class="panel"><h3>Request Body</h3><pre>' + escape(prettyBody(i.reqBody)) + '</pre></div>' +
           '<div class="panel" id="resp-panel-' + i.idx + '"><h3>Response Body</h3><pre>' + escape(prettyBody(i.respBody)) + '</pre></div>' +
@@ -420,6 +434,32 @@ load();
 </html>`;
 
 const items = summarize();
+
+// Static mode: write the same page to a file with the report inlined, and do
+// not start a server.
+//
+// This exists because CI has no HTML report at all for the provider harness.
+// The htmlextra reporter only emits one in sequential mode (PARALLEL=0), and CI
+// runs PARALLEL=1 -- one newman fork per provider, with no way to merge N HTML
+// documents. The merged JSON, however, is exactly what this viewer already
+// renders, so reusing it costs nothing and keeps a single source of truth for
+// the markup: fixing the viewer fixes the artifact, and they cannot drift.
+if (args.static) {
+  // Redact before serializing, and ONLY here. The live viewer below serves the
+  // full items to whoever ran the harness on their own machine; this file is
+  // uploaded to R2 and linked from the public changelog, so every byte inlined
+  // into it is world-readable - and provider requests carry Authorization and
+  // API-key headers, signed URLs, and error bodies that quote keys back.
+  const inlined =
+    `<script>window.__STATIC_REPORT__ = ${JSON.stringify(redactItemsForPublic(items)).replace(/</g, "\\u003c")};</script>`;
+  // Injected before the page's own script so load() sees it, and with < escaped
+  // so a response body containing "</script>" cannot break out of the tag.
+  const html = VIEWER_HTML.replace("<main id=\"list\"></main>", `<main id="list"></main>${inlined}`);
+  writeFileSync(args.static, html);
+  console.log(`Static provider harness report: ${args.static} (${items.length} requests)`);
+  process.exit(0);
+}
+
 const allowedTargets = new Set(
   items.map((i) => `${String(i.method || "GET").toUpperCase()} ${i.url}`)
 );

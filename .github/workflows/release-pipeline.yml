@@ -315,6 +315,7 @@ jobs:
           path: |
             tmp/newman-report*.json
             tmp/newman-cli*.log
+            tmp/provider-harness-report.html
             tmp/harness-failures.md
             tmp/harness-token-parity.md
             tmp/stream-cancel-report.json
@@ -341,6 +342,9 @@ jobs:
           chmod +x ./.github/workflows/scripts/configure-r2.sh ./.github/workflows/scripts/upload-test-reports-to-r2.sh
           ./.github/workflows/scripts/configure-r2.sh || { echo "::warning::R2 not configured; skipping report publish"; exit 0; }
           mkdir -p tmp/provider-harness-report
+          # index.html so the R2 key serves as a browsable page, matching the
+          # cli-harness reports the changelog links alongside it.
+          cp tmp/provider-harness-report.html tmp/provider-harness-report/index.html 2>/dev/null || true
           cp tmp/harness-failures.md tmp/harness-token-parity.md tmp/provider-harness-report/ 2>/dev/null || true
           ./.github/workflows/scripts/upload-test-reports-to-r2.sh \
             "${{ needs.detect-changes.outputs.transport-version }}" \
@@ -486,14 +490,14 @@ jobs:
         include: ${{ fromJSON(needs.resolve-cli-versions.outputs.matrix) }}
     name: test-cli-harness (${{ matrix.label }})
     runs-on: ubuntu-latest
-    # The four run_cases invocations in test-cli-harness.sh each pass
-    # TIMEOUT=25m, so the Go suites alone can take 100m on top of the CLI
+    # The five run_cases invocations in test-cli-harness.sh each pass
+    # TIMEOUT=25m, so the Go suites alone can take 125m on top of the CLI
     # installs, the UI build and the gateway build. A job timeout cancels the
     # run, and the report upload is `if: !cancelled()`, so a cancel loses the
     # harness artifacts too. Raised twice: 90 -> 120 when the opencode suite was
     # added and the core scenarios went multi-turn, 120 -> 150 for the
-    # opencode-responses suite.
-    timeout-minutes: 150
+    # opencode-responses suite, 150 -> 180 for opencode-anthropic.
+    timeout-minutes: 180
     permissions:
       contents: read
     steps:
@@ -615,6 +619,7 @@ jobs:
             tmp/cli-harness-codex.log
             tmp/cli-harness-opencode.log
             tmp/cli-harness-opencode-responses.log
+            tmp/cli-harness-opencode-anthropic.log
             # Per-attempt snapshots, written when a suite needed retries. The
             # reports above are overwritten in place by each rerun, so this is
             # the only record of what the first attempt failed on.

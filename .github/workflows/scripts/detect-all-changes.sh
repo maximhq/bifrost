@@ -436,6 +436,25 @@ echo "   Bifrost HTTP: $BIFROST_HTTP_NEEDS_RELEASE (v$TRANSPORT_VERSION)"
 echo "   Docker: $DOCKER_NEEDS_RELEASE (v$TRANSPORT_VERSION)"
 
 # Set outputs (only when running in GitHub Actions)
+# Version strings are read straight out of the repo's version files and are then
+# interpolated by callers into shell commands (the R2 upload steps, the changelog
+# push, the docker manifest). A value carrying a quote, a space or a newline would
+# break out of the generated command, and GITHUB_OUTPUT is line-oriented so a
+# newline would additionally forge an extra output line. Nothing downstream can
+# defend against that once it is written, so it is rejected here, at the single
+# point where these values enter the workflow.
+for _pair in "core:$CORE_VERSION" "framework:$FRAMEWORK_VERSION" "transport:$TRANSPORT_VERSION"; do
+  _name="${_pair%%:*}"
+  _value="${_pair#*:}"
+  case "$_value" in
+    "") continue ;;
+    *[!0-9A-Za-z.+_-]*)
+      echo "❌ refusing to emit $_name version with unexpected characters: $_value" >&2
+      exit 1
+      ;;
+  esac
+done
+
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
     echo "core-needs-release=$CORE_NEEDS_RELEASE"
