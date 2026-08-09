@@ -93,20 +93,83 @@ func TestCreateVirtualKeyProviderConfigResolvesKeyIDsByName(t *testing.T) {
 	}
 }
 
+func replaceConfigs(store *RDBConfigStore, ctx context.Context, vkID string, configs []tables.TableVirtualKeyProviderConfig) error {
+	return store.DB().Transaction(func(tx *gorm.DB) error {
+		return store.ReplaceVirtualKeyProviderConfigs(ctx, vkID, configs, tx)
+	})
+}
+
 func TestReplaceVirtualKeyProviderConfigsResolvesKeyIDsByName(t *testing.T) {
+	tests := []struct {
+		name        string
+		keyIDsEntry string
+		wantErr     bool
+	}{
+		{name: "key name resolves", keyIDsEntry: testKeyName},
+		{name: "uuid still resolves", keyIDsEntry: testKeyUUID},
+		{name: "unknown entry still fails", keyIDsEntry: "no-such-key", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := setupRDBTestStore(t)
+			ctx := context.Background()
+			seedKeyAndVirtualKey(t, store, "vk-replace")
+
+			pc := parseProviderConfig(t, tt.keyIDsEntry)
+			pc.VirtualKeyID = "vk-replace"
+
+			err := replaceConfigs(store, ctx, "vk-replace", []tables.TableVirtualKeyProviderConfig{pc})
+			if tt.wantErr {
+				var unresolved *ErrUnresolvedKeys
+				require.ErrorAs(t, err, &unresolved)
+				return
+			}
+			require.NoError(t, err)
+
+			var configs []tables.TableVirtualKeyProviderConfig
+			require.NoError(t, store.DB().Where("virtual_key_id = ?", "vk-replace").Find(&configs).Error)
+			require.Len(t, configs, 1)
+			assertAssociatedKey(t, store, configs[0].ID)
+		})
+	}
+}
+
+// Mixed identifiers across several configs in one replacement call: name and
+// UUID entries resolve through the batched per-column lookups independently.
+func TestReplaceVirtualKeyProviderConfigsResolvesMixedIdentifiers(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
-	seedKeyAndVirtualKey(t, store, "vk-replace")
+	seedKeyAndVirtualKey(t, store, "vk-mixed")
+	anthropicKey := tables.TableKey{
+		Name:     "my-anthropic-key",
+		Provider: "anthropic",
+		KeyID:    "9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff",
+		Value:    *schemas.NewSecretVar("sk-ant-test"),
+	}
+	require.NoError(t, store.DB().Create(&anthropicKey).Error)
 
-	pc := parseProviderConfig(t, testKeyName)
-	pc.VirtualKeyID = "vk-replace"
+	openaiPC := parseProviderConfig(t, testKeyName) // by name
+	openaiPC.VirtualKeyID = "vk-mixed"
+	var anthropicPC tables.TableVirtualKeyProviderConfig
+	require.NoError(t, json.Unmarshal([]byte(fmt.Sprintf(`{
+		"provider": "anthropic",
+		"allowed_models": ["*"],
+		"key_ids": [%q]
+	}`, anthropicKey.KeyID)), &anthropicPC)) // by uuid
+	anthropicPC.VirtualKeyID = "vk-mixed"
 
-	require.NoError(t, store.DB().Transaction(func(tx *gorm.DB) error {
-		return store.ReplaceVirtualKeyProviderConfigs(ctx, "vk-replace", []tables.TableVirtualKeyProviderConfig{pc}, tx)
-	}))
+	require.NoError(t, replaceConfigs(store, ctx, "vk-mixed", []tables.TableVirtualKeyProviderConfig{openaiPC, anthropicPC}))
 
 	var configs []tables.TableVirtualKeyProviderConfig
-	require.NoError(t, store.DB().Where("virtual_key_id = ?", "vk-replace").Find(&configs).Error)
-	require.Len(t, configs, 1)
-	assertAssociatedKey(t, store, configs[0].ID)
+	require.NoError(t, store.DB().Where("virtual_key_id = ?", "vk-mixed").Order("provider").Find(&configs).Error)
+	require.Len(t, configs, 2)
+	wantKeyIDs := map[string]string{"anthropic": anthropicKey.KeyID, "openai": testKeyUUID}
+	for _, pc := range configs {
+		var joins []tables.TableVirtualKeyProviderConfigKey
+		require.NoError(t, store.DB().Where("table_virtual_key_provider_config_id = ?", pc.ID).Find(&joins).Error)
+		require.Len(t, joins, 1)
+		var dbKey tables.TableKey
+		require.NoError(t, store.DB().First(&dbKey, joins[0].TableKeyID).Error)
+		require.Equal(t, wantKeyIDs[pc.Provider], dbKey.KeyID)
+	}
 }
