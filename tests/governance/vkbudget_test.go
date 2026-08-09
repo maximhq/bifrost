@@ -537,3 +537,97 @@ func TestVKResetBudgetUsageClearsSpend(t *testing.T) {
 			lastResetBefore.Format(time.RFC3339), lastResetAfter.Format(time.RFC3339))
 	}
 }
+
+// TestVKResetBudgetUsageRestoresCapacity answers the question a usage counter
+// alone cannot: does clearing spend actually let requests through again.
+//
+// Zeroing current_usage is only meaningful if enforcement follows it. The
+// enforcement path reads the in-memory governance store, not the database, so a
+// reset that reached the database but not memory would show usage at zero on
+// every read while requests kept getting rejected. This drives the budget to
+// exhaustion, confirms rejection, resets, and confirms the next request succeeds.
+//
+// Not parallel: it writes and polls, contending with the rest of the suite on
+// the default SQLite store.
+func TestVKResetBudgetUsageRestoresCapacity(t *testing.T) {
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	// Small enough that a single completion exhausts it, so the test costs one
+	// extra request rather than a loop.
+	createResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/api/governance/virtual-keys",
+		Body: CreateVirtualKeyRequest{
+			Name:            "test-vk-reset-capacity-" + generateRandomID(),
+			ProviderConfigs: defaultProviderConfigs(),
+			Budgets:         []BudgetRequest{{MaxLimit: 0.00001, ResetDuration: "1M"}},
+		},
+	})
+	if createResp.StatusCode != 200 {
+		t.Fatalf("Failed to create VK: status %d, body %v", createResp.StatusCode, createResp.Body)
+	}
+	vkID := ExtractIDFromResponse(t, createResp)
+	testData.AddVirtualKey(vkID)
+	vkValue := createResp.Body["virtual_key"].(map[string]interface{})["value"].(string)
+
+	completion := func() *APIResponse {
+		return MakeRequest(t, APIRequest{
+			Method: "POST",
+			Path:   "/v1/chat/completions",
+			Body: ChatCompletionRequest{
+				Model:    "openai/gpt-4o",
+				Messages: []ChatMessage{{Role: "user", Content: "Reply with the single word: ok"}},
+			},
+			VKHeader: &vkValue,
+		})
+	}
+
+	// The first request is admitted because usage starts at zero, and its cost
+	// pushes usage past the cap.
+	if resp := completion(); resp.StatusCode >= 400 {
+		t.Fatalf("first request should be admitted on an unused budget: status %d, body %v", resp.StatusCode, resp.Body)
+	}
+
+	// Usage is recorded asynchronously, so wait for enforcement to start rejecting.
+	deadline := time.Now().Add(30 * time.Second)
+	var blocked *APIResponse
+	for {
+		resp := completion()
+		if resp.StatusCode >= 400 {
+			blocked = resp
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("budget of $0.00001 never blocked a request; usage is %v", vkBudgetUsage(t, vkID))
+		}
+		time.Sleep(time.Second)
+	}
+	if !CheckErrorMessage(t, blocked, "budget") {
+		t.Fatalf("request was rejected for a reason other than budget: %v", blocked.Body)
+	}
+	t.Logf("budget exhausted as expected at $%.8f of usage", vkBudgetUsage(t, vkID))
+
+	// Reset usage and raise the cap, so the next request is admitted only if the
+	// reset actually reached the store that enforces spend.
+	resetUsage := true
+	resetResp := MakeRequest(t, APIRequest{
+		Method: "PUT",
+		Path:   "/api/governance/virtual-keys/" + vkID,
+		Body: UpdateVirtualKeyRequest{
+			Budgets:          []BudgetRequest{{MaxLimit: 5, ResetDuration: "1M"}},
+			ResetBudgetUsage: &resetUsage,
+		},
+	})
+	if resetResp.StatusCode != 200 {
+		t.Fatalf("Failed to reset budget usage: status %d, body %v", resetResp.StatusCode, resetResp.Body)
+	}
+	if usage := vkBudgetUsage(t, vkID); usage != 0 {
+		t.Fatalf("usage was not cleared: %v", usage)
+	}
+
+	if resp := completion(); resp.StatusCode >= 400 {
+		t.Errorf("request still rejected after the usage reset, so enforcement did not see it: status %d, body %v",
+			resp.StatusCode, resp.Body)
+	}
+}

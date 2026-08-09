@@ -319,6 +319,8 @@ type UpdateTeamRequest struct {
 	// rate limit. Pointer so a test can distinguish "leave unchanged" from an
 	// explicit false.
 	CalendarAligned *bool `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // UpdateCustomerRequest represents a request to update a customer
@@ -326,6 +328,8 @@ type UpdateCustomerRequest struct {
 	Name            *string         `json:"name,omitempty"`
 	Budgets         []BudgetRequest `json:"budgets,omitempty"`
 	CalendarAligned *bool           `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request
