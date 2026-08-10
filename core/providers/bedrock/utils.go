@@ -8,10 +8,7 @@ import (
 	"fmt"
 	"mime"
 	"net/url"
-<<<<<<< HEAD
 	"path/filepath"
-=======
->>>>>>> fce501eed (fix: bedrock files handling in inference (#5947))
 	"regexp"
 	"strings"
 
@@ -1335,10 +1332,6 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		if block.File.FileData != nil && strings.HasPrefix(*block.File.FileData, "data:") {
 			dataURLMediaType, dataURLIsBase64, dataURLPayload, isDataURL = schemas.ParseDataURL(*block.File.FileData)
 		}
-		if format != "" {
-			documentSource.Format = format
-		}
-
 		// Resolve the document format, most authoritative hint first. Falls back to
 		// the "pdf" default only when nothing identifies the document.
 		format, isText := "", false
