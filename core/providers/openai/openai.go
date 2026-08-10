@@ -511,6 +511,9 @@ func HandleOpenAITextCompletionStreaming(
 				},
 			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
+		if errors.Is(err, providerUtils.ErrRestrictedIPBlocked) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderRestrictedIPBlocked, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
@@ -1118,6 +1121,9 @@ func HandleOpenAIChatCompletionStreaming(
 					Error:   err,
 				},
 			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
+		if errors.Is(err, providerUtils.ErrRestrictedIPBlocked) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderRestrictedIPBlocked, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -1833,6 +1839,9 @@ func HandleOpenAIResponsesStreaming(
 				},
 			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
+		if errors.Is(err, providerUtils.ErrRestrictedIPBlocked) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderRestrictedIPBlocked, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
@@ -2478,6 +2487,9 @@ func HandleOpenAISpeechStreamRequest(
 					Error:   err,
 				},
 			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
+		if errors.Is(err, providerUtils.ErrRestrictedIPBlocked) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderRestrictedIPBlocked, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
