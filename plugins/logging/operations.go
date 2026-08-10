@@ -700,6 +700,24 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		if result.ImageGenerationResponse != nil {
 			entry.ImageGenerationOutputParsed = result.ImageGenerationResponse
 		}
+		if result.VideoGenerationResponse != nil {
+			// Generation, remix and retrieve all return BifrostVideoGenerationResponse;
+			// the request type is the only discriminator.
+			if extraFields.RequestType == schemas.VideoRetrieveRequest {
+				entry.VideoRetrieveOutputParsed = result.VideoGenerationResponse
+			} else {
+				entry.VideoGenerationOutputParsed = result.VideoGenerationResponse
+			}
+		}
+		if result.VideoDownloadResponse != nil {
+			entry.VideoDownloadOutputParsed = result.VideoDownloadResponse
+		}
+		if result.VideoListResponse != nil {
+			entry.VideoListOutputParsed = result.VideoListResponse
+		}
+		if result.VideoDeleteResponse != nil {
+			entry.VideoDeleteOutputParsed = result.VideoDeleteResponse
+		}
 		if result.PassthroughResponse != nil && len(result.PassthroughResponse.Body) > 0 {
 			entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
 		}
