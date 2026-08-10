@@ -1407,6 +1407,15 @@ func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestC
 		// change and overwrite what this reset just preserved.
 		defaults.ConfigHashes.SemanticSettings = current.ConfigHashes.SemanticSettings
 	}
+	// Session behaviour is preserved for the same reason as the semantic block:
+	// this endpoint restores the default phrase lists, and nothing about that
+	// implies a conversation should stop holding its tier. Silently switching
+	// session routing off here would change how every live conversation is routed
+	// as a side effect of an unrelated action.
+	if current != nil && current.Session != nil {
+		defaults.Session = current.Session
+		defaults.ConfigHashes.SessionSettings = current.ConfigHashes.SessionSettings
+	}
 	// Normalize before anything leaves this handler, matching the PUT path. The
 	// store and the classifier normalize on their own, so persistence and
 	// routing were always correct — but the raw defaults carry phrases as

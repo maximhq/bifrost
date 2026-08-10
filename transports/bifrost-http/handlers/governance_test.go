@@ -365,6 +365,99 @@ func TestComplexityAnalyzerConfigPutPersistsAndReloads(t *testing.T) {
 	}
 }
 
+// The session block travels through a different path than the rest of the
+// analyzer config: it is encoded into its own record column and merged by hash.
+// A field missed in any of those steps round-trips as a silent zero rather than
+// an error, so this asserts the values survive the full PUT → store → reload.
+func TestComplexityAnalyzerConfigPutRoundTripsSessionBlock(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &mockComplexityGovernanceManager{}
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	cfg := complexity.DefaultAnalyzerConfig()
+	cfg.Session = &configstore.ComplexitySessionConfig{
+		Mode:                  configstore.ComplexitySessionModePinned,
+		TTL:                   30 * time.Minute,
+		ReleaseAfterFailures:  5,
+		MaxSwitchesPerSession: 2,
+	}
+
+	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
+	handler.updateComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil || stored.Session == nil {
+		t.Fatalf("expected session block to survive the round trip, got %+v", stored)
+	}
+	if stored.Session.Mode != configstore.ComplexitySessionModePinned {
+		t.Fatalf("expected mode %q, got %q", configstore.ComplexitySessionModePinned, stored.Session.Mode)
+	}
+	if stored.Session.TTL != 30*time.Minute {
+		t.Fatalf("expected ttl 30m, got %s", stored.Session.TTL)
+	}
+	if stored.Session.ReleaseAfterFailures != 5 {
+		t.Fatalf("expected release_after_failures 5, got %d", stored.Session.ReleaseAfterFailures)
+	}
+	if stored.Session.MaxSwitchesPerSession != 2 {
+		t.Fatalf("expected max_switches_per_session 2, got %d", stored.Session.MaxSwitchesPerSession)
+	}
+	// Unset fields must come back carrying normalization's defaults rather than
+	// zeros, since a zero TTL or empty identity ladder would disable the feature
+	// while the mode still reads as enabled.
+	if len(stored.Session.IdentitySources) == 0 {
+		t.Fatalf("expected identity sources to be defaulted, got %+v", stored.Session)
+	}
+	if stored.Session.DowngradeAfterNTurns != configstore.DefaultComplexitySessionDowngradeAfterNTurns {
+		t.Fatalf("expected downgrade_after_n_turns default %d, got %d",
+			configstore.DefaultComplexitySessionDowngradeAfterNTurns, stored.Session.DowngradeAfterNTurns)
+	}
+}
+
+// switch_min_similarity below semantic.min_similarity inverts the intended
+// hysteresis — a lower bar to switch a session than to classify a turn — and the
+// two values live in different config blocks, so nothing but this cross-field
+// check catches it.
+func TestComplexityAnalyzerConfigPutRejectsSwitchSimilarityBelowMinSimilarity(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockComplexityGovernanceManager{},
+	}
+
+	cfg := complexity.DefaultAnalyzerConfig()
+	cfg.Semantic = &configstore.ComplexitySemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+		MinSimilarity:  0.8,
+	}
+	cfg.Session = &configstore.ComplexitySessionConfig{
+		Mode:                configstore.ComplexitySessionModeCacheAware,
+		SwitchMinSimilarity: 0.5,
+	}
+
+	ctx := newTestRequestCtx(testComplexityAnalyzerPayload(t, cfg))
+	handler.updateComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "switch_min_similarity") {
+		t.Fatalf("expected error naming switch_min_similarity, got %s", string(ctx.Response.Body()))
+	}
+}
+
 func TestComplexityAnalyzerConfigPutAcceptsLegacyKeywordsAndWritesCanonicalShape(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := setupPricingOverrideHandlerStore(t)
@@ -775,6 +868,66 @@ func TestComplexityAnalyzerConfigResetPreservesSemanticBlock(t *testing.T) {
 	}
 	if body.Semantic == nil || body.Semantic.EmbeddingModel != "text-embedding-3-small" {
 		t.Fatalf("expected the reset response to carry the semantic block, got %s", string(ctx.Response.Body()))
+	}
+}
+
+// Restoring the default phrase lists says nothing about whether conversations
+// should keep holding their tier. Dropping the session block here would change
+// how every live conversation routes as a side effect of an unrelated action.
+func TestComplexityAnalyzerConfigResetPreservesSessionBlock(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: &mockComplexityGovernanceManager{},
+	}
+
+	custom := complexity.DefaultAnalyzerConfig()
+	custom.Keywords.SimpleKeywords = []string{"only phrase the operator wrote"}
+	custom.Session = &configstore.ComplexitySessionConfig{
+		Mode:                 configstore.ComplexitySessionModePinned,
+		TTL:                  45 * time.Minute,
+		ReleaseAfterFailures: 7,
+	}
+	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
+		t.Fatalf("seed custom config: %v", err)
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.resetComplexityAnalyzerConfig(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get stored config: %v", err)
+	}
+	if stored == nil || stored.Session == nil {
+		t.Fatalf("reset must keep session behavior, got %+v", stored)
+	}
+	if stored.Session.Mode != configstore.ComplexitySessionModePinned {
+		t.Fatalf("expected mode preserved, got %q", stored.Session.Mode)
+	}
+	if stored.Session.TTL != 45*time.Minute {
+		t.Fatalf("expected ttl preserved, got %s", stored.Session.TTL)
+	}
+	if stored.Session.ReleaseAfterFailures != 7 {
+		t.Fatalf("expected release_after_failures preserved, got %d", stored.Session.ReleaseAfterFailures)
+	}
+	// The phrase lists are what reset actually owns.
+	if slices.Contains(stored.Keywords.SimpleKeywords, "only phrase the operator wrote") {
+		t.Fatalf("expected default simple phrases after reset, got %v", stored.Keywords.SimpleKeywords)
+	}
+	// The response body drives the form the operator is looking at; if it omitted
+	// the block the sheet would show session behavior switched off.
+	var body complexity.AnalyzerConfig
+	if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+		t.Fatalf("decode reset response: %v", err)
+	}
+	if body.Session == nil || body.Session.Mode != configstore.ComplexitySessionModePinned {
+		t.Fatalf("expected the reset response to carry the session block, got %s", string(ctx.Response.Body()))
 	}
 }
 

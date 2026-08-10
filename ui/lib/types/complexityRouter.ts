@@ -39,9 +39,33 @@ export interface SemanticStatusInfo {
 	cached_phrases?: number;
 }
 
+// Mirrors ComplexitySessionMode* in framework/configstore. "off" is a real
+// stored value rather than an absent block, so an operator who turns session
+// behavior off keeps the settings they tuned instead of losing them.
+export type SessionMode = "off" | "pinned" | "cache_aware";
+
+// Mirrors ComplexitySessionIdentity* in framework/configstore. The gateway
+// always tries these in the order header → harness regardless of how they are
+// listed in persisted configuration.
+export type SessionIdentitySource = "header" | "harness";
+
+export interface SessionConfig {
+	mode: SessionMode;
+	ttl?: string;
+	identity_sources?: SessionIdentitySource[];
+	release_after_failures?: number;
+	// cache_aware only, from here down.
+	switch_min_similarity?: number;
+	downgrade_after_n_turns?: number;
+	min_cached_tokens_to_hold?: number;
+	max_switches_per_session?: number;
+	always_allow_escalation?: boolean;
+}
+
 export interface AnalyzerConfig {
 	keywords: EditableKeywordConfig;
 	semantic?: SemanticConfig;
+	session?: SessionConfig;
 }
 
 export type KeywordListKey = keyof EditableKeywordConfig;
@@ -165,4 +189,121 @@ export function parseSemanticTimeoutMs(timeout: string | undefined): number {
 export function formatSemanticTimeout(milliseconds: number): string {
 	const safe = Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : DEFAULT_SEMANTIC_TIMEOUT_MS;
 	return `${safe}ms`;
+}
+
+// Mirrors DefaultComplexitySession* in framework/configstore.
+export const DEFAULT_SESSION_TTL_MINUTES = 60;
+export const DEFAULT_SESSION_RELEASE_AFTER_FAILURES = 3;
+export const DEFAULT_SESSION_DOWNGRADE_AFTER_N_TURNS = 2;
+export const DEFAULT_SESSION_MIN_CACHED_TOKENS_TO_HOLD = 1024;
+
+// Fingerprint is deliberately absent, matching DefaultComplexitySessionIdentitySources:
+// it groups conversations by their opening text, so two unrelated sessions that
+// start the same way would share one tier.
+export const DEFAULT_SESSION_IDENTITY_SOURCES: SessionIdentitySource[] = ["header", "harness"];
+
+export const DEFAULT_SESSION_CONFIG: SessionConfig = {
+	mode: "off",
+	ttl: `${DEFAULT_SESSION_TTL_MINUTES}m`,
+	identity_sources: DEFAULT_SESSION_IDENTITY_SOURCES,
+	release_after_failures: DEFAULT_SESSION_RELEASE_AFTER_FAILURES,
+	switch_min_similarity: 0,
+	downgrade_after_n_turns: DEFAULT_SESSION_DOWNGRADE_AFTER_N_TURNS,
+	min_cached_tokens_to_hold: DEFAULT_SESSION_MIN_CACHED_TOKENS_TO_HOLD,
+	max_switches_per_session: 0,
+	always_allow_escalation: false,
+};
+
+// These are the wire values, not display aliases: config.json and the governance
+// API take the same three strings.
+export const SESSION_MODE_OPTIONS: Array<{
+	value: SessionMode;
+	label: string;
+	description: string;
+}> = [
+	{
+		value: "off",
+		label: "Off",
+		description: "Every turn is classified independently. Tiers can change mid-conversation.",
+	},
+	{
+		value: "pinned",
+		label: "Pinned",
+		description: "The first turn of a conversation picks the tier and the rest of the session keeps it.",
+	},
+	{
+		value: "cache_aware",
+		label: "Cache aware",
+		description: "Like Pinned, but a confident enough classification can still move the session when little cache would be lost.",
+	},
+];
+
+export const SESSION_MODE_LABELS: Record<SessionMode, string> = {
+	off: "Off",
+	pinned: "Pinned",
+	cache_aware: "Cache aware",
+};
+
+export const SESSION_IDENTITY_SOURCE_OPTIONS: Array<{
+	value: SessionIdentitySource;
+	label: string;
+	description: string;
+}> = [
+	{
+		value: "header",
+		label: "Session header",
+		description: "Uses the x-bf-session-id header sent by the caller. The most explicit source, and the only one the caller controls.",
+	},
+	{
+		value: "harness",
+		label: "Harness session ID",
+		description: "Uses the conversation ID that coding harnesses such as Claude Code and Codex already send.",
+	},
+];
+
+// Go's time.Duration.String() emits concatenated units ("1h0m0s", "30m0s"), not
+// only the single-unit forms the minutes control writes ("60m"). Accept both so
+// a saved config can round-trip into the form without looking malformed.
+const GO_DURATION_UNIT_TO_MINUTES: Record<string, number> = {
+	ns: 1 / 6e10,
+	us: 1 / 6e7,
+	µs: 1 / 6e7,
+	μs: 1 / 6e7,
+	ms: 1 / 60000,
+	s: 1 / 60,
+	m: 1,
+	h: 60,
+};
+
+// Returns null when the string is blank, zero, negative, or not a Go duration.
+export function tryParseSessionTtlMinutes(ttl: string | undefined): number | null {
+	if (!ttl) return null;
+	const trimmed = ttl.trim();
+	if (!trimmed) return null;
+
+	// Local /g regex — a shared lastIndex would leak across calls.
+	const partRe = /([0-9]*\.?[0-9]+)(ns|us|µs|μs|ms|s|m|h)/g;
+	let total = 0;
+	let matched = 0;
+	let part: RegExpExecArray | null;
+	while ((part = partRe.exec(trimmed)) !== null) {
+		if (part.index !== matched) return null;
+		matched = part.index + part[0].length;
+		const value = Number(part[1]);
+		const unit = GO_DURATION_UNIT_TO_MINUTES[part[2]];
+		if (!Number.isFinite(value) || unit === undefined) return null;
+		total += value * unit;
+	}
+	if (matched === 0 || matched !== trimmed.length) {
+		const numeric = Number(trimmed);
+		return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+	}
+	return Number.isFinite(total) && total > 0 ? total : null;
+}
+
+// TTL round-trips as a Go duration ("1h0m0s", "30m") but the form edits minutes.
+// Anything unparseable falls back to the default rather than sending 0, which
+// the server rejects.
+export function parseSessionTtlMinutes(ttl: string | undefined): number {
+	return tryParseSessionTtlMinutes(ttl) ?? DEFAULT_SESSION_TTL_MINUTES;
 }
