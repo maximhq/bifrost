@@ -1791,8 +1791,12 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		// Message stop - always set stopReason
 		stopReason := "end_turn"
-		if bifrostResp.Response != nil && bifrostResp.Response.IncompleteDetails != nil {
-			stopReason = bifrostResp.Response.IncompleteDetails.Reason
+		if bifrostResp.Response != nil {
+			if bifrostResp.Response.StopReason != nil {
+				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
+			} else if bifrostResp.Response.IncompleteDetails != nil {
+				stopReason = bifrostResp.Response.IncompleteDetails.Reason
+			}
 		}
 		event.StopReason = &stopReason
 
@@ -2665,8 +2669,14 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	if !schemas.BedrockModelSupportsCachePoints(capModel) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
-	} else if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
-		downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+	} else {
+		if !schemas.BedrockModelSupportsExtendedCacheTTL(capModel) {
+			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+		}
+		// Bedrock rejects a request carrying more than BedrockMaxCachePoints markers outright,
+		// so trim the earliest rather than let the whole call fail. Runs last, after every
+		// converter branch has contributed its markers.
+		clampBedrockCachePoints(bedrockReq)
 	}
 
 	return bedrockReq, nil
@@ -3911,22 +3921,58 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
+	// Only the LAST breakpoint in a reminder is emitted. Within a single message an intermediate
+	// cachePoint buys nothing — a marker at the end already closes over every preceding block, and
+	// the message is atomic so no later request can diverge in its middle — while still consuming
+	// one of the four checkpoints Bedrock allows per request. Collapsing to one keeps a
+	// pathological reminder from crowding out the system and tool-result anchors.
+	var lastCacheControl *schemas.CacheControl
 
-	// Text-only by design: reminders never carry images, and we deliberately attach no cache point
-	// here — a breakpoint on this moving-tail message would shift every turn and defeat the prefix
-	// caching this inlining exists for.
+	// Text-only by design: reminders never carry images.
+	//
+	// The breakpoint, by contrast, has to survive the inlining. A mid-conversation reminder
+	// frequently carries the conversation-level cache anchor — Claude Code's third breakpoint,
+	// after the two on the leading system prompt — and dropping it leaves both survivors inside
+	// the `system` block, pinning the cacheable prefix at the system/tools floor so the entire
+	// conversation body is re-read uncached on every turn. That is the exact collapse the
+	// surrounding inlining exists to prevent.
+	//
+	// A breakpoint on this moving tail is not a wasted breakpoint: Bedrock matches the longest
+	// cached prefix at or before each breakpoint, so one that advances a turn at a time extends
+	// the cached prefix and costs a single write, which is how incremental conversation caching
+	// is meant to work. Measured end to end in the harness — 49.8% → 99.9% hit rate on a warm
+	// ~19K prompt. See tests/e2e/api/runners/lib/midconv-system-cache-parity.mjs and
+	// midconvcachepoint_test.go.
+	//
+	// Models that don't support prompt caching are unaffected: stripCachePointsFromBedrockRequest
+	// runs later in ToBedrockResponsesRequest and drops cachePoint-only content blocks outright.
 	if msg.Content.ContentStr != nil {
+		// The string form has nowhere to hang a per-block cache_control, so no breakpoint was
+		// sent and none may be invented — that would burn a cache checkpoint the client never
+		// asked for, against a cap Bedrock sets at 4 for Claude.
 		wrap(*msg.Content.ContentStr)
 	} else if msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Text != nil {
 				wrap(*block.Text)
+				if block.CacheControl != nil {
+					lastCacheControl = block.CacheControl
+				}
 			}
 		}
 	}
 
 	if len(contentBlocks) == 0 {
 		return nil
+	}
+
+	// Per Converse semantics a cachePoint element terminates the cacheable prefix rather than
+	// opening one, so it follows the text it closes over — the same ordering every sibling call
+	// site in this file already uses for tool_use and tool_result blocks.
+	if lastCacheControl != nil {
+		contentBlocks = append(contentBlocks, BedrockContentBlock{
+			CachePoint: newBedrockCachePoint(lastCacheControl.TTL),
+		})
 	}
 
 	return &BedrockMessage{
@@ -4531,49 +4577,91 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 	return outputMessages
 }
 
-// convertBifrostReasoningToBedrockReasoning converts a Bifrost reasoning message to Bedrock reasoning blocks
+// convertBifrostReasoningToBedrockReasoning converts a Bifrost reasoning message to Bedrock reasoning blocks.
+//
+// Every block this emits MUST carry a non-nil Text. BedrockReasoningContentText.Text
+// is `*string json:"text,omitempty"`, so a nil pointer does not serialise as
+// `"text":null` -- the key disappears from the request entirely, and Bedrock Converse
+// answers:
+//
+//	N validation errors detected: Value at 'messages.2.member.content.1.member.
+//	reasoningContent.reasoningText.text' failed to satisfy constraint: Member must not be null
+//
+// once per replayed assistant turn. See reasoning_replay_test.go, which pins the
+// invariant at both the struct and the serialised-wire level.
 func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []BedrockContentBlock {
 	var reasoningBlocks []BedrockContentBlock
 
-	if msg.Content != nil && msg.Content.ContentBlocks != nil {
+	// Track whether the content blocks actually produced reasoning rather than
+	// branching on Content being non-nil. A non-nil but empty ContentBlocks -- or
+	// one holding only non-reasoning blocks -- must fall through to
+	// ResponsesReasoning instead of shadowing it, otherwise the replayed reasoning
+	// is silently dropped. Mirrors toBedrockInvokeAnthropicResponse in invoke.go,
+	// which already guards this on the invoke path.
+	emittedFromContentBlocks := false
+	if msg.Content != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
-				reasoningBlock := BedrockContentBlock{
+				reasoningBlocks = append(reasoningBlocks, BedrockContentBlock{
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      block.Text,
 							Signature: reasoningSignatureForBedrock(block.Signature),
 						},
 					},
-				}
-				reasoningBlocks = append(reasoningBlocks, reasoningBlock)
+				})
+				emittedFromContentBlocks = true
 			}
 		}
-	} else if msg.ResponsesReasoning != nil {
-		if msg.ResponsesReasoning.Summary != nil {
-			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
-				reasoningBlock := BedrockContentBlock{
-					ReasoningContent: &BedrockReasoningContent{
-						ReasoningText: &BedrockReasoningContentText{
-							Text: &reasoningContent.Text,
-						},
-					},
-				}
-				reasoningBlocks = append(reasoningBlocks, reasoningBlock)
-			}
-		} else if msg.ResponsesReasoning.EncryptedContent != nil {
-			// Bedrock doesn't have a direct equivalent to encrypted content,
-			// so we'll store it as a regular reasoning block with a special marker
-			encryptedText := fmt.Sprintf("[ENCRYPTED_REASONING: %s]", *msg.ResponsesReasoning.EncryptedContent)
-			reasoningBlock := BedrockContentBlock{
+	}
+	if emittedFromContentBlocks || msg.ResponsesReasoning == nil {
+		return reasoningBlocks
+	}
+
+	// Routed through the helper rather than read directly, so the empty-string
+	// guard matches every other signature site (see reasoningSignatureForBedrock).
+	signature := reasoningSignatureForBedrock(msg.ResponsesReasoning.EncryptedContent)
+
+	if len(msg.ResponsesReasoning.Summary) > 0 {
+		for i, reasoningContent := range msg.ResponsesReasoning.Summary {
+			text := reasoningContent.Text
+			block := BedrockContentBlock{
 				ReasoningContent: &BedrockReasoningContent{
-					ReasoningText: &BedrockReasoningContentText{
-						Text: &encryptedText,
-					},
+					ReasoningText: &BedrockReasoningContentText{Text: &text},
 				},
 			}
-			reasoningBlocks = append(reasoningBlocks, reasoningBlock)
+			// The signature goes on the first block only. Bedrock verifies it
+			// against that block's text, so repeating one signature across several
+			// summary entries would present it as signing text it never signed --
+			// and dropping it entirely, as this branch used to, loses the replay
+			// token the next turn needs.
+			if i == 0 {
+				block.ReasoningContent.ReasoningText.Signature = signature
+			}
+			reasoningBlocks = append(reasoningBlocks, block)
 		}
+		return reasoningBlocks
+	}
+
+	if signature != nil {
+		// A signature with no accompanying thinking text. This is what the
+		// streaming ingress path emits (an empty summary plus the signature in
+		// encrypted_content), so it is what a client faithfully replaying a
+		// streamed turn sends back.
+		//
+		// An empty Text is the only text available here -- the client never
+		// received the prose to replay -- but an ABSENT one is not an option: it
+		// is the difference between a request Bedrock evaluates and one it
+		// rejects outright before reading a token.
+		emptyText := ""
+		reasoningBlocks = append(reasoningBlocks, BedrockContentBlock{
+			ReasoningContent: &BedrockReasoningContent{
+				ReasoningText: &BedrockReasoningContentText{
+					Text:      &emptyText,
+					Signature: signature,
+				},
+			},
+		})
 	}
 
 	return reasoningBlocks

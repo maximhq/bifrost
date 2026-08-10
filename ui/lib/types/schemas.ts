@@ -430,6 +430,12 @@ export const networkConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z
+			.number()
+			.int("HTTP/2 ping interval must be a whole number of seconds")
+			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
+			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
@@ -489,6 +495,12 @@ export const networkFormConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z.coerce
+			.number("HTTP/2 ping interval must be a number")
+			.int("HTTP/2 ping interval must be a whole number of seconds")
+			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
+			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {

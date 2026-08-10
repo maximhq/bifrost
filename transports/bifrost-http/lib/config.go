@@ -2375,6 +2375,17 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				if forceFileSync || existingBudget.ConfigHash != fileBudgetHash {
 					logger.Debug("config hash mismatch for budget %s, syncing from config file", newBudget.ID)
 					configData.Governance.Budgets[i].ConfigHash = fileBudgetHash
+					// config.json is authoritative for configuration, never for
+					// accounting. The file row carries CurrentUsage=0 and a zero
+					// LastReset because it declares neither, so adopt the persisted
+					// values before any copy is taken. Mutating the source element
+					// rather than the copies fixes all three consumers at once: the
+					// row handed to UpdateBudget, the merged snapshot below, and
+					// pruneGovernanceConfigToFile's wholesale replacement of
+					// config.GovernanceConfig.Budgets, which runs after this and
+					// would otherwise re-zero what we just repaired.
+					configData.Governance.Budgets[i].CurrentUsage = existingBudget.CurrentUsage
+					configData.Governance.Budgets[i].LastReset = existingBudget.LastReset
 					budgetsToUpdate = append(budgetsToUpdate, configData.Governance.Budgets[i])
 					governanceConfig.Budgets[j] = configData.Governance.Budgets[i]
 				} else {
@@ -2406,6 +2417,11 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				if forceFileSync || existingRateLimit.ConfigHash != fileRLHash {
 					logger.Debug("config hash mismatch for rate limit %s, syncing from config file", newRateLimit.ID)
 					configData.Governance.RateLimits[i].ConfigHash = fileRLHash
+					// Same ownership boundary as budgets above.
+					configData.Governance.RateLimits[i].TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
+					configData.Governance.RateLimits[i].TokenLastReset = existingRateLimit.TokenLastReset
+					configData.Governance.RateLimits[i].RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
+					configData.Governance.RateLimits[i].RequestLastReset = existingRateLimit.RequestLastReset
 					rateLimitsToUpdate = append(rateLimitsToUpdate, configData.Governance.RateLimits[i])
 					governanceConfig.RateLimits[j] = configData.Governance.RateLimits[i]
 				} else {

@@ -1,0 +1,246 @@
+---
+title: "GitHub Copilot"
+description: "Route GitHub Copilot App, Copilot CLI, and the VS Code Copilot Chat extension through Bifrost using each surface's Bring Your Own Key (BYOK) support."
+icon: "github"
+---
+
+GitHub Copilot ships **Bring Your Own Key (BYOK)** support across all three of its surfaces - the standalone [Copilot app](https://docs.github.com/en/copilot/how-tos/github-copilot-app), [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli), and the [Copilot Chat extension for VS Code](https://code.visualstudio.com/docs/agent-customization/language-models).
+
+<Note>
+If your Allowed Headers are already set to `*`, you can skip this note. If not and you face issues integrating Bifrost with Copilot, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
+</Note>
+
+<Note>
+BYOK is a recent addition to all three surfaces and menu labels can shift between releases. If a step below doesn't match what you see, update to the latest version of the app/CLI/extension first.
+</Note>
+
+## GitHub Copilot App
+
+The [GitHub Copilot app](https://docs.github.com/en/copilot/how-tos/github-copilot-app) is the standalone desktop client for running agentic coding sessions outside an editor. It supports BYOK, so you can run sessions entirely against Bifrost - you still sign in with a GitHub account, but you don't need an active Copilot plan if you're only using your own provider.
+
+1. Open the Copilot app and go to **Settings → Model Providers → Add Provider**.
+2. Choose the **OpenAI-compatible** provider type (Anthropic is also listed if you'd rather point at Bifrost's native Anthropic surface - see the alternative below).
+3. Fill in the provider details:
+
+   | Field | Value |
+   |-------|-------|
+   | **Name** | `Bifrost` (or anything you'll recognize in the model picker) |
+   | **Base URL** | `http://localhost:8080/openai/v1/chat/completions` (or your deployed Bifrost host, e.g. `https://bifrost.example.com/openai/v1/chat/completions`) |
+   | **API Key** | Your Bifrost virtual key |
+
+4. Save. Bifrost-routed models now appear in the app's model picker alongside any GitHub-hosted models, and you choose which one to use per session.
+
+<Note>
+To use Bifrost's native Anthropic-compatible surface instead, add an **Anthropic** provider with base URL `http://localhost:8080/anthropic` and your Bifrost virtual key as the API key.
+</Note>
+
+Provider credentials are stored in your OS's credential store and are never displayed back in the UI.
+
+## GitHub Copilot CLI
+
+[Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli) is GitHub's agentic terminal coding agent - it inspects your repo, edits files, runs commands, and reviews diffs from the shell.
+
+### Installing Copilot CLI
+
+```bash
+npm install -g @github/copilot
+```
+
+Requires Node.js 22 or later. WinGet, Homebrew, and standalone binary installs are also available - see the [installation docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli).
+
+### Configuring Copilot CLI with Bifrost
+
+Copilot CLI reads its model provider from environment variables, set before launching:
+
+```bash
+export COPILOT_PROVIDER_TYPE=openai
+export COPILOT_PROVIDER_BASE_URL=http://localhost:8080/openai/v1
+export COPILOT_PROVIDER_API_KEY=<bifrost_virtual_key>
+export COPILOT_MODEL=openai/gpt-5
+```
+
+```bash
+copilot
+```
+
+Always launch `copilot` from the same terminal session where you exported these variables, or add them to your shell profile - GUI-launched terminals and IDE-integrated shells won't pick up an interactive export unless the environment is configured there too.
+
+You can also switch models per run with the `--model` flag:
+
+```bash
+copilot --model anthropic/claude-sonnet-4-5-20250929
+```
+
+<Note>
+Set `COPILOT_PROVIDER_TYPE=anthropic` and `COPILOT_PROVIDER_BASE_URL=http://localhost:8080/anthropic` to route Copilot CLI through Bifrost's native Anthropic-compatible surface instead.
+</Note>
+
+<Warning>
+Models used with Copilot CLI must support tool calling and streaming - Copilot CLI relies on both for file edits, command execution, and multi-step tasks. GitHub recommends a minimum 128k context window.
+</Warning>
+
+## GitHub Copilot Chat (VS Code Extension)
+
+The Copilot Chat extension's current BYOK path is the **Custom Endpoint** model provider (the older `github.copilot.chat.customOAIModels` setting still works but is deprecated).
+
+1. Open the Command Palette and run **Chat: Manage Language Models** (or click the gear icon in the chat model picker).
+2. Choose **Add Models → Custom Endpoint**. VS Code creates/opens a `chatLanguageModels.json` file.
+3. Add an entry pointing at Bifrost:
+
+```json
+[
+  {
+    "name": "Bifrost",
+    "vendor": "customendpoint",
+    "apiKey": "${input:bifrostApiKey}",
+    "apiType": "chat-completions",
+    "models": [
+      {
+        "id": "anthropic/claude-sonnet-4-5-20250929",
+        "name": "Claude Sonnet 4.5 (Bifrost)",
+        "url": "http://localhost:8080/openai/v1/chat/completions",
+        "toolCalling": true,
+        "vision": true,
+        "maxInputTokens": 200000,
+        "maxOutputTokens": 8192
+      },
+      {
+        "id": "openai/gpt-5",
+        "name": "GPT-5 (Bifrost)",
+        "url": "http://localhost:8080/openai/v1/chat/completions",
+        "toolCalling": true,
+        "vision": true,
+        "maxInputTokens": 400000,
+        "maxOutputTokens": 128000
+      }
+    ]
+  }
+]
+```
+
+4. Save the file. VS Code will prompt you to enter the API key securely on first use - enter your Bifrost virtual key; it's stored in VS Code's secret storage, not in `chatLanguageModels.json`.
+5. Open the chat model picker and select one of your Bifrost models.
+
+Add one `models` entry per Bifrost model you want selectable, using the `provider/model-name` format for `id`.
+
+<Note>
+`apiType` also accepts `"messages"` (Anthropic's Messages API) and `"responses"` (OpenAI's Responses API). To use Bifrost's native Anthropic surface instead, set `"apiType": "messages"` and point `url` at `http://localhost:8080/anthropic/v1/messages`.
+</Note>
+
+## Using Virtual Keys
+
+Bifrost [Virtual Keys](/features/governance/virtual-keys) work as the API key in all three surfaces - the Copilot app's provider API key, Copilot CLI's `COPILOT_PROVIDER_API_KEY`, and the VS Code extension's Custom Endpoint API key. Virtual keys let you enforce budgets, rate limits, and provider access controls per user or team without sharing raw provider credentials.
+
+## Adding MCP Servers via Bifrost
+
+<Note>
+This feature is only available on `v1.4.0-prerelease1` and above.
+</Note>
+
+Bifrost exposes every MCP tool you've configured through a single aggregated MCP server endpoint at `/mcp`. Instead of wiring each individual MCP server into Copilot, connect Copilot to Bifrost once and it gets every tool Bifrost has access to - with virtual keys controlling which tools each client is allowed to see.
+
+### GitHub Copilot CLI
+
+Add Bifrost with `copilot mcp add`.
+
+**Header auth** (`headers` or `both` mode) - send a virtual key as a `Bearer` token or under `x-bf-vk` header:
+
+```bash
+copilot mcp add --transport http \
+  --header "x-bf-vk: <BIFROST_VIRTUAL_KEY>" \
+  bifrost http://localhost:8080/mcp
+```
+
+**OAuth** (`oauth` or `both` mode) - omit `--header` entirely:
+
+```bash
+copilot mcp add --transport http bifrost http://localhost:8080/mcp
+```
+
+This writes the server into `~/.copilot/mcp-config.json`, which you can also edit directly:
+
+```json
+{
+  "mcpServers": {
+    "bifrost": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "x-bf-vk": "<BIFROST_VIRTUAL_KEY>"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Replace `<BIFROST_VIRTUAL_KEY>` with your actual Bifrost virtual key, or drop the `headers` block entirely for OAuth. Copilot CLI will only have access to the MCP tools permitted by that key's configuration.
+
+### GitHub Copilot Chat (VS Code Extension)
+
+Add Bifrost to `.vscode/mcp.json` (to share with your team via version control) or your user MCP config (Command Palette → **MCP: Open User Configuration**, for a personal connection).
+
+**Header auth** (`headers` or `both` mode) - send a virtual key as a `Bearer` token or under `x-bf-vk` header:
+
+```json
+{
+  "servers": {
+    "bifrost": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "x-bf-vk": "<BIFROST_VIRTUAL_KEY>"
+      }
+    }
+  }
+}
+```
+
+**OAuth** (`oauth` or `both` mode) - omit `headers` entirely.
+
+```json
+{
+  "servers": {
+    "bifrost": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+Save the file and click **Start** next to the `bifrost` entry, then switch Copilot Chat to **Agent** mode. Click the tools icon (**Configure your MCP server**) at the bottom of the chat window to see Bifrost's tools listed and available to the agent.
+
+### GitHub Copilot App
+
+**Header auth** (`headers` or `both` mode) - send a virtual key as a `Bearer` token or under `x-bf-vk` header:
+
+1. Open **Settings → MCP Servers → Add Server**.
+2. Set **Type** to **HTTP**, **URL** to `http://localhost:8080/mcp`, and add an `x-bf-vk: <BIFROST_VIRTUAL_KEY>` header.
+3. Save. Bifrost's tools become available to agent sessions in the app.
+
+**OAuth** (`oauth` or `both` mode) - leave the headers section empty:
+
+1. Open **Settings → MCP Servers → Add Server**.
+2. Set **Type** to **HTTP**, **URL** to `http://localhost:8080/mcp`, and add no headers.
+3. Save. The app opens a browser consent page against Bifrost on first connect.
+
+<Note>
+The MCP settings screen is newer than BYOK support and menu labels may differ slightly by app version. If you don't see **MCP Servers** in Settings, update to the latest release.
+</Note>
+
+### Tool Access Control
+
+Control which tools each Copilot surface can see using [Virtual Keys](/features/governance/virtual-keys):
+
+- Create a separate virtual key per surface (or per user/team)
+- Configure which MCP servers and tools that key can access in the Bifrost dashboard
+- Bifrost enforces these permissions automatically on every `/mcp` request
+
+For complete setup instructions and tool filtering options, see [MCP Gateway](/mcp/gateway).
+
+## Next Steps
+
+- [Provider Configuration](/quickstart/gateway/provider-configuration) - Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) - Set up usage limits and access control
+- [MCP Gateway](/mcp/gateway) - Full MCP server setup and tool filtering

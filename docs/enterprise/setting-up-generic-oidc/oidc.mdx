@@ -3,7 +3,7 @@ title: "SSO using OIDC"
 description: "Configure any standard OpenID Connect provider as your identity provider for Bifrost Enterprise."
 ---
 
-This guide applies to any identity provider that implements the OpenID Connect (OIDC) standard — including PingIdentity, ForgeRock, OneLogin, JumpCloud, CyberArk Identity, and others not covered by a dedicated Bifrost guide.
+This guide applies to any identity provider that implements the OpenID Connect (OIDC) standard - including PingIdentity, ForgeRock, OneLogin, JumpCloud, CyberArk Identity, and others not covered by a dedicated Bifrost guide.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ This guide applies to any identity provider that implements the OpenID Connect (
 
 In your identity provider's admin console, create a new application. Look for options like **Create App Integration**, **Add Application**, **New Application**, or **Register Client**.
 
-Choose a type that matches the **Authorization Code** flow with a server-side callback — typically **Web Application** or **Regular Web Application** with a **Confidential** client. Avoid **SPA** or **Native** types.
+Choose a type that matches the **Authorization Code** flow with a server-side callback - typically **Web Application** or **Regular Web Application** with a **Confidential** client. Avoid **SPA** or **Native** types.
 
 </Step>
 
@@ -53,10 +53,10 @@ Save the application.
 
 Your application must request the following OAuth scopes:
 
-- `openid` — required for OIDC
-- `profile` — provides `name`, `given_name`, `family_name`
-- `email` — provides the user's email address
-- `offline_access` — provides a refresh token for session maintenance (if supported)
+- `openid` - required for OIDC
+- `profile` - provides `name`, `given_name`, `family_name`
+- `email` - provides the user's email address
+- `offline_access` - provides a refresh token for session maintenance (if supported)
 
 </Step>
 
@@ -109,9 +109,9 @@ The issuer URL typically looks like `https://auth.company.com` or `https://auth.
 
 In your IdP, assign the users or groups that should be able to log in to Bifrost:
 
-- **Explicit assignment** — add users directly to the application
-- **Group-based access** — assign a group; all members get access
-- **Policy-based** — configure an access policy
+- **Explicit assignment** - add users directly to the application
+- **Group-based access** - assign a group; all members get access
+- **Policy-based** - configure an access policy
 
 Only users explicitly granted access can authenticate via Bifrost.
 
@@ -146,11 +146,11 @@ Enter the credentials you copied in Step 3:
 | **Issuer URL** | Your IdP's OIDC issuer URL (no trailing slash) |
 | **Client ID** | Application Client ID |
 | **Client Secret** | Application Client Secret |
-| **Audience** | Optional — the expected `aud` claim. Defaults to Client ID. |
+| **Audience** | Optional - the expected `aud` claim. Defaults to Client ID. |
 
 Click **Discover endpoints** to auto-fill the authorize, token, and userinfo endpoints from your issuer's discovery document. Then click **Verify & Next**.
 
-<Frame caption="Provider Configuration — enter your OIDC issuer URL and client credentials, then Discover endpoints to validate.">
+<Frame caption="Provider Configuration - enter your OIDC issuer URL and client credentials, then Discover endpoints to validate.">
   <img src="/media/user-provisioning/generic-oidc/bifrost-provider-config.png" alt="Bifrost Provider Configuration form showing Issuer URL, discovered endpoints, Client ID, Client Secret, and optional Audience fields" />
 </Frame>
 
@@ -160,9 +160,9 @@ Click **Discover endpoints** to auto-fill the authorize, token, and userinfo end
 
 On the Attribute Mapping screen, click **Discover Claims** to fetch live claims from your IdP.
 
-Bifrost opens a sign-in popup — no session is created. Once you authenticate, it returns the exact claims your IdP is sending in the JWT. Use this to confirm which attributes — groups, roles, department, or custom claims — are present before building your mappings.
+Bifrost opens a sign-in popup - no session is created. Once you authenticate, it returns the exact claims your IdP is sending in the JWT. Use this to confirm which attributes - groups, roles, department, or custom claims - are present before building your mappings.
 
-<Frame caption="Discover Claims — shows all claims the IdP is returning in the JWT so you can reference exact names when building mappings.">
+<Frame caption="Discover Claims - shows all claims the IdP is returning in the JWT so you can reference exact names when building mappings.">
   <img src="/media/user-provisioning/generic-oidc/bifrost-discover-claims.png" alt="Bifrost Discover Claims screen listing all claims returned by the generic OIDC provider" />
 </Frame>
 
@@ -178,7 +178,12 @@ Use the sections below the claim list to map IdP claim values to Bifrost roles, 
 
 **Attribute-to-Role Mappings**
 
-Map a claim value to a Bifrost role. All matching rules are evaluated — if multiple rules match, the role with the highest permissions is assigned. If no rule matches, login is denied.
+Map a claim value to a Bifrost role. All matching rules are evaluated. If several rules match, Bifrost picks one using your chosen resolution strategy:
+
+- **The role with the most permissions** (default)
+- **The first matching role, by list order** (drag rows to set priority)
+
+If no rule matches, login is denied.
 
 **Attribute-to-Team Mappings**
 
@@ -186,13 +191,13 @@ Map a claim value to a Bifrost team. All matching rules apply.
 
 - Use a specific value (e.g. `engineering`) to map that exact claim value to a named team
 - Use `*` to sync the claim value directly as the team name
-- Use `${*}` to extract part of the string — e.g. `/${*}` matches `/Engineering` and creates team **Engineering**
+- Use `${*}` to extract part of the string - e.g. `/${*}` matches `/Engineering` and creates team **Engineering**
 
 **Attribute-to-Business Unit Mappings**
 
 Same wildcard support as team mappings. When a rule matches, the resolved business unit is assigned to all of that user's teams.
 
-<Frame caption="Attribute Mapping — configure role, team, and business unit rules based on the claims your IdP sends.">
+<Frame caption="Attribute Mapping - configure role, team, and business unit rules based on the claims your IdP sends.">
   <img src="/media/user-provisioning/generic-oidc/bifrost-attribute-setup.png" alt="Bifrost Attribute Mapping screen showing role and team mapping rules configured for the generic OIDC provider" />
 </Frame>
 
@@ -206,9 +211,9 @@ Click **Next** when done.
 
 <Step title="Review and enable">
 
-Review your full configuration — connection details, attribute mappings, and SCIM status — then click **Save & Enable**.
+Review your full configuration - connection details, attribute mappings, and SCIM status - then click **Save & Enable**.
 
-<Frame caption="Review & Enable — confirm your connection and mappings before activating the provider.">
+<Frame caption="Review & Enable - confirm your connection and mappings before activating the provider.">
   <img src="/media/user-provisioning/generic-oidc/bifrost-review-enable.png" alt="Bifrost Review and Enable screen showing Generic OIDC Provider connection details and configured attribute mappings" />
 </Frame>
 
@@ -232,12 +237,12 @@ For providers that support it, see [SCIM with Generic OIDC](./scim) to enable re
 
 ## Troubleshooting
 
-**User is not redirected to the IdP** — verify the provider is enabled in Bifrost and the server was restarted after saving. Confirm the Issuer URL has no trailing slash and is reachable from your Bifrost server.
+**User is not redirected to the IdP** - verify the provider is enabled in Bifrost and the server was restarted after saving. Confirm the Issuer URL has no trailing slash and is reachable from your Bifrost server.
 
-**JWKS validation fails** — Bifrost fetches `<issuer>/.well-known/openid-configuration` to discover the JWKS endpoint. Ensure this URL is reachable from your Bifrost host.
+**JWKS validation fails** - Bifrost fetches `<issuer>/.well-known/openid-configuration` to discover the JWKS endpoint. Ensure this URL is reachable from your Bifrost host.
 
-**Audience mismatch** — set the **Audience** field in Bifrost to match the `aud` claim in the JWT. Leave blank to default to the Client ID.
+**Audience mismatch** - set the **Audience** field in Bifrost to match the `aud` claim in the JWT. Leave blank to default to the Client ID.
 
-**Claims are present in Discover Claims but role mapping is not working** — confirm the claim name matches exactly what the IdP sends (case-sensitive, including namespacing). Dotted paths (e.g. `realm_access.roles`) are supported.
+**Claims are present in Discover Claims but role mapping is not working** - confirm the claim name matches exactly what the IdP sends (case-sensitive, including namespacing). Dotted paths (e.g. `realm_access.roles`) are supported.
 
-**Login fails after successful IdP authentication** — check that the redirect URI in your IdP exactly matches `https://<your-bifrost-domain>/login`. Trailing slashes and path differences are not allowed.
+**Login fails after successful IdP authentication** - check that the redirect URI in your IdP exactly matches `https://<your-bifrost-domain>/login`. Trailing slashes and path differences are not allowed.

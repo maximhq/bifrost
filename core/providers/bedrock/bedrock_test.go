@@ -3178,8 +3178,14 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					},
 				},
 			},
-			expectedBlocks: 1,
-			description:    "Valid file block should create a ContentBlock",
+			// Converse rejects a message carrying a document block with no
+			// accompanying text block ("If you include a ContentBlock with a
+			// document field in the array, you must also include a ContentBlock
+			// with a text field" — API_runtime_Converse), so a document-only
+			// message gets a placeholder text block injected ahead of it. See
+			// bedrockDocumentPlaceholderText and document_placeholder_test.go.
+			expectedBlocks: 2,
+			description:    "Valid file block should create a document ContentBlock plus the required placeholder text block",
 		},
 		{
 			name: "MixedValidAndInvalidBlocks_ShouldOnlyCreateValidBlocks",
@@ -4533,9 +4539,14 @@ func TestDocumentFormatMapping(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Len(t, result.Messages, 1)
-			require.Len(t, result.Messages[0].Content, 1)
-			require.NotNil(t, result.Messages[0].Content[0].Document)
-			assert.Equal(t, tt.expectedFormat, result.Messages[0].Content[0].Document.Format,
+			// A document-only message gets a placeholder text block injected
+			// ahead of the document: Converse rejects a document ContentBlock
+			// that isn't accompanied by a text ContentBlock
+			// (API_runtime_Converse). See document_placeholder_test.go.
+			require.Len(t, result.Messages[0].Content, 2)
+			require.NotNil(t, result.Messages[0].Content[0].Text, "placeholder text block must lead")
+			require.NotNil(t, result.Messages[0].Content[1].Document)
+			assert.Equal(t, tt.expectedFormat, result.Messages[0].Content[1].Document.Format,
 				"File type %q should map to format %q", tt.fileType, tt.expectedFormat)
 		})
 	}
@@ -6679,11 +6690,20 @@ func TestSystemReminderBetweenToolCallAndResult(t *testing.T) {
 	assert.True(t, hasResult, "user message after tool_use must contain the matching tool_result")
 }
 
-// TestSystemReminderDoesNotCarryCachePoint pins the deliberate omission flagged in review: an
-// inlined mid-conversation reminder must NOT emit a CachePoint, even if its block carries
-// CacheControl. A breakpoint at the moving conversation tail would shift every turn and defeat
-// the prefix caching this whole change exists to preserve.
-func TestSystemReminderDoesNotCarryCachePoint(t *testing.T) {
+// TestSystemReminderCarriesCachePoint pins the corrected contract, replacing a test that
+// asserted the opposite.
+//
+// The original reasoning was that a breakpoint at the moving conversation tail would shift every
+// turn and defeat prefix caching, so the inlined reminder deliberately dropped its CacheControl.
+// The premise is right and the conclusion inverted: Bedrock matches the longest cached prefix at
+// or before each breakpoint, so a marker that advances one turn at a time EXTENDS the cached
+// prefix for one write — that is how incremental conversation caching is meant to work. Dropping
+// it does not fall back to a safe state; it removes the only conversation-level anchor, leaving
+// the surviving markers in `system` and re-reading the whole conversation body uncached.
+//
+// Measured across the provider harness, the old behavior cost half the prompt on a warm ~19K
+// conversation (49.8% hit rate vs 99.9% with the anchor preserved).
+func TestSystemReminderCarriesCachePoint(t *testing.T) {
 	reminder := systemReminderTextMsg("Reminder that happens to carry a breakpoint.")
 	reminder.Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
 
@@ -6696,9 +6716,40 @@ func TestSystemReminderDoesNotCarryCachePoint(t *testing.T) {
 	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
 	require.NoError(t, err)
 
+	// The marker must follow the wrapped reminder text: per Converse semantics a cachePoint
+	// element terminates the cacheable prefix rather than opening one.
+	var found bool
+	for _, m := range messages {
+		for i, b := range m.Content {
+			if b.Text == nil || !strings.Contains(*b.Text, "<system-reminder>") {
+				continue
+			}
+			require.Greater(t, len(m.Content), i+1, "reminder text must be followed by its cachePoint")
+			assert.NotNil(t, m.Content[i+1].CachePoint,
+				"the inlined reminder carries the conversation-level cache anchor; dropping it pins "+
+					"the cacheable prefix at the system floor")
+			found = true
+		}
+	}
+	assert.True(t, found, "expected the inlined <system-reminder> block in the converted messages")
+}
+
+// TestSystemReminderWithoutCacheControlAddsNoCachePoint is the guard against the opposite error:
+// a reminder whose block carries no CacheControl must not grow a marker, which would burn one of
+// the four checkpoints Bedrock allows on a breakpoint the caller never requested.
+func TestSystemReminderWithoutCacheControlAddsNoCachePoint(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		systemReminderTextMsg("You are Claude Code."),
+		userReminderTextMsg("hello"),
+		systemReminderTextMsg("Reminder with no breakpoint."),
+	}
+
+	messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(context.Background(), input, true)
+	require.NoError(t, err)
+
 	for _, m := range messages {
 		for _, b := range m.Content {
-			assert.Nil(t, b.CachePoint, "inlined reminder must not introduce a CachePoint block")
+			assert.Nil(t, b.CachePoint, "no cache_control on the reminder means no CachePoint may be invented")
 		}
 	}
 }

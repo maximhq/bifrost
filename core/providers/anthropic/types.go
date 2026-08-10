@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -874,31 +875,32 @@ func (req *AnthropicMessageRequest) IsStreamingRequested() bool {
 
 // Known fields for AnthropicMessageRequest
 var anthropicMessageRequestKnownFields = map[string]bool{
-	"model":              true,
-	"max_tokens":         true,
-	"messages":           true,
-	"metadata":           true,
-	"system":             true,
-	"cache_control":      true,
-	"temperature":        true,
-	"top_p":              true,
-	"top_k":              true,
-	"stop_sequences":     true,
-	"stream":             true,
-	"tools":              true,
-	"tool_choice":        true,
-	"mcp_servers":        true,
-	"thinking":           true,
-	"output_format":      true,
-	"output_config":      true,
-	"speed":              true,
-	"service_tier":       true,
-	"inference_geo":      true,
-	"context_management": true,
-	"container":          true,
-	"diagnostics":        true,
-	"extra_params":       true,
-	"fallbacks":          true,
+	"model":                 true,
+	"max_tokens":            true,
+	"messages":              true,
+	"metadata":              true,
+	"system":                true,
+	"cache_control":         true,
+	"temperature":           true,
+	"top_p":                 true,
+	"top_k":                 true,
+	"stop_sequences":        true,
+	"stream":                true,
+	"tools":                 true,
+	"tool_choice":           true,
+	"mcp_servers":           true,
+	"thinking":              true,
+	"output_format":         true,
+	"output_config":         true,
+	"speed":                 true,
+	"service_tier":          true,
+	"inference_geo":         true,
+	"context_management":    true,
+	"container":             true,
+	"diagnostics":           true,
+	"fallback_credit_token": true,
+	"extra_params":          true,
+	"fallbacks":             true,
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for AnthropicMessageRequest.
@@ -918,30 +920,7 @@ func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Parse JSON to extract unknown fields
-	var rawData map[string]json.RawMessage
-	if err := sonic.Unmarshal(data, &rawData); err != nil {
-		return err
-	}
-
-	// Initialize ExtraParams if not already initialized
-	if req.ExtraParams == nil {
-		req.ExtraParams = make(map[string]interface{})
-	}
-
-	// Extract unknown fields, preserving nested key ordering for prompt caching.
-	// Store as json.RawMessage (compacted) instead of parsing into map[string]interface{}
-	// which would destroy key order on re-serialization.
-	for key, value := range rawData {
-		if !anthropicMessageRequestKnownFields[key] {
-			var buf bytes.Buffer
-			if err := json.Compact(&buf, value); err == nil {
-				req.ExtraParams[key] = json.RawMessage(buf.Bytes())
-			} else {
-				req.ExtraParams[key] = json.RawMessage(value)
-			}
-		}
-	}
+	extractAnthropicMessageRequestUnknownFields(data, req)
 
 	// Compact known json.RawMessage fields for deterministic cache keys
 	if len(req.OutputFormat) > 0 {
@@ -958,6 +937,28 @@ func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// extractAnthropicMessageRequestUnknownFields scans only the top-level object,
+// avoiding a second decode and RawMessage copy for every known request field.
+func extractAnthropicMessageRequestUnknownFields(data []byte, req *AnthropicMessageRequest) {
+	gjson.ParseBytes(data).ForEach(func(key, value gjson.Result) bool {
+		keyString := key.String()
+		if anthropicMessageRequestKnownFields[keyString] {
+			return true
+		}
+
+		if req.ExtraParams == nil {
+			req.ExtraParams = make(map[string]interface{})
+		}
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(value.Raw)); err == nil {
+			req.ExtraParams[keyString] = json.RawMessage(buf.Bytes())
+		} else {
+			req.ExtraParams[keyString] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
 }
 
 // MarshalJSON implements custom JSON marshalling for AnthropicMessageRequest.

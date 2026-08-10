@@ -1203,14 +1203,12 @@ pricing-overrides:
         in: query
         description: Filter by scope kind
         schema:
+          $ref: '../../schemas/management/governance.yaml#/PricingOverrideScopeKind'
+      - name: user_id
+        in: query
+        description: Filter by user ID (for user* scopes)
+        schema:
           type: string
-          enum:
-            - global
-            - provider
-            - provider_key
-            - virtual_key
-            - virtual_key_provider
-            - virtual_key_provider_key
       - name: virtual_key_id
         in: query
         description: Filter by virtual key ID (for virtual_key* scopes)
@@ -1226,6 +1224,23 @@ pricing-overrides:
         description: Filter by provider key ID
         schema:
           type: string
+      - name: search
+        in: query
+        description: Case-insensitive substring match against the pricing override name. A non-empty value switches the response to the paginated shape.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Maximum number of results to return. A non-empty `limit`, `offset`, or `search` value switches the response to the paginated shape.
+        schema:
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        description: Number of results to skip
+        schema:
+          type: integer
+          minimum: 0
     security:
       - ManagementBearerAuth: []
     responses:

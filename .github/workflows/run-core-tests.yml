@@ -1,0 +1,189 @@
+name: Run Core Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to test
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify repository member access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          permission=$(gh api "repos/${{ github.repository }}/collaborators/${{ github.actor }}/permission" --jq '.permission')
+          case "$permission" in
+            admin|maintain|write) ;;
+            *)
+              echo "::error::Repository write access is required to run this workflow. ${{ github.actor }} has permission: $permission"
+              exit 1
+              ;;
+          esac
+
+  run-core-tests:
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
+      MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ARN: ${{ secrets.AWS_ARN }}
+      BEDROCK_API_KEY: ${{ secrets.BEDROCK_API_KEY }}
+      AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+      AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+      AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+      ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+      PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+      SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
+      CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+      COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+      VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+      VERTEX_GCS_BUCKET: ${{ secrets.VERTEX_GCS_BUCKET }}
+      VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
+      GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+      HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+      BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
+      BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+      AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+      AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
+      BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            127.0.0.1:8080
+            7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
+            accounts.google.com:443
+            aiplatform.googleapis.com:443
+            api.anthropic.com:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
+            api.fireworks.ai:443
+            api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.openai.com:443
+            api.parasail.io:443
+            api.perplexity.ai:443
+            api.replicate.com:443
+            api.x.ai:443
+            azure.archive.ubuntu.com:80
+            esm.ubuntu.com:443
+            bifrost-gateway-resource.openai.azure.com:443
+            bedrock-mantle.us-east-1.api.aws:443
+            bedrock-runtime.us-east-1.amazonaws.com:443
+            bedrock.us-east-1.amazonaws.com:443
+            bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            dl.google.com:443
+            fal.media:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            generativelanguage.googleapis.com:443
+            files.pythonhosted.org:443
+            pypi.org:443
+            getbifrost.ai:443
+            github.com:443
+            huggingface.co:443
+            iojs.org:443
+            login.microsoftonline.com:443
+            maxim-o1.openai.azure.com:443
+            nodejs.org:443
+            oauth2.googleapis.com:443
+            objects.githubusercontent.com:443
+            openrouter.ai:443
+            packages.cloud.google.com:443
+            proxy.golang.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            router.huggingface.co:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            us-central1-aiplatform.googleapis.com:443
+            www.getbifrost.ai:443
+
+      - name: Checkout requested branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.26.5"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: "575.0.1"
+
+      - name: test-core
+        run: ./.github/workflows/scripts/test-core.sh
+
+      - name: test-cli-harness
+        run: ./.github/workflows/scripts/test-cli-harness.sh
+
+      - name: test-integration
+        run: ./.github/workflows/scripts/test-integrations.sh
+
+      - name: test-core-unit
+        working-directory: core
+        run: |
+          packages=()
+          while IFS=$'\t' read -r package directory; do
+            if [[ "$package" == */internal/llmtests ]]; then
+              continue
+            fi
+            if find "$directory" -maxdepth 1 -name '*_test.go' -exec grep -lq '/internal/llmtests' {} +; then
+              echo "Skipping llmtests-backed package: $package"
+              continue
+            fi
+            packages+=("$package")
+          done < <(go list -f '{{.ImportPath}}{{"\t"}}{{.Dir}}' ./...)
+          if (( ${#packages[@]} == 0 )); then
+            echo "::error::No core unit-test packages found"
+            exit 1
+          fi
+          go test -timeout 20m "${packages[@]}"

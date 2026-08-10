@@ -3978,6 +3978,61 @@ func TestGenAIFinishReasonMaxTokens_PersistsThroughBifrostRoundTrip(t *testing.T
 	assert.Equal(t, gemini.FinishReasonMaxTokens, out.Candidates[0].FinishReason)
 }
 
+// Regression: candidates[0].safetyRatings, candidates[0].avgLogprobs, and the native
+// responseId must survive Gemini/Vertex → Bifrost → Gemini on the GenAI generateContent
+// path. These fields have no home in Bifrost's OpenAI-shaped Responses schema, so they
+// must be preserved via ProviderExtraFields rather than silently dropped.
+// See https://github.com/maximhq/bifrost/issues/5843
+func TestGenAISafetyRatingsAvgLogprobsResponseID_PersistThroughBifrostRoundTrip(t *testing.T) {
+	geminiResp := &gemini.GenerateContentResponse{
+		ResponseID:   "abcd1234",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{
+				Index:        0,
+				FinishReason: gemini.FinishReasonStop,
+				AvgLogprobs:  -0.1234,
+				Content: &gemini.Content{
+					Role: "model",
+					Parts: []*gemini.Part{
+						{Text: "hello there"},
+					},
+				},
+				SafetyRatings: []*gemini.SafetyRating{
+					{
+						Category:    "HARM_CATEGORY_HARASSMENT",
+						Probability: "NEGLIGIBLE",
+					},
+					{
+						Category:    "HARM_CATEGORY_DANGEROUS_CONTENT",
+						Probability: "LOW",
+						Blocked:     false,
+					},
+				},
+			},
+		},
+	}
+
+	bifrostResp := geminiResp.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+	require.NotNil(t, bifrostResp.ProviderExtraFields, "safetyRatings/avgLogprobs/responseId must be captured in ProviderExtraFields since Bifrost's Responses schema has no field for them")
+	assert.Equal(t, "abcd1234", bifrostResp.ProviderExtraFields["responseId"])
+	assert.NotNil(t, bifrostResp.ProviderExtraFields["safetyRatings"])
+	assert.Equal(t, -0.1234, bifrostResp.ProviderExtraFields["avgLogprobs"])
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.Len(t, out.Candidates, 1)
+
+	assert.Equal(t, "abcd1234", out.ResponseID, "native responseId must be restored, not the synthesized resp_... internal ID")
+	assert.InDelta(t, -0.1234, out.Candidates[0].AvgLogprobs, 0.0001)
+	require.Len(t, out.Candidates[0].SafetyRatings, 2)
+	assert.Equal(t, "HARM_CATEGORY_HARASSMENT", out.Candidates[0].SafetyRatings[0].Category)
+	assert.Equal(t, "NEGLIGIBLE", out.Candidates[0].SafetyRatings[0].Probability)
+	assert.Equal(t, "HARM_CATEGORY_DANGEROUS_CONTENT", out.Candidates[0].SafetyRatings[1].Category)
+	assert.Equal(t, "LOW", out.Candidates[0].SafetyRatings[1].Probability)
+}
+
 // Regression: GenAI usageMetadata modality details must include tokenCount even when zero.
 // Some clients (e.g. @ai-sdk/google) validate tokenCount as required and reject missing fields.
 func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T) {

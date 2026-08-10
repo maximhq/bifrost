@@ -1897,12 +1897,6 @@ func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.Re
 	h.handleStreamingResponse(ctx, bifrostCtx, schemas.TranscriptionStreamRequest, getStream, cancel)
 }
 
-// streamHeartbeatInterval is how often handleStreamingResponse's heartbeat goroutine
-// probes the downstream connection with a no-op SSE comment. See that goroutine's
-// comment for why this exists: disconnect detection is otherwise purely reactive to
-// real-data write failures, which a fast/bursty upstream can outrun entirely.
-const streamHeartbeatInterval = 100 * time.Millisecond
-
 // handleStreamingResponse is a generic function to handle streaming responses using Server-Sent Events (SSE)
 // The cancel function is called ONLY when client disconnects are detected via write errors.
 // Bifrost handles cleanup internally for normal completion and errors, so we only cancel
@@ -2009,25 +2003,23 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			transportLogs = logs
 		}
 
-		// heartbeatDone asks the keep-alive goroutine below to stop once this producer
-		// goroutine exits, via any path (normal completion, disconnect, interceptor error).
-		// heartbeatExited is closed BY that goroutine right before it returns -- the deferred
-		// cleanup below waits on it before calling reader.Done(), so eventCh is never closed
-		// while the heartbeat goroutine could still be mid-send on it (see reader.Close() call
-		// below for why closing heartbeatDone alone isn't enough).
-		heartbeatDone := make(chan struct{})
-		heartbeatExited := make(chan struct{})
+		// Client-disconnect detection is otherwise purely reactive: cancel() only fires when
+		// a downstream SendEvent write actually fails, which only happens when this loop
+		// attempts one. If the upstream provider delivers its whole response in a few
+		// large/fast chunks, this loop may never attempt another write during the window
+		// where the client has already disconnected, so the disconnect goes undetected and
+		// the request logs as a false success (observed live: Vertex's streamGenerateContent
+		// delivers fewer, larger deltas than direct Gemini for the same prompt, giving the
+		// write-failure detector too few chances to fire before the stream finished).
+		// A periodic no-op heartbeat forces an extra write attempt during otherwise-idle
+		// gaps, closing that window without touching fasthttp's connection internals.
+		heartbeatDone, heartbeatExited := lib.StartSSEHeartbeat(lib.DefaultSSEHeartbeatInterval, reader.SendHeartbeat, cancel)
 
 		defer func() {
-			close(heartbeatDone)
-			// heartbeatDone only unblocks the heartbeat goroutine if it's waiting at its
-			// outer select; if it's currently blocked inside SendHeartbeat -> Send's
-			// `eventCh <- event` case (channel full, nothing reading), closing heartbeatDone
-			// does nothing -- that goroutine isn't looking at it. reader.Close() closes
-			// closeCh instead, which Send's inner select already watches, so it safely
-			// unblocks a pending send without racing eventCh's close below.
-			reader.Close()
-			<-heartbeatExited
+			// Must run before reader.Done(): closing eventCh while the heartbeat goroutine
+			// could still be mid-send on it panics ("send on closed channel"). See
+			// lib.StopSSEHeartbeat's doc for the full ordering rationale.
+			lib.StopSSEHeartbeat(reader, heartbeatDone, heartbeatExited)
 			schemas.ReleaseHTTPRequest(httpReq)
 			// Fallback: on early-return paths (client disconnect, interceptor error)
 			// we never reached the pre-[DONE] invocation, so run it now. Any error is
@@ -2041,33 +2033,6 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL.
 			if traceCompleter != nil {
 				traceCompleter(transportLogs)
-			}
-		}()
-
-		// Client-disconnect detection above is purely reactive: cancel() only fires when
-		// a downstream SendEvent write actually fails, which only happens when this loop
-		// attempts one. If the upstream provider delivers its whole response in a few
-		// large/fast chunks, this loop may never attempt another write during the window
-		// where the client has already disconnected, so the disconnect goes undetected and
-		// the request logs as a false success (observed live: Vertex's streamGenerateContent
-		// delivers fewer, larger deltas than direct Gemini for the same prompt, giving the
-		// write-failure detector too few chances to fire before the stream finished).
-		// A periodic no-op heartbeat forces an extra write attempt during otherwise-idle
-		// gaps, closing that window without touching fasthttp's connection internals.
-		go func() {
-			defer close(heartbeatExited)
-			ticker := time.NewTicker(streamHeartbeatInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if !reader.SendHeartbeat() {
-						cancel() // Disconnect discovered via the heartbeat, not real data.
-						return
-					}
-				case <-heartbeatDone:
-					return
-				}
 			}
 		}()
 

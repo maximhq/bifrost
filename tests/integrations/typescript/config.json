@@ -187,14 +187,14 @@
         "enabled": true,
         "type": "sqlite",
         "config": {
-            "path": "../../tests/integrations/typescript/config.db"
+            "path": "tests/integrations/typescript/config.db"
         }
     },
     "logs_store": {
         "enabled": true,
         "type": "sqlite",
         "config": {
-            "path": "../../tests/integrations/typescript/logs.db"
+            "path": "tests/integrations/typescript/logs.db"
         }
     },
     "governance": {

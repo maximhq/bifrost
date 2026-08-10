@@ -11,6 +11,7 @@
 //     --bifrost-log tmp/bifrost-dev.log --out tmp/harness-failures.md
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readReport } from "./lib/read-report.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -610,7 +611,7 @@ const renderMissingPerRoute = (byRoute) => {
 };
 
 const main = () => {
-  const raw = JSON.parse(readFileSync(REPORT, "utf8"));
+  const raw = readReport(REPORT);
   const execs = raw.run?.executions || [];
   const stats = raw.run?.stats || {};
   const logText = existsSync(BIFROST_LOG) ? readFileSync(BIFROST_LOG, "utf8") : "";

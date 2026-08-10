@@ -477,6 +477,110 @@ func TestToBifrostResponsesStreamResponse_PopulatesFinalDoneTextAndCompletedOutp
 	}
 }
 
+func TestToBifrostResponsesStreamResponse_NilDeltaWithFinishReasonStillCompletes(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	part := "Hello"
+	roleChunk := &BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{Role: &role}}},
+		},
+	}
+	contentChunk := &BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{Content: &part}}},
+		},
+	}
+
+	// Reproduces the real wire shape many OpenAI-compatible upstreams send on their
+	// terminal chunk: {"choices":[{"delta":null,"finish_reason":"stop"}],"usage":{...}}
+	var terminalChunk BifrostChatResponse
+	terminalJSON := `{"id":"chatcmpl-test","model":"test-model","choices":[{"index":0,"delta":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`
+	if err := json.Unmarshal([]byte(terminalJSON), &terminalChunk); err != nil {
+		t.Fatalf("failed to unmarshal terminal chunk fixture: %v", err)
+	}
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, roleChunk.ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, contentChunk.ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, terminalChunk.ToBifrostResponsesStreamResponse(state)...)
+
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+	}
+
+	if completed == nil {
+		t.Fatal("expected a Completed event even though the terminal chunk had delta:null")
+	}
+	if completed.Response == nil || completed.Response.Usage == nil {
+		t.Fatal("expected Completed event to carry usage")
+	}
+	if completed.Response.Usage.InputTokens != 5 || completed.Response.Usage.OutputTokens != 2 {
+		t.Fatalf("unexpected usage: %+v", completed.Response.Usage)
+	}
+	if completed.Response.StopReason == nil || *completed.Response.StopReason != "stop" {
+		t.Fatalf("expected stop_reason stop, got %+v", completed.Response.StopReason)
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_MissingDeltaKeyWithFinishReasonStillCompletes(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	part := "Hi"
+	roleChunk := &BifrostChatResponse{
+		ID:    "chatcmpl-test2",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{Role: &role}}},
+		},
+	}
+	contentChunk := &BifrostChatResponse{
+		ID:    "chatcmpl-test2",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{Content: &part}}},
+		},
+	}
+
+	// Some upstreams omit the "delta" key entirely on the terminal chunk rather than
+	// sending it as null, leaving ChatStreamResponseChoice itself nil after unmarshal.
+	var terminalChunk BifrostChatResponse
+	terminalJSON := `{"id":"chatcmpl-test2","model":"test-model","choices":[{"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`
+	if err := json.Unmarshal([]byte(terminalJSON), &terminalChunk); err != nil {
+		t.Fatalf("failed to unmarshal terminal chunk fixture: %v", err)
+	}
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, roleChunk.ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, contentChunk.ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, terminalChunk.ToBifrostResponsesStreamResponse(state)...)
+
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+	}
+
+	if completed == nil {
+		t.Fatal("expected a Completed event even though the terminal chunk omitted the delta key")
+	}
+	if completed.Response == nil || completed.Response.Usage == nil {
+		t.Fatal("expected Completed event to carry usage")
+	}
+}
+
 func TestToBifrostResponsesResponse_MapsLengthToIncomplete(t *testing.T) {
 	length := string(BifrostFinishReasonLength)
 	resp := (&BifrostChatResponse{

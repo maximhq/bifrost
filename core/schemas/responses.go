@@ -528,6 +528,9 @@ type ResponsesParameters struct {
 	// the combination; providers without the concept ignore it.
 	IncludeServerSideToolInvocations *bool `json:"include_server_side_tool_invocations,omitempty"`
 
+	// ContextManagement configures automatic context window management.
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -2433,8 +2436,54 @@ func normalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
 	case strings.HasPrefix(s, "advisor") && t != ResponsesToolTypeAdvisor:
 		// Covers "advisor_20260301" and future dated versions.
 		return ResponsesToolTypeAdvisor
+	case toolSearchVariantName(s) != "":
+		// Covers Anthropic's server-side tool-search meta-tool in both variants
+		// and both spellings: "tool_search_tool_regex_20251119",
+		// "tool_search_tool_bm25_20251119" and their undated forms. Without this
+		// the dated type reached the providers verbatim, missed every switch on
+		// ResponsesToolTypeToolSearch, and got downcast to a plain custom tool —
+		// so Anthropic treated tool_search as a client tool and never ran the
+		// server-side search. The regex/bm25 variant is preserved on Name (see
+		// toolSearchVariantName), which is what the Anthropic converter reads.
+		//
+		// Matching on the recognized variants rather than a bare "tool_search"
+		// prefix keeps an unrecognized sibling type out of the server-tool
+		// converter and provider feature gate: it should reach unknown-tool
+		// handling instead of silently becoming a variant-less tool_search.
+		return ResponsesToolTypeToolSearch
 	default:
 		return t
+	}
+}
+
+// toolSearchVariantName recovers the tool-search variant name from a raw tool
+// type string. normalizeResponsesToolType collapses every tool_search_tool_*
+// spelling to the canonical "tool_search", which erases the regex-vs-bm25
+// distinction from Type — but the two are not interchangeable: regex expects
+// Python re.search() patterns and bm25 expects natural language, so a silent
+// downgrade hands the model the wrong query grammar. The Anthropic converter
+// recovers the variant from Name, so the decoder backfills it here when the
+// caller declared the tool by type alone (as Anthropic's own Go and C# SDK
+// examples do). Returns "" when the type carries no variant.
+//
+// Cite: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
+func toolSearchVariantName(rawType string) string {
+	const prefix = "tool_search_tool_"
+	if !strings.HasPrefix(rawType, prefix) {
+		return ""
+	}
+	// Anthropic documents exactly two variants, dated and undated. Anchoring on
+	// the variant token (rather than searching anywhere in the string) keeps an
+	// unrelated type that merely contains "regex"/"bm25" from being claimed, and
+	// keeps a future sibling variant from being misreported as one of these two.
+	variant := strings.TrimPrefix(rawType, prefix)
+	switch {
+	case variant == "regex" || strings.HasPrefix(variant, "regex_"):
+		return "tool_search_tool_regex"
+	case variant == "bm25" || strings.HasPrefix(variant, "bm25_"):
+		return "tool_search_tool_bm25"
+	default:
+		return ""
 	}
 }
 
@@ -2631,67 +2680,84 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON implements custom JSON unmarshaling for ResponsesTool
 // It unmarshals common fields first, then the appropriate embedded struct based on type
 func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
-	// First unmarshal into a map to inspect the type
-	var raw map[string]interface{}
-	if err := Unmarshal(data, &raw); err != nil {
-		return err
+	// gjson never validates its input, so the malformed-JSON rejection the
+	// previous map decode gave us for free has to be explicit here.
+	if !gjson.ValidBytes(data) {
+		return fmt.Errorf("invalid JSON in ResponsesTool")
 	}
+
+	// One pass over the object for every common field. This replaces a decode
+	// into map[string]interface{} (which parsed the whole tool a second time
+	// just to read the type discriminator) plus a MarshalSorted/Unmarshal
+	// round-trip per structured field to convert interface{} back to a struct.
+	// The indices below must stay aligned with this path list.
+	fields := gjson.GetManyBytes(data,
+		"type",                  // 0
+		"name",                  // 1
+		"description",           // 2
+		"cache_control",         // 3
+		"defer_loading",         // 4
+		"allowed_callers",       // 5
+		"input_examples",        // 6
+		"eager_input_streaming", // 7
+		"function",              // 8 — Chat Completions wrapper, lifted below
+	)
 
 	// Extract type field
-	typeValue, ok := raw["type"]
-	if !ok {
+	typeField := fields[0]
+	if !typeField.Exists() {
 		return fmt.Errorf("missing required 'type' field in ResponsesTool")
 	}
-
-	typeStr, ok := typeValue.(string)
-	if !ok {
+	if typeField.Type != gjson.String {
 		return fmt.Errorf("'type' field must be a string")
 	}
+	typeStr := typeField.String()
 	t.Type = normalizeResponsesToolType(ResponsesToolType(typeStr))
 
-	// Unmarshal common fields
-	if name, ok := raw["name"].(string); ok {
-		t.Name = &name
+	// Unmarshal common fields. Values of the wrong JSON type are skipped rather
+	// than rejected, preserving the tolerance of the `raw[k].(string)` /
+	// `raw[k].(bool)` type assertions this replaced — clients in the wild send
+	// e.g. "defer_loading": "true", and that has always been a no-op, not a 400.
+	if v := fields[1]; v.Type == gjson.String {
+		t.Name = new(v.String())
 	}
-	if description, ok := raw["description"].(string); ok {
-		t.Description = &description
+	if v := fields[2]; v.Type == gjson.String {
+		t.Description = new(v.String())
 	}
-	if cacheControl, ok := raw["cache_control"]; ok {
-		bytes, err := MarshalSorted(cacheControl)
-		if err != nil {
-			return err
-		}
+	if v := fields[3]; v.Exists() {
 		var cc CacheControl
-		if err := Unmarshal(bytes, &cc); err != nil {
+		if err := Unmarshal([]byte(v.Raw), &cc); err != nil {
 			return err
 		}
 		t.CacheControl = &cc
 	}
 	// Anthropic-native tool flags. Mirror the emit side in MarshalJSON above —
 	// without these reads, a round-trip silently drops the fields.
-	if v, ok := raw["defer_loading"].(bool); ok {
-		t.DeferLoading = Ptr(v)
+	if v := fields[4]; v.IsBool() {
+		t.DeferLoading = new(v.Bool())
 	}
-	if v, ok := raw["allowed_callers"]; ok {
-		bytes, err := MarshalSorted(v)
-		if err != nil {
-			return err
-		}
-		if err := Unmarshal(bytes, &t.AllowedCallers); err != nil {
+	if v := fields[5]; v.Exists() {
+		if err := Unmarshal([]byte(v.Raw), &t.AllowedCallers); err != nil {
 			return err
 		}
 	}
-	if v, ok := raw["input_examples"]; ok {
-		bytes, err := MarshalSorted(v)
-		if err != nil {
-			return err
-		}
-		if err := Unmarshal(bytes, &t.InputExamples); err != nil {
+	if v := fields[6]; v.Exists() {
+		if err := Unmarshal([]byte(v.Raw), &t.InputExamples); err != nil {
 			return err
 		}
 	}
-	if v, ok := raw["eager_input_streaming"].(bool); ok {
-		t.EagerInputStreaming = Ptr(v)
+	if v := fields[7]; v.IsBool() {
+		t.EagerInputStreaming = new(v.Bool())
+	}
+
+	// Anthropic's tool-search meta-tool identifies its variant (regex vs bm25)
+	// in the type, which normalizeResponsesToolType has just collapsed to the
+	// canonical "tool_search". Backfill the variant onto Name so it survives —
+	// an explicitly supplied name always wins.
+	if t.Type == ResponsesToolTypeToolSearch && t.Name == nil {
+		if variant := toolSearchVariantName(typeStr); variant != "" {
+			t.Name = new(variant)
+		}
 	}
 
 	// Based on type, unmarshal into the appropriate embedded struct
@@ -2707,31 +2773,31 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		// lifting the nested fields the tool parses with a nil name and
 		// providers that require one (e.g. Bedrock) reject the request.
 		// Top-level (Responses format) fields win when both are present.
-		if _, hasWrapper := raw["function"]; hasWrapper {
-			var wrapper struct {
-				Function *struct {
-					Name        *string                 `json:"name"`
-					Description *string                 `json:"description"`
-					Parameters  *ToolFunctionParameters `json:"parameters"`
-					Strict      *bool                   `json:"strict"`
-				} `json:"function"`
+		//
+		// Only the wrapper subobject is decoded, not the whole tool again. A
+		// JSON null matches the old map decoder's behaviour: the key is present
+		// but the wrapper stays nil, so nothing is lifted and nothing errors.
+		if wrapper := fields[8]; wrapper.Exists() && wrapper.Type != gjson.Null {
+			var nested struct {
+				Name        *string                 `json:"name"`
+				Description *string                 `json:"description"`
+				Parameters  *ToolFunctionParameters `json:"parameters"`
+				Strict      *bool                   `json:"strict"`
 			}
-			if err := Unmarshal(data, &wrapper); err != nil {
+			if err := Unmarshal([]byte(wrapper.Raw), &nested); err != nil {
 				return fmt.Errorf("invalid 'function' object in ResponsesTool: %w", err)
 			}
-			if wrapper.Function != nil {
-				if t.Name == nil {
-					t.Name = wrapper.Function.Name
-				}
-				if t.Description == nil {
-					t.Description = wrapper.Function.Description
-				}
-				if funcTool.Parameters == nil {
-					funcTool.Parameters = wrapper.Function.Parameters
-				}
-				if funcTool.Strict == nil {
-					funcTool.Strict = wrapper.Function.Strict
-				}
+			if t.Name == nil {
+				t.Name = nested.Name
+			}
+			if t.Description == nil {
+				t.Description = nested.Description
+			}
+			if funcTool.Parameters == nil {
+				funcTool.Parameters = nested.Parameters
+			}
+			if funcTool.Strict == nil {
+				funcTool.Strict = nested.Strict
 			}
 		}
 		t.ResponsesToolFunction = &funcTool
@@ -3004,10 +3070,10 @@ type ResponsesToolComputerUsePreview struct {
 // ResponsesToolWebSearch represents a tool web search
 type ResponsesToolWebSearch struct {
 	ExternalWebAccess  *bool                               `json:"external_web_access,omitempty"`
-	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"` // Filters for the search
+	Filters            *ResponsesToolWebSearchFilters      `json:"filters,omitempty"`              // Filters for the search
 	SearchContentTypes []string                            `json:"search_content_types,omitempty"` // "text" | "image"
-	SearchContextSize  *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
-	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
+	SearchContextSize  *string                             `json:"search_context_size,omitempty"`  // "low" | "medium" | "high"
+	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`        // The approximate location of the user
 
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search

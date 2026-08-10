@@ -1255,6 +1255,8 @@ components:
       $ref: './schemas/inference/text.yaml#/TextCompletionResponse'
 
     # ==================== Responses API ====================
+    ContextManagement:
+      $ref: './schemas/inference/responses.yaml#/ContextManagement'
     ResponsesRequest:
       $ref: './schemas/inference/responses.yaml#/ResponsesRequest'
     ResponsesResponse:
@@ -1620,6 +1622,8 @@ components:
       $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
 
     # Governance - Pricing Overrides
+    PricingOverrideScopeKind:
+      $ref: './schemas/management/governance.yaml#/PricingOverrideScopeKind'
     PricingOverrideRequestType:
       $ref: './schemas/management/governance.yaml#/PricingOverrideRequestType'
     PricingPatch:

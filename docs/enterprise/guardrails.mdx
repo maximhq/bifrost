@@ -103,7 +103,7 @@ Access Guardrails from the Bifrost dashboard:
 
 ### Architecture
 
-The following diagram illustrates how Rules and Profiles work together to validate LLM requests:
+The following diagram illustrates how Rules and Profiles work together for the LLM target. For tool execution, see [MCP Guardrails](#mcp-guardrails).
 
 ```mermaid
 flowchart TB
@@ -160,6 +160,38 @@ flowchart TB
 3. **LLM Processing** - If input passes, request is forwarded to the LLM provider
 4. **Output Validation** - Response is evaluated by output rules using linked profiles
 5. **Response** - Validated response is returned (or blocked/modified based on violations)
+
+---
+
+## MCP Guardrails
+
+MCP guardrails protect the actual tool-execution boundary, not merely the tool call proposed by an LLM.
+
+After the rule's CEL expression matches, Bifrost applies the selected phase:
+
+| Apply on | Flow |
+|----------|------|
+| **Before tool call** (`input`) | Inspect arguments → allow or redact and execute; **block → stop before execution** |
+| **After tool result** (`output`) | Execute tool → inspect a successful text-bearing result → allow or redact and return; **block → do not return the result** |
+| **Both** (`both`) | Run the input flow; if allowed, execute the tool and run the output flow. A block at either boundary stops processing |
+
+<Frame>
+  <img src="/media/guardrails/ui-mcp-guardrail-rule.png" alt="MCP guardrail rule editor showing the MCP target, before and after execution phases, a linked profile, and MCP client and tool conditions" />
+</Frame>
+
+### Choose Which Tool Calls to Guard
+
+- **MCP Client** is populated from configured clients that are enabled.
+- **MCP Tool** is populated from their currently discovered tools.
+- **Tool Argument** shows a searchable dropdown of top-level string, number, and boolean input-schema fields when one MCP tool is selected with the `=` operator. You can also enter an argument name manually.
+
+MCP rules can additionally use the shared identity fields listed under [Guardrail Targets](#guardrail-targets).
+
+<Note>
+All supported guardrail providers can be linked to MCP rules without separate MCP-specific provider setup. Provider capabilities still apply: only providers listed in [Guardrail Redaction](/enterprise/guardrails/redaction) support Bifrost-managed redaction, while other providers may detect, block, or return provider-managed transformations.
+</Note>
+
+MCP rules use the same linked profiles, sampling, and timeout settings as LLM rules. See [Creating Rules](#creating-rules) for configuration and [CEL Expression Examples](#cel-expression-examples) for targeting examples.
 
 ---
 
