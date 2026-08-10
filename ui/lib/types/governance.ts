@@ -241,6 +241,8 @@ export interface UpdateTeamRequest {
 	budgets?: CreateBudgetRequest[]; // Replaces all team budgets; empty array clears
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface CreateCustomerRequest {
@@ -257,6 +259,8 @@ export interface UpdateCustomerRequest {
 	budget?: UpdateBudgetRequest; // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface CreateBudgetRequest {
@@ -422,6 +426,8 @@ export interface UpdateModelConfigRequest {
 	provider?: string; // Optional provider - if empty/null, applies to all providers
 	budgets?: CreateBudgetRequest[]; // Full desired set; reconciled against existing
 	rate_limit?: UpdateRateLimitRequest;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface GetModelConfigsParams {
@@ -606,6 +612,8 @@ export interface UpdateProviderGovernanceRequest {
 	budgets?: CreateBudgetRequest[]; // [] = remove all
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface GetProviderGovernanceResponse {

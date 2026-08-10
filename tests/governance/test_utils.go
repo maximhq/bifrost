@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -88,9 +89,22 @@ type APIResponse struct {
 }
 
 // MakeRequest makes an HTTP request to the Bifrost API
+// baseURL is the gateway the governance suite exercises.
+//
+// Overridable so a run can target a gateway other than the default dev one, for
+// example an instance started with provider credentials in scope while a
+// developer's own gateway keeps port 8080. Defaults to the historical value, so
+// nothing changes for an unconfigured run.
+func baseURL() string {
+	if override := os.Getenv("BIFROST_TEST_BASE_URL"); override != "" {
+		return strings.TrimSuffix(override, "/")
+	}
+	return "http://localhost:8080"
+}
+
 func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 	client := &http.Client{}
-	url := fmt.Sprintf("http://localhost:8080%s", req.Path)
+	url := fmt.Sprintf("%s%s", baseURL(), req.Path)
 
 	var body io.Reader
 	if req.Body != nil {
@@ -144,7 +158,7 @@ func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
 // Use this when you need to test specific header formats (e.g., Authorization, x-api-key)
 func MakeRequestWithCustomHeaders(t *testing.T, req APIRequest, customHeaders map[string]string) *APIResponse {
 	client := &http.Client{}
-	url := fmt.Sprintf("http://localhost:8080%s", req.Path)
+	url := fmt.Sprintf("%s%s", baseURL(), req.Path)
 
 	var body io.Reader
 	if req.Body != nil {
@@ -289,6 +303,8 @@ type UpdateVirtualKeyRequest struct {
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
 	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // UpdateTeamRequest represents a request to update a team
@@ -303,6 +319,8 @@ type UpdateTeamRequest struct {
 	// rate limit. Pointer so a test can distinguish "leave unchanged" from an
 	// explicit false.
 	CalendarAligned *bool `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // UpdateCustomerRequest represents a request to update a customer
@@ -310,6 +328,35 @@ type UpdateCustomerRequest struct {
 	Name            *string         `json:"name,omitempty"`
 	Budgets         []BudgetRequest `json:"budgets,omitempty"`
 	CalendarAligned *bool           `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+}
+
+// CreateModelConfigRequest represents a request to create a model-scoped limit.
+type CreateModelConfigRequest struct {
+	ModelName string                  `json:"model_name"`
+	Provider  *string                 `json:"provider,omitempty"`
+	Scope     string                  `json:"scope,omitempty"`
+	ScopeID   *string                 `json:"scope_id,omitempty"`
+	Budgets   []BudgetRequest         `json:"budgets,omitempty"`
+	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+}
+
+// UpdateModelConfigRequest represents a request to update a model-scoped limit.
+type UpdateModelConfigRequest struct {
+	ModelName *string         `json:"model_name,omitempty"`
+	Provider  *string         `json:"provider,omitempty"`
+	Budgets   []BudgetRequest `json:"budgets,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
+}
+
+// UpdateProviderGovernanceRequest represents a request to update provider-level governance.
+type UpdateProviderGovernanceRequest struct {
+	Budgets         *[]BudgetRequest `json:"budgets,omitempty"`
+	CalendarAligned *bool            `json:"calendar_aligned,omitempty"`
+	// ResetBudgetUsage zeroes accumulated spend on the reconciled budgets.
+	ResetBudgetUsage *bool `json:"reset_budget_usage,omitempty"`
 }
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request

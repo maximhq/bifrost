@@ -219,6 +219,29 @@ Quarter boundaries repeat every three months, so `quarter_start_month` only chan
 
 Changing `quarter_start_month` on a live calendar-aligned budget takes effect on the next reset tick rather than instantly. The new definition is stored immediately, which moves where the current window starts; if that boundary has moved forward, the budget reads as due and resets shortly after, zeroing usage. That is the honest outcome - under the new calendar the current quarter genuinely began on a later date.
 
+### Resetting budget usage
+
+Changing a budget's amount or reset frequency does not clear the spend already recorded against it. To
+clear it, send `reset_budget_usage: true` on the update request. The UI asks before saving whenever a
+budget's configuration changed, offering **Preserve Usage** or **Reset Usage**.
+
+```json
+{
+  "budgets": [{ "max_limit": 5000, "reset_duration": "1M" }],
+  "reset_budget_usage": true
+}
+```
+
+Supported on virtual keys, teams, customers, model limits, and provider governance.
+
+<Note>
+The reset clears **usage only**. The reset window keeps its existing start and end, because `last_reset`
+only ever advances and never moves as a side effect of a configuration write. That rule is what keeps
+every node in a cluster agreeing on which window is currently open. The normal scheduled reset is
+unaffected and still advances `last_reset` when the window closes, so a manually cleared budget resets
+again at its usual boundary rather than starting a fresh window from the moment you cleared it.
+</Note>
+
 ### Budget overrides
 
 A budget can carry a temporary **override** that adds spending capacity on top of its configured limit without touching the base limit, current usage, or reset schedule. While an override is active, enforcement uses:

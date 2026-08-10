@@ -18,11 +18,13 @@ import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import QuarterStartSelect from "@/components/ui/quarterStartSelect";
 import { budgetResetDurationOptions, resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
 import { CreateTeamRequest, Team, UpdateTeamRequest } from "@/lib/types/governance";
-import { formatCurrency } from "@/lib/utils/governance";
+import { budgetSignature, formatCurrency } from "@/lib/utils/governance";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { formatDistanceToNow } from "date-fns";
@@ -115,6 +117,10 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 	// Team-wide calendar-align toggle: confirmation only fires on the off→on
 	// transition for an existing team (mirrors the VK sheet behavior).
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
+	// Defers the save until the operator says whether to clear accumulated spend.
+	// The payload is a marker rather than the form data: this sheet keeps its own
+	// formData state, which the save reads directly.
+	const resetPrompt = useBudgetUsageResetPrompt<boolean>();
 
 	const updateBudgetRow = (idx: number, patch: Partial<TeamBudgetRow>) => {
 		setFormData((prev) => {
@@ -230,6 +236,26 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 		setFormData((prev) => ({ ...prev, [field]: value }));
 	};
 
+	// Whether this save changes budget configuration on an existing team, which is
+	// when clearing accumulated spend is a meaningful choice. Creating a team has
+	// no usage to reset, and a save that leaves budgets alone should not ask.
+	// Compared without ids on purpose: form rows carry none while persisted rows do,
+	// so including them would report a change on every save. The shared signature
+	// folds in the fiscal quarter, which a limit-and-duration comparison misses -
+	// moving Q1 from April to July reschedules the reset without touching either.
+	const budgetsChanged = () => {
+		if (!isEditing || !team) return false;
+		const next = formData.budgets
+			.filter((r) => r.maxLimit !== undefined && r.maxLimit !== null)
+			.map((r) => ({ max_limit: r.maxLimit, reset_duration: r.resetDuration, reset_config: r.resetConfig }));
+		const current = (team.budgets ?? []).map((b) => ({
+			max_limit: b.max_limit ?? undefined,
+			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
+		}));
+		return budgetSignature(next) !== budgetSignature(current);
+	};
+
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
 
@@ -238,6 +264,14 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 			return;
 		}
 
+		if (budgetsChanged()) {
+			resetPrompt.ask(true);
+			return;
+		}
+		await saveTeam(false);
+	};
+
+	const saveTeam = async (resetBudgetUsage: boolean) => {
 		// Serialize budget rows whose max_limit was filled in — rows left blank
 		// are silently dropped (the backend treats the slice as authoritative).
 		const submittableBudgets = formData.budgets
@@ -259,6 +293,8 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 					budgets: submittableBudgets,
 					// Team-wide setting that governs both team budgets and the team rate limit.
 					calendar_aligned: formData.calendarAligned,
+					// Only sent when the operator explicitly chose to clear spend.
+					reset_budget_usage: resetBudgetUsage || undefined,
 				};
 
 				// Detect rate limit changes using had/has pattern
@@ -528,6 +564,13 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 								</AlertDialogFooter>
 							</AlertDialogContent>
 						</AlertDialog>
+						<BudgetUsageResetDialog
+							data-testid="team-budget-reset-dialog"
+							ownerLabel="team"
+							open={resetPrompt.isOpen}
+							onOpenChange={resetPrompt.setOpen}
+							onChoice={(resetUsage) => resetPrompt.resolve(() => saveTeam(resetUsage))}
+						/>
 
 						{/* Current Usage Section (only shown when editing with existing limits) */}
 						{isEditing && ((team?.budgets && team.budgets.length > 0) || team?.rate_limit) && (
