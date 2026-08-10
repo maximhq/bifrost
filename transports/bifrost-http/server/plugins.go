@@ -58,7 +58,7 @@ func InstantiatePlugin(ctx context.Context, name string, path *string, pluginCon
 // duplicate label names would panic prometheus vector registration.
 func buildTelemetryConfig(clientLabels []string, pluginConfig any) (*telemetry.Config, error) {
 	telConfig := &telemetry.Config{
-		CustomLabels: clientLabels,
+		CustomLabels: dedupeLabels(clientLabels),
 	}
 	if pluginConfig == nil {
 		return telConfig, nil
@@ -77,15 +77,25 @@ func buildTelemetryConfig(clientLabels []string, pluginConfig any) (*telemetry.C
 		telConfig.MetricsEnabled = extraConfig.MetricsEnabled
 	}
 	if len(extraConfig.CustomLabels) > 0 {
-		merged := append([]string(nil), telConfig.CustomLabels...)
-		for _, label := range extraConfig.CustomLabels {
-			if !slices.Contains(merged, label) {
-				merged = append(merged, label)
-			}
-		}
-		telConfig.CustomLabels = merged
+		telConfig.CustomLabels = dedupeLabels(append(append([]string(nil), telConfig.CustomLabels...), extraConfig.CustomLabels...))
 	}
 	return telConfig, nil
+}
+
+// dedupeLabels returns labels with duplicates removed, preserving first-seen
+// order. Duplicate label names would panic prometheus vector registration, and
+// either source (client.prometheus_labels or the plugin config) may carry them.
+func dedupeLabels(labels []string) []string {
+	if len(labels) == 0 {
+		return labels
+	}
+	deduped := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if !slices.Contains(deduped, label) {
+			deduped = append(deduped, label)
+		}
+	}
+	return deduped
 }
 
 // loadBuiltinPlugin instantiates a built-in plugin by name

@@ -34,6 +34,12 @@ func TestBuildTelemetryConfigMergesCustomLabels(t *testing.T) {
 			want:         []string{"team", "cluster", "env"},
 		},
 		{
+			name:         "duplicates within client labels deduped",
+			clientLabels: []string{"team", "team", "cluster"},
+			pluginConfig: nil,
+			want:         []string{"team", "cluster"},
+		},
+		{
 			name:         "no plugin config keeps client labels",
 			clientLabels: []string{"cluster"},
 			pluginConfig: nil,
