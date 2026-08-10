@@ -387,6 +387,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.PassthroughResponseBody) +
 		len(log.ContentSummary) +
 		len(log.CacheDebug) +
+		len(log.GuardrailDebug) +
 		len(log.RoutingEngineLogs)
 	// Baseline for fixed-width columns and struct overhead
 	return n + 512

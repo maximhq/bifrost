@@ -37,6 +37,7 @@ type AccumulatedData struct {
 	TokenUsage            *schemas.BifrostLLMUsage
 	ServiceTier           *schemas.BifrostServiceTier
 	CacheDebug            *schemas.BifrostCacheDebug
+	GuardrailDebug        *schemas.BifrostGuardrailDebug
 	Cost                  *float64
 	AudioOutput           *schemas.BifrostSpeechResponse
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
@@ -82,6 +83,7 @@ type ChatStreamChunk struct {
 	TokenUsage         *schemas.BifrostLLMUsage               // Token usage if available
 	ServiceTier        *schemas.BifrostServiceTier            // Served OpenAI tier if available
 	SemanticCacheDebug *schemas.BifrostCacheDebug             // Semantic cache debug if available
+	GuardrailDebug     *schemas.BifrostGuardrailDebug         // Guardrail debug if available
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
@@ -96,6 +98,7 @@ type ResponsesStreamChunk struct {
 	TokenUsage         *schemas.BifrostLLMUsage                // Token usage if available
 	ServiceTier        *schemas.BifrostServiceTier             // Served OpenAI tier if available
 	SemanticCacheDebug *schemas.BifrostCacheDebug              // Semantic cache debug if available
+	GuardrailDebug     *schemas.BifrostGuardrailDebug          // Guardrail debug if available
 	Cost               *float64                                // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
@@ -361,6 +364,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.TextCompletionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.TextCompletionResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeChat:
 		var message *schemas.ChatMessage
 		if p.Data.OutputMessage != nil {
@@ -413,6 +419,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.ChatResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.ChatResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeResponses:
 		responsesResp := &schemas.BifrostResponsesResponse{}
 
@@ -438,6 +447,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			responsesResp.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			responsesResp.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 		resp.ResponsesResponse = responsesResp
 	case StreamTypeAudio:
 		speechResp := p.Data.AudioOutput
@@ -461,6 +473,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.CacheDebug != nil {
 			resp.SpeechResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+		if p.Data.GuardrailDebug != nil {
+			resp.SpeechResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
+		}
 	case StreamTypeTranscription:
 		transcriptionResp := p.Data.TranscriptionOutput
 		if transcriptionResp == nil {
@@ -482,6 +497,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.Data.CacheDebug != nil {
 			resp.TranscriptionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
+		if p.Data.GuardrailDebug != nil {
+			resp.TranscriptionResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
 		}
 	case StreamTypeImage:
 		imageResp := p.Data.ImageGenerationOutput
@@ -516,6 +534,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.Data.CacheDebug != nil {
 			resp.ImageGenerationResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
+		if p.Data.GuardrailDebug != nil {
+			resp.ImageGenerationResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
 		}
 
 	}
