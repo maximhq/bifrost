@@ -355,6 +355,139 @@ func TestInitMultiProfileValidation(t *testing.T) {
 	}
 }
 
+// TestProfileTracesEnabledDefault verifies TracesEnabled defaults to true when omitted
+// and is honored when set explicitly.
+func TestProfileTracesEnabledDefault(t *testing.T) {
+	raw := `{
+		"profiles": [
+			{"collector_url": "a:4317", "trace_type": "genai_extension", "protocol": "grpc"},
+			{"protocol": "http", "metrics_enabled": true, "metrics_endpoint": "b:4318", "traces_enabled": false}
+		]
+	}`
+
+	var cfg Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !cfg.Profiles[0].TracesEnabled {
+		t.Errorf("profile 0 TracesEnabled = false, want true (default)")
+	}
+	if cfg.Profiles[1].TracesEnabled {
+		t.Errorf("profile 1 TracesEnabled = true, want false (explicit)")
+	}
+}
+
+// TestInitMetricsOnlyProfile verifies a metrics-only profile (traces disabled, no
+// collector_url) builds a target with a metrics exporter but no trace client.
+func TestInitMetricsOnlyProfile(t *testing.T) {
+	raw := `{"profiles": [
+		{"traces_enabled": false, "protocol": "http", "metrics_enabled": true, "metrics_endpoint": "localhost:4318"}
+	]}`
+
+	var cfg Config
+	if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	plugin, err := Init(context.Background(), &cfg, testLogger{}, nil, "")
+	if err != nil {
+		t.Fatalf("Init metrics-only profile: %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	if len(plugin.targets) != 1 {
+		t.Fatalf("targets len = %d, want 1", len(plugin.targets))
+	}
+	if plugin.targets[0].client != nil {
+		t.Errorf("metrics-only target has a trace client, want nil")
+	}
+	if plugin.targets[0].metricsExporter == nil {
+		t.Errorf("metrics-only target has no metrics exporter, want one")
+	}
+}
+
+// TestInitMetricsOnlyPushIntervalTooLarge verifies a metrics-only profile (nil trace
+// client) with metrics_push_interval > 300 returns the validation error instead of
+// panicking on a nil client.Close().
+func TestInitMetricsOnlyPushIntervalTooLarge(t *testing.T) {
+	raw := `{"profiles": [
+		{"traces_enabled": false, "protocol": "http", "metrics_enabled": true, "metrics_endpoint": "localhost:4318", "metrics_push_interval": 301}
+	]}`
+
+	var cfg Config
+	if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	plugin, err := Init(context.Background(), &cfg, testLogger{}, nil, "")
+	if err == nil {
+		if plugin != nil {
+			_ = plugin.Cleanup()
+		}
+		t.Fatalf("expected error for metrics_push_interval > 300, got nil")
+	}
+}
+
+// TestInitTracesOnlyProfileNeedsCollectorURL verifies a traces-enabled profile still
+// requires collector_url.
+func TestInitTracesOnlyProfileNeedsCollectorURL(t *testing.T) {
+	raw := `{"profiles": [
+		{"trace_type": "genai_extension", "protocol": "grpc"}
+	]}`
+
+	var cfg Config
+	if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, err := Init(context.Background(), &cfg, testLogger{}, nil, ""); err == nil {
+		t.Errorf("expected error for traces-enabled profile missing collector_url")
+	}
+}
+
+// TestInitBothDisabledProfile verifies a profile with both traces and metrics disabled
+// is allowed as a no-op (matching the telemetry plugin, where pull and push are
+// independent and both may be off): it builds a target with no client or exporter.
+func TestInitBothDisabledProfile(t *testing.T) {
+	raw := `{"profiles": [
+		{"traces_enabled": false}
+	]}`
+
+	var cfg Config
+	if err := sonic.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	plugin, err := Init(context.Background(), &cfg, testLogger{}, nil, "")
+	if err != nil {
+		t.Fatalf("Init both-disabled profile: %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	if len(plugin.targets) != 1 {
+		t.Fatalf("targets len = %d, want 1", len(plugin.targets))
+	}
+	if plugin.targets[0].client != nil || plugin.targets[0].metricsExporter != nil {
+		t.Errorf("both-disabled target should have no client or exporter")
+	}
+}
+
+// TestTracesEnabledStorageRoundTrip verifies traces_enabled survives storage marshalling.
+func TestTracesEnabledStorageRoundTrip(t *testing.T) {
+	raw := `{"profiles": [
+		{"traces_enabled": false, "protocol": "http", "metrics_enabled": true, "metrics_endpoint": "localhost:4318"}
+	]}`
+	var cfg Config
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	stored, err := cfg.MarshalForStorage()
+	if err != nil {
+		t.Fatalf("MarshalForStorage: %v", err)
+	}
+	var back Config
+	if err := json.Unmarshal(stored, &back); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	if back.Profiles[0].TracesEnabled {
+		t.Errorf("round-trip TracesEnabled = true, want false")
+	}
+}
+
 type testLogger struct{}
 
 func (testLogger) Debug(string, ...any)                   {}
