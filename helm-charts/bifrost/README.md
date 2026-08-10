@@ -8,6 +8,12 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ## Changelog
 
+### 2.1.35
+
+- Added `traces_enabled` to OTEL config (single-profile and `profiles[*]`). When `false`, no traces are exported and `collector_url` is not required, giving a metrics-only profile. Renders into `traces_enabled`; defaults to `true`.
+- Added `trace_headers` and `metrics_headers` to OTEL config (single-profile and `profiles[*]`). Common `headers` still go to both endpoints; these are overlaid on top for the trace / metrics endpoint respectively (same key wins), e.g. a Databricks table name required only on metrics. Render into `trace_headers` / `metrics_headers`.
+
+
 ### 2.1.34
 
 - Added `bifrost.scim.config.roleResolutionStrategy` (`highestPermissionCount` default, or `order`) to pick a single role when a user matches multiple `attributeRoleMappings` — most-permissioned role vs first match in the list. Passes through into `scim_config.config.roleResolutionStrategy`.
