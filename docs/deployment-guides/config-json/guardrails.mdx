@@ -96,6 +96,35 @@ Runs entirely in-process with no external dependency. Uses the embedded default 
 `ignored_secret_keywords` is optional. It suppresses a detection when the matched secret value contains one of the listed substrings. Keep these values narrow so real leaked credentials are not hidden.
 
 </Tab>
+<Tab title="Prompt Guardrails">
+
+Uses a configured Bifrost LLM provider and model to evaluate text against a natural-language policy. The judge model must support Chat Completions or the Responses API, plus `response_format`. Bifrost prefers Chat Completions when the model supports both.
+
+```json
+{
+  "guardrails_config": {
+    "guardrail_providers": [
+      {
+        "id": 3,
+        "provider_name": "prompt-guardrail",
+        "policy_name": "block-medical-diagnoses",
+        "enabled": true,
+        "timeout": 30,
+        "config": {
+          "judge_provider": "openai",
+          "judge_model": "gpt-4o-mini",
+          "rule": "Block responses that provide a definitive medical diagnosis for an individual.",
+          "max_output_tokens": 200
+        }
+      }
+    ]
+  }
+}
+```
+
+Prompt Guardrails returns binary allow or block decisions. It adds judge-model latency and token cost, and it does not inspect image pixels or binary files. See [Prompt Guardrails](/enterprise/guardrails/prompt-guardrails) for model requirements, verification, failure behavior, and policy-writing guidance.
+
+</Tab>
 <Tab title="Presidio">
 
 Calls a Microsoft Presidio Analyzer service for PII detection. Use `action: "redact"` to apply Bifrost-managed redaction to Presidio findings.
@@ -469,7 +498,7 @@ Calls Repello Argus prompt and response analysis endpoints. The configured Argus
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique integer ID - referenced by rules via `provider_config_ids` |
-| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"`, `"lakera"`, `"repelloai-argus"` |
+| `provider_name` | Yes | Backend: `"regex"`, `"secrets"`, `"prompt-guardrail"`, `"presidio"`, `"azure-pii"`, `"bedrock"`, `"azure"`, `"model-armor"`, `"crowdstrike-aidr"`, `"patronus-ai"`, `"grayswan"`, `"lakera"`, `"repelloai-argus"` |
 | `policy_name` | Yes | Human-readable policy label |
 | `enabled` | Yes | `true` to activate |
 | `timeout` | No | Execution timeout in seconds |
@@ -645,6 +674,17 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `action` | No | **Plain only** | `detect_only` \| `block` \| `redact` (default: `block`) |
 | `redaction_strategy` | No | **Plain only** | `replace` \| `mask` \| `hash` (default: `replace`) |
 | `redaction_mode` | No | **Plain only** | `runtime` \| `logs_only` \| `runtime_reversible` (default: `runtime`) |
+
+### Prompt Guardrails
+
+| Field | Required | env.\* supported | Notes |
+|-------|----------|-----------------|-------|
+| `judge_provider` | Yes | **Plain only** | Configured Bifrost provider used for the judge request |
+| `judge_model` | Yes | **Plain only** | Judge model; must support Chat Completions or the Responses API, plus `response_format` |
+| `rule` | Yes | **Plain only** | Natural-language policy to evaluate |
+| `prompt_template` | No | **Plain only** | Custom system-prompt template; must contain `{{rule}}` and must not contain `{{content}}` |
+| `timeout` | No | **Plain only** | Judge-request timeout in seconds (default: `30`) |
+| `max_output_tokens` | No | **Plain only** | Judge response limit from `1` to `1024` (default: `200`) |
 
 ---
 
