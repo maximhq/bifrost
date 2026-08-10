@@ -124,11 +124,13 @@ kubectl run postgres-check --namespace bifrost \
   --command -- sleep 3600
 
 kubectl wait --namespace bifrost --for=condition=Ready pod/postgres-check --timeout=2m
-kubectl exec --namespace bifrost -it postgres-check -- psql
+kubectl exec --namespace bifrost -it postgres-check -- psql \
+  -c "SHOW server_version;" \
+  -c "SHOW server_encoding;"
 kubectl delete pod --namespace bifrost postgres-check
 ```
 
-Enter the PostgreSQL password when psql prompts. A successful connection confirms DNS, TCP, TLS, and database authentication from the pod network. Confirm that `SHOW server_version;` reports PostgreSQL 16 or later.
+Enter the PostgreSQL password when psql prompts. A successful connection confirms DNS, TCP, TLS, and database authentication from the pod network. Confirm that `server_version` reports PostgreSQL 16 or later and `server_encoding` reports `UTF8`.
 
 </Tab>
 <Tab title="SQLite (OSS only)">
