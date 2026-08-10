@@ -5845,6 +5845,13 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		stampRequestedRoute(ctx, requested)
 	}
 
+	// Arms once for the whole call, including every fallback attempt below --
+	// a caller's declared total-duration budget must not restart per attempt,
+	// or a request with N configured fallbacks could take up to N times the
+	// declared deadline. See armRequestTimeout's doc comment.
+	stopRequestTimeout := armRequestTimeout(ctx)
+	defer stopRequestTimeout()
+
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
 	// Whole-request start for top-down overhead (total minus upstream). On ctx so
@@ -6079,6 +6086,14 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}()
 	stampRequestedRoute(ctx, requested)
 
+	// Arms once for the whole call, including every fallback attempt below.
+	// See the identical comment in handleRequest, and armRequestTimeout's doc
+	// comment, for why this must not restart per attempt. Every return path
+	// below either wraps the returned channel with wrapStreamForRequestTimeout
+	// (success: stop only once the caller has fully drained the stream) or
+	// calls stopRequestTimeout directly (error: nothing to wrap).
+	stopRequestTimeout := armRequestTimeout(ctx)
+
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
 	// Whole-request start for overhead on the streaming short-circuit path; the
@@ -6112,6 +6127,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	validateErr := validateRequestAfterPreRequestHooks(req)
 	bifrost.endCoreSpan(preDispatchSpan)
 	if validateErr != nil {
+		stopRequestTimeout()
 		// Returning before tryStreamRequest skips the downstream log drain, so
 		// flush any PreRequestHook-emitted plugin logs here.
 		flushPluginLogs(ctx)
@@ -6147,10 +6163,12 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
 	if !shouldTryFallbacks {
-		if primaryErr == nil {
-			served = &schemas.Route{Provider: provider, Model: model}
+		if primaryErr != nil {
+			stopRequestTimeout()
+			return primaryResult, primaryErr
 		}
-		return primaryResult, primaryErr
+		served = &schemas.Route{Provider: provider, Model: model}
+		return wrapStreamForRequestTimeout(primaryResult, stopRequestTimeout), nil
 	}
 
 	// Mirror handleRequest: register core on the engines-used list and post
@@ -6219,7 +6237,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			served = &schemas.Route{Provider: fallback.Provider, Model: fallback.Model}
 			servedFallback = true
-			return result, nil
+			return wrapStreamForRequestTimeout(result, stopRequestTimeout), nil
 		}
 
 		// End span with error status
@@ -6230,6 +6248,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+			stopRequestTimeout()
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
@@ -6237,6 +6256,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		lastErr = fallbackErr
 	}
 
+	stopRequestTimeout()
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("All %d fallback(s) exhausted; returning primary error (%s)", len(fallbacks), routingErrorSummary(primaryErr)))
 	// All providers failed, return the original error, with the provider headers it came with
 	restoreProviderResponseHeaders(ctx, primaryHeaders)
