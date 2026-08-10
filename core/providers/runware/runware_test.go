@@ -24,15 +24,19 @@ func TestRunware(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Runware,
+		ChatModel:            "google-gemma-4-31b",
 		ImageGenerationModel: "runware:101@1",
 		ImageEditModel:       "runware:102@1",             // FLUX Fill: supports seedImage + maskImage (inpainting)
 		VideoGenerationModel: "klingai:kling-video@3-pro", // set a video model; flip the scenarios below on to exercise it
 		Scenarios: llmtests.TestScenarios{
-			ImageGeneration: true,
-			ImageEdit:       true,
-			VideoGeneration: false,
-			VideoRetrieve:   false,
-			VideoDownload:   false,
+			SimpleChat:       true,
+			CompletionStream: true,
+			ListModels:       true,
+			ImageGeneration:  true,
+			ImageEdit:        true,
+			VideoGeneration:  false,
+			VideoRetrieve:    false,
+			VideoDownload:    false,
 		},
 	}
 

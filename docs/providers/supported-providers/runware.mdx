@@ -1,6 +1,6 @@
 ---
 title: "Runware"
-description: "Runware API conversion guide - text-to-image, image editing, and text/image-to-video generation"
+description: "Runware API conversion guide - OpenAI-compatible chat (LLM), text-to-image, image editing, and text/image-to-video generation"
 icon: "/media/runware-nav.svg"
 ---
 
@@ -8,10 +8,17 @@ icon: "/media/runware-nav.svg"
 
 Runware exposes a single synchronous endpoint (`https://api.runware.ai/v1`) that accepts an **array of tasks**. Bifrost wraps each request in this array envelope and maps the unified image and video schemas onto Runware's `imageInference` and `videoInference` task types. Image tasks return synchronously; video tasks are submitted asynchronously and polled to completion.
 
+Bifrost routes chat completions (unary and streaming), the Responses API (unary and streaming, translated to chat completions), and model listing through its shared OpenAI-compatible handlers.
+
 ### Supported Operations
 
 | Operation | Supported | Task Type |
 |-----------|-----------|-----------|
+| Chat Completion | ✅ | OpenAI-compatible `/v1/chat/completions` |
+| Chat Completion (stream) | ✅ | OpenAI-compatible `/v1/chat/completions` (SSE) |
+| List Models | ✅ | OpenAI-compatible `/v1/models` |
+| Responses API | ✅ | OpenAI-compatible `/v1/responses` (translated to chat) |
+| Responses API (stream) | ✅ | OpenAI-compatible `/v1/responses` (SSE, translated to chat) |
 | Image Generation | ✅ | `imageInference` |
 | Image Edit (inpainting / outpainting) | ✅ | `imageInference` |
 | Video Generation | ✅ | `videoInference` (async) |
@@ -20,6 +27,41 @@ Runware exposes a single synchronous endpoint (`https://api.runware.ai/v1`) that
 | Image Variation | ❌ | - |
 | Image / Image Edit (stream) | ❌ | - |
 | Video Delete / List / Remix | ❌ | - |
+
+---
+
+# Chat Completions (LLM)
+
+Runware's text models are served through an OpenAI-compatible endpoint. Route to them with the `runware/<model>` syntax; resolve exact model ids from `/v1/models`.
+
+## Chat (`POST /v1/chat/completions`)
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Runware-hosted model id (from `/v1/models`) |
+| `messages` | array | ✅ | Standard OpenAI chat messages |
+| `stream` | bool | ❌ | Server-Sent Events streaming |
+| `tools` / `tool_choice` | array / string | ❌ | Tool calling (passed through) |
+| `response_format` | object | ❌ | Structured outputs (JSON schema) |
+
+Standard OpenAI sampling fields (`temperature`, `top_p`, `max_tokens`, `stop`, `presence_penalty`, `frequency_penalty`, `seed`) are forwarded as-is.
+
+### Example
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "runware/<model-id>",
+    "messages": [{"role": "user", "content": "Hello, Bifrost!"}]
+  }'
+```
+
+</Tab>
+</Tabs>
 
 ---
 
