@@ -63,33 +63,91 @@ func TestUsesGeminiEmbedContentAPI(t *testing.T) {
 	}
 }
 
-func TestToVertexGeminiEmbedContentRequest_FullyQualifiedModel(t *testing.T) {
+func TestVertexGeminiEmbedTexts_TextOrTextsNotBoth(t *testing.T) {
+	t.Parallel()
+
+	a, b, empty := "a", "b", ""
+	// Text takes precedence over Texts (legacy parity).
+	req := &schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{
+			Text:  &a,
+			Texts: []string{b, "c"},
+		},
+	}
+	got := vertexGeminiEmbedTexts(req)
+	if len(got) != 1 || got[0] != "a" {
+		t.Fatalf("Text precedence: got %v, want [a]", got)
+	}
+
+	// Empty entries in Texts are skipped.
+	req = &schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{Texts: []string{"x", empty, "y", ""}},
+	}
+	got = vertexGeminiEmbedTexts(req)
+	if len(got) != 2 || got[0] != "x" || got[1] != "y" {
+		t.Fatalf("empty filter: got %v, want [x y]", got)
+	}
+
+	// Empty single Text → no inputs.
+	req = &schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{Text: &empty},
+	}
+	if got = vertexGeminiEmbedTexts(req); len(got) != 0 {
+		t.Fatalf("empty Text: got %v", got)
+	}
+}
+
+func TestToVertexGeminiEmbedContentRequest_BodyShapeAndExtraParams(t *testing.T) {
 	t.Parallel()
 
 	text := "Hello world"
 	dims := 768
+	extra := map[string]interface{}{
+		"taskType":    "RETRIEVAL_DOCUMENT",
+		"title":       "doc",
+		"dimensions":  dims, // should be consumed (typed field wins via Params.Dimensions)
+		"custom_flag": true, // should remain for passthrough
+	}
 	req := &schemas.BifrostEmbeddingRequest{
 		Model: "models/gemini-embedding-2",
 		Input: &schemas.EmbeddingInput{Text: &text},
 		Params: &schemas.EmbeddingParameters{
-			Dimensions: &dims,
+			Dimensions:  &dims,
+			ExtraParams: extra,
 		},
 	}
-	modelID := canonicalVertexModelID(req.Model)
 
-	embedReq := ToVertexGeminiEmbedContentRequest(req, text, "my-project", "eu", modelID)
+	embedReq := ToVertexGeminiEmbedContentRequest(req, text)
 	if embedReq == nil {
 		t.Fatal("expected non-nil embedContent request")
 	}
-
 	if embedReq.Model != "" {
-		t.Fatalf("model must be omitted from body (URL carries identity), got %q", embedReq.Model)
+		t.Fatalf("model must be omitted from body, got %q", embedReq.Model)
 	}
 	if embedReq.Content == nil || len(embedReq.Content.Parts) != 1 || embedReq.Content.Parts[0].Text != text {
 		t.Fatalf("content = %#v", embedReq.Content)
 	}
 	if embedReq.OutputDimensionality == nil || *embedReq.OutputDimensionality != dims {
 		t.Fatalf("outputDimensionality = %#v", embedReq.OutputDimensionality)
+	}
+	if embedReq.TaskType == nil || *embedReq.TaskType != "RETRIEVAL_DOCUMENT" {
+		t.Fatalf("taskType = %#v", embedReq.TaskType)
+	}
+	if embedReq.Title == nil || *embedReq.Title != "doc" {
+		t.Fatalf("title = %#v", embedReq.Title)
+	}
+	// Consumed keys must not remain in ExtraParams (passthrough merge).
+	for _, k := range []string{"taskType", "title", "dimensions", "outputDimensionality", "task_type"} {
+		if _, ok := embedReq.ExtraParams[k]; ok {
+			t.Fatalf("ExtraParams still has consumed key %q: %#v", k, embedReq.ExtraParams)
+		}
+	}
+	if v, ok := embedReq.ExtraParams["custom_flag"].(bool); !ok || !v {
+		t.Fatalf("custom_flag should remain for passthrough: %#v", embedReq.ExtraParams)
+	}
+	// Original map must be untouched.
+	if _, ok := extra["taskType"]; !ok {
+		t.Fatal("original ExtraParams was mutated")
 	}
 
 	raw, err := json.Marshal(embedReq)
@@ -98,13 +156,29 @@ func TestToVertexGeminiEmbedContentRequest_FullyQualifiedModel(t *testing.T) {
 	}
 	s := string(raw)
 	if strings.Contains(s, `"instances"`) || strings.Contains(s, `"requests"`) {
-		t.Fatalf("single embedContent body must not wrap instances/requests: %s", s)
+		t.Fatalf("body must not wrap instances/requests: %s", s)
 	}
 	if strings.Contains(s, `"model"`) {
-		t.Fatalf("body must not set model (Vertex oneof with URL): %s", s)
+		t.Fatalf("body must not set model: %s", s)
 	}
-	if !strings.Contains(s, `"content"`) {
-		t.Fatalf("body = %s", s)
+}
+
+func TestToVertexGeminiEmbedContentRequest_SnakeCaseTaskType(t *testing.T) {
+	t.Parallel()
+
+	text := "hi"
+	req := &schemas.BifrostEmbeddingRequest{
+		Input: &schemas.EmbeddingInput{Text: &text},
+		Params: &schemas.EmbeddingParameters{
+			ExtraParams: map[string]interface{}{"task_type": "SEMANTIC_SIMILARITY"},
+		},
+	}
+	embedReq := ToVertexGeminiEmbedContentRequest(req, text)
+	if embedReq.TaskType == nil || *embedReq.TaskType != "SEMANTIC_SIMILARITY" {
+		t.Fatalf("taskType = %#v", embedReq.TaskType)
+	}
+	if _, ok := embedReq.ExtraParams["task_type"]; ok {
+		t.Fatalf("task_type should be deleted from ExtraParams: %#v", embedReq.ExtraParams)
 	}
 }
 
@@ -174,12 +248,10 @@ func TestGetVertexEmbeddingURL_MethodByModel(t *testing.T) {
 	}
 }
 
-// TestGeminiEmbedContentResponse_PreservesValues is a fixture regression for the
-// Vertex :embedContent response path (live shape: embedding.values).
-func TestGeminiEmbedContentResponse_PreservesValues(t *testing.T) {
+// Live Vertex :embedContent fixture — usage comes from usageMetadata, not statistics.
+func TestVertexGeminiEmbedContentResponse_LiveUsageMetadata(t *testing.T) {
 	t.Parallel()
 
-	// Live Vertex response for gemini-embedding-2:embedContent (trimmed).
 	const fixture = `{
   "embedding": {
     "values": [0.11, 0.22, 0.33]
@@ -190,23 +262,23 @@ func TestGeminiEmbedContentResponse_PreservesValues(t *testing.T) {
   }
 }`
 
-	var embedResp gemini.GeminiEmbedContentResponse
+	var embedResp vertexGeminiEmbedContentResponse
 	if err := json.Unmarshal([]byte(fixture), &embedResp); err != nil {
 		t.Fatalf("unmarshal fixture: %v", err)
 	}
 	if len(embedResp.Embedding.Values) != 3 {
 		t.Fatalf("values len = %d", len(embedResp.Embedding.Values))
 	}
+	if embedResp.UsageMetadata == nil {
+		t.Fatal("expected usageMetadata on fixture")
+	}
 
-	got := bifrostEmbeddingFromGeminiEmbedContent(&embedResp, "gemini-embedding-2", 0)
+	got := bifrostEmbeddingFromVertexGeminiEmbedContent(&embedResp, "gemini-embedding-2", 0)
 	if got == nil {
 		t.Fatal("nil conversion")
 	}
-	if got.Model != "gemini-embedding-2" || len(got.Data) != 1 {
+	if got.Model != "gemini-embedding-2" || len(got.Data) != 1 || got.Data[0].Index != 0 {
 		t.Fatalf("got = %#v", got)
-	}
-	if got.Data[0].Index != 0 {
-		t.Fatalf("index = %d", got.Data[0].Index)
 	}
 	want := []float64{0.11, 0.22, 0.33}
 	for i, v := range want {
@@ -214,21 +286,44 @@ func TestGeminiEmbedContentResponse_PreservesValues(t *testing.T) {
 			t.Fatalf("values[%d] = %v, want %v", i, got.Data[0].Embedding.EmbeddingArray[i], v)
 		}
 	}
+	// Live shape assertions (CodeRabbit #3 / #5).
+	if got.Usage == nil {
+		t.Fatal("expected Usage from usageMetadata")
+	}
+	if got.Usage.PromptTokens != 2 || got.Usage.TotalTokens != 2 {
+		t.Fatalf("usage = %#v, want prompt=2 total=2", got.Usage)
+	}
+}
+
+func TestVertexGeminiEmbedContentResponse_StatisticsFallback(t *testing.T) {
+	t.Parallel()
+
+	got := bifrostEmbeddingFromVertexGeminiEmbedContent(&vertexGeminiEmbedContentResponse{
+		Embedding: gemini.GeminiEmbedding{
+			Values:     []float64{1},
+			Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 9},
+		},
+	}, "m", 0)
+	if got == nil || got.Usage == nil || got.Usage.PromptTokens != 9 || got.Usage.TotalTokens != 9 {
+		t.Fatalf("statistics fallback usage = %#v", got)
+	}
 }
 
 func TestMergeBifrostEmbeddingResponses_OrderAndUsage(t *testing.T) {
 	t.Parallel()
 
-	p0 := bifrostEmbeddingFromGeminiEmbedContent(&gemini.GeminiEmbedContentResponse{
-		Embedding: gemini.GeminiEmbedding{
-			Values:     []float64{1, 2},
-			Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 3},
+	p0 := bifrostEmbeddingFromVertexGeminiEmbedContent(&vertexGeminiEmbedContentResponse{
+		Embedding: gemini.GeminiEmbedding{Values: []float64{1, 2}},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+			PromptTokenCount: 3,
+			TotalTokenCount:  3,
 		},
 	}, "gemini-embedding-2", 0)
-	p1 := bifrostEmbeddingFromGeminiEmbedContent(&gemini.GeminiEmbedContentResponse{
-		Embedding: gemini.GeminiEmbedding{
-			Values:     []float64{3, 4, 5},
-			Statistics: &gemini.ContentEmbeddingStatistics{TokenCount: 4},
+	p1 := bifrostEmbeddingFromVertexGeminiEmbedContent(&vertexGeminiEmbedContentResponse{
+		Embedding: gemini.GeminiEmbedding{Values: []float64{3, 4, 5}},
+		UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+			PromptTokenCount: 4,
+			TotalTokenCount:  4,
 		},
 	}, "gemini-embedding-2", 1)
 
@@ -243,25 +338,22 @@ func TestMergeBifrostEmbeddingResponses_OrderAndUsage(t *testing.T) {
 		t.Fatalf("vector lens wrong: %#v", got.Data)
 	}
 	if got.Usage == nil || got.Usage.PromptTokens != 7 || got.Usage.TotalTokens != 7 {
-		t.Fatalf("usage = %#v", got.Usage)
+		t.Fatalf("merged usage = %#v, want 7/7 from usageMetadata parts", got.Usage)
 	}
 }
 
-// Ensure unmarshaling the batch-shaped response into EmbedContentResponse fails
-// loudly (documents why we must not call :batchEmbedContents on Vertex).
-func TestGeminiEmbedContentResponse_RejectsBatchShape(t *testing.T) {
+func TestVertexGeminiEmbedContentResponse_RejectsBatchShape(t *testing.T) {
 	t.Parallel()
 
 	const batchFixture = `{"embeddings":[{"values":[0.1,0.2]}]}`
-	var embedResp gemini.GeminiEmbedContentResponse
+	var embedResp vertexGeminiEmbedContentResponse
 	if err := json.Unmarshal([]byte(batchFixture), &embedResp); err != nil {
 		t.Fatalf("unexpected unmarshal err: %v", err)
 	}
-	// JSON ignores unknown "embeddings" key — Values stays empty.
 	if len(embedResp.Embedding.Values) != 0 {
-		t.Fatalf("expected empty values when given batch shape, got %v", embedResp.Embedding.Values)
+		t.Fatalf("expected empty values for batch shape, got %v", embedResp.Embedding.Values)
 	}
-	if bifrostEmbeddingFromGeminiEmbedContent(&embedResp, "m", 0) != nil {
-		t.Fatal("batch-shaped body must not convert to a Bifrost embedding")
+	if bifrostEmbeddingFromVertexGeminiEmbedContent(&embedResp, "m", 0) != nil {
+		t.Fatal("batch-shaped body must not convert")
 	}
 }

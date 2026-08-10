@@ -27,8 +27,8 @@ func canonicalVertexModelID(model string) string {
 
 // usesGeminiEmbedContentAPI reports whether the model should be called via the
 // Gemini Generative Language embedding surface on Vertex
-// (:batchEmbedContents / :embedContent) rather than the legacy Vertex
-// prediction embedding API (:predict + instances).
+// (:embedContent) rather than the legacy Vertex prediction embedding API
+// (:predict + instances).
 //
 // Legacy :predict models include text-embedding-004, text-embedding-005,
 // text-multilingual-embedding-002, multimodalembedding@001, etc.
@@ -107,47 +107,69 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 }
 
 // vertexGeminiEmbedTexts extracts the ordered list of input texts from a Bifrost
-// embedding request (single Text and/or Texts).
+// embedding request.
+//
+// Matches legacy ToVertexEmbeddingRequest semantics: Text takes precedence over
+// Texts (never both). Empty strings are skipped so a single "" in Texts does not
+// abort a multi-input request when building :embedContent bodies.
 func vertexGeminiEmbedTexts(bifrostReq *schemas.BifrostEmbeddingRequest) []string {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
-	var texts []string
-	if bifrostReq.Input.Text != nil && *bifrostReq.Input.Text != "" {
-		texts = append(texts, *bifrostReq.Input.Text)
+	var raw []string
+	if bifrostReq.Input.Text != nil {
+		raw = []string{*bifrostReq.Input.Text}
+	} else if len(bifrostReq.Input.Texts) > 0 {
+		raw = bifrostReq.Input.Texts
 	}
-	if len(bifrostReq.Input.Texts) > 0 {
-		texts = append(texts, bifrostReq.Input.Texts...)
+	if len(raw) == 0 {
+		return nil
+	}
+	texts := make([]string, 0, len(raw))
+	for _, t := range raw {
+		if t == "" {
+			continue
+		}
+		texts = append(texts, t)
 	}
 	return texts
+}
+
+// cloneStringAnyMap shallow-copies a map[string]interface{} so callers can
+// delete consumed keys without mutating the shared Params.ExtraParams map.
+func cloneStringAnyMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // ToVertexGeminiEmbedContentRequest builds a single Vertex :embedContent body.
 //
 // Live Vertex AI (global / multi-region eu|us) serves gemini-embedding-* on
-// :embedContent with response shape {"embedding":{"values":[…]}}. The Google AI
-// Studio :batchEmbedContents endpoint is not available on the Vertex publisher
-// path (HTML 404) — using it and unmarshaling as GeminiEmbeddingResponse yields
-// "failed to unmarshal response from provider API".
+// :embedContent with response shape {"embedding":{"values":[…]}, "usageMetadata":…}.
+// The Google AI Studio :batchEmbedContents endpoint is not available on the
+// Vertex publisher path (HTML 404).
 //
 // The model is taken from the URL path only. Putting "model" in the JSON body
 // triggers Vertex INVALID_ARGUMENT:
-//   Invalid value (oneof), oneof field '_model' is already set. Cannot set 'model'
-// (modelID/projectID/region are kept in the signature for call-site clarity and
-// future use; they intentionally do not appear in the wire body).
+//
+//	Invalid value (oneof), oneof field '_model' is already set. Cannot set 'model'
+//
+// Consumed ExtraParams keys (taskType, title, dimensions and snake_case aliases)
+// are deleted from a cloned map so passthrough merge does not re-inject them as
+// duplicate JSON fields alongside the typed struct tags.
 func ToVertexGeminiEmbedContentRequest(
 	bifrostReq *schemas.BifrostEmbeddingRequest,
 	text string,
-	projectID string,
-	region string,
-	modelID string,
 ) *gemini.GeminiEmbeddingRequest {
 	if bifrostReq == nil || text == "" {
 		return nil
 	}
-	_ = projectID
-	_ = region
-	_ = modelID
 	embeddingReq := &gemini.GeminiEmbeddingRequest{
 		// Model intentionally empty — omitempty; identity is the URL resource.
 		Content: &gemini.Content{
@@ -157,26 +179,46 @@ func ToVertexGeminiEmbedContentRequest(
 		},
 	}
 	if bifrostReq.Params != nil {
-		embeddingReq.ExtraParams = bifrostReq.Params.ExtraParams
+		extra := cloneStringAnyMap(bifrostReq.Params.ExtraParams)
 		if bifrostReq.Params.Dimensions != nil {
 			embeddingReq.OutputDimensionality = bifrostReq.Params.Dimensions
+			delete(extra, "dimensions")
+			delete(extra, "outputDimensionality")
 		}
-		if bifrostReq.Params.ExtraParams != nil {
-			if taskType, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["taskType"]); ok {
+		if extra != nil {
+			// Prefer camelCase (Gemini wire); accept snake_case aliases from clients.
+			if taskType, ok := schemas.SafeExtractStringPointer(extra["taskType"]); ok {
+				embeddingReq.TaskType = taskType
+			} else if taskType, ok := schemas.SafeExtractStringPointer(extra["task_type"]); ok {
 				embeddingReq.TaskType = taskType
 			}
-			if title, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["title"]); ok {
+			delete(extra, "taskType")
+			delete(extra, "task_type")
+			if title, ok := schemas.SafeExtractStringPointer(extra["title"]); ok {
 				embeddingReq.Title = title
 			}
+			delete(extra, "title")
 		}
+		embeddingReq.ExtraParams = extra
 	}
 	return embeddingReq
 }
 
-// bifrostEmbeddingFromGeminiEmbedContent converts a Vertex/Google :embedContent
+// vertexGeminiEmbedContentResponse is the live Vertex :embedContent JSON shape.
+// usageMetadata is first-class on the wire; Embedding.Statistics is rarely set.
+type vertexGeminiEmbedContentResponse struct {
+	Embedding     gemini.GeminiEmbedding                         `json:"embedding"`
+	UsageMetadata *gemini.GenerateContentResponseUsageMetadata   `json:"usageMetadata,omitempty"`
+}
+
+// bifrostEmbeddingFromVertexGeminiEmbedContent converts a Vertex :embedContent
 // response into Bifrost form for one input at the given index.
-func bifrostEmbeddingFromGeminiEmbedContent(
-	resp *gemini.GeminiEmbedContentResponse,
+//
+// Token usage preference:
+//  1. usageMetadata.promptTokenCount / totalTokenCount (live Vertex body)
+//  2. embedding.statistics.tokenCount (fallback / Google AI Studio shapes)
+func bifrostEmbeddingFromVertexGeminiEmbedContent(
+	resp *vertexGeminiEmbedContentResponse,
 	model string,
 	index int,
 ) *schemas.BifrostEmbeddingResponse {
@@ -196,7 +238,21 @@ func bifrostEmbeddingFromGeminiEmbedContent(
 			},
 		},
 	}
-	if resp.Embedding.Statistics != nil {
+	switch {
+	case resp.UsageMetadata != nil && (resp.UsageMetadata.PromptTokenCount > 0 || resp.UsageMetadata.TotalTokenCount > 0):
+		prompt := int(resp.UsageMetadata.PromptTokenCount)
+		total := int(resp.UsageMetadata.TotalTokenCount)
+		if total == 0 {
+			total = prompt
+		}
+		if prompt == 0 {
+			prompt = total
+		}
+		out.Usage = &schemas.BifrostLLMUsage{
+			PromptTokens: prompt,
+			TotalTokens:  total,
+		}
+	case resp.Embedding.Statistics != nil:
 		tokens := int(resp.Embedding.Statistics.TokenCount)
 		out.Usage = &schemas.BifrostLLMUsage{
 			PromptTokens: tokens,
