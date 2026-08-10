@@ -543,6 +543,9 @@ func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
 	if err != nil {
 		return err
 	}
+	if s.db.Name() == "postgres" {
+		serializedEntry = sanitizePostgresUpdateEntry(serializedEntry)
+	}
 
 	tx := s.db.WithContext(ctx).Model(&Log{}).Where("id = ?", id).Updates(serializedEntry)
 	if tx.Error != nil {
@@ -4429,6 +4432,9 @@ func (s *RDBLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any
 	serializedEntry, err := serializeMCPToolLogUpdateEntry(entry)
 	if err != nil {
 		return err
+	}
+	if s.db.Name() == "postgres" {
+		serializedEntry = sanitizePostgresUpdateEntry(serializedEntry)
 	}
 
 	tx := s.db.WithContext(ctx).Model(&MCPToolLog{}).Where("id = ?", id).Updates(serializedEntry)
