@@ -687,7 +687,7 @@ export function LogDetailView({
 	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
-	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output;
+	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
 	const videoListOutput = log.video_list_output;
 	const pluginLogCount = (() => {
 		if (!log.plugin_logs) return 0;

@@ -2202,6 +2202,124 @@ func TestApplyNonStreamingOutputToEntryContentLoggingEnabled(t *testing.T) {
 	}
 }
 
+// TestApplyNonStreamingOutputToEntryVideoOutputs verifies that each video response lands in
+// its own log column. Generation, remix and retrieve all return BifrostVideoGenerationResponse,
+// so the request type is the only thing separating generation from retrieve.
+func TestApplyNonStreamingOutputToEntryVideoOutputs(t *testing.T) {
+	videoResponse := func(requestType schemas.RequestType) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+				ID:          "vid_123:openai",
+				Status:      schemas.VideoStatusQueued,
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: requestType},
+			},
+		}
+	}
+
+	tests := []struct {
+		name   string
+		result *schemas.BifrostResponse
+		verify func(t *testing.T, entry *logstore.Log)
+	}{
+		{
+			name:   "generation",
+			result: videoResponse(schemas.VideoGenerationRequest),
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoGenerationOutputParsed == nil {
+					t.Fatal("expected VideoGenerationOutputParsed to be set")
+				}
+				if entry.VideoRetrieveOutputParsed != nil {
+					t.Error("expected VideoRetrieveOutputParsed to stay nil")
+				}
+				if entry.VideoGenerationOutputParsed.ID != "vid_123:openai" {
+					t.Errorf("expected provider-scoped ID, got %q", entry.VideoGenerationOutputParsed.ID)
+				}
+			},
+		},
+		{
+			name:   "remix routes to generation",
+			result: videoResponse(schemas.VideoRemixRequest),
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoGenerationOutputParsed == nil {
+					t.Error("expected VideoGenerationOutputParsed to be set")
+				}
+			},
+		},
+		{
+			name:   "retrieve",
+			result: videoResponse(schemas.VideoRetrieveRequest),
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoRetrieveOutputParsed == nil {
+					t.Fatal("expected VideoRetrieveOutputParsed to be set")
+				}
+				if entry.VideoGenerationOutputParsed != nil {
+					t.Error("expected VideoGenerationOutputParsed to stay nil")
+				}
+			},
+		},
+		{
+			name: "download",
+			result: &schemas.BifrostResponse{
+				VideoDownloadResponse: &schemas.BifrostVideoDownloadResponse{
+					VideoID:     "vid_123:openai",
+					ContentType: "video/mp4",
+					ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoDownloadRequest},
+				},
+			},
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoDownloadOutputParsed == nil {
+					t.Error("expected VideoDownloadOutputParsed to be set")
+				}
+			},
+		},
+		{
+			name: "list",
+			result: &schemas.BifrostResponse{
+				VideoListResponse: &schemas.BifrostVideoListResponse{
+					Object:      "list",
+					Data:        []schemas.VideoObject{{ID: "vid_123:openai"}},
+					ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoListRequest},
+				},
+			},
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoListOutputParsed == nil {
+					t.Error("expected VideoListOutputParsed to be set")
+				}
+			},
+		},
+		{
+			name: "delete",
+			result: &schemas.BifrostResponse{
+				VideoDeleteResponse: &schemas.BifrostVideoDeleteResponse{
+					ID:          "vid_123:openai",
+					Deleted:     true,
+					ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.VideoDeleteRequest},
+				},
+			},
+			verify: func(t *testing.T, entry *logstore.Log) {
+				if entry.VideoDeleteOutputParsed == nil {
+					t.Error("expected VideoDeleteOutputParsed to be set")
+				}
+			},
+		},
+	}
+
+	plugin := &LoggerPlugin{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &logstore.Log{}
+			plugin.applyNonStreamingOutputToEntry(entry, tt.result, false, true)
+			tt.verify(t, entry)
+		})
+	}
+
+	t.Run("content logging disabled", func(t *testing.T) {
+		entry := &logstore.Log{}
+		plugin.applyNonStreamingOutputToEntry(entry, videoResponse(schemas.VideoGenerationRequest), false, false)
+		if entry.VideoGenerationOutputParsed != nil {
+			t.Error("expected VideoGenerationOutputParsed to be nil when contentLoggingEnabled=false")
+		}
+	})
 // TestGuardrailDebugForLogReadsContextWithoutResponse verifies input blocks remain observable.
 func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
