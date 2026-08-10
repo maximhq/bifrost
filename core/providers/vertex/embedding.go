@@ -130,8 +130,11 @@ func vertexGeminiEmbedTexts(bifrostReq *schemas.BifrostEmbeddingRequest) []strin
 // path (HTML 404) — using it and unmarshaling as GeminiEmbeddingResponse yields
 // "failed to unmarshal response from provider API".
 //
-// modelID must be canonical (see canonicalVertexModelID). The optional model
-// field is set to the fully-qualified publisher resource name Vertex expects.
+// The model is taken from the URL path only. Putting "model" in the JSON body
+// triggers Vertex INVALID_ARGUMENT:
+//   Invalid value (oneof), oneof field '_model' is already set. Cannot set 'model'
+// (modelID/projectID/region are kept in the signature for call-site clarity and
+// future use; they intentionally do not appear in the wire body).
 func ToVertexGeminiEmbedContentRequest(
 	bifrostReq *schemas.BifrostEmbeddingRequest,
 	text string,
@@ -142,8 +145,11 @@ func ToVertexGeminiEmbedContentRequest(
 	if bifrostReq == nil || text == "" {
 		return nil
 	}
+	_ = projectID
+	_ = region
+	_ = modelID
 	embeddingReq := &gemini.GeminiEmbeddingRequest{
-		Model: "projects/" + projectID + "/locations/" + region + "/publishers/google/models/" + modelID,
+		// Model intentionally empty — omitempty; identity is the URL resource.
 		Content: &gemini.Content{
 			Parts: []*gemini.Part{
 				{Text: text},

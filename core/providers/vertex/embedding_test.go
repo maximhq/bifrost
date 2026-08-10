@@ -82,12 +82,8 @@ func TestToVertexGeminiEmbedContentRequest_FullyQualifiedModel(t *testing.T) {
 		t.Fatal("expected non-nil embedContent request")
 	}
 
-	wantModel := "projects/my-project/locations/eu/publishers/google/models/gemini-embedding-2"
-	if embedReq.Model != wantModel {
-		t.Fatalf("model = %q, want %q", embedReq.Model, wantModel)
-	}
-	if strings.Contains(embedReq.Model, "models/models/") {
-		t.Fatalf("double models/ prefix: %q", embedReq.Model)
+	if embedReq.Model != "" {
+		t.Fatalf("model must be omitted from body (URL carries identity), got %q", embedReq.Model)
 	}
 	if embedReq.Content == nil || len(embedReq.Content.Parts) != 1 || embedReq.Content.Parts[0].Text != text {
 		t.Fatalf("content = %#v", embedReq.Content)
@@ -104,7 +100,10 @@ func TestToVertexGeminiEmbedContentRequest_FullyQualifiedModel(t *testing.T) {
 	if strings.Contains(s, `"instances"`) || strings.Contains(s, `"requests"`) {
 		t.Fatalf("single embedContent body must not wrap instances/requests: %s", s)
 	}
-	if !strings.Contains(s, `"content"`) || !strings.Contains(s, wantModel) {
+	if strings.Contains(s, `"model"`) {
+		t.Fatalf("body must not set model (Vertex oneof with URL): %s", s)
+	}
+	if !strings.Contains(s, `"content"`) {
 		t.Fatalf("body = %s", s)
 	}
 }
