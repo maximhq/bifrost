@@ -40,8 +40,11 @@ func isEncryptedReasoningRejection(err *schemas.BifrostError) bool {
 		return true
 	}
 	message := strings.ToLower(err.Error.Message)
+	// Anthropic sends no code and names the offending block instead:
+	// "messages.1.content.0: Invalid `data` in `redacted_thinking` block".
 	return strings.Contains(message, encryptedContentErrorCode) ||
-		(strings.Contains(message, "encrypted content") && strings.Contains(message, "could not be verified"))
+		(strings.Contains(message, "encrypted content") && strings.Contains(message, "could not be verified")) ||
+		(strings.Contains(message, "invalid `data`") && strings.Contains(message, "`redacted_thinking` block"))
 }
 
 // stripResponsesEncryptedContent removes encrypted_content from every reasoning item
