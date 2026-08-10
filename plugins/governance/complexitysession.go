@@ -60,6 +60,10 @@ type SessionComplexityRecord struct {
 	RuleID string `json:"rule_id"`
 	// SwitchCount is the number of tier changes made during this session.
 	SwitchCount int `json:"switch_count,omitempty"`
+	// RefreshedAt is when the sliding expiration was last extended. It exists so
+	// reads can tell whether the window actually needs sliding: refreshing on
+	// every read makes each read a write, and each write a cluster broadcast.
+	RefreshedAt time.Time `json:"refreshed_at"`
 
 	// PendingTier is the lower tier currently being considered for a sustained
 	// downgrade. Empty means that no downgrade is pending.
@@ -71,9 +75,6 @@ type SessionComplexityRecord struct {
 	// pending sequence.
 	PendingMinScore float64 `json:"pending_min_score,omitempty"`
 
-	// ConsecutiveFailures counts upstream failures associated with the current
-	// pin and is reset after a successful pinned attempt.
-	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
 	// RouteObservations is keyed by a stable, opaque effective-route identity.
 	// It is a map so primary, fallback, and destination warmth remain separate.
 	// Writers are responsible for bounding retained history.
@@ -81,18 +82,23 @@ type SessionComplexityRecord struct {
 }
 
 // SessionStoreStatus describes the guarantees of the active session-state
-// backend. Multi-replica session routing is safe only when both
-// SharedAcrossReplicas and AtomicUpdates are true.
+// backend. It reports what the storage layer can prove about itself, never
+// whether a given deployment is safe: that also depends on how many replicas
+// are running, which this layer cannot observe.
 type SessionStoreStatus struct {
 	// Backend is a diagnostic name for the active implementation. Callers must
 	// use the capability fields, not this label, when deciding readiness.
 	Backend string `json:"backend"`
-	// SharedAcrossReplicas reports whether all replicas observe the same logical
-	// session records.
-	SharedAcrossReplicas bool `json:"shared_across_replicas"`
-	// AtomicUpdates reports whether concurrent updates to one session are
-	// serialized across every replica that shares the backend.
-	AtomicUpdates bool `json:"atomic_updates"`
+	// ReplicationConfigured reports whether local mutations are forwarded to
+	// other nodes. It is deliberately named for the configuration rather than
+	// the outcome: forwarding is fire-and-forget, so a delegate being installed
+	// says nothing about whether peers are connected, reachable, or converged.
+	ReplicationConfigured bool `json:"replication_configured"`
+	// AtomicAcrossReplicas reports whether concurrent updates to one session are
+	// serialized across everything sharing this backend. A single node holding
+	// the only copy satisfies this through its own lock; gossip replication does
+	// not, because it resolves conflicts by last-write-wins after the fact.
+	AtomicAcrossReplicas bool `json:"atomic_across_replicas"`
 }
 
 // SessionRecordUpdater mutates a caller-owned copy of the current session
@@ -105,9 +111,16 @@ type SessionRecordUpdater func(*SessionComplexityRecord) error
 // contract. Implementations must be safe for concurrent use and must not expose
 // shared record pointers or RouteObservations maps to callers.
 type SessionStore interface {
-	// Get atomically reads a record and refreshes its sliding expiration to ttl.
-	// The returned record is caller-owned. found is false, with a nil error, when
-	// the key is absent or expired. ttl must be positive.
+	// Get reads a record and keeps its sliding expiration at least ttl away. The
+	// returned record is caller-owned. found is false, with a nil error, when the
+	// key is absent or expired. ttl must be positive.
+	//
+	// The refresh is coarse rather than per-read: an implementation may leave the
+	// expiry untouched while the window is still comfortably in the future. A
+	// record therefore survives at least ttl of idleness, and may survive somewhat
+	// longer. This is deliberate — sliding on literally every read turns a read
+	// path into a write path, which on a replicated backend means a cluster
+	// message per request.
 	Get(ctx context.Context, key string, ttl time.Duration) (record *SessionComplexityRecord, found bool, err error)
 	// Create atomically stores a caller-owned snapshot only when key is absent or
 	// expired. created is false, with a nil error, when another caller already
@@ -160,21 +173,74 @@ func (s *kvSessionStore) Get(ctx context.Context, key string, ttl time.Duration)
 		return nil, false, err
 	}
 
-	value, found, err := s.store.UpdateWithTTL(key, ttl, func(current any) (any, error) {
-		return complexitySessionRecordFromValue(current)
-	})
-	if err != nil {
-		return nil, found, fmt.Errorf("refresh complexity session %q: %w", key, err)
-	}
-	if !found {
+	// The read-only path first. kvstore.Get takes a read lock and notifies no
+	// delegate, so a held turn costs nothing beyond a map lookup.
+	value, err := s.store.Get(key)
+	if errors.Is(err, kvstore.ErrNotFound) {
 		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read complexity session %q: %w", key, err)
 	}
 
 	record, err := complexitySessionRecordFromValue(value)
 	if err != nil {
 		return nil, true, fmt.Errorf("read complexity session %q: %w", key, err)
 	}
-	return record, true, nil
+
+	// Still comfortably inside the window, so leave the expiry alone.
+	if time.Since(record.RefreshedAt) < complexitySessionRefreshInterval(ttl) {
+		return record, true, nil
+	}
+
+	refreshedAt := time.Now()
+	value, found, err := s.store.UpdateWithTTL(key, complexitySessionStoredTTL(ttl), func(current any) (any, error) {
+		refreshed, err := complexitySessionRecordFromValue(current)
+		if err != nil {
+			return nil, err
+		}
+		refreshed.RefreshedAt = refreshedAt
+		return refreshed, nil
+	})
+	if err != nil {
+		return nil, true, fmt.Errorf("refresh complexity session %q: %w", key, err)
+	}
+	if !found {
+		// Expired between the read and the refresh. The record we hold is already
+		// gone, so report it as absent rather than serving a tier the store no
+		// longer has.
+		return nil, false, nil
+	}
+
+	refreshed, err := complexitySessionRecordFromValue(value)
+	if err != nil {
+		return nil, true, fmt.Errorf("read refreshed complexity session %q: %w", key, err)
+	}
+	return refreshed, true, nil
+}
+
+// complexitySessionRefreshInterval is how much of the idle window may elapse
+// before a read slides the expiry. A quarter keeps writes to roughly four per
+// window however chatty the conversation is, while staying frequent enough that
+// the stored expiry never drifts far from the truth.
+func complexitySessionRefreshInterval(ttl time.Duration) time.Duration {
+	interval := ttl / 4
+	if interval <= 0 {
+		// A ttl too short to quarter refreshes on every read, which is correct:
+		// there is no amplification to avoid at that scale.
+		return 0
+	}
+	return interval
+}
+
+// complexitySessionStoredTTL is the expiry actually written to the backend. It
+// carries one refresh interval of headroom so a coarse refresh can never expire
+// a session earlier than the configured idle window: the worst case is a read
+// that declines to slide just before the caller goes idle, and the headroom
+// covers exactly that gap. The cost is that an abandoned session lingers up to
+// one interval longer than configured.
+func complexitySessionStoredTTL(ttl time.Duration) time.Duration {
+	return ttl + complexitySessionRefreshInterval(ttl)
 }
 
 // Create stores a detached record snapshot when key is currently absent or
@@ -187,7 +253,13 @@ func (s *kvSessionStore) Create(ctx context.Context, key string, record *Session
 		return false, errNilComplexitySessionRecord
 	}
 
-	created, err := s.store.SetNXWithTTL(key, cloneSessionComplexityRecord(record), ttl)
+	// The store owns the refresh clock, not the caller: a record created with a
+	// zero or stale RefreshedAt would slide its expiry on the very next read,
+	// which is the write-per-read this exists to avoid.
+	stored := cloneSessionComplexityRecord(record)
+	stored.RefreshedAt = time.Now()
+
+	created, err := s.store.SetNXWithTTL(key, stored, complexitySessionStoredTTL(ttl))
 	if err != nil {
 		return false, fmt.Errorf("create complexity session %q: %w", key, err)
 	}
@@ -204,7 +276,11 @@ func (s *kvSessionStore) Update(ctx context.Context, key string, ttl time.Durati
 		return nil, false, errNilComplexitySessionUpdater
 	}
 
-	value, found, err := s.store.UpdateWithTTL(key, ttl, func(current any) (any, error) {
+	// An update is already a write, so it slides the window too — leaving it on
+	// the old expiry would make a just-modified session expire sooner than a
+	// merely-read one.
+	refreshedAt := time.Now()
+	value, found, err := s.store.UpdateWithTTL(key, complexitySessionStoredTTL(ttl), func(current any) (any, error) {
 		record, err := complexitySessionRecordFromValue(current)
 		if err != nil {
 			return nil, err
@@ -212,6 +288,8 @@ func (s *kvSessionStore) Update(ctx context.Context, key string, ttl time.Durati
 		if err := update(record); err != nil {
 			return nil, err
 		}
+		// Stamped after the updater so a caller cannot rewind the refresh clock.
+		record.RefreshedAt = refreshedAt
 		return cloneSessionComplexityRecord(record), nil
 	})
 	if err != nil {
@@ -252,11 +330,16 @@ func (s *kvSessionStore) Status(ctx context.Context) (SessionStoreStatus, error)
 		return SessionStoreStatus{}, err
 	}
 
-	sharedAcrossReplicas := s.store.HasSyncDelegate()
+	replicationConfigured := s.store.HasSyncDelegate()
 	return SessionStoreStatus{
-		Backend:              complexitySessionStoreBackendKV,
-		SharedAcrossReplicas: sharedAcrossReplicas,
-		AtomicUpdates:        !sharedAcrossReplicas,
+		Backend:               complexitySessionStoreBackendKV,
+		ReplicationConfigured: replicationConfigured,
+		// Inverted deliberately. With no delegate this process holds the only
+		// copy and its own lock serializes every update, so updates are atomic
+		// across the one replica that exists. Once replication is configured the
+		// lock is local to each node while the records are shared, which is the
+		// combination that lets two nodes decide different tiers for one session.
+		AtomicAcrossReplicas: !replicationConfigured,
 	}, nil
 }
 

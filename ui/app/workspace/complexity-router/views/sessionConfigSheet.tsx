@@ -6,13 +6,38 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
-import { SESSION_IDENTITY_SOURCE_OPTIONS, SESSION_MODE_OPTIONS, SessionIdentitySource } from "@/lib/types/complexityRouter";
+import {
+	SESSION_IDENTITY_SOURCE_OPTIONS,
+	SESSION_MODE_OPTIONS,
+	SessionIdentitySource,
+	sessionStoreReadiness,
+	SessionStoreReadiness,
+	SessionStoreStatus,
+} from "@/lib/types/complexityRouter";
 import { cn } from "@/lib/utils";
 import { Info, LoaderCircle, Save, TriangleAlert } from "lucide-react";
 import { Controller, type Control, type FieldErrors, type UseFormRegister } from "react-hook-form";
 import type { AnalyzerFormValues, SessionFormValues } from "../formSchema";
 import { sessionTtlFieldValue } from "../formSchema";
 import { FieldLabel } from "./formPrimitives";
+
+// Each state names the guarantee and the consequence. The middle one is the
+// case that matters: it is what a replicated deployment reports today, and it is
+// the one a single "replicated ✓" boolean would have rendered as reassuring.
+const READINESS_COPY: Record<SessionStoreReadiness, { title: string; body: string }> = {
+	"node-local": {
+		title: "Session state is node-local.",
+		body: "Each gateway holds its own copy. That is fine on a single replica; if you run more than one, a conversation is tracked separately on each and can be pinned to a different tier on each.",
+	},
+	"replicated-not-atomic": {
+		title: "Replicated, but not atomic.",
+		body: "Records reach other replicas, but concurrent updates to one conversation are not serialized across them. Two replicas handling turns at the same time can decide different tiers, and the later write wins. Use load-balancer session affinity if you need this to hold.",
+	},
+	"shared-atomic": {
+		title: "Shared and atomic.",
+		body: "Every replica sees the same session records and concurrent updates to one conversation are serialized across them.",
+	},
+};
 
 interface Props {
 	open: boolean;
@@ -26,6 +51,10 @@ interface Props {
 	// on the tier the classifier produces, so with no classifier there is nothing
 	// to pin and these settings sit inert.
 	isClassifierConfigured: boolean;
+	// What the session backend reports about itself. Undefined means no store is
+	// attached, which is not the same as an unsafe one.
+	storeStatus: SessionStoreStatus | undefined;
+	storeStatusLoading: boolean;
 	canSave: boolean;
 	isSaving: boolean;
 	onSave: () => void;
@@ -46,11 +75,14 @@ export default function SessionConfigSheet({
 	session,
 	canUpdate,
 	isClassifierConfigured,
+	storeStatus,
+	storeStatusLoading,
 	canSave,
 	isSaving,
 	onSave,
 }: Props) {
 	const mode = session?.mode ?? "off";
+	const readiness = sessionStoreReadiness(storeStatus);
 	const isEnabled = mode === "pinned" || mode === "cache_aware";
 	const isCacheAware = mode === "cache_aware";
 	const fieldsDisabled = !canUpdate || !isEnabled;
@@ -103,16 +135,17 @@ export default function SessionConfigSheet({
 						</p>
 					</div>
 
-					{/* Session state is held per node. Track A's readiness probe will
-					    replace this with the live backend's guarantees; until then the
-					    caveat is stated unconditionally rather than implied, because a
-					    silent split across replicas looks like the feature working. */}
-					{isEnabled && (
-						<Alert variant="warning" data-testid="complexity-router-session-replica-warning">
-							<TriangleAlert className="h-4 w-4" />
+					{/* The backend can only describe itself — it cannot see how many
+					    replicas are running — so none of these three say "safe". They
+					    say what the storage guarantees and leave the topology to the
+					    operator, who is the only one who knows it. */}
+					{isEnabled && !storeStatusLoading && readiness && (
+						<Alert variant={readiness === "shared-atomic" ? "info" : "warning"} data-testid="complexity-router-session-store-readiness">
+							{readiness === "shared-atomic" ? <Info className="h-4 w-4" /> : <TriangleAlert className="h-4 w-4" />}
 							<AlertDescription>
-								Session state is held in each gateway&apos;s own memory. If you run more than one replica, turns handled by different
-								replicas resolve their tiers independently, so a conversation can be pinned to two different tiers at once.
+								<span>
+									<span className="font-medium">{READINESS_COPY[readiness].title}</span> {READINESS_COPY[readiness].body}
+								</span>
 							</AlertDescription>
 						</Alert>
 					)}
@@ -151,29 +184,6 @@ export default function SessionConfigSheet({
 							) : (
 								<p className="text-muted-foreground text-xs leading-relaxed">How long an idle conversation keeps its tier.</p>
 							)}
-						</div>
-
-						<div className="space-y-2">
-							<FieldLabel
-								htmlFor="session-release-after-failures"
-								tooltip="After this many consecutive upstream failures the pin is dropped and the next turn is classified fresh, on the assumption that the pinned tier is the thing failing."
-							>
-								Release after failures
-							</FieldLabel>
-							<Input
-								id="session-release-after-failures"
-								data-testid="complexity-router-session-release-input"
-								type="number"
-								min={1}
-								step={1}
-								disabled={fieldsDisabled}
-								aria-invalid={errors?.release_after_failures ? true : undefined}
-								className={cn("font-mono", errors?.release_after_failures && "border-destructive focus-visible:ring-destructive")}
-								{...register("session.release_after_failures", {
-									valueAsNumber: true,
-								})}
-							/>
-							{errors?.release_after_failures && <p className="text-destructive text-xs">{errors.release_after_failures.message}</p>}
 						</div>
 					</div>
 

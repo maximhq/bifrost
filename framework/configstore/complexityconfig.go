@@ -355,7 +355,6 @@ const (
 // on the exemplar set's score distribution, so it ships unset (no gating).
 const (
 	DefaultComplexitySessionTTL                   = time.Hour
-	DefaultComplexitySessionReleaseAfterFailures  = 3
 	DefaultComplexitySessionDowngradeAfterNTurns  = 2
 	DefaultComplexitySessionMinCachedTokensToHold = 1024
 )
@@ -381,9 +380,6 @@ type ComplexitySessionConfig struct {
 	// session ID, tried in the constant order above regardless of the order
 	// given here.
 	IdentitySources []string `json:"identity_sources,omitempty"`
-	// ReleaseAfterFailures releases a pin after this many consecutive upstream
-	// failures, on the assumption that the pinned tier is implicated.
-	ReleaseAfterFailures int `json:"release_after_failures,omitempty"`
 
 	// SwitchMinSimilarity is the confidence a classification must reach before
 	// it may change session state, forming hysteresis with the semantic
@@ -501,7 +497,6 @@ func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
 		Mode:                  strings.ToLower(strings.TrimSpace(c.Mode)),
 		TTL:                   c.TTL,
 		IdentitySources:       normalizeComplexitySessionIdentitySources(c.IdentitySources),
-		ReleaseAfterFailures:  c.ReleaseAfterFailures,
 		SwitchMinSimilarity:   c.SwitchMinSimilarity,
 		DowngradeAfterNTurns:  c.DowngradeAfterNTurns,
 		MinCachedTokensToHold: c.MinCachedTokensToHold,
@@ -516,9 +511,6 @@ func (c *ComplexitySessionConfig) normalized() *ComplexitySessionConfig {
 	}
 	if len(out.IdentitySources) == 0 {
 		out.IdentitySources = DefaultComplexitySessionIdentitySources()
-	}
-	if out.ReleaseAfterFailures == 0 {
-		out.ReleaseAfterFailures = DefaultComplexitySessionReleaseAfterFailures
 	}
 	if out.DowngradeAfterNTurns == 0 {
 		out.DowngradeAfterNTurns = DefaultComplexitySessionDowngradeAfterNTurns
@@ -594,9 +586,6 @@ func (c *ComplexitySessionConfig) Validate() error {
 	// MinSimilarity treatment: a misconfiguration, not "never switch".
 	if c.SwitchMinSimilarity < 0 || c.SwitchMinSimilarity >= 1 {
 		return fmt.Errorf("session switch_min_similarity must be at least 0 and less than 1, got %v", c.SwitchMinSimilarity)
-	}
-	if c.ReleaseAfterFailures < 1 {
-		return fmt.Errorf("session release_after_failures must be at least 1, got %d", c.ReleaseAfterFailures)
 	}
 	if c.DowngradeAfterNTurns < 1 {
 		return fmt.Errorf("session downgrade_after_n_turns must be at least 1, got %d", c.DowngradeAfterNTurns)

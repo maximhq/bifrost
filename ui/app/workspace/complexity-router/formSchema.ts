@@ -61,10 +61,6 @@ const sessionSchema = z.object({
 	// The server rejects an empty ladder, and with nothing able to identify a
 	// session the feature silently does nothing.
 	identity_sources: z.array(z.enum(["header", "harness"])).min(1, "Select at least one way to identify a session"),
-	release_after_failures: z
-		.number({ error: "Enter a whole number of failures" })
-		.int("Must be a whole number")
-		.min(1, "Must be at least 1"),
 	switch_min_similarity: z.number({ error: "Enter a number between 0 and 1" }).min(0, "Must be 0 or greater").lt(1, "Must be less than 1"),
 	downgrade_after_n_turns: z.number({ error: "Enter a whole number of turns" }).int("Must be a whole number").min(1, "Must be at least 1"),
 	min_cached_tokens_to_hold: z
@@ -164,7 +160,6 @@ export const DEFAULT_SESSION_FORM_VALUES: SessionFormValues = {
 	mode: DEFAULT_SESSION_CONFIG.mode,
 	ttl: DEFAULT_SESSION_CONFIG.ttl ?? "60m",
 	identity_sources: [...DEFAULT_SESSION_IDENTITY_SOURCES],
-	release_after_failures: DEFAULT_SESSION_CONFIG.release_after_failures ?? 3,
 	switch_min_similarity: DEFAULT_SESSION_CONFIG.switch_min_similarity ?? 0,
 	downgrade_after_n_turns: DEFAULT_SESSION_CONFIG.downgrade_after_n_turns ?? 2,
 	min_cached_tokens_to_hold: DEFAULT_SESSION_CONFIG.min_cached_tokens_to_hold ?? 1024,
@@ -226,7 +221,6 @@ export function toFormValues(config: AnalyzerConfig): AnalyzerFormValues {
 						savedSession.identity_sources && savedSession.identity_sources.length > 0
 							? savedSession.identity_sources
 							: DEFAULT_SESSION_FORM_VALUES.identity_sources,
-					release_after_failures: savedSession.release_after_failures ?? DEFAULT_SESSION_FORM_VALUES.release_after_failures,
 					switch_min_similarity: savedSession.switch_min_similarity ?? 0,
 					downgrade_after_n_turns: savedSession.downgrade_after_n_turns ?? DEFAULT_SESSION_FORM_VALUES.downgrade_after_n_turns,
 					min_cached_tokens_to_hold: savedSession.min_cached_tokens_to_hold ?? DEFAULT_SESSION_FORM_VALUES.min_cached_tokens_to_hold,

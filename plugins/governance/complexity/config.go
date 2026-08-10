@@ -42,6 +42,12 @@ const (
 const (
 	MechanismSemantic = "semantic"
 	MechanismSkipped  = "skipped"
+	// MechanismSession means the tier was reused from session state rather than
+	// classified for this request. It is a distinct value rather than reporting
+	// the mechanism that originally decided it: the whole point of the pin is
+	// that no classifier ran for this turn, and recording "semantic" would make
+	// a log of held turns indistinguishable from a log of embedded ones.
+	MechanismSession = "session"
 )
 
 // Default boundaries are retained for the dormant lexical analyzer and its

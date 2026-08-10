@@ -107,6 +107,20 @@ type complexitySemanticStatusProvider interface {
 	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
 }
 
+// complexitySessionStoreStatusProvider is separate from the semantic provider so
+// a build that exposes one but not the other still serves what it has.
+type complexitySessionStoreStatusProvider interface {
+	GetComplexitySessionStoreStatus(ctx context.Context) (*governance.SessionStoreStatus, error)
+}
+
+// complexityStatusResponse is the analyzer status payload. SemanticStatusInfo is
+// embedded rather than nested so every field clients already read stays at the
+// top level; session_store is additive and omitted when no store is attached.
+type complexityStatusResponse struct {
+	complexity.SemanticStatusInfo
+	SessionStore *governance.SessionStoreStatus `json:"session_store,omitempty"`
+}
+
 // GovernanceHandler manages HTTP requests for governance operations
 // ScopeNameResolver returns the human-readable name for a non-global model
 // config scope target (e.g. a virtual key's Name given its ID). The second
@@ -1471,7 +1485,21 @@ func (h *GovernanceHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx
 		SendError(ctx, fasthttp.StatusServiceUnavailable, fmt.Sprintf("failed to get semantic complexity status: %v", err))
 		return
 	}
-	SendJSON(ctx, status)
+
+	response := complexityStatusResponse{SemanticStatusInfo: status}
+	// The session store is reported alongside the classifier rather than behind
+	// its own endpoint, but it must not be able to fail the whole response: a
+	// classifier that is ready is still worth reporting when the session backend
+	// cannot describe itself.
+	if sessionProvider, ok := h.governanceManager.(complexitySessionStoreStatusProvider); ok {
+		sessionStatus, sessionErr := sessionProvider.GetComplexitySessionStoreStatus(ctx)
+		if sessionErr != nil {
+			logger.Warn("failed to get complexity session store status: %v", sessionErr)
+		} else {
+			response.SessionStore = sessionStatus
+		}
+	}
+	SendJSON(ctx, response)
 }
 
 // Virtual Key CRUD Operations

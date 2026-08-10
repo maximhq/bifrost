@@ -274,6 +274,8 @@ type mockComplexityGovernanceManager struct {
 	validationErr  error
 	semanticStatus complexity.SemanticStatusInfo
 	semanticErr    error
+	sessionStatus  *governance.SessionStoreStatus
+	sessionErr     error
 }
 
 func (m *mockComplexityGovernanceManager) ReloadComplexityAnalyzerConfig(_ context.Context, config *complexity.AnalyzerConfig) error {
@@ -292,6 +294,103 @@ func (m *mockComplexityGovernanceManager) ValidateComplexityAnalyzerConfig(_ con
 // non-persisted semantic classifier state.
 func (m *mockComplexityGovernanceManager) GetComplexitySemanticStatus(_ context.Context) (complexity.SemanticStatusInfo, error) {
 	return m.semanticStatus, m.semanticErr
+}
+
+// GetComplexitySessionStoreStatus lets the same tests emulate the session
+// backend's reported guarantees.
+func (m *mockComplexityGovernanceManager) GetComplexitySessionStoreStatus(_ context.Context) (*governance.SessionStoreStatus, error) {
+	return m.sessionStatus, m.sessionErr
+}
+
+// The session block is additive: it must not move or drop any field an existing
+// client already reads off this endpoint.
+func TestComplexityStatusReportsSessionStoreAlongsideSemanticFields(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler := &GovernanceHandler{
+		configStore: setupPricingOverrideHandlerStore(t),
+		governanceManager: &mockComplexityGovernanceManager{
+			semanticStatus: complexity.SemanticStatusInfo{
+				State:  complexity.SemanticStatusReady,
+				Loaded: 12,
+				Total:  12,
+			},
+			sessionStatus: &governance.SessionStoreStatus{
+				Backend:               "kvstore",
+				ReplicationConfigured: true,
+				AtomicAcrossReplicas:  false,
+			},
+		},
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.getComplexitySemanticStatus(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	// Top-level shape is the contract existing clients depend on.
+	for field, want := range map[string]any{"state": "ready", "loaded": float64(12), "total": float64(12)} {
+		if body[field] != want {
+			t.Fatalf("expected %s=%v at the top level, got %v: %s", field, want, body[field], string(ctx.Response.Body()))
+		}
+	}
+
+	sessionStore, ok := body["session_store"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected a session_store object, got %s", string(ctx.Response.Body()))
+	}
+	if sessionStore["replication_configured"] != true || sessionStore["atomic_across_replicas"] != false {
+		t.Fatalf("expected the replicated-but-not-atomic pair, got %v", sessionStore)
+	}
+}
+
+// No attached store is the normal case with session routing off, so the field is
+// omitted rather than reported as a backend with no guarantees — which would
+// render as the alarming state in the UI.
+func TestComplexityStatusOmitsSessionStoreWhenUnattached(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler := &GovernanceHandler{
+		configStore:       setupPricingOverrideHandlerStore(t),
+		governanceManager: &mockComplexityGovernanceManager{semanticStatus: complexity.SemanticStatusInfo{State: complexity.SemanticStatusDisabled}},
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.getComplexitySemanticStatus(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if strings.Contains(string(ctx.Response.Body()), "session_store") {
+		t.Fatalf("expected session_store to be omitted, got %s", string(ctx.Response.Body()))
+	}
+}
+
+// A session backend that cannot describe itself must not take the classifier's
+// readiness down with it.
+func TestComplexityStatusSurvivesSessionStoreError(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler := &GovernanceHandler{
+		configStore: setupPricingOverrideHandlerStore(t),
+		governanceManager: &mockComplexityGovernanceManager{
+			semanticStatus: complexity.SemanticStatusInfo{State: complexity.SemanticStatusReady, Loaded: 3, Total: 3},
+			sessionErr:     errors.New("store unavailable"),
+		},
+	}
+
+	ctx := newTestRequestCtx("")
+	handler.getComplexitySemanticStatus(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected status 200 despite the session error, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if !strings.Contains(string(ctx.Response.Body()), `"state":"ready"`) {
+		t.Fatalf("expected the classifier state to still be reported, got %s", string(ctx.Response.Body()))
+	}
 }
 
 func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
@@ -382,7 +481,6 @@ func TestComplexityAnalyzerConfigPutRoundTripsSessionBlock(t *testing.T) {
 	cfg.Session = &configstore.ComplexitySessionConfig{
 		Mode:                  configstore.ComplexitySessionModePinned,
 		TTL:                   30 * time.Minute,
-		ReleaseAfterFailures:  5,
 		MaxSwitchesPerSession: 2,
 	}
 
@@ -405,9 +503,6 @@ func TestComplexityAnalyzerConfigPutRoundTripsSessionBlock(t *testing.T) {
 	}
 	if stored.Session.TTL != 30*time.Minute {
 		t.Fatalf("expected ttl 30m, got %s", stored.Session.TTL)
-	}
-	if stored.Session.ReleaseAfterFailures != 5 {
-		t.Fatalf("expected release_after_failures 5, got %d", stored.Session.ReleaseAfterFailures)
 	}
 	if stored.Session.MaxSwitchesPerSession != 2 {
 		t.Fatalf("expected max_switches_per_session 2, got %d", stored.Session.MaxSwitchesPerSession)
@@ -887,7 +982,6 @@ func TestComplexityAnalyzerConfigResetPreservesSessionBlock(t *testing.T) {
 	custom.Session = &configstore.ComplexitySessionConfig{
 		Mode:                 configstore.ComplexitySessionModePinned,
 		TTL:                  45 * time.Minute,
-		ReleaseAfterFailures: 7,
 	}
 	if err := store.UpdateComplexityAnalyzerConfig(context.Background(), &custom); err != nil {
 		t.Fatalf("seed custom config: %v", err)
@@ -912,9 +1006,6 @@ func TestComplexityAnalyzerConfigResetPreservesSessionBlock(t *testing.T) {
 	}
 	if stored.Session.TTL != 45*time.Minute {
 		t.Fatalf("expected ttl preserved, got %s", stored.Session.TTL)
-	}
-	if stored.Session.ReleaseAfterFailures != 7 {
-		t.Fatalf("expected release_after_failures preserved, got %d", stored.Session.ReleaseAfterFailures)
 	}
 	// The phrase lists are what reset actually owns.
 	if slices.Contains(stored.Keywords.SimpleKeywords, "only phrase the operator wrote") {
