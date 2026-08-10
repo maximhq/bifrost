@@ -45,7 +45,7 @@ Values written to `kubernetes_secret` resources are stored in Terraform state. P
 Create an EBS volume, persistent volume, and persistent volume claim for Bifrost data storage.
 
 <Note>
-This example uses the standard Amazon EBS CSI driver (`ebs.csi.aws.com`). Install the EKS add-on before applying it. EKS Auto Mode uses a different provisioner, so use an Auto Mode storage class instead.
+This static persistent volume example is intended for standard EKS clusters using the Amazon EBS CSI driver (`ebs.csi.aws.com`). Install the EKS add-on before applying it. It does not apply to EKS Auto Mode, which uses a different provisioner and requires separate storage configuration and migration steps. Changing only the storage class is not sufficient.
 </Note>
 
 ```terraform
