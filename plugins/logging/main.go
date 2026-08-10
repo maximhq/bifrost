@@ -1043,9 +1043,14 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
 	if ok && fallbackRequestID != "" {
 		effectiveRequestID = fallbackRequestID
-		if parentRequestID == "" {
-			parentRequestID = requestID
-		}
+		// A fallback attempt always nests under the primary request, even when the
+		// client supplied a session id via baggage. Leaving the session id here
+		// would point the attempt at a string that is not a log row, so the
+		// grouped log view could not collapse the chain — and if that string
+		// happened to collide with a real request id, the attempt would nest under
+		// an unrelated request. The session id stays on the primary row, which is
+		// what the session view lists.
+		parentRequestID = requestID
 	}
 
 	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
