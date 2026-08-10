@@ -3095,6 +3095,17 @@ func (m *mockCustomerStore) DeleteBudget(_ context.Context, _ string, _ ...*gorm
 
 type mockCustomerGovernanceManager struct {
 	GovernanceManager
+	// adoptedBudgetIDs records what the handler asked to be re-anchored onto the
+	// calendar grid, so a test can tell "alignment was switched on" apart from
+	// "alignment was already on and nothing needed adopting".
+	adoptedBudgetIDs []string
+	adoptCalls       int
+}
+
+func (m *mockCustomerGovernanceManager) AdoptCalendarAlignmentInMemory(_ context.Context, _ BudgetUsageResetOwner, budgetIDs []string, _ []string) error {
+	m.adoptCalls++
+	m.adoptedBudgetIDs = append(m.adoptedBudgetIDs, budgetIDs...)
+	return nil
 }
 
 func (m *mockCustomerGovernanceManager) ReloadCustomer(_ context.Context, _ string) (*configstoreTables.TableCustomer, error) {
@@ -3210,7 +3221,8 @@ func TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets(t *testing.T) {
 			CurrentUsage:  99.0,
 		}},
 	}
-	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+	governanceManager := &mockCustomerGovernanceManager{}
+	h := &GovernanceHandler{configStore: store, governanceManager: governanceManager}
 
 	body, _ := json.Marshal(map[string]any{"calendar_aligned": true})
 	ctx := &fasthttp.RequestCtx{}
@@ -3232,6 +3244,16 @@ func TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets(t *testing.T) {
 		if b.CurrentUsage != 99.0 {
 			t.Errorf("budget %s CurrentUsage changed to %v; enabling alignment must not clear usage", b.ID, b.CurrentUsage)
 		}
+	}
+	// The config write leaves the window alone, but on its own that is exactly the
+	// bug: the reset sweep would find the window overdue against the new boundary
+	// and clear the 99.0 above. The handler must hand the budget to the in-memory
+	// adoption, which re-anchors it forward instead.
+	if governanceManager.adoptCalls != 1 {
+		t.Errorf("expected exactly one calendar adoption call, got %d", governanceManager.adoptCalls)
+	}
+	if len(governanceManager.adoptedBudgetIDs) != 1 || governanceManager.adoptedBudgetIDs[0] != budgetID {
+		t.Errorf("expected budget %s to be adopted onto its calendar boundary, got %v", budgetID, governanceManager.adoptedBudgetIDs)
 	}
 }
 
@@ -3262,7 +3284,8 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 			},
 		},
 	}
-	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+	governanceManager := &mockCustomerGovernanceManager{}
+	h := &GovernanceHandler{configStore: store, governanceManager: governanceManager}
 
 	body, _ := json.Marshal(map[string]any{"calendar_aligned": true})
 	ctx := &fasthttp.RequestCtx{}
@@ -3276,6 +3299,12 @@ func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
 	}
 	if len(store.updatedBudgets) != 0 {
 		t.Errorf("expected no UpdateBudget call when calendar_aligned was already true, got %d", len(store.updatedBudgets))
+	}
+	// Adoption belongs to the switch-over only. A budget already on the calendar
+	// grid must not be re-anchored on every unrelated config write, which would
+	// keep pushing its boundary forward and stop it ever resetting.
+	if governanceManager.adoptCalls != 0 {
+		t.Errorf("alignment was already enabled, so no adoption should be requested; got %d calls", governanceManager.adoptCalls)
 	}
 }
 
@@ -3436,6 +3465,80 @@ func TestProviderGovernance_UnknownProviderStill404(t *testing.T) {
 	if putCtx.Response.StatusCode() != fasthttp.StatusNotFound {
 		t.Fatalf("PUT unknown provider status got %d, want 404; body=%s", putCtx.Response.StatusCode(), putCtx.Response.Body())
 	}
+}
+
+// providerGovernanceAdoptionManager records which budget IDs the provider
+// governance handler asked to re-anchor onto the calendar grid. It reuses the
+// pricing-override manager for everything else, including ReloadModelConfig,
+// which returns no entity - the handler must not depend on the reload to know
+// which windows to adopt.
+type providerGovernanceAdoptionManager struct {
+	pricingOverrideTestGovernanceManager
+	adoptedBudgetIDs []string
+	adoptCalls       int
+}
+
+func (m *providerGovernanceAdoptionManager) AdoptCalendarAlignmentInMemory(_ context.Context, _ BudgetUsageResetOwner, budgetIDs []string, _ []string) error {
+	m.adoptCalls++
+	m.adoptedBudgetIDs = append(m.adoptedBudgetIDs, budgetIDs...)
+	return nil
+}
+
+// TestUpdateProviderGovernance_AdoptsReconciledBudgetsNotStaleOnes pins the
+// contract that makes it safe for the adoption call to read mc.Budgets rather
+// than a reloaded model config: reconcileModelConfigBudgets writes the
+// reconciled set back onto mc, so by the time alignment is adopted, mc.Budgets
+// holds the rows that actually exist.
+//
+// The switch-on request replaces a monthly budget with a quarterly one, so the
+// same call deletes one row and creates another. Adoption must be addressed to
+// the row that now exists. Addressed to the deleted one it is a silent no-op,
+// and the newly created window is never anchored, so the next evaluation clears
+// usage the operator was promised would carry over.
+func TestUpdateProviderGovernance_AdoptsReconciledBudgetsNotStaleOnes(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	manager := &providerGovernanceAdoptionManager{}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+	const providerName = "openai"
+	require.NoError(t, store.AddProvider(ctx, schemas.ModelProvider(providerName), configstore.ProviderConfig{}))
+
+	// A rolling monthly budget, alignment off.
+	createCtx := newGovernanceProviderNameCtx(providerName, `{"budgets":[{"max_limit":10,"reset_duration":"1M"}],"calendar_aligned":false}`)
+	handler.updateProviderGovernance(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(),
+		"seed PUT failed; body=%s", createCtx.Response.Body())
+	require.Zero(t, manager.adoptCalls,
+		"alignment was never switched on, so nothing should have been adopted yet")
+
+	pn := providerName
+	before, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &pn)
+	require.NoError(t, err)
+	require.Len(t, before.Budgets, 1)
+	staleBudgetID := before.Budgets[0].ID
+
+	// Switch alignment on and swap the duration in the same request, so
+	// reconciliation cannot match the existing row and must delete it and create
+	// a replacement.
+	switchCtx := newGovernanceProviderNameCtx(providerName, `{"budgets":[{"max_limit":25,"reset_duration":"1Q"}],"calendar_aligned":true}`)
+	handler.updateProviderGovernance(switchCtx)
+	require.Equal(t, fasthttp.StatusOK, switchCtx.Response.StatusCode(),
+		"switch-on PUT failed; body=%s", switchCtx.Response.Body())
+
+	after, err := store.GetModelConfig(ctx, configstoreTables.ModelConfigScopeGlobal, nil, configstoreTables.ModelConfigAllModels, &pn)
+	require.NoError(t, err)
+	require.Len(t, after.Budgets, 1)
+	freshBudgetID := after.Budgets[0].ID
+	require.NotEqual(t, staleBudgetID, freshBudgetID,
+		"this test is only meaningful if reconciliation actually swapped the row")
+
+	require.Equal(t, 1, manager.adoptCalls, "switching alignment on must adopt exactly once")
+	assert.Equal(t, []string{freshBudgetID}, manager.adoptedBudgetIDs,
+		"adoption must name the budget that survived reconciliation")
+	assert.NotContains(t, manager.adoptedBudgetIDs, staleBudgetID,
+		"adoption named the deleted budget, so the surviving window was left un-anchored")
 }
 
 // TestProviderGovernance_MalformedEncodingReturns400 locks in the fail-closed

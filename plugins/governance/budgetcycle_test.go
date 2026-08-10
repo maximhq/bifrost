@@ -857,9 +857,13 @@ func TestDumpBudgetsCannotUndoOperatorReset(t *testing.T) {
 // creates the budget at test time, so LastReset is always inside the current
 // period. Both cases are pinned below so the difference is visible.
 //
-// Closing the gap needs either an activation marker or a dedicated write path,
-// because UpdateBudget copies last_reset back from the stored row on every config
-// write. Tracked as follow-up work; until then the docs describe this behaviour.
+// The gap is closed by adoption: the owner handlers now call
+// AdoptCalendarAlignmentInMemory on the switch-over, which moves each open window
+// forward onto its boundary so the sweep below never finds it overdue. These
+// assertions stay as they are on purpose - budgetResetTarget itself is unchanged,
+// and it is precisely its "reset whatever is overdue" rule that makes adoption
+// necessary. Read them as the reason the switch-over needs a step, not as a
+// description of what an operator sees.
 func TestEnablingCalendarAlignmentCanResetAtTheBoundaryAlreadyPassed(t *testing.T) {
 	store := newStandaloneStore(t)
 	now := time.Date(2026, time.February, 5, 12, 0, 0, 0, time.UTC)

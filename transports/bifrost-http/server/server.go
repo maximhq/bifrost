@@ -105,6 +105,11 @@ type ServerCallbacks interface {
 	// owns them so enterprise can address the cluster broadcast that propagates the
 	// reset to peers.
 	ResetBudgetUsageInMemory(ctx context.Context, owner handlers.BudgetUsageResetOwner, budgetIDs []string) error
+	// AdoptCalendarAlignmentInMemory re-anchors an owner's budgets and rate limits
+	// onto their calendar boundaries after alignment was switched on, preserving
+	// usage. owner identifies the entity so enterprise can address the cluster
+	// broadcast, exactly as the usage reset above does.
+	AdoptCalendarAlignmentInMemory(ctx context.Context, owner handlers.BudgetUsageResetOwner, budgetIDs []string, rateLimitIDs []string) error
 	RemoveVirtualKey(ctx context.Context, id string) error
 	// Provider related callbacks
 	GetModelsForProvider(provider schemas.ModelProvider) []string
@@ -494,6 +499,41 @@ func (s *BifrostHTTPServer) ResetBudgetUsageInMemory(ctx context.Context, owner 
 	for _, budgetID := range budgetIDs {
 		if _, ok := store.ResetBudgetUsageInMemory(ctx, budgetID); !ok {
 			logger.Debug("budget %s not present in the governance store; skipping usage reset", budgetID)
+		}
+	}
+	return nil
+}
+
+// AdoptCalendarAlignmentInMemory re-anchors an owner's budgets and rate limits
+// onto their calendar boundaries after alignment was switched on.
+//
+// Only meaningful on the false-to-true transition. The in-memory store is what
+// the reset sweep reads, and a window that opened before the current boundary
+// reads as already due the moment the flag flips, so without this the operator
+// loses the usage they were still accumulating. Adoption moves the boundary
+// forward instead, which every persistence path allows, and the next dump tick
+// carries the new boundary to the database the same way an ordinary reset does.
+//
+// Missing entries are not an error: a budget or rate limit can legitimately have
+// been deleted in the same request that turned alignment on.
+func (s *BifrostHTTPServer) AdoptCalendarAlignmentInMemory(ctx context.Context, owner handlers.BudgetUsageResetOwner, budgetIDs []string, rateLimitIDs []string) error {
+	if len(budgetIDs) == 0 && len(rateLimitIDs) == 0 {
+		return nil
+	}
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	store := governancePlugin.GetGovernanceStore()
+	now := time.Now()
+	for _, budgetID := range budgetIDs {
+		if !store.AdoptCalendarAlignmentInMemory(ctx, budgetID, now) {
+			logger.Debug("budget %s needed no calendar adoption (absent, unalignable, or already current)", budgetID)
+		}
+	}
+	for _, rateLimitID := range rateLimitIDs {
+		if !store.AdoptRateLimitCalendarAlignmentInMemory(ctx, rateLimitID, now) {
+			logger.Debug("rate limit %s needed no calendar adoption (absent, unalignable, or already current)", rateLimitID)
 		}
 	}
 	return nil
