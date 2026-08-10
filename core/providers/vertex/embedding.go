@@ -106,38 +106,131 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 	return vertexReq
 }
 
-// ToVertexGeminiBatchEmbeddingRequest converts a Bifrost embedding request to
-// the Gemini :batchEmbedContents body used on Vertex for gemini-embedding-* models.
+// vertexGeminiEmbedTexts extracts the ordered list of input texts from a Bifrost
+// embedding request (single Text and/or Texts).
+func vertexGeminiEmbedTexts(bifrostReq *schemas.BifrostEmbeddingRequest) []string {
+	if bifrostReq == nil || bifrostReq.Input == nil {
+		return nil
+	}
+	var texts []string
+	if bifrostReq.Input.Text != nil && *bifrostReq.Input.Text != "" {
+		texts = append(texts, *bifrostReq.Input.Text)
+	}
+	if len(bifrostReq.Input.Texts) > 0 {
+		texts = append(texts, bifrostReq.Input.Texts...)
+	}
+	return texts
+}
+
+// ToVertexGeminiEmbedContentRequest builds a single Vertex :embedContent body.
 //
-// modelID must already be a canonical publisher model id (see canonicalVertexModelID),
-// without a "models/" prefix. On Vertex each request.model must be a fully-qualified
-// publisher model resource name
-// (projects/.../locations/.../publishers/google/models/...). Google AI Studio
-// accepts the short "models/{id}" form; Vertex rejects it.
-func ToVertexGeminiBatchEmbeddingRequest(
+// Live Vertex AI (global / multi-region eu|us) serves gemini-embedding-* on
+// :embedContent with response shape {"embedding":{"values":[…]}}. The Google AI
+// Studio :batchEmbedContents endpoint is not available on the Vertex publisher
+// path (HTML 404) — using it and unmarshaling as GeminiEmbeddingResponse yields
+// "failed to unmarshal response from provider API".
+//
+// modelID must be canonical (see canonicalVertexModelID). The optional model
+// field is set to the fully-qualified publisher resource name Vertex expects.
+func ToVertexGeminiEmbedContentRequest(
 	bifrostReq *schemas.BifrostEmbeddingRequest,
+	text string,
 	projectID string,
 	region string,
 	modelID string,
-) *gemini.GeminiBatchEmbeddingRequest {
-	if bifrostReq == nil {
+) *gemini.GeminiEmbeddingRequest {
+	if bifrostReq == nil || text == "" {
 		return nil
 	}
-	// Build the batch from a request whose Model is the bare id so
-	// gemini.ToGeminiEmbeddingRequest does not re-introduce a models/ prefix
-	// based on a client-supplied "models/…" string (we overwrite Model below
-	// with the FQ resource name anyway).
-	reqCopy := *bifrostReq
-	reqCopy.Model = modelID
-	batch := gemini.ToGeminiEmbeddingRequest(&reqCopy)
-	if batch == nil {
+	embeddingReq := &gemini.GeminiEmbeddingRequest{
+		Model: "projects/" + projectID + "/locations/" + region + "/publishers/google/models/" + modelID,
+		Content: &gemini.Content{
+			Parts: []*gemini.Part{
+				{Text: text},
+			},
+		},
+	}
+	if bifrostReq.Params != nil {
+		embeddingReq.ExtraParams = bifrostReq.Params.ExtraParams
+		if bifrostReq.Params.Dimensions != nil {
+			embeddingReq.OutputDimensionality = bifrostReq.Params.Dimensions
+		}
+		if bifrostReq.Params.ExtraParams != nil {
+			if taskType, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["taskType"]); ok {
+				embeddingReq.TaskType = taskType
+			}
+			if title, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["title"]); ok {
+				embeddingReq.Title = title
+			}
+		}
+	}
+	return embeddingReq
+}
+
+// bifrostEmbeddingFromGeminiEmbedContent converts a Vertex/Google :embedContent
+// response into Bifrost form for one input at the given index.
+func bifrostEmbeddingFromGeminiEmbedContent(
+	resp *gemini.GeminiEmbedContentResponse,
+	model string,
+	index int,
+) *schemas.BifrostEmbeddingResponse {
+	if resp == nil || len(resp.Embedding.Values) == 0 {
 		return nil
 	}
-	fqModel := "projects/" + projectID + "/locations/" + region + "/publishers/google/models/" + modelID
-	for i := range batch.Requests {
-		batch.Requests[i].Model = fqModel
+	out := &schemas.BifrostEmbeddingResponse{
+		Object: "list",
+		Model:  model,
+		Data: []schemas.EmbeddingData{
+			{
+				Object: "embedding",
+				Index:  index,
+				Embedding: schemas.EmbeddingStruct{
+					EmbeddingArray: append([]float64(nil), resp.Embedding.Values...),
+				},
+			},
+		},
 	}
-	return batch
+	if resp.Embedding.Statistics != nil {
+		tokens := int(resp.Embedding.Statistics.TokenCount)
+		out.Usage = &schemas.BifrostLLMUsage{
+			PromptTokens: tokens,
+			TotalTokens:  tokens,
+		}
+	}
+	return out
+}
+
+// mergeBifrostEmbeddingResponses concatenates Data slices (preserving order)
+// and sums usage token counts. Used when multi-input embeddings are issued as
+// sequential :embedContent calls on Vertex.
+func mergeBifrostEmbeddingResponses(parts []*schemas.BifrostEmbeddingResponse, model string) *schemas.BifrostEmbeddingResponse {
+	if len(parts) == 0 {
+		return nil
+	}
+	out := &schemas.BifrostEmbeddingResponse{
+		Object: "list",
+		Model:  model,
+		Data:   make([]schemas.EmbeddingData, 0, len(parts)),
+	}
+	var usage *schemas.BifrostLLMUsage
+	for _, p := range parts {
+		if p == nil {
+			continue
+		}
+		out.Data = append(out.Data, p.Data...)
+		if p.Usage != nil {
+			if usage == nil {
+				usage = &schemas.BifrostLLMUsage{}
+			}
+			usage.PromptTokens += p.Usage.PromptTokens
+			usage.TotalTokens += p.Usage.TotalTokens
+		}
+	}
+	out.Usage = usage
+	if len(out.Data) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ToBifrostEmbeddingResponse converts a Vertex AI legacy :predict embedding
