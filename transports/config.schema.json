@@ -3168,6 +3168,11 @@
           "description": "Whether this profile exports traces and metrics",
           "default": true
         },
+        "traces_enabled": {
+          "type": "boolean",
+          "description": "Enable trace export for this profile. When false, no traces are sent and collector_url is not required, giving a metrics-only profile (pair with metrics_enabled).",
+          "default": true
+        },
         "service_name": {
           "type": "string",
           "description": "Service name to be used for tracing",
@@ -3255,14 +3260,28 @@
       "allOf": [
         {
           "if": {
-            "not": {
-              "properties": {
-                "enabled": {
-                  "const": false
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
                 }
               },
-              "required": ["enabled"]
-            }
+              {
+                "not": {
+                  "properties": {
+                    "traces_enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["traces_enabled"]
+                }
+              }
+            ]
           },
           "then": {
             "required": ["collector_url", "trace_type", "protocol"]
@@ -3278,7 +3297,7 @@
             "required": ["metrics_enabled"]
           },
           "then": {
-            "required": ["metrics_endpoint"]
+            "required": ["metrics_endpoint", "protocol"]
           }
         }
       ],
