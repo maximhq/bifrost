@@ -18,6 +18,8 @@ export interface ProviderConfigBudgetLine {
 	id?: string;
 	max_limit?: number;
 	reset_duration?: string;
+	/** Fiscal quarter definition; only meaningful when reset_duration is "1Q". */
+	reset_config?: { quarter_start_month?: number };
 }
 
 export interface ProviderConfigRateLimit {
@@ -273,10 +275,16 @@ export function ProviderConfigCard({
 									id: b.id,
 									max_limit: b.max_limit,
 									reset_duration: b.reset_duration || "1M",
+									reset_config: b.reset_config,
 								}))}
 								onChange={(lines: BudgetLineEntry[]) => {
 									update({
-										budgets: lines.map((l) => ({ id: l.id, max_limit: l.max_limit, reset_duration: l.reset_duration })),
+										budgets: lines.map((l) => ({
+											id: l.id,
+											max_limit: l.max_limit,
+											reset_duration: l.reset_duration,
+											reset_config: l.reset_config,
+										})),
 									});
 								}}
 							/>
@@ -368,12 +376,20 @@ export function ProviderConfigCard({
 														lines={(mb.budgets || []).map((b) => ({
 															max_limit: b.max_limit,
 															reset_duration: b.reset_duration || "1d",
+															reset_config: b.reset_config,
 														}))}
 														onChange={(lines: BudgetLineEntry[]) => {
 															update({
 																modelBudgets: modelBudgets.map((m, i) =>
 																	i === mbIndex
-																		? { ...m, budgets: lines.map((l) => ({ max_limit: l.max_limit, reset_duration: l.reset_duration })) }
+																		? {
+																				...m,
+																				budgets: lines.map((l) => ({
+																					max_limit: l.max_limit,
+																					reset_duration: l.reset_duration,
+																					reset_config: l.reset_config,
+																				})),
+																			}
 																		: m,
 																),
 															});

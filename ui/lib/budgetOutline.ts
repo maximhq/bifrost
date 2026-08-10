@@ -20,6 +20,7 @@ const SHORT_PERIOD: Record<string, string> = {
 	"1d": "day",
 	"1w": "wk",
 	"1M": "mo",
+	"1Q": "qtr",
 	"1Y": "yr",
 };
 

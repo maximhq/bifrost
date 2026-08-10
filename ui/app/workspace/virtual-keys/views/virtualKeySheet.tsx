@@ -49,7 +49,15 @@ import {
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
-import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride, parseResetPeriod } from "@/lib/utils/governance";
+import {
+	type BudgetComparisonEntry,
+	budgetSignature,
+	formatCurrency,
+	getEffectiveBudgetLimit,
+	hasActiveBudgetOverride,
+	parseResetPeriod,
+	quarterStartOf,
+} from "@/lib/utils/governance";
 import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -85,6 +93,9 @@ const providerConfigSchema = z.object({
 				id: z.string().optional(),
 				max_limit: z.number().nonnegative().optional(),
 				reset_duration: z.string().optional(),
+				// Zod strips unknown keys, so the fiscal quarter has to be declared
+				// here or it is erased from form state on every parse.
+				reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 			}),
 		)
 		.optional(),
@@ -125,6 +136,7 @@ const formSchema = z
 					id: z.string().optional(),
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string(),
+					reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 				}),
 			)
 			.optional(),
@@ -154,11 +166,18 @@ const formSchema = z
 	);
 
 type FormData = z.infer<typeof formSchema>;
-type BudgetComparisonEntry = {
-	id?: string;
-	max_limit?: number;
-	reset_duration?: string;
-	current_usage?: number;
+
+/**
+ * Why the save dialog is asking about existing usage.
+ *
+ * The two cases need different copy: "over-limit" means the recorded spend already
+ * meets or exceeds the new cap, while "quarter-shift" only means the reset boundary
+ * moved under a live budget - which fires at any usage above zero, so labelling it
+ * as over-limit would misdescribe a budget that is nowhere near its cap.
+ */
+type BudgetUsageWarning = {
+	kind: "over-limit" | "quarter-shift";
+	message: string;
 };
 
 const pad2 = (n: number) => n.toString().padStart(2, "0");
@@ -317,6 +336,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						id: b.id,
 						max_limit: b.max_limit,
 						reset_duration: b.reset_duration,
+						reset_config: b.reset_config,
 					})),
 					rate_limit: config.rate_limit
 						? {
@@ -349,6 +369,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 							id: b.id,
 							max_limit: b.max_limit,
 							reset_duration: b.reset_duration ?? "1M",
+							reset_config: b.reset_config,
 						}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
@@ -490,7 +511,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const [showRotateWarning, setShowRotateWarning] = useState(false);
 	const [showBudgetResetPrompt, setShowBudgetResetPrompt] = useState(false);
 	const [pendingBudgetResetData, setPendingBudgetResetData] = useState<FormData | null>(null);
-	const [pendingBudgetUsageWarning, setPendingBudgetUsageWarning] = useState<string | null>(null);
+	const [pendingBudgetUsageWarning, setPendingBudgetUsageWarning] = useState<BudgetUsageWarning | null>(null);
 
 	const handleCalendarAlignedChange = (checked: boolean) => {
 		if (checked && isEditing) {
@@ -540,16 +561,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		}));
 	};
 
-	const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
-		(budgets || [])
-			.filter((budget) => budget.max_limit !== undefined)
-			.map((budget) => `${budget.id ?? ""}:${budget.max_limit}:${budget.reset_duration ?? ""}`)
-			.sort()
-			.join("|");
-
 	const parseResetDurationMs = (duration?: string) => {
 		if (!duration) return null;
-		const match = duration.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d|w|M|Y)$/);
+		const match = duration.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d|w|M|Q|Y)$/);
 		if (!match) return null;
 		const amount = Number(match[1]);
 		const unit = match[2];
@@ -561,6 +575,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			d: 24 * 60 * 60 * 1000,
 			w: 7 * 24 * 60 * 60 * 1000,
 			M: 30 * 24 * 60 * 60 * 1000,
+			Q: 90 * 24 * 60 * 60 * 1000,
 			Y: 365 * 24 * 60 * 60 * 1000,
 		};
 		return amount * multipliers[unit];
@@ -600,7 +615,20 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 				const configChanged = existing.max_limit !== budget.max_limit || existing.reset_duration !== budget.reset_duration;
 				const usage = existing.current_usage ?? 0;
 				if (configChanged && usage >= budget.max_limit) {
-					return `${scopeLabel} ${budget.reset_duration} budget has ${formatBudgetAmount(usage)} usage, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`;
+					return {
+						kind: "over-limit" as const,
+						message: `${scopeLabel} ${budget.reset_duration} budget has ${formatBudgetAmount(usage)} usage, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`,
+					};
+				}
+				// Moving the fiscal quarter moves the reset boundary under a live budget.
+				// Spend is deliberately carried into the new quarter rather than forgiven,
+				// so surface it before saving instead of letting the number reappear
+				// unexplained against a window the operator did not think they had started.
+				if (budget.reset_duration.endsWith("Q") && quarterStartOf(existing) !== quarterStartOf(budget) && usage > 0) {
+					return {
+						kind: "quarter-shift" as const,
+						message: `${scopeLabel} quarterly budget has ${formatBudgetAmount(usage)} of usage. Changing the fiscal quarter moves the reset date and carries that spend into the new quarter.`,
+					};
 				}
 				reconciled.push({ ...budget, current_usage: usage });
 				continue;
@@ -620,7 +648,10 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			}, null);
 			const inheritedUsage = closestShorter?.current_usage ?? 0;
 			if (inheritedUsage >= budget.max_limit) {
-				return `${scopeLabel} ${budget.reset_duration} budget will inherit ${formatBudgetAmount(inheritedUsage)} from the ${closestShorter?.reset_duration} budget, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`;
+				return {
+					kind: "over-limit" as const,
+					message: `${scopeLabel} ${budget.reset_duration} budget will inherit ${formatBudgetAmount(inheritedUsage)} from the ${closestShorter?.reset_duration} budget, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`,
+				};
 			}
 			reconciled.push({ ...budget, current_usage: inheritedUsage });
 		}
@@ -783,7 +814,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+					(b): b is { id?: string; max_limit: number; reset_duration: string; reset_config?: { quarter_start_month?: number } } =>
+						b.max_limit !== undefined,
 				);
 				const hadBudget = virtualKey.budgets && virtualKey.budgets.length > 0;
 				if (validBudgets.length > 0) {
@@ -831,7 +863,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+					(b): b is { id?: string; max_limit: number; reset_duration: string; reset_config?: { quarter_start_month?: number } } =>
+						b.max_limit !== undefined,
 				);
 				if (validBudgets.length > 0) {
 					createData.budgets = validBudgets;
@@ -1126,6 +1159,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																	id: l.id,
 																	max_limit: l.max_limit,
 																	reset_duration: l.reset_duration,
+																	reset_config: l.reset_config,
 																})),
 																rate_limit: next.rateLimit ?? undefined,
 															};
@@ -1689,10 +1723,16 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						<AlertDialog open={showBudgetResetPrompt} onOpenChange={setShowBudgetResetPrompt}>
 							<AlertDialogContent data-testid="vk-budget-reset-dialog">
 								<AlertDialogHeader>
-									<AlertDialogTitle>{pendingBudgetUsageWarning ? "Preserve over-limit usage?" : "Reset budget usage?"}</AlertDialogTitle>
+									<AlertDialogTitle>
+										{pendingBudgetUsageWarning?.kind === "over-limit"
+											? "Preserve over-limit usage?"
+											: pendingBudgetUsageWarning?.kind === "quarter-shift"
+												? "Carry usage into the new quarter?"
+												: "Reset budget usage?"}
+									</AlertDialogTitle>
 									<AlertDialogDescription>
 										{pendingBudgetUsageWarning
-											? `${pendingBudgetUsageWarning} You can preserve usage anyway, or reset usage to 0.`
+											? `${pendingBudgetUsageWarning.message} You can preserve usage anyway, or reset usage to 0.`
 											: "You changed a budget amount, reset frequency, or calendar alignment. Reset current budget usage to 0, or preserve the existing usage counters."}
 									</AlertDialogDescription>
 								</AlertDialogHeader>

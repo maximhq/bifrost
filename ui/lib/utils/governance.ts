@@ -14,6 +14,7 @@ export function parseResetPeriod(duration: string): string {
 		d: { singular: "day", plural: "days" },
 		w: { singular: "week", plural: "weeks" },
 		M: { singular: "month", plural: "months" },
+		Q: { singular: "quarter", plural: "quarters" },
 		y: { singular: "year", plural: "years" },
 	};
 
@@ -75,7 +76,7 @@ export function getBudgetOverrideValidUntil(
 	calendarAligned = false,
 ): Date | null {
 	if (!Number.isSafeInteger(cycles) || cycles <= 0) return null;
-	const match = /^(\d+)([smhdwMyY])$/.exec(budget.reset_duration);
+	const match = /^(\d+)([smhdwMQyY])$/.exec(budget.reset_duration);
 	const validUntil = new Date(budget.last_reset);
 	if (!match || Number.isNaN(validUntil.getTime())) return null;
 
@@ -101,6 +102,15 @@ export function getBudgetOverrideValidUntil(
 				addUTCMonthsClamped(validUntil, durationValue);
 			} else {
 				validUntil.setTime(validUntil.getTime() + durationValue * 30 * 24 * 60 * 60 * 1000);
+			}
+			break;
+		case "Q":
+			// A calendar quarter is exactly three months; a rolling one is the 90-day
+			// approximation ParseDuration uses on the Go side.
+			if (calendarAligned) {
+				addUTCMonthsClamped(validUntil, durationValue * 3);
+			} else {
+				validUntil.setTime(validUntil.getTime() + durationValue * 90 * 24 * 60 * 60 * 1000);
 			}
 			break;
 		case "y":
@@ -173,3 +183,32 @@ export function getUsageVariant(percentage: number): "default" | "secondary" | "
 	if (percentage >= 75) return "secondary";
 	return "default";
 }
+/** A budget reduced to the fields that decide whether its reset window moved. */
+export interface BudgetComparisonEntry {
+	id?: string;
+	max_limit?: number;
+	reset_duration?: string;
+	reset_config?: { quarter_start_month?: number };
+	current_usage?: number;
+}
+
+/** Normalised fiscal quarter start; absent and an explicit January are the same window. */
+export const quarterStartOf = (entry: Pick<BudgetComparisonEntry, "reset_config">) => entry.reset_config?.quarter_start_month || 1;
+
+/**
+ * A stable string describing every budget setting that moves a reset boundary.
+ *
+ * The fiscal quarter start belongs here for quarterly budgets: April and July
+ * are the same limit on the same 1Q cadence and differ only in when the window
+ * turns over, so a signature built from limit and duration alone reports "no
+ * change" for precisely the edit that reschedules the reset.
+ */
+export const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
+	(budgets || [])
+		.filter((budget) => budget.max_limit !== undefined)
+		.map((budget) => {
+			const quarterStart = budget.reset_duration?.endsWith("Q") ? quarterStartOf(budget) : "";
+			return `${budget.id ?? ""}:${budget.max_limit}:${budget.reset_duration ?? ""}:${quarterStart}`;
+		})
+		.sort()
+		.join("|");
