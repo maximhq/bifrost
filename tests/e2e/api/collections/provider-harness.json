@@ -48882,7 +48882,11 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+<<<<<<< HEAD
                   "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+=======
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+>>>>>>> d704af43c (fix: add anthropic error branch on stripping on encrypted content (#5960))
                   "pm.test('unverifiable encrypted reasoning degrades instead of 400ing', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'Anthropic rejection reached the client; the encrypted-reasoning fail-soft did not fire').to.not.include('redacted_thinking');",
@@ -48926,7 +48930,11 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+<<<<<<< HEAD
                   "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+=======
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+>>>>>>> d704af43c (fix: add anthropic error branch on stripping on encrypted content (#5960))
                   "pm.test('streaming turn degrades instead of erroring on unverifiable reasoning', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'Anthropic rejection surfaced in the stream; the fail-soft did not fire').to.not.include('redacted_thinking');",
