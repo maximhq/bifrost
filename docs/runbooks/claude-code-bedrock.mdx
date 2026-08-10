@@ -63,7 +63,23 @@ Create or edit the virtual key used by Claude Code:
 1. Allow the `bedrock` provider.
 2. Confirm the virtual key is active and has sufficient budget and rate limits.
 
-## 3. Configure Claude Code
+## 3. Setup harness
+
+<Tabs>
+<Tab title="With Edge installed">
+
+Bifrost Edge provides the more seamless setup: it routes Claude Code traffic through Bifrost at the machine level, so you do not need to configure a gateway URL or virtual key in Claude Code.
+
+1. Install or deploy Bifrost Edge by following [Deploy with MDM](/edge/deployment-mdm). If Edge is already installed, skip this step.
+2. Complete the one-time setup approval and sign in through your browser.
+3. Open Edge from the menu bar or system tray, select the virtual key configured in the previous step, and confirm that Edge is connected.
+4. Confirm that Claude Code is allowed by your organization's [AI app policy](/edge/app-governance).
+5. Install Claude Code using [Anthropic's installation guide](https://code.claude.com/docs/en/overview), then start it normally. No changes to `.claude/settings.json`, `ANTHROPIC_BASE_URL`, or `ANTHROPIC_AUTH_TOKEN` are required.
+
+Edge now routes Claude Code requests through Bifrost in the background. For more detail about the user experience, see [How Edge works](/edge/how-it-works).
+
+</Tab>
+<Tab title="Without Edge installed">
 
 Install Claude Code using [Anthropic's installation guide](https://code.claude.com/docs/en/overview). Then edit the most specific settings file that applies:
 
@@ -122,15 +138,18 @@ Additional behavior:
 
 See Claude Code's [gateway protocol reference](https://code.claude.com/docs/en/llm-gateway-protocol) and [model configuration guide](https://code.claude.com/docs/en/model-config) for the current discovery behavior and tier variables.
 
+</Tab>
+</Tabs>
+
 ## 4. Test Claude Code
 
-Start Claude Code and run:
+Start Claude Code normally. If you are using Edge, choose the desired model as you normally would. If you configured Claude Code directly, run:
 
 ```text
 /model
 ```
 
-With discovery enabled, confirm that the configured `claude-*` deployment names appear under **From gateway**. Select one and send:
+With discovery enabled, confirm that the configured `claude-*` deployment names appear under **From gateway**. Select one, then send the following prompt. With Edge, send the same prompt after selecting a model normally:
 
 ```text
 Reply with claude-code-bedrock-ok. Do not call any tools.

@@ -56,7 +56,23 @@ Create or edit the virtual key used by Codex:
 1. Allow the `bedrock` provider.
 2. Confirm the virtual key is active and has sufficient budget and rate limits.
 
-## 3. Configure Codex CLI
+## 3. Setup harness
+
+<Tabs>
+<Tab title="With Edge installed">
+
+Bifrost Edge provides the more seamless setup: it routes Codex CLI traffic through Bifrost at the machine level, so you do not need to configure a custom provider, gateway URL, or virtual key in Codex.
+
+1. Install or deploy Bifrost Edge by following [Deploy with MDM](/edge/deployment-mdm). If Edge is already installed, skip this step.
+2. Complete the one-time setup approval and sign in through your browser.
+3. Open Edge from the menu bar or system tray, select the virtual key configured in the previous step, and confirm that Edge is connected.
+4. Confirm that Codex CLI is allowed by your organization's [AI app policy](/edge/app-governance).
+5. Install Codex using the [official Codex CLI guide](https://developers.openai.com/codex/cli/), then start it normally. No changes to `~/.codex/config.toml` or `BIFROST_API_KEY` are required.
+
+Edge now routes Codex CLI requests through Bifrost in the background. For more detail about the user experience, see [How Edge works](/edge/how-it-works).
+
+</Tab>
+<Tab title="Without Edge installed">
 
 Install Codex using the [official Codex CLI guide](https://developers.openai.com/codex/cli/).
 
@@ -90,21 +106,24 @@ Setting `supports_websockets = false` keeps Codex on HTTPS Responses requests fo
 
 The `bifrost_bedrock` provider ID is intentionally custom. `openai`, `ollama`, and `lmstudio` are reserved Codex provider IDs. See [Custom model providers](https://learn.chatgpt.com/docs/config-file/config-advanced#custom-model-providers).
 
+</Tab>
+</Tabs>
+
 ## 4. Test Codex
 
-Start Codex with the configured default:
+With Edge, start Codex normally:
 
 ```bash
 codex
 ```
 
-Or select the model explicitly:
+Without Edge, start Codex with the configured default, or select the model explicitly:
 
 ```bash
 codex --model bedrock/gpt-5.5
 ```
 
-Inside Codex, run `/status` and confirm the provider is `bifrost_bedrock` and the model is `bedrock/gpt-5.5`. Then send:
+Inside Codex, run `/status`. Without Edge, confirm the provider is `bifrost_bedrock` and the model is `bedrock/gpt-5.5`. With Edge, no custom Bifrost provider appears in Codex; confirm that Edge is connected instead. Then send:
 
 ```text
 Reply with codex-bedrock-ok. Do not call any tools.
@@ -114,7 +133,7 @@ Open **Logs** in Bifrost and confirm the request used `bedrock` and resolved the
 
 ## Model listing and the Codex model picker
 
-Bifrost's model endpoint and Codex's interactive picker are separate behaviors:
+The behavior in this section applies when Codex is configured directly without Edge. Bifrost's model endpoint and Codex's interactive picker are separate behaviors:
 
 - `GET /openai/v1/models` is the model list exposed by the Bifrost virtual key.
 - The current Codex slash command is `/model`.
