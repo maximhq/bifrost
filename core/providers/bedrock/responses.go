@@ -4844,6 +4844,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						bedrockBlock.Document = doc
 						break
 					}
+<<<<<<< HEAD
 
 					// URL-sourced document: fetch and inline the bytes. Converse has no
 					// url member on DocumentSource.
@@ -4861,6 +4862,8 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						bedrockBlock.Document = doc
 						break
 					}
+=======
+>>>>>>> fce501eed (fix: bedrock files handling in inference (#5947))
 
 					// Handle file data
 					if file.FileData != nil {
@@ -4872,11 +4875,17 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 								doc.Source.Bytes = &dataURLPayload
 							} else {
 								// Inline percent-encoded payload (data:text/plain,Hello%20World)
+<<<<<<< HEAD
 								decoded, err := url.PathUnescape(dataURLPayload)
 								if err != nil {
 									return nil, fmt.Errorf("invalid percent-encoded data URL payload: %w", err)
 								}
 								dataURLPayload = decoded
+=======
+								if decoded, err := url.PathUnescape(dataURLPayload); err == nil {
+									dataURLPayload = decoded
+								}
+>>>>>>> fce501eed (fix: bedrock files handling in inference (#5947))
 								if isTextFile {
 									doc.Source.Text = &dataURLPayload
 								}
