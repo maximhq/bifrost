@@ -327,6 +327,7 @@
                     "icon": "shield-check",
                     "pages": [
                       "enterprise/guardrails/secrets-detection",
+                      "enterprise/guardrails/prompt-guardrails",
                       "enterprise/guardrails/custom-regex",
                       "integrations/guardrails/presidio",
                       "integrations/guardrails/azure-language-pii",
@@ -567,6 +568,7 @@
             "icon": "road-barrier",
             "pages": [
               "enterprise/guardrails/secrets-detection",
+              "enterprise/guardrails/prompt-guardrails",
               "enterprise/guardrails/custom-regex",
               "integrations/guardrails/presidio",
               "integrations/guardrails/azure-language-pii",
