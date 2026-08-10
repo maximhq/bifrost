@@ -56,6 +56,16 @@ func (mc *ModelCatalog) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, pr
 	return mc.datasheet.CalculateCostForUsage(usage, provider, model, requestType, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateGuardrailCost computes the aggregate cost of guardrail judge calls.
+func (mc *ModelCatalog) CalculateGuardrailCost(debug *schemas.BifrostGuardrailDebug, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateGuardrailCost(debug, (*datasheet.LookupScopes)(scopes))
+}
+
+// CalculateCacheEmbeddingCost computes the semantic-cache embedding lookup cost.
+func (mc *ModelCatalog) CalculateCacheEmbeddingCost(debug *schemas.BifrostCacheDebug, scopes *PricingLookupScopes) float64 {
+	return mc.datasheet.CalculateCacheEmbeddingCost(debug, (*datasheet.LookupScopes)(scopes))
+}
+
 // UpsertModelPricingAttributes writes additional_attributes for every row
 // matching (model, provider) and reloads the pricing cache.
 func (mc *ModelCatalog) UpsertModelPricingAttributes(ctx context.Context, model string, provider schemas.ModelProvider, attrs map[string]string) (int64, error) {
