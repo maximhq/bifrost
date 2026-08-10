@@ -1059,11 +1059,12 @@
                   "type": "object",
                   "properties": {
                     "service_name": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Name of the service to report to Datadog. Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_SERVICE)"
                     },
                     "ml_app": {
                       "type": "string",
-                      "description": "ML application name for Datadog LLM Observability grouping (defaults to service_name)"
+                      "description": "ML application name for Datadog LLM Observability grouping (defaults to service_name). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_ML_APP)"
                     },
                     "agent_addr": {
                       "type": "string",
@@ -1090,10 +1091,12 @@
                       "description": "DogStatsD server port for metrics, used with dogstatsd_host (agent mode only). Supports env.VAR_NAME prefix. Defaults to 8125; has no effect when dogstatsd_host is unset"
                     },
                     "env": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Environment tag (e.g. production, staging). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_ENV)"
                     },
                     "version": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Service version tag. Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_VERSION)"
                     },
                     "custom_tags": {
                       "type": "object",
