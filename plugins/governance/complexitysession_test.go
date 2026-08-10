@@ -1,14 +1,20 @@
 package governance
 
 import (
+	"context"
+	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/kvstore"
 )
 
 func TestResolveSessionIDPrecedence(t *testing.T) {
@@ -267,6 +273,326 @@ func TestBuildComplexitySessionKeyRejectsBlankIdentity(t *testing.T) {
 			assert.Empty(t, key)
 		})
 	}
+}
+
+func TestKVSessionStoreRoundTripAndOwnership(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	key := testComplexitySessionKey(t, "tenant", "round-trip")
+	decidedAt := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+	lastSeenAt := decidedAt.Add(time.Minute)
+	record := &SessionComplexityRecord{
+		Tier:                "complex",
+		DecidedAt:           decidedAt,
+		RuleID:              "rule-1",
+		SwitchCount:         2,
+		PendingTier:         "medium",
+		PendingTurns:        1,
+		PendingMinScore:     0.91,
+		ConsecutiveFailures: 1,
+		RouteObservations: map[string]SessionRouteObservation{
+			"route-1": {
+				CachedReadTokens: 4096,
+				CacheObserved:    true,
+				LastSeenAt:       lastSeenAt,
+			},
+		},
+	}
+	want := cloneSessionComplexityRecord(record)
+
+	created, err := sessionStore.Create(context.Background(), key, record, time.Hour)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	// Mutating the input after Create must not mutate stored state.
+	record.Tier = "simple"
+	record.RouteObservations["route-1"] = SessionRouteObservation{CachedReadTokens: 1}
+
+	got, found, err := sessionStore.Get(context.Background(), key, time.Hour)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, want, got)
+
+	// Mutating a returned record must not mutate stored state either.
+	got.PendingTurns = 99
+	got.RouteObservations["route-1"] = SessionRouteObservation{CachedReadTokens: 2}
+
+	gotAgain, found, err := sessionStore.Get(context.Background(), key, time.Hour)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, want, gotAgain)
+}
+
+func TestKVSessionStoreCreateIsAtomic(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	key := testComplexitySessionKey(t, "tenant", "create-race")
+
+	const contenders = 50
+	var createdCount atomic.Int32
+	errCh := make(chan error, contenders)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range contenders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			created, err := sessionStore.Create(context.Background(), key, &SessionComplexityRecord{
+				Tier:   "complex",
+				RuleID: "rule-1",
+			}, time.Hour)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if created {
+				createdCount.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("create failed: %v", err)
+	}
+	assert.EqualValues(t, 1, createdCount.Load())
+}
+
+func TestKVSessionStoreUpdateIsAtomic(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	key := testComplexitySessionKey(t, "tenant", "update-race")
+	created, err := sessionStore.Create(context.Background(), key, &SessionComplexityRecord{
+		Tier:              "complex",
+		RuleID:            "rule-1",
+		RouteObservations: map[string]SessionRouteObservation{},
+	}, time.Hour)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	const updates = 100
+	errCh := make(chan error, updates)
+	var wg sync.WaitGroup
+	for range updates {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, found, err := sessionStore.Update(context.Background(), key, time.Hour, func(record *SessionComplexityRecord) error {
+				record.PendingTurns++
+				return nil
+			})
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if !found {
+				errCh <- kvstore.ErrNotFound
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("update failed: %v", err)
+	}
+
+	record, found, err := sessionStore.Get(context.Background(), key, time.Hour)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, updates, record.PendingTurns)
+}
+
+func TestKVSessionStoreUpdateFailureDoesNotMutate(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	key := testComplexitySessionKey(t, "tenant", "failed-update")
+	created, err := sessionStore.Create(context.Background(), key, &SessionComplexityRecord{
+		Tier:         "complex",
+		RuleID:       "rule-1",
+		PendingTurns: 1,
+	}, time.Hour)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	wantErr := errors.New("policy rejected update")
+	_, found, err := sessionStore.Update(context.Background(), key, time.Hour, func(record *SessionComplexityRecord) error {
+		record.PendingTurns = 99
+		return wantErr
+	})
+	require.ErrorIs(t, err, wantErr)
+	require.True(t, found)
+
+	record, found, err := sessionStore.Get(context.Background(), key, time.Hour)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, 1, record.PendingTurns)
+}
+
+func TestKVSessionStoreSlidingTTL(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	key := testComplexitySessionKey(t, "tenant", "sliding-ttl")
+	const ttl = 250 * time.Millisecond
+
+	created, err := sessionStore.Create(context.Background(), key, &SessionComplexityRecord{
+		Tier:   "complex",
+		RuleID: "rule-1",
+	}, ttl)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	time.Sleep(150 * time.Millisecond)
+	_, found, err := sessionStore.Get(context.Background(), key, ttl)
+	require.NoError(t, err)
+	require.True(t, found, "record should exist before its original deadline")
+
+	time.Sleep(150 * time.Millisecond)
+	_, found, err = sessionStore.Get(context.Background(), key, ttl)
+	require.NoError(t, err)
+	require.True(t, found, "successful Get should extend the deadline")
+
+	time.Sleep(300 * time.Millisecond)
+	_, found, err = sessionStore.Get(context.Background(), key, ttl)
+	require.NoError(t, err)
+	assert.False(t, found, "record should expire when its TTL is no longer refreshed")
+}
+
+func TestKVSessionStoreRegistersReplicationDecoder(t *testing.T) {
+	source, sourceKV := newTestKVSessionStore(t)
+	target, targetKV := newTestKVSessionStore(t)
+	delegate := &forwardingKVDelegate{target: targetKV}
+	sourceKV.SetDelegate(delegate)
+
+	key := testComplexitySessionKey(t, "tenant", "replicated")
+	want := &SessionComplexityRecord{
+		Tier:   "complex",
+		RuleID: "rule-1",
+		RouteObservations: map[string]SessionRouteObservation{
+			"route-1": {CachedReadTokens: 2048, CacheObserved: true},
+		},
+	}
+	created, err := source.Create(context.Background(), key, want, time.Hour)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NoError(t, delegate.Err())
+
+	replicatedValue, err := targetKV.Get(key)
+	require.NoError(t, err)
+	assert.IsType(t, &SessionComplexityRecord{}, replicatedValue)
+
+	got, found, err := target.Get(context.Background(), key, time.Hour)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, want, got)
+}
+
+func TestKVSessionStoreRejectsInvalidReplicatedRecord(t *testing.T) {
+	sessionStore, store := newTestKVSessionStore(t)
+	key := testComplexitySessionKey(t, "tenant", "invalid-replica")
+	require.NoError(t, store.SetRemote(key, []byte("{"), time.Now().UnixNano(), 0))
+
+	_, found, err := sessionStore.Get(context.Background(), key, time.Hour)
+	require.ErrorIs(t, err, errInvalidComplexitySession)
+	assert.True(t, found)
+}
+
+func TestKVSessionStoreDeleteAndValidation(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	key := testComplexitySessionKey(t, "tenant", "delete")
+	record := &SessionComplexityRecord{Tier: "complex", RuleID: "rule-1"}
+
+	created, err := sessionStore.Create(context.Background(), key, record, time.Hour)
+	require.NoError(t, err)
+	require.True(t, created)
+	deleted, err := sessionStore.Delete(context.Background(), key)
+	require.NoError(t, err)
+	assert.True(t, deleted)
+	deleted, err = sessionStore.Delete(context.Background(), key)
+	require.NoError(t, err)
+	assert.False(t, deleted)
+
+	_, err = sessionStore.Create(context.Background(), key, record, 0)
+	require.ErrorIs(t, err, errInvalidComplexitySessionTTL)
+	_, err = sessionStore.Create(context.Background(), key, nil, time.Hour)
+	require.ErrorIs(t, err, errNilComplexitySessionRecord)
+	_, _, err = sessionStore.Update(context.Background(), key, time.Hour, nil)
+	require.ErrorIs(t, err, errNilComplexitySessionUpdater)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = sessionStore.Create(canceled, key, record, time.Hour)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = sessionStore.Status(nil)
+	require.ErrorIs(t, err, errNilComplexitySessionContext)
+}
+
+func TestKVSessionStoreStatus(t *testing.T) {
+	sessionStore, store := newTestKVSessionStore(t)
+
+	status, err := sessionStore.Status(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, SessionStoreStatus{
+		Backend:              complexitySessionStoreBackendKV,
+		SharedAcrossReplicas: false,
+		AtomicUpdates:        true,
+	}, status)
+
+	_, targetKV := newTestKVSessionStore(t)
+	store.SetDelegate(&forwardingKVDelegate{target: targetKV})
+	status, err = sessionStore.Status(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, SessionStoreStatus{
+		Backend:              complexitySessionStoreBackendKV,
+		SharedAcrossReplicas: true,
+		AtomicUpdates:        false,
+	}, status)
+}
+
+func newTestKVSessionStore(t *testing.T) (*kvSessionStore, *kvstore.Store) {
+	t.Helper()
+	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, store.Close())
+	})
+	sessionStore, err := newKVSessionStore(store)
+	require.NoError(t, err)
+	return sessionStore, store
+}
+
+func testComplexitySessionKey(t *testing.T, scopeID, sessionID string) string {
+	t.Helper()
+	key, ok := buildComplexitySessionKey(scopeID, sessionID)
+	require.True(t, ok)
+	return key
+}
+
+type forwardingKVDelegate struct {
+	target *kvstore.Store
+	mu     sync.Mutex
+	err    error
+}
+
+func (d *forwardingKVDelegate) OnSet(key string, valueJSON []byte, writtenAt int64, expiresAt int64) {
+	d.recordError(d.target.SetRemote(key, valueJSON, writtenAt, expiresAt))
+}
+
+func (d *forwardingKVDelegate) OnDelete(key string, deletedAt int64) {
+	d.recordError(d.target.DeleteRemote(key, deletedAt))
+}
+
+func (d *forwardingKVDelegate) recordError(err error) {
+	if err == nil {
+		return
+	}
+	d.mu.Lock()
+	if d.err == nil {
+		d.err = err
+	}
+	d.mu.Unlock()
+}
+
+func (d *forwardingKVDelegate) Err() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.err
 }
 
 func complexitySessionChatRequest(systemText string, userTexts ...string) *schemas.BifrostRequest {
