@@ -143,13 +143,17 @@ See Claude Code's [gateway protocol reference](https://code.claude.com/docs/en/l
 
 ## 4. Test Claude Code
 
-Start Claude Code normally. If you are using Edge, choose the desired model as you normally would. If you configured Claude Code directly, run:
+Start Claude Code normally and run:
 
 ```text
 /model
 ```
 
-With discovery enabled, confirm that the configured `claude-*` deployment names appear under **From gateway**. Select one, then send the following prompt. With Edge, send the same prompt after selecting a model normally:
+- **Discovery disabled:** Select the built-in Claude tier that maps to the deployment you configured through `ANTHROPIC_MODEL` or the corresponding default tier variable.
+- **Discovery enabled:** Select either the configured `claude-*` deployment under **From gateway** or the matching built-in Claude tier.
+- **With Edge:** Select the desired model as you normally would.
+
+After selecting the model, send:
 
 ```text
 Reply with claude-code-bedrock-ok. Do not call any tools.
