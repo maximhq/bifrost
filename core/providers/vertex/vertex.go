@@ -1728,6 +1728,13 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 
 // embeddingGeminiEmbedContent implements the Gemini-native Vertex embedding path
 // via :embedContent (see Embedding docs).
+//
+// Contract notes (multi-input /v1/embeddings):
+//   - Inputs are issued as sequential blocking :embedContent calls (no fan-out
+//     concurrency). Latency scales linearly with len(input).
+//   - Failure on input k aborts the whole request after k successful upstream
+//     calls may already have been billed (abort-on-first-failure).
+//   - Empty strings in Texts are skipped (see vertexGeminiEmbedTexts).
 func (provider *VertexProvider) embeddingGeminiEmbedContent(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
@@ -1742,7 +1749,6 @@ func (provider *VertexProvider) embeddingGeminiEmbedContent(
 	}
 
 	forceSingleRegion := resolveVertexForceSingleRegion(ctx, key)
-	effectiveRegion := getVertexEffectiveRegion(region, modelID, forceSingleRegion)
 
 	// Model-aware host so multi-region-only embedding models (e.g. on eu/us
 	// pools via rep.googleapis.com) are routed correctly when the key is
@@ -1781,8 +1787,9 @@ func (provider *VertexProvider) embeddingGeminiEmbedContent(
 	var lastRaw map[string]interface{}
 
 	for i, text := range texts {
-		embedReq := ToVertexGeminiEmbedContentRequest(request, text, projectID, effectiveRegion, modelID)
+		embedReq := ToVertexGeminiEmbedContentRequest(request, text)
 		if embedReq == nil {
+			// Should not happen after vertexGeminiEmbedTexts filters empties.
 			return nil, providerUtils.NewBifrostOperationError("failed to build embedContent request", fmt.Errorf("nil request for input %d", i))
 		}
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -1840,7 +1847,7 @@ func (provider *VertexProvider) embeddingGeminiEmbedContent(
 							}
 						}
 					}
-				} else if len(errBody) > 0 && errBody[0] == '<' {
+				} else if errBody[0] == '<' {
 					// HTML 404 body from missing Vertex endpoints (e.g. batchEmbedContents).
 					errorMessage = fmt.Sprintf("provider returned HTTP %d (non-JSON body)", resp.StatusCode())
 				}
@@ -1851,6 +1858,9 @@ func (provider *VertexProvider) embeddingGeminiEmbedContent(
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil), jsonBody, errBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		}
 
+		// Embeddings are small fixed-size float arrays — never hand off a large
+		// response stream (that path would leak the connection while the loop
+		// continues and would inject empty vectors into the merged result).
 		responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
 		if decodeErr != nil {
 			wait()
@@ -1859,28 +1869,23 @@ func (provider *VertexProvider) embeddingGeminiEmbedContent(
 			return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		if isLargeResp {
-			// Large response path: return metadata-only for this input (rare for embeddings).
 			wait()
 			fasthttp.ReleaseRequest(req)
-			// resp owned by large reader
-			parts = append(parts, &schemas.BifrostEmbeddingResponse{
-				Model: request.Model,
-				Data: []schemas.EmbeddingData{{
-					Object: "embedding",
-					Index:  i,
-				}},
-			})
-			continue
+			fasthttp.ReleaseResponse(resp)
+			return nil, providerUtils.NewBifrostOperationError(
+				"unexpected large response from embedContent",
+				fmt.Errorf("embedding responses are expected to be small; refusing large-response handoff for input %d", i),
+			)
 		}
 		wait()
 
-		var embedResp gemini.GeminiEmbedContentResponse
+		var embedResp vertexGeminiEmbedContentResponse
 		if err := sonic.Unmarshal(responseBody, &embedResp); err != nil {
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
-		part := bifrostEmbeddingFromGeminiEmbedContent(&embedResp, request.Model, i)
+		part := bifrostEmbeddingFromVertexGeminiEmbedContent(&embedResp, request.Model, i)
 		if part == nil {
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
