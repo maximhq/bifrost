@@ -4907,6 +4907,11 @@
           "description": "Whether this profile exports traces and metrics",
           "default": true
         },
+        "traces_enabled": {
+          "type": "boolean",
+          "description": "Enable trace export for this profile. When false, no traces are sent and collector_url is not required, giving a metrics-only profile (pair with metrics_enabled).",
+          "default": true
+        },
         "service_name": {
           "type": "string",
           "description": "Service name to be used for tracing",
@@ -4954,7 +4959,21 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Custom headers for the collector (supports env.VAR_NAME prefix)"
+          "description": "Custom headers sent to both the trace and metrics endpoints (supports env.VAR_NAME prefix)"
+        },
+        "trace_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the trace endpoint, overlaid on headers (same key wins). Supports env.VAR_NAME prefix."
+        },
+        "metrics_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the metrics endpoint, overlaid on headers (same key wins). Useful when a collector requires a per-signal header, e.g. a Databricks table name. Supports env.VAR_NAME prefix."
         },
         "tls_ca_cert": {
           "type": "string",
@@ -4994,14 +5013,28 @@
       "allOf": [
         {
           "if": {
-            "not": {
-              "properties": {
-                "enabled": {
-                  "const": false
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
                 }
               },
-              "required": ["enabled"]
-            }
+              {
+                "not": {
+                  "properties": {
+                    "traces_enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["traces_enabled"]
+                }
+              }
+            ]
           },
           "then": {
             "required": ["collector_url", "trace_type", "protocol"]
@@ -5009,15 +5042,29 @@
         },
         {
           "if": {
-            "properties": {
-              "metrics_enabled": {
-                "const": true
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
+                }
+              },
+              {
+                "properties": {
+                  "metrics_enabled": {
+                    "const": true
+                  }
+                },
+                "required": ["metrics_enabled"]
               }
-            },
-            "required": ["metrics_enabled"]
+            ]
           },
           "then": {
-            "required": ["metrics_endpoint"]
+            "required": ["metrics_endpoint", "protocol"]
           }
         }
       ],
