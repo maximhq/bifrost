@@ -215,6 +215,7 @@ type CreateVirtualKeyRequest struct {
 	Budgets         []BudgetRequest         `json:"budgets,omitempty"`
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
+	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
 }
 
 // ProviderConfigRequest represents a provider configuration for a virtual key
@@ -237,13 +238,22 @@ func float64Ptr(v float64) *float64 {
 type BudgetRequest struct {
 	MaxLimit      float64 `json:"max_limit"`
 	ResetDuration string  `json:"reset_duration"`
+	// ResetConfig carries window settings the duration cannot express, currently
+	// the fiscal quarter start. Only valid on a quarterly ("1Q") duration.
+	ResetConfig *BudgetResetConfigRequest `json:"reset_config,omitempty"`
+}
+
+// BudgetResetConfigRequest mirrors tables.BudgetResetConfig on the wire.
+type BudgetResetConfigRequest struct {
+	QuarterStartMonth int `json:"quarter_start_month,omitempty"`
 }
 
 // CreateTeamRequest represents a request to create a team
 type CreateTeamRequest struct {
-	Name       string          `json:"name"`
-	CustomerID *string         `json:"customer_id,omitempty"`
-	Budgets    []BudgetRequest `json:"budgets,omitempty"`
+	Name            string          `json:"name"`
+	CustomerID      *string         `json:"customer_id,omitempty"`
+	Budgets         []BudgetRequest `json:"budgets,omitempty"`
+	CalendarAligned bool            `json:"calendar_aligned,omitempty"`
 }
 
 // CreateCustomerRequest represents a request to create a customer
@@ -275,6 +285,7 @@ type UpdateVirtualKeyRequest struct {
 	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive        *bool                   `json:"is_active,omitempty"`
 	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
+	CalendarAligned *bool                   `json:"calendar_aligned,omitempty"`
 }
 
 // UpdateTeamRequest represents a request to update a team
@@ -285,6 +296,10 @@ type UpdateTeamRequest struct {
 	//   &[]BudgetRequest{}   → explicit empty array (server clears all budgets)
 	//   &[]BudgetRequest{…}  → replace with the provided budgets
 	Budgets *[]BudgetRequest `json:"budgets,omitempty"`
+	// CalendarAligned toggles calendar-aligned resets for the team's budgets and
+	// rate limit. Pointer so a test can distinguish "leave unchanged" from an
+	// explicit false.
+	CalendarAligned *bool `json:"calendar_aligned,omitempty"`
 }
 
 // UpdateCustomerRequest represents a request to update a customer

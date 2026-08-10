@@ -646,3 +646,74 @@ func TestQuarterlyBudgetResetsExactlyOncePerQuarter(t *testing.T) {
 
 	assert.Equal(t, 4, resets, "a year must contain exactly four quarterly resets")
 }
+
+// TestQuarterDefinitionSurvivesVirtualKeyReload closes the last link in the
+// cluster propagation chain.
+//
+// A quarterly budget's fiscal calendar never travels over the wire. The gossip
+// payload carries usage only, and a config change broadcasts nothing but an
+// entity ID and action; each peer answers it by calling ReloadVirtualKey, which
+// re-reads the row with Preload("Budgets") and hands the result to
+// UpdateVirtualKeyInMemory. Two links in that chain are already covered - the
+// AfterFind hook firing on a nested preload, and the migration persisting the
+// column - and this covers the third: the in-memory store keeping the
+// definition rather than rebuilding budgets from a field list.
+//
+// If it were lost here, the node that served the edit would enforce April
+// quarters while every peer enforced January ones, with nothing logged.
+func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
+	ctx := context.Background()
+
+	newQuarterlyVK := func(quarterStart time.Month, usage float64) *configstoreTables.TableVirtualKey {
+		budget := buildBudgetWithUsage("vk-quarterly-budget", 1000, usage, "1Q")
+		budget.ResetConfig = &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(quarterStart)}
+		vk := buildVirtualKeyWithBudget("vk-quarterly", "bf-vk-quarterly", "quarterly", budget)
+		vk.CalendarAligned = true
+		return vk
+	}
+
+	// February start puts 15 June in the May-Jul quarter, where a January default
+	// would say Apr-Jun and disagree by a whole month.
+	now := time.Date(2026, time.June, 15, 12, 0, 0, 0, time.UTC)
+	wantWindow := time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC)
+
+	assertQuarterly := func(t *testing.T, loaded *configstoreTables.TableBudget, wantUsage float64) {
+		t.Helper()
+		require.NotNil(t, loaded)
+		require.NotNil(t, loaded.ResetConfig, "the peer's in-memory budget lost its quarter definition")
+		assert.Equal(t, int(time.February), loaded.ResetConfig.QuarterStartMonth)
+		assert.True(t, loaded.IsCalendarAligned, "calendar alignment is stamped from the owning virtual key")
+		// The definition has to actually drive the window, not merely be stored.
+		assert.Equal(t, wantWindow, loaded.WindowStart(now))
+		// Config travels on a reload; live counters do not.
+		assert.Equal(t, wantUsage, loaded.CurrentUsage)
+	}
+
+	// A node seeing the virtual key for the first time: UpdateVirtualKeyInMemory
+	// delegates to CreateVirtualKeyInMemory when nothing is cached yet.
+	t.Run("first load", func(t *testing.T) {
+		store := newStandaloneStore(t)
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 250), nil, nil, nil)
+		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
+	})
+
+	// The path a peer actually takes after an ID-only config broadcast: the
+	// virtual key is already cached, so the update branch rebuilds its budgets.
+	// This branch is distinct from the create branch above and preserves live
+	// usage from the cached row, so it has to be exercised separately - a
+	// definition dropped only here would survive every first-load test.
+	t.Run("reload over an existing virtual key", func(t *testing.T) {
+		store := newStandaloneStore(t)
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.January, 0), nil, nil, nil)
+
+		// Simulate accrued spend on the cached copy, then reload with an edited
+		// fiscal calendar, exactly as a peer would after the operator changes it.
+		cached := store.LoadBudget(ctx, "vk-quarterly-budget")
+		require.NotNil(t, cached)
+		cached.CurrentUsage = 250
+		store.storeBudget(cached.ID, cached)
+
+		store.UpdateVirtualKeyInMemory(ctx, newQuarterlyVK(time.February, 0), nil, nil, nil)
+		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
+	})
+}
