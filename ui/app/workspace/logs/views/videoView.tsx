@@ -1,7 +1,15 @@
 import { ExternalLink, Video } from "lucide-react";
 
+import { CopyableId } from "@/components/copyableId";
 import { Badge } from "@/components/ui/badge";
-import { BifrostVideoDownloadOutput, BifrostVideoGenerationOutput, BifrostVideoListOutput } from "@/lib/types/logs";
+import { RequestTypeLabels } from "@/lib/constants/logs";
+import {
+	BifrostVideoDeleteOutput,
+	BifrostVideoDownloadOutput,
+	BifrostVideoGenerationOutput,
+	BifrostVideoListOutput,
+	VideoOutput as VideoAsset,
+} from "@/lib/types/logs";
 
 import CollapsibleBox from "./collapsibleBox";
 import { CodeEditor } from "@/components/ui/codeEditor";
@@ -10,7 +18,7 @@ interface VideoGenerationInput {
 	prompt: string;
 }
 
-type VideoOutput = BifrostVideoGenerationOutput | BifrostVideoDownloadOutput;
+type VideoOutput = BifrostVideoGenerationOutput | BifrostVideoDownloadOutput | BifrostVideoDeleteOutput;
 
 interface VideoViewProps {
 	videoInput?: VideoGenerationInput;
@@ -21,20 +29,24 @@ interface VideoViewProps {
 
 function getMethodTypeLabel(requestType?: string): string {
 	if (!requestType) return "Video";
-	const normalized = requestType.toLowerCase();
-	if (normalized.includes("video_download")) return "Video Download";
-	if (normalized.includes("video_retrieve")) return "Video Retrieve";
-	if (normalized.includes("video_generation")) return "Video Generation";
-	if (normalized.includes("video_list")) return "Video List";
-	return "Video";
+	return RequestTypeLabels[requestType.toLowerCase() as keyof typeof RequestTypeLabels] || "Video";
+}
+
+function getVideoSrc(video: VideoAsset): string | null {
+	if (video.url) return video.url;
+	if (video.base64) return `data:${video.content_type || "video/mp4"};base64,${video.base64}`;
+	return null;
 }
 
 export default function VideoView({ videoInput, videoOutput, videoListOutput, requestType }: VideoViewProps) {
 	const methodTypeLabel = getMethodTypeLabel(requestType);
-	const isDownload = requestType?.toLowerCase().includes("video_download");
+	const normalizedType = requestType?.toLowerCase() ?? "";
+	const isDownload = normalizedType.includes("video_download");
+	const isDelete = normalizedType.includes("video_delete");
 	const downloadOutput = isDownload && videoOutput ? (videoOutput as BifrostVideoDownloadOutput) : null;
-	const generationOutput = !isDownload && videoOutput ? (videoOutput as BifrostVideoGenerationOutput) : null;
-	const outputURL = generationOutput?.videos?.[0]?.url;
+	const deleteOutput = isDelete && videoOutput ? (videoOutput as BifrostVideoDeleteOutput) : null;
+	const generationOutput = !isDownload && !isDelete && videoOutput ? (videoOutput as BifrostVideoGenerationOutput) : null;
+	const videos = generationOutput?.videos?.filter((video) => video.url || video.base64) ?? [];
 
 	return (
 		<div className="space-y-4">
@@ -64,7 +76,10 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 									{downloadOutput.video_id && (
 										<div className="space-y-1">
 											<div className="text-muted-foreground text-xs font-medium">VIDEO ID</div>
-											<div className="font-mono text-xs break-all">{downloadOutput.video_id}</div>
+											<div className="flex items-center gap-1">
+												<div className="font-mono text-xs break-all">{downloadOutput.video_id}</div>
+												<CopyableId id={downloadOutput.video_id} entityLabel="Video" testId="video-view-copy-download-video-id-button" />
+											</div>
 										</div>
 									)}
 									{downloadOutput.content_type && (
@@ -76,9 +91,36 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 								</div>
 								<p className="text-muted-foreground text-xs">Video content was successfully downloaded (content is not stored in logs)</p>
 							</>
+						) : deleteOutput ? (
+							<div className="grid grid-cols-3 gap-3">
+								{deleteOutput.id && (
+									<div className="space-y-1">
+										<div className="text-muted-foreground text-xs font-medium">VIDEO ID</div>
+										<div className="flex items-center gap-1">
+											<div className="font-mono text-xs break-all">{deleteOutput.id}</div>
+											<CopyableId id={deleteOutput.id} entityLabel="Video" testId="video-view-copy-delete-video-id-button" />
+										</div>
+									</div>
+								)}
+								<div className="space-y-1">
+									<div className="text-muted-foreground text-xs font-medium">DELETED</div>
+									<Badge variant="secondary" className="uppercase">
+										{deleteOutput.deleted ? "true" : "false"}
+									</Badge>
+								</div>
+							</div>
 						) : generationOutput ? (
 							<>
 								<div className="grid grid-cols-3 gap-3">
+									{generationOutput.id && (
+										<div className="space-y-1">
+											<div className="text-muted-foreground text-xs font-medium">VIDEO ID</div>
+											<div className="flex items-center gap-1">
+												<div className="font-mono text-xs break-all">{generationOutput.id}</div>
+												<CopyableId id={generationOutput.id} entityLabel="Video" testId="video-view-copy-generation-video-id-button" />
+											</div>
+										</div>
+									)}
 									{generationOutput.status && (
 										<div className="space-y-1">
 											<div className="text-muted-foreground text-xs font-medium">STATUS</div>
@@ -93,10 +135,22 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 											<div className="font-mono text-xs">{generationOutput.progress}%</div>
 										</div>
 									)}
-									{generationOutput.id && (
+									{generationOutput.seconds && (
 										<div className="space-y-1">
-											<div className="text-muted-foreground text-xs font-medium">VIDEO ID</div>
-											<div className="font-mono text-xs break-all">{generationOutput.id}</div>
+											<div className="text-muted-foreground text-xs font-medium">DURATION</div>
+											<div className="font-mono text-xs">{generationOutput.seconds}s</div>
+										</div>
+									)}
+									{generationOutput.size && (
+										<div className="space-y-1">
+											<div className="text-muted-foreground text-xs font-medium">SIZE</div>
+											<div className="font-mono text-xs">{generationOutput.size}</div>
+										</div>
+									)}
+									{generationOutput.remixed_from_video_id && (
+										<div className="space-y-1">
+											<div className="text-muted-foreground text-xs font-medium">REMIXED FROM</div>
+											<div className="font-mono text-xs break-all">{generationOutput.remixed_from_video_id}</div>
 										</div>
 									)}
 								</div>
@@ -111,22 +165,29 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 									</div>
 								)}
 
-								{outputURL && (
-									<div className="space-y-2">
-										<video className="w-full rounded-sm border bg-black" controls preload="metadata" src={outputURL}>
-											<track kind="captions" />
-										</video>
-										<a
-											href={outputURL}
-											target="_blank"
-											rel="noopener noreferrer"
-											className="text-primary inline-flex items-center gap-1 text-xs underline"
-										>
-											Open video URL
-											<ExternalLink className="h-3 w-3" />
-										</a>
-									</div>
-								)}
+								{videos.map((video, index) => {
+									const src = getVideoSrc(video);
+									if (!src) return null;
+									return (
+										<div key={index} className="space-y-2">
+											<video className="w-full rounded-sm border bg-black" controls preload="metadata" src={src}>
+												<track kind="captions" />
+											</video>
+											{video.url && (
+												<a
+													href={video.url}
+													target="_blank"
+													rel="noopener noreferrer"
+													data-testid="video-view-open-video-url-link"
+													className="text-primary inline-flex items-center gap-1 text-xs underline"
+												>
+													Open video URL
+													<ExternalLink className="h-3 w-3" />
+												</a>
+											)}
+										</div>
+									);
+								})}
 							</>
 						) : null}
 					</div>
