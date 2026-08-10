@@ -1660,6 +1660,7 @@ func HandleAnthropicResponsesStream(
 			}
 			if validateDeepSeekUsage {
 				if err := validateDeepSeekV4FlashStreamMetadata(eventType, eventDataBytes, deepSeekUsageState); err != nil {
+					normalizeBilledUsage()
 					sendDeepSeekUsageFidelityStreamError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, sendBackRawRequest, err)
 					return
 				}

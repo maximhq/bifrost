@@ -92,7 +92,7 @@ type deepSeekStreamUsageState struct {
 func validateDeepSeekV4FlashResponseMetadata(data []byte) error {
 	var metadata deepSeekResponseMetadata
 	if err := sonic.Unmarshal(data, &metadata); err != nil {
-		return fmt.Errorf("usage metadata decode failed: %w", err)
+		return fmt.Errorf("usage metadata decode failed")
 	}
 	if metadata.Model != deepSeekV4FlashModel {
 		return fmt.Errorf("response model %q does not match %q", metadata.Model, deepSeekV4FlashModel)
@@ -105,7 +105,7 @@ func validateDeepSeekV4FlashResponseMetadata(data []byte) error {
 func validateDeepSeekV4FlashStreamMetadata(eventType string, data []byte, state *deepSeekStreamUsageState) error {
 	var metadata deepSeekStreamMetadata
 	if err := sonic.Unmarshal(data, &metadata); err != nil {
-		return fmt.Errorf("stream usage metadata decode failed: %w", err)
+		return fmt.Errorf("stream usage metadata decode failed")
 	}
 	if string(metadata.Type) != eventType {
 		return fmt.Errorf("stream event type mismatch: envelope=%q data=%q", eventType, metadata.Type)

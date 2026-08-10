@@ -35,6 +35,13 @@ func TestValidateDeepSeekV4FlashResponseMetadata(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("decode error is sanitized", func(t *testing.T) {
+		err := validateDeepSeekV4FlashResponseMetadata([]byte(`{"model":"deepseek-v4-flash","usage":{"input_tokens":"sensitive-upstream-fragment"}}`))
+		if err == nil || err.Error() != "usage metadata decode failed" {
+			t.Fatalf("decode error = %v, want fixed sanitized message", err)
+		}
+	})
 }
 
 // TestValidateDeepSeekV4FlashStreamLifecycle verifies a complete ordered stream
@@ -67,6 +74,10 @@ func TestValidateDeepSeekV4FlashStreamRejectsMalformedUsage(t *testing.T) {
 		body string
 		want string
 	}{
+		{name: "message absent", body: `{"type":"message_start"}`, want: "missing message"},
+		{name: "usage absent", body: `{"type":"message_start","message":{"model":"deepseek-v4-flash"}}`, want: "absent"},
+		{name: "usage corrupt", body: `{"type":"message_start","message":{"model":"deepseek-v4-flash","usage":{"input_tokens":"sensitive-upstream-fragment"}}}`, want: "stream usage metadata decode failed"},
+		{name: "usage negative", body: `{"type":"message_start","message":{"model":"deepseek-v4-flash","usage":{"input_tokens":-1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}`, want: "negative"},
 		{name: "collapsed start", body: `{"type":"message_start","message":{"model":"deepseek-v4-flash","usage":{"input_tokens":121,"output_tokens":0}}}`, want: "collapsed"},
 		{name: "nonconserving start", body: `{"type":"message_start","message":{"model":"deepseek-v4-flash","usage":{"input_tokens":100,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":0,"prompt_tokens":121}}}`, want: "non-conserving"},
 		{name: "wrong model", body: `{"type":"message_start","message":{"model":"deepseek-v4-flash-0731","usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}`, want: "does not match"},
@@ -78,6 +89,17 @@ func TestValidateDeepSeekV4FlashStreamRejectsMalformedUsage(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("stream decode error is sanitized", func(t *testing.T) {
+		err := validateDeepSeekV4FlashStreamMetadata(
+			"message_start",
+			[]byte(`{"type":"message_start","message":{"model":"deepseek-v4-flash","usage":{"input_tokens":"sensitive-upstream-fragment"}}}`),
+			&deepSeekStreamUsageState{},
+		)
+		if err == nil || err.Error() != "stream usage metadata decode failed" {
+			t.Fatalf("decode error = %v, want fixed sanitized message", err)
+		}
+	})
 
 	for _, tc := range []struct {
 		name string

@@ -3694,11 +3694,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 		if bifrostReq.Params.Reasoning != nil {
 			if isDeepSeekV4FlashRequest(bifrostReq.Provider, capModel) {
-				// DeepSeek V4 Flash's Anthropic-compatible surface accepts only
-				// output_config.effort. Never synthesize legacy Anthropic thinking,
-				// including when a neutral max_tokens value coexists.
-				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-					setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+				// DeepSeek V4 Flash uses output_config.effort for active reasoning
+				// and thinking.type=disabled for an explicit "none". A neutral
+				// max_tokens value alone does not enable legacy Anthropic thinking.
+				if bifrostReq.Params.Reasoning.Effort != nil {
+					if *bifrostReq.Params.Reasoning.Effort == "none" {
+						anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
+					} else {
+						setEffortOnOutputConfig(anthropicReq, MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort))
+					}
 				}
 			} else if bifrostReq.Params.Reasoning.MaxTokens != nil {
 				if IsAdaptiveOnlyThinkingModel(capModel) {

@@ -34,6 +34,100 @@ func TestDeepSeekV4FlashUsesOutputConfigEffort(t *testing.T) {
 		assertDeepSeekEffortOnly(t, req, effort)
 	})
 
+	t.Run("chat max tokens only", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		maxTokens := 4096
+		req, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-flash",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{MaxTokens: &maxTokens},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicChatRequest: %v", err)
+		}
+		if req.Thinking != nil || (req.OutputConfig != nil && req.OutputConfig.Effort != nil) {
+			t.Fatalf("max-tokens-only request gained reasoning controls: thinking=%#v output_config=%#v", req.Thinking, req.OutputConfig)
+		}
+	})
+
+	t.Run("responses max tokens only", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		maxTokens := 4096
+		req, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-flash",
+			Params: &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: &maxTokens},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		if req.Thinking != nil || (req.OutputConfig != nil && req.OutputConfig.Effort != nil) {
+			t.Fatalf("max-tokens-only request gained reasoning controls: thinking=%#v output_config=%#v", req.Thinking, req.OutputConfig)
+		}
+	})
+
+	t.Run("chat explicit none", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		effort := "none"
+		req, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-flash",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: &effort},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicChatRequest: %v", err)
+		}
+		if req.Thinking == nil || req.Thinking.Type != "disabled" {
+			t.Fatalf("explicit none did not disable thinking: %#v", req.Thinking)
+		}
+		if req.OutputConfig != nil && req.OutputConfig.Effort != nil {
+			t.Fatalf("explicit none emitted output_config.effort: %#v", req.OutputConfig)
+		}
+	})
+
+	t.Run("responses explicit none", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		effort := "none"
+		req, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.DeepSeek,
+			Model:    "deepseek-v4-flash",
+			Params: &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: &effort},
+			},
+		})
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		if req.Thinking == nil || req.Thinking.Type != "disabled" {
+			t.Fatalf("explicit none did not disable thinking: %#v", req.Thinking)
+		}
+		if req.OutputConfig != nil && req.OutputConfig.Effort != nil {
+			t.Fatalf("explicit none emitted output_config.effort: %#v", req.OutputConfig)
+		}
+	})
+
 	t.Run("responses alias", func(t *testing.T) {
 		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 		defer cancel()
@@ -149,7 +243,7 @@ func TestDeepSeekV4FlashEffortGateIsExact(t *testing.T) {
 }
 
 // TestBuildDeepSeekV4FlashRequestBodyPreservesEffort verifies the final wire
-// body retains output_config.effort and omits unsupported thinking metadata.
+// body retains active effort and explicit thinking-disable controls.
 func TestBuildDeepSeekV4FlashRequestBodyPreservesEffort(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
@@ -170,6 +264,24 @@ func TestBuildDeepSeekV4FlashRequestBodyPreservesEffort(t *testing.T) {
 	}
 	if providerUtils.JSONFieldExists(body, "thinking") {
 		t.Fatalf("DeepSeek wire body gained unsupported thinking: %s", body)
+	}
+
+	disabled := "none"
+	body, bifrostErr = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.DeepSeek,
+		Model:    "deepseek-v4-flash",
+		Params: &schemas.ResponsesParameters{
+			Reasoning: &schemas.ResponsesParametersReasoning{Effort: &disabled},
+		},
+	}, AnthropicRequestBuildConfig{Provider: schemas.DeepSeek})
+	if bifrostErr != nil {
+		t.Fatalf("BuildAnthropicResponsesRequestBody explicit none: %v", bifrostErr)
+	}
+	if got := providerUtils.GetJSONField(body, "thinking.type").String(); got != "disabled" {
+		t.Fatalf("thinking.type = %q, want disabled; body=%s", got, body)
+	}
+	if providerUtils.JSONFieldExists(body, "output_config.effort") {
+		t.Fatalf("explicit none emitted output_config.effort: %s", body)
 	}
 }
 

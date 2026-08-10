@@ -242,6 +242,53 @@ func TestResponsesStreamAnthropicV4FlashRejectsCollapsedUsageFirst(t *testing.T)
 	}
 }
 
+// TestResponsesStreamAnthropicV4FlashNormalizesUsageBeforeFidelityError verifies
+// cached prompt tokens are folded into the billing snapshot on per-event exits.
+func TestResponsesStreamAnthropicV4FlashNormalizesUsageBeforeFidelityError(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\n"+
+			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":0,"prompt_tokens":121}}}`+"\n\n"+
+			"event: message_delta\n"+
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":-1}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := provider.ResponsesStream(
+		ctx,
+		passthroughPostHook,
+		nil,
+		anthropicTestKey(),
+		v4FlashResponsesRequest(),
+	)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup: %v", bifrostErr.Error.Message)
+	}
+	var fidelityErr *schemas.BifrostError
+	for chunk := range stream {
+		if chunk != nil && chunk.BifrostError != nil {
+			if fidelityErr != nil {
+				t.Fatalf("stream emitted multiple errors: first=%#v second=%#v", fidelityErr, chunk.BifrostError)
+			}
+			fidelityErr = chunk.BifrostError
+		}
+	}
+	assertUsageFidelityError(t, fidelityErr)
+	billedUsage, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage)
+	if !ok || billedUsage == nil {
+		t.Fatalf("stream did not retain accumulated billing usage: %#v", billedUsage)
+	}
+	if billedUsage.PromptTokens != 121 || billedUsage.TotalTokens != 121 {
+		t.Fatalf("cached usage was not normalized before the error: %#v", billedUsage)
+	}
+}
+
 // TestResponsesStreamAnthropicV4FlashAcceptsCompleteUsage verifies a complete
 // Responses event lifecycle streams successfully without a fidelity error.
 func TestResponsesStreamAnthropicV4FlashAcceptsCompleteUsage(t *testing.T) {
@@ -289,6 +336,46 @@ func TestResponsesStreamAnthropicV4FlashAcceptsCompleteUsage(t *testing.T) {
 	}
 	if chunks == 0 {
 		t.Fatal("valid stream emitted no chunks")
+	}
+}
+
+// TestResponsesStreamAnthropicV4FlashRejectsTruncatedUsage verifies a stream
+// ending after message_start emits the typed fidelity error.
+func TestResponsesStreamAnthropicV4FlashRejectsTruncatedUsage(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\n"+
+			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":0,"prompt_tokens":121}}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	stream, bifrostErr := provider.ResponsesStream(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		passthroughPostHook,
+		nil,
+		anthropicTestKey(),
+		v4FlashResponsesRequest(),
+	)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup: %v", bifrostErr.Error.Message)
+	}
+	var fidelityErr *schemas.BifrostError
+	for chunk := range stream {
+		if chunk != nil && chunk.BifrostError != nil {
+			if fidelityErr != nil {
+				t.Fatalf("stream emitted multiple errors: first=%#v second=%#v", fidelityErr, chunk.BifrostError)
+			}
+			fidelityErr = chunk.BifrostError
+		}
+	}
+	assertUsageFidelityError(t, fidelityErr)
+	if fidelityErr.Error == nil || !strings.Contains(fidelityErr.Error.Message, "message_delta") {
+		t.Fatalf("truncated stream emitted the wrong fidelity detail: %#v", fidelityErr)
 	}
 }
 
