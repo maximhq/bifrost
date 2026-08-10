@@ -658,7 +658,7 @@ bifrost:
       enabled: false
       version: 1
       config:
-        service_name: "bifrost"
+        service_name: "bifrost"  # Service name reported to Datadog (supports env.VAR_NAME)
         # Datadog Agent address. Supports env.VAR_NAME references — e.g. set
         # agent_addr: "env.DD_AGENT_ADDR" and inject DD_AGENT_ADDR via the
         # top-level `env:` (e.g. from status.hostIP for a node-local agent DaemonSet).
@@ -672,11 +672,11 @@ bifrost:
         # agent_port: "8126"
         # dogstatsd_host: "env.DD_AGENT_HOST"
         # dogstatsd_port: "8125"
-        env: ""
-        version: ""
+        env: ""                     # Environment tag, e.g. production (supports env.VAR_NAME)
+        version: ""                 # Service version tag (supports env.VAR_NAME)
         custom_tags: {}
         enable_traces: true
-        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name)
+        # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name, supports env.VAR_NAME)
         # enable_metrics: true
         # enable_llm_obs: true
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
