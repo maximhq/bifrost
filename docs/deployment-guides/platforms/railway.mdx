@@ -15,10 +15,12 @@ Railway can run the public Bifrost image as a long-running service. The deployme
 | Model | Compatibility | Constraint |
 |---|---|---|
 | Disposable one-replica evaluation | **Compatible** | Local data is not durable. |
-| One replica with Railway volume and SQLite | **Preview with permission check** | Railway mounts volumes as root; the Bifrost image runs as UID `1000`. Verify write access before relying on it. |
-| One replica with external PostgreSQL | **Preview** | Fits ephemeral replacement when configuration is supplied at startup. |
+| One OSS replica with Railway volume and SQLite | **Preview with permission check** | SQLite is OSS-only. Railway mounts volumes as root; verify write access for container UID `1000`. |
+| One replica with external PostgreSQL 16+ | **Preview** | Fits ephemeral replacement when configuration is supplied at startup. |
 | Multiple OSS DB-managed replicas | **Not supported** | OSS live configuration does not synchronize. |
 | Enterprise mesh | **Unqualified** | The guide does not verify required peer TCP+UDP addressing; use no compatibility claim. |
+
+Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support the SQLite alternative on this page.
 
 ## Deploy Bifrost
 
@@ -94,15 +96,15 @@ curl --fail --show-error https://<RAILWAY_HOSTNAME>/health
 
 Railway supports **Deploy on Railway** buttons only after a project is created and published as a Railway template. Bifrost does not currently have a verified Maxim-owned template ID, so this page does not fabricate a deploy link. Image-backed Railway templates also require an explicit process for testing and publishing each new Bifrost image version.
 
-## SQLite storage alternative
+## SQLite storage alternative (OSS only)
 
-For a single-instance SQLite deployment, create `config.json` from the [SQLite configuration](/deployment-guides/runtime-contract#sqlite), encode and inject it using Step 3, remove the PostgreSQL variables, and attach a Railway volume at `/app/data`.
+This alternative is available only for OSS Bifrost. For a single-instance SQLite deployment, create `config.json` from the [SQLite configuration](/deployment-guides/runtime-contract#sqlite), encode and inject it using Step 3, remove the PostgreSQL variables, and attach a Railway volume at `/app/data`.
 
 Before using the deployment, confirm that the mounted path is writable by container UID `1000`. Railway volumes can be root-owned; if the platform configuration cannot provide safe write access, use PostgreSQL instead. Keep one replica because SQLite files are not a replica-coordination mechanism.
 
 ## Scaling and upgrades
 
-- SQLite volume: one replica.
+- OSS SQLite volume: one replica.
 - PostgreSQL-backed OSS configuration: one replica.
 - File-only OSS: multiple replicas only with identical immutable config and secrets.
 - Enterprise mesh: not qualified on this page; validate required peer networking or use release-qualified broker mode.

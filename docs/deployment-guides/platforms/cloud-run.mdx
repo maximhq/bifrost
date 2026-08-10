@@ -15,8 +15,8 @@ Cloud Run can run a Bifrost HTTP gateway. This page shows how to configure its c
 | Deployment model | Compatibility | Reason |
 |---|---|---|
 | Disposable one-instance evaluation | **Compatible** | The writable in-memory filesystem is enough until the instance is replaced. |
-| Durable one-instance PostgreSQL | **Preview** | External stores survive replacement; live qualification is still required. |
-| SQLite production | **Not supported on the default filesystem** | Cloud Run filesystem writes consume memory and do not survive instance termination. |
+| Durable one-instance PostgreSQL 16+ | **Preview** | External stores survive replacement; live qualification is still required. |
+| SQLite | **Not supported for Enterprise; not durable on the default filesystem for OSS** | Enterprise does not support SQLite, and Cloud Run filesystem writes do not survive instance termination. |
 | OSS DB-managed multiple instances | **Not supported** | OSS processes do not synchronize live DB-backed configuration. |
 | Enterprise mesh clustering | **Not supported by Cloud Run services** | Instances do not provide the stable peer ingress and multiple inbound cluster protocols required by mesh mode. |
 | Enterprise broker clustering | **Potentially compatible; qualify release** | Gateway nodes need only outbound broker connectivity, but the Enterprise broker and platform timeout behavior require release-specific validation. |
@@ -25,9 +25,9 @@ Cloud Run supports `linux/amd64` for a multi-architecture image, matching the Bi
 
 ## Deploy Bifrost
 
-This path stores both Bifrost stores in PostgreSQL. It mounts `config.json` from Secret Manager outside `/app/data`, copies it into the writable application directory, and starts one Cloud Run instance.
+This path stores both Bifrost stores in PostgreSQL 16 or later. It mounts `config.json` from Secret Manager outside `/app/data`, copies it into the writable application directory, and starts one Cloud Run instance.
 
-Cloud Run's normal writable filesystem is ephemeral, so it cannot provide durable SQLite storage. Use PostgreSQL for configuration and logs that must survive revision or instance replacement.
+Cloud Run's normal writable filesystem is ephemeral, so it cannot provide durable SQLite storage. Enterprise does not support SQLite on any filesystem. Use PostgreSQL 16 or later for configuration and logs that must survive revision or instance replacement.
 
 ### Step 1: Set the deployment values
 
@@ -97,7 +97,7 @@ gcloud run deploy bifrost \
   --no-allow-unauthenticated
 ```
 
-The service account must already exist and be usable by the deployer. The database can be Cloud SQL or any reachable PostgreSQL service.
+The service account must already exist and be usable by the deployer. The database can be Cloud SQL or any reachable PostgreSQL service configured for version 16 or later.
 
 ### Step 4: Verify
 

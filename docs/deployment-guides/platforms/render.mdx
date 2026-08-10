@@ -14,10 +14,12 @@ Render can run the versioned Bifrost image as a web service. The deployment belo
 
 | Model | Compatibility | Constraint |
 |---|---|---|
-| One replica with Render persistent disk and SQLite | **Preview** | Disk is single-instance and disables zero-downtime deploys. |
-| One replica with external PostgreSQL | **Preview** | Compatible with ephemeral replacement; live qualification remains required. |
+| One OSS replica with Render persistent disk and SQLite | **Preview** | SQLite is OSS-only; the disk is single-instance and disables zero-downtime deploys. |
+| One replica with external PostgreSQL 16+ | **Preview** | Compatible with ephemeral replacement; live qualification remains required. |
 | Multiple OSS replicas with DB-managed config | **Not supported** | OSS processes do not synchronize in-memory configuration. |
 | Enterprise mesh | **Unqualified** | Render web services expose one HTTP port; peer discovery and TCP+UDP cluster networking are not documented here. |
+
+Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support the SQLite alternative on this page.
 
 See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract) for the shared container values.
 
@@ -76,7 +78,7 @@ PG_DATABASE=<POSTGRES_DATABASE>
 BIFROST_ENCRYPTION_KEY=<STABLE_ENCRYPTION_KEY>
 ```
 
-Deploy one instance. Render Postgres is one option; any PostgreSQL server reachable from the service is valid.
+Deploy one instance. Render Postgres is one option; any PostgreSQL 16 or later server reachable from the service is valid.
 
 ### Step 4: Verify
 
@@ -90,11 +92,11 @@ Inspect the Render logs if the health check does not pass. Bifrost must be able 
 
 Render supports a **Deploy to Render** button backed by a root `render.yaml`. Bifrost does not publish that Blueprint yet. A safe Blueprint must pin a tested Bifrost image and provide a reviewed configuration/secret flow; it would then need an automated update and smoke test for every Bifrost release. This guide therefore does not link to an unverified button.
 
-## SQLite storage alternative
+## SQLite storage alternative (OSS only)
 
-For a single-instance SQLite deployment, create `config.json` from the [SQLite configuration](/deployment-guides/runtime-contract#sqlite), encode it as shown in Step 1, and keep the same Docker command. Remove the PostgreSQL environment variables, attach a paid persistent disk at `/app/data`, and keep one instance.
+This alternative is available only for OSS Bifrost. For a single-instance SQLite deployment, create `config.json` from the [SQLite configuration](/deployment-guides/runtime-contract#sqlite), encode it as shown in Step 1, and keep the same Docker command. Remove the PostgreSQL environment variables, attach a paid persistent disk at `/app/data`, and keep one instance.
 
-Verify that the disk is writable by container UID `1000` before storing customer configuration. A Render disk is attached to one service instance and prevents zero-downtime replacement, so PostgreSQL remains the preferred path for enterprise deployments.
+Verify that the disk is writable by container UID `1000` before storing customer configuration. A Render disk is attached to one service instance and prevents zero-downtime replacement. Enterprise deployments must use PostgreSQL 16 or later instead.
 
 ## External access
 
@@ -102,7 +104,7 @@ Render's web-service URL and managed TLS are one optional frontend implementatio
 
 ## Scaling and upgrades
 
-- Persistent-disk SQLite: one instance and a brief interruption during replacement.
+- OSS persistent-disk SQLite: one instance and a brief interruption during replacement.
 - PostgreSQL-backed OSS configuration: one instance.
 - File-only OSS: several instances only with identical immutable configuration and no shared SQLite.
 - Enterprise: do not claim mesh support until peer networking and the exact Enterprise release are qualified; broker mode is an advanced alternative to evaluate.

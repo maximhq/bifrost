@@ -18,11 +18,13 @@ The Helm configuration is validated in the repository. The complete guide is not
 | Container | OSS image or Enterprise image supplied by Maxim; nodes must match `linux/amd64` or `linux/arm64` |
 | HTTP | `ClusterIP` Service on `8080/TCP` by default |
 | Health | `GET /health` on the HTTP Service |
-| SQLite persistence | One replica and a `ReadWriteOnce` PVC; EBS CSI driver and a usable StorageClass are platform requirements |
-| PostgreSQL | Any reachable PostgreSQL satisfying the shared contract; it may run inside or outside AWS |
+| SQLite persistence (OSS only) | One replica and a `ReadWriteOnce` PVC; EBS CSI driver and a usable StorageClass are platform requirements |
+| PostgreSQL | PostgreSQL 16 or later reachable from the cluster; it may run inside or outside AWS |
 | External access | Any compatible Gateway API, ingress, Service `LoadBalancer`, or external proxy |
 | Enterprise mesh | Kubernetes pod discovery plus bidirectional `10101/TCP+UDP` and `10102/TCP` between Bifrost pods |
 | Image pull | Public Docker Hub for OSS, or the Enterprise registry/mirror identity supplied for the customer through [Enterprise AWS](/deployment-guides/enterprise/aws) |
+
+Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support SQLite. The SQLite path below is available only for OSS deployments.
 
 ## Deploy Bifrost
 
@@ -129,12 +131,12 @@ kubectl exec --namespace bifrost -it postgres-check -- psql
 kubectl delete pod --namespace bifrost postgres-check
 ```
 
-Enter the PostgreSQL password when psql prompts. A successful connection confirms DNS, TCP, TLS, and database authentication from the pod network.
+Enter the PostgreSQL password when psql prompts. A successful connection confirms DNS, TCP, TLS, and database authentication from the pod network. Confirm that `SHOW server_version;` reports PostgreSQL 16 or later.
 
 </Tab>
-<Tab title="SQLite">
+<Tab title="SQLite (OSS only)">
 
-Use SQLite only for a single Bifrost replica. On EKS, select a StorageClass backed by the EBS CSI driver or another CSI implementation that provides a ReadWriteOnce volume.
+This option is available only for OSS Bifrost. Use SQLite for a single replica and select a StorageClass backed by the EBS CSI driver or another CSI implementation that provides a ReadWriteOnce volume.
 
 ```bash
 kubectl get storageclass
@@ -161,7 +163,7 @@ bifrost:
 EOF
 ```
 
-Replace `<STORAGE_CLASS>` with a class returned by `kubectl get storageclass`. This creates persistent `/app/data` storage for SQLite. PostgreSQL is not required for this option.
+Replace `<STORAGE_CLASS>` with a class returned by `kubectl get storageclass`. This creates persistent `/app/data` storage for the OSS SQLite deployment. PostgreSQL is not required for this OSS option.
 
 </Tab>
 </Tabs>
@@ -289,7 +291,7 @@ Point the hostname to the provisioned load balancer and verify `https://<BIFROST
 
 ### Replica configuration
 
-- Keep SQLite at one replica.
+- Keep OSS with SQLite at one replica.
 - Keep OSS with DB-managed configuration at one replica, or use the [file-only OSS multinode pattern](/deployment-guides/how-to/multinode).
 - For Enterprise replicas, use PostgreSQL, enable clustering, enable `rbac.podDiscovery`, and permit internal cluster ports. Start from [Cluster Mode and HA](/deployment-guides/helm/cluster), not from an EKS-specific copy of those values.
 
@@ -306,7 +308,7 @@ kubectl describe pvc --namespace bifrost
 kubectl logs --namespace bifrost -l app.kubernetes.io/name=bifrost --tail=200
 ```
 
-- Pending SQLite pod: inspect PVC events, StorageClass, EBS CSI controller, and zone placement.
+- Pending OSS SQLite pod: inspect PVC events, StorageClass, EBS CSI controller, and zone placement.
 - `ImagePullBackOff`: verify the repository, tag, node/pod pull identity, and registry reachability.
 - `/health` returns `503`: inspect Bifrost logs and verify each configured store from the pod network.
 - Streaming stops at a fixed interval: inspect every ingress/proxy idle timeout and response buffering setting.

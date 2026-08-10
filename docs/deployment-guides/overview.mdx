@@ -32,17 +32,17 @@ Bifrost stores provider configuration, encrypted credentials, application settin
 
 | Deployment | Storage setup |
 |---|---|
-| One Bifrost instance using SQLite | SQLite in a persistent `/app/data` directory |
-| One instance using PostgreSQL for both stores | A reachable PostgreSQL database; no persistent Bifrost `/app/data` volume |
+| One OSS Bifrost instance using SQLite | SQLite in a persistent `/app/data` directory |
+| One instance using PostgreSQL for both stores | A reachable PostgreSQL 16 or later database; no persistent Bifrost `/app/data` volume |
 | Several OSS instances | The same file-only `config.json` and secrets on every instance; use PostgreSQL for shared logs when logging is enabled |
-| Several instances with configuration managed through the dashboard or API | Bifrost Enterprise clustering with PostgreSQL |
+| Bifrost Enterprise | PostgreSQL 16 or later for both the configuration store and log store |
 
-PostgreSQL can be an existing database, a self-managed server, or a managed database such as Amazon RDS, Google Cloud SQL, Azure Database for PostgreSQL, Render Postgres, or Railway Postgres. Use whichever service fits your infrastructure and connect Bifrost using the host, port, database name, username, password, and TLS mode.
+When using PostgreSQL, Bifrost requires version 16 or later. It can be an existing database, a self-managed server, or a managed database such as Amazon RDS, Google Cloud SQL, Azure Database for PostgreSQL, Render Postgres, or Railway Postgres. Use whichever service fits your infrastructure and connect Bifrost using the host, port, database name, username, password, and TLS mode.
 
 When both `config_store` and `logs_store` use PostgreSQL, Bifrost does not use SQLite and does not need persistent storage mounted at `/app/data`. The application directory and `config.json` must still be available to the running container.
 
 <Warning>
-A SQLite database belongs to one Bifrost process. Do not mount the same SQLite database into several containers. OSS instances using a shared PostgreSQL configuration store also do not automatically update each other's in-memory configuration; use the [OSS multinode setup](/deployment-guides/how-to/multinode) or Enterprise clustering.
+Bifrost Enterprise does not support SQLite. Configure both Enterprise stores with PostgreSQL 16 or later. SQLite is available only for OSS deployments and belongs to one Bifrost process; do not mount the same SQLite database into several containers. OSS instances using a shared PostgreSQL configuration store also do not automatically update each other's in-memory configuration; use the [OSS multinode setup](/deployment-guides/how-to/multinode) or Enterprise clustering.
 </Warning>
 
 ## Prepare configuration and secrets
@@ -50,7 +50,7 @@ A SQLite database belongs to one Bifrost process. Do not mount the same SQLite d
 Every deployment needs:
 
 - A versioned Bifrost image.
-- An application directory at `/app/data`; persist it only when a store uses SQLite.
+- An application directory at `/app/data`; persist it only for an OSS deployment whose configuration store or log store uses SQLite.
 - A stable encryption key when persisted credentials are encrypted.
 - Credentials for the LLM providers and integrations you configure.
 - Database connection values when using PostgreSQL.
@@ -76,7 +76,7 @@ The installation sequence is the same on every platform:
 
 1. Create or select the container service or Kubernetes cluster.
 2. Create the Bifrost encryption key and provider secrets.
-3. For SQLite, prepare persistent `/app/data` storage. For PostgreSQL-only storage, prepare the database connection instead.
+3. For OSS with SQLite, prepare persistent `/app/data` storage. For PostgreSQL-only storage, including every Enterprise deployment, prepare the database connection instead.
 4. Supply the image, configuration, secrets, and database connection to Bifrost.
 5. Expose the Bifrost HTTP port to its intended clients.
 6. Start the service and wait for `/health` to return `200`.
