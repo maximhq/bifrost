@@ -19,10 +19,11 @@ export interface ModelLimitConfig {
   provider: string
   modelName: string
   budget?: { maxLimit: number; resetDuration?: string }
-  rateLimit?: {
-    tokenMaxLimit?: number
-    requestMaxLimit?: number
-  }
+  rateLimits?: {
+    metric: 'tokens' | 'requests'
+    maxLimit: number
+    resetDuration?: string
+  }[]
 }
 
 function toTestIdPart(value: string): string {
@@ -58,6 +59,10 @@ export class ModelLimitsPage extends BasePage {
   async modelLimitExists(modelName: string, provider: string = 'all'): Promise<boolean> {
     const row = this.getModelLimitRow(modelName, provider)
     return await row.isVisible({ timeout: 5000 }).catch(() => false)
+  }
+
+  async modelRateLimitRuleCount(modelName: string, provider: string = 'all'): Promise<number> {
+    return await this.getModelLimitRow(modelName, provider).getByTestId(/^model-limit-rate-limit-rule-/).count()
   }
 
   private async openModelLimitActions(modelName: string, provider: string = 'all'): Promise<void> {
@@ -113,6 +118,47 @@ export class ModelLimitsPage extends BasePage {
     }
   }
 
+  private async setRateLimits(config?: ModelLimitConfig['rateLimits']): Promise<void> {
+    if (!config) return
+
+    const testId = 'model-limit-rate-limit-lines'
+    const lines = this.page.locator(`[data-testid^="${testId}-line-"]`)
+    if (config.length === 0) {
+      const clearButton = this.page.getByTestId(`${testId}-clear-btn`)
+      if (await clearButton.isVisible().catch(() => false)) await clearButton.click()
+      return
+    }
+
+    while ((await lines.count()) < config.length) {
+      await this.page.getByTestId(`${testId}-add-btn`).click()
+    }
+
+    while ((await lines.count()) > config.length) {
+      const excessIndex = (await lines.count()) - 1
+      await this.page.getByTestId(`${testId}-remove-${excessIndex}`).click()
+    }
+
+    for (let index = 0; index < config.length; index += 1) {
+      const rule = config[index]
+      const line = this.page.getByTestId(`${testId}-line-${index}`)
+      const metricLabel = rule.metric === 'tokens' ? 'Tokens' : 'Requests'
+      await this.page.getByTestId(`${testId}-metric-${index}`).click()
+      await this.page.getByRole('option', { name: metricLabel, exact: true }).click()
+
+      const amountInput = this.page.getByTestId(`${testId}-amount-${index}`)
+      await amountInput.click()
+      await amountInput.fill('')
+      await amountInput.pressSequentially(String(rule.maxLimit))
+
+      if (rule.resetDuration) {
+        const resetPeriodLabel = resetPeriodLabels[rule.resetDuration]
+        if (!resetPeriodLabel) throw new Error(`unsupported resetDuration: ${rule.resetDuration}`)
+        await line.getByRole('combobox').nth(1).click()
+        await this.page.getByRole('option', { name: resetPeriodLabel, exact: true }).click()
+      }
+    }
+  }
+
   /**
    * Create a model limit via the sheet: selects provider, selects the requested
    * model (config.modelName) in the search dropdown, fills budget and rate
@@ -143,12 +189,7 @@ export class ModelLimitsPage extends BasePage {
 
     await this.setBudget(config.budget)
 
-    if (config.rateLimit?.tokenMaxLimit !== undefined) {
-      await this.page.locator('#modelTokenMaxLimit').fill(String(config.rateLimit.tokenMaxLimit))
-    }
-    if (config.rateLimit?.requestMaxLimit !== undefined) {
-      await this.page.locator('#modelRequestMaxLimit').fill(String(config.rateLimit.requestMaxLimit))
-    }
+    await this.setRateLimits(config.rateLimits)
 
     const saveBtn = this.page.getByRole('button', { name: /Create Limit/i })
     await expect(saveBtn).toBeEnabled({ timeout: 10000 })
@@ -168,16 +209,7 @@ export class ModelLimitsPage extends BasePage {
 
     await this.setBudget(updates.budget)
 
-    if (updates.rateLimit?.tokenMaxLimit !== undefined) {
-      const tokenInput = this.page.locator('#modelTokenMaxLimit')
-      await tokenInput.clear()
-      await tokenInput.fill(String(updates.rateLimit.tokenMaxLimit))
-    }
-    if (updates.rateLimit?.requestMaxLimit !== undefined) {
-      const requestInput = this.page.locator('#modelRequestMaxLimit')
-      await requestInput.clear()
-      await requestInput.fill(String(updates.rateLimit.requestMaxLimit))
-    }
+    await this.setRateLimits(updates.rateLimits)
 
     const saveBtn = this.page.getByRole('button', { name: /Save Changes|Create Limit/i })
     await expect(saveBtn).toBeEnabled({ timeout: 10000 })

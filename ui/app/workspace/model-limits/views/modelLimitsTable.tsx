@@ -24,7 +24,7 @@ import { getErrorMessage, useDeleteModelConfigMutation, useGetModelConfigQuery }
 import { ModelProvider } from "@/lib/types/config";
 import { ModelConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/lib/utils/governance";
+import { formatCurrency, getModelRateLimitRules } from "@/lib/utils/governance";
 import { getScopeLabel } from "@/lib/utils/labels";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ArrowUpRight, ChevronLeft, ChevronRight, Edit, MoreHorizontal, Plus, Search, Trash2 } from "lucide-react";
@@ -360,24 +360,10 @@ export default function ModelLimitsTable({
 									// Model configs can own multiple budgets; show all (like the VK table).
 									const budgets = config.budgets ?? (config.budget ? [config.budget] : []);
 									const isBudgetExhausted = budgets.some((b) => b.max_limit > 0 && b.current_usage >= b.max_limit);
-									const isRateLimitExhausted =
-										(config.rate_limit?.token_max_limit &&
-											config.rate_limit.token_max_limit > 0 &&
-											config.rate_limit.token_current_usage >= config.rate_limit.token_max_limit) ||
-										(config.rate_limit?.request_max_limit &&
-											config.rate_limit.request_max_limit > 0 &&
-											config.rate_limit.request_current_usage >= config.rate_limit.request_max_limit);
+									const isRateLimitExhausted = getModelRateLimitRules(config).some(
+										(rule) => rule.max_limit > 0 && rule.current_usage >= rule.max_limit,
+									);
 									const isExhausted = isBudgetExhausted || isRateLimitExhausted;
-
-									// Compute safe percentages to avoid division by zero
-									const tokenPercentage =
-										config.rate_limit?.token_max_limit && config.rate_limit.token_max_limit > 0
-											? Math.min((config.rate_limit.token_current_usage / config.rate_limit.token_max_limit) * 100, 100)
-											: 0;
-									const requestPercentage =
-										config.rate_limit?.request_max_limit && config.rate_limit.request_max_limit > 0
-											? Math.min((config.rate_limit.request_current_usage / config.rate_limit.request_max_limit) * 100, 100)
-											: 0;
 
 									return (
 										<TableRow
@@ -458,84 +444,7 @@ export default function ModelLimitsTable({
 												)}
 											</TableCell>
 											<TableCell className="min-w-[180px]">
-												{config.rate_limit ? (
-													<div className="space-y-2.5">
-														{config.rate_limit.token_max_limit && (
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<div className="space-y-1.5">
-																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">{config.rate_limit.token_max_limit.toLocaleString()} tokens</span>
-																				<span className="text-muted-foreground">
-																					{formatResetDuration(config.rate_limit.token_reset_duration || "1h")}
-																				</span>
-																			</div>
-																			<Progress
-																				value={tokenPercentage}
-																				className={cn(
-																					"bg-muted/70 dark:bg-muted/30 h-1",
-																					config.rate_limit.token_current_usage >= config.rate_limit.token_max_limit
-																						? "[&>div]:bg-red-500/70"
-																						: tokenPercentage > 80
-																							? "[&>div]:bg-amber-500/70"
-																							: "[&>div]:bg-emerald-500/70",
-																				)}
-																			/>
-																		</div>
-																	</TooltipTrigger>
-																	<TooltipContent>
-																		<p className="font-medium">
-																			{config.rate_limit.token_current_usage.toLocaleString()} /{" "}
-																			{config.rate_limit.token_max_limit.toLocaleString()} tokens
-																		</p>
-																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(config.rate_limit.token_reset_duration || "1h")}
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														)}
-														{config.rate_limit.request_max_limit && (
-															<TooltipProvider>
-																<Tooltip>
-																	<TooltipTrigger asChild>
-																		<div className="space-y-1.5">
-																			<div className="flex items-center justify-between gap-4 text-xs">
-																				<span className="font-medium">{config.rate_limit.request_max_limit.toLocaleString()} req</span>
-																				<span className="text-muted-foreground">
-																					{formatResetDuration(config.rate_limit.request_reset_duration || "1h")}
-																				</span>
-																			</div>
-																			<Progress
-																				value={requestPercentage}
-																				className={cn(
-																					"bg-muted/70 dark:bg-muted/30 h-1",
-																					config.rate_limit.request_current_usage >= config.rate_limit.request_max_limit
-																						? "[&>div]:bg-red-500/70"
-																						: requestPercentage > 80
-																							? "[&>div]:bg-amber-500/70"
-																							: "[&>div]:bg-emerald-500/70",
-																				)}
-																			/>
-																		</div>
-																	</TooltipTrigger>
-																	<TooltipContent>
-																		<p className="font-medium">
-																			{config.rate_limit.request_current_usage.toLocaleString()} /{" "}
-																			{config.rate_limit.request_max_limit.toLocaleString()} requests
-																		</p>
-																		<p className="text-primary-foreground/80 text-xs">
-																			Resets {formatResetDuration(config.rate_limit.request_reset_duration || "1h")}
-																		</p>
-																	</TooltipContent>
-																</Tooltip>
-															</TooltipProvider>
-														)}
-													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">-</span>
-												)}
+												<ModelRateLimitCell config={config} />
 											</TableCell>
 											<TableCell
 												className={cn(
@@ -603,5 +512,49 @@ export default function ModelLimitsTable({
 				)}
 			</div>
 		</>
+	);
+}
+
+function ModelRateLimitCell({ config }: { config: ModelConfig }) {
+	const rules = getModelRateLimitRules(config);
+	if (rules.length === 0) return <span className="text-muted-foreground text-sm">-</span>;
+	return (
+		<div className="min-w-[220px] space-y-2.5">
+			{rules.map((rule, index) => {
+				const percentage = rule.max_limit > 0 ? Math.min((rule.current_usage / rule.max_limit) * 100, 100) : 0;
+				const exhausted = rule.current_usage >= rule.max_limit;
+				return (
+					<TooltipProvider key={`${rule.id ?? "legacy"}-${rule.metric}-${rule.reset_duration}-${index}`}>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<div className="space-y-1.5" data-testid={`model-limit-rate-limit-rule-${index}`}>
+									<div className="flex items-center justify-between gap-4 text-xs">
+										<span className={cn("font-medium", exhausted && "text-red-500")}>
+											{rule.current_usage.toLocaleString()} / {rule.max_limit.toLocaleString()}{" "}
+											{rule.metric === "tokens" ? "tokens" : "req"}
+										</span>
+										<span className="text-muted-foreground">{formatResetDuration(rule.reset_duration)}</span>
+									</div>
+									<Progress
+										value={percentage}
+										className={cn(
+											"bg-muted/70 dark:bg-muted/30 h-1",
+											exhausted ? "[&>div]:bg-red-500/70" : percentage > 80 ? "[&>div]:bg-amber-500/70" : "[&>div]:bg-emerald-500/70",
+										)}
+									/>
+								</div>
+							</TooltipTrigger>
+							<TooltipContent>
+								<p className="font-medium">
+									{rule.current_usage.toLocaleString()} / {rule.max_limit.toLocaleString()}{" "}
+									{rule.metric === "tokens" ? "tokens" : "requests"}
+								</p>
+								<p className="text-primary-foreground/80 text-xs">Resets {formatResetDuration(rule.reset_duration)}</p>
+							</TooltipContent>
+						</Tooltip>
+					</TooltipProvider>
+				);
+			})}
+		</div>
 	);
 }

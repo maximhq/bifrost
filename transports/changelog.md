@@ -2,6 +2,18 @@
 
 - **WebSocket Proxy Support** — Realtime and Responses WebSocket connections now route through the configured provider-level proxy (HTTP, SOCKS5, env-based) instead of always dialing direct
 - **Configurable SCIM Buffer Sizes** — Added `WithFasthttpBufferSizes` option to `HTTPClientFactory` so IdP token endpoints returning headers larger than the 4KB default no longer fail SCIM/OAuth clients
+- **Model Multi-Window Rate Limits** — Model-level rate-limit APIs, config schema support, and Model Limits UI for independent RPM/RPD/TPM/TPD rules
+- **Wafer AI Provider** - Added Wafer AI as a supported provider
+- **Async Webhooks** - New webhook delivery system for async jobs: configurable webhook endpoints (config.json, admin API, and UI), SSRF-safe delivery dispatcher with retries, delivery history with server-side pagination/search/filtering, and inference `request_id` propagation through async jobs and webhook payloads; failed jobs now inline `error`/`error_omitted` fields
+- **Reasoning Token Tracking** - Anthropic extended-thinking tokens are now tracked as `ReasoningTokens` across chat, responses, and passthrough
+- **Retain Content Toggle** - New toggle to always retain request/response content in object storage regardless of retention cleanup
+- **Throughput Metrics** - Tokens/sec throughput histogram endpoints, dashboard metrics, and throughput in model rankings and trend data
+- **MCP Metrics** - MCP metrics exported via OTEL and the telemetry (Prometheus) plugin, plus a `resource` parameter on the MCP OAuth handshake
+- **Routing Rule Validation** - Routing CEL expressions and `scope_id` references are now validated at write time in create/update handlers
+- **Network Config** - Configurable keep-alive duration in network config
+- **Object Storage Archival** - Added `archiveInterval`, `archiveGracePeriod`, and `archiveMaxObjectBytes` settings
+- **Connector User Email Export** - Connectors can now export user emails
+- **Logs UI** - Server fallback model shown in logs, content-disabled message on the logs UI, persisted page-size preference, and `prompt_tokens`/`completion_tokens` in search stats
 
 ## 🐞 Fixed
 
@@ -31,3 +43,6 @@
 ## 🔧 Maintenance
 
 - **Dependency Upgrades** — Bumped core to v1.7.6, framework to v1.5.6, and governance to v1.6.10; all other plugins bumped to pick up the cascade (compat v0.1.32, jsonparser v1.5.33, logging v1.6.6, maxim v1.6.33, mocker v1.5.33, modelcatalogresolver v1.0.14, otel v1.4.5, prompts v1.0.33, semanticcache v1.5.33, telemetry v1.5.33)
+- [#5074](https://github.com/maximhq/bifrost/issues/5074) - Fallback routing model selection is truncating model names
+- [#5108](https://github.com/maximhq/bifrost/issues/5108) - Bedrock Converse: reasoning_config/thinking silently dropped on cross-provider translation, fallbacks lose extended thinking
+- [#5308](https://github.com/maximhq/bifrost/issues/5308) - Responses API image blocks missing required "detail" field when converted from non-OpenAI providers

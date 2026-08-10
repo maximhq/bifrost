@@ -3503,7 +3503,7 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 			}
 			for _, existing := range config.GovernanceConfig.RateLimits {
 				if existing.ID != "" && !keep[existing.ID] {
-					if err := config.ConfigStore.DeleteRateLimit(ctx, existing.ID, tx); err != nil && !errors.Is(err, configstore.ErrNotFound) {
+					if err := deleteRateLimitIfUnreferencedInConfigSync(tx, existing.ID); err != nil {
 						return fmt.Errorf("failed to delete rate limit %s: %w", existing.ID, err)
 					}
 				}
@@ -3515,6 +3515,37 @@ func pruneGovernanceConfigToFile(ctx context.Context, config *Config, configData
 	if err != nil {
 		logger.Fatal("failed to prune governance config: %v", err)
 	}
+}
+
+// deleteRateLimitIfUnreferencedInConfigSync protects both legacy singular
+// governance links and model-owned multi-rule links while pruning a config
+// section. The model-config FK is intentionally included here because config
+// sync prunes top-level rows before it relinks model_configs.
+func deleteRateLimitIfUnreferencedInConfigSync(tx *gorm.DB, rateLimitID string) error {
+	if rateLimitID == "" {
+		return nil
+	}
+	var references int64
+	if err := tx.Raw(`
+		SELECT COUNT(*) FROM (
+			SELECT rate_limit_id AS referenced_id FROM governance_model_configs WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM config_providers WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_virtual_keys WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_virtual_key_provider_configs WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_teams WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT rate_limit_id FROM governance_customers WHERE rate_limit_id IS NOT NULL
+			UNION ALL SELECT id FROM governance_rate_limits WHERE id = ? AND model_config_id IS NOT NULL
+		) AS rate_limit_refs
+		WHERE referenced_id = ?
+	`, rateLimitID, rateLimitID).Scan(&references).Error; err != nil {
+		return fmt.Errorf("failed to check rate limit %q references: %w", rateLimitID, err)
+	}
+	if references == 0 {
+		if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 // updateGovernanceConfigInStore updates governance config items in the store
@@ -3836,8 +3867,13 @@ func updateGovernanceConfigInStore(
 			if err := config.ConfigStore.CreateModelConfig(ctx, &modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to create model config %s: %w", modelConfig.ID, err)
 			}
-			if len(modelConfig.BudgetIDs) > 0 {
+			if modelConfig.BudgetIDs != nil {
 				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
+			}
+			if modelConfig.RateLimitIDs != nil {
+				if err := linkModelConfigRateLimits(tx, modelConfig.ID, modelConfig.RateLimitIDs); err != nil {
 					return err
 				}
 			}
@@ -3851,8 +3887,13 @@ func updateGovernanceConfigInStore(
 			if err := config.ConfigStore.UpdateModelConfig(ctx, &modelConfig, tx); err != nil {
 				return fmt.Errorf("failed to update model config %s: %w", modelConfig.ID, err)
 			}
-			if len(modelConfig.BudgetIDs) > 0 {
+			if modelConfig.BudgetIDs != nil {
 				if err := linkModelConfigBudgets(tx, modelConfig.ID, modelConfig.BudgetIDs); err != nil {
+					return err
+				}
+			}
+			if modelConfig.RateLimitIDs != nil {
+				if err := linkModelConfigRateLimits(tx, modelConfig.ID, modelConfig.RateLimitIDs); err != nil {
 					return err
 				}
 			}
@@ -3929,6 +3970,9 @@ func updateGovernanceConfigInStore(
 }
 
 func validateModelConfigGovernanceOwnership(tx *gorm.DB, modelConfig configstoreTables.TableModelConfig) error {
+	if modelConfig.RateLimitID != nil && modelConfig.RateLimitIDs != nil {
+		return fmt.Errorf("model config %q cannot set both rate_limit_id and rate_limit_ids", modelConfig.ID)
+	}
 	if err := validateBudgetLinkOwnership(tx, modelConfig.BudgetID, "model config", modelConfig.ID); err != nil {
 		return err
 	}
@@ -3940,6 +3984,21 @@ func validateModelConfigGovernanceOwnership(tx *gorm.DB, modelConfig configstore
 		if err := validateBudgetLinkOwnership(tx, &id, "model config", modelConfig.ID); err != nil {
 			return err
 		}
+	}
+	seenModelRateLimitRules := make(map[string]string, len(modelConfig.RateLimitIDs))
+	for _, rateLimitID := range modelConfig.RateLimitIDs {
+		id := strings.TrimSpace(rateLimitID)
+		if id == "" {
+			continue
+		}
+		key, err := validateModelRateLimitLinkOwnership(tx, id, modelConfig.ID)
+		if err != nil {
+			return err
+		}
+		if previousID, exists := seenModelRateLimitRules[key]; exists {
+			return fmt.Errorf("model config %q contains duplicate rate limit rule %q (IDs %q and %q)", modelConfig.ID, key, previousID, id)
+		}
+		seenModelRateLimitRules[key] = id
 	}
 	return nil
 }
@@ -7302,4 +7361,120 @@ func DeepCopy[T any](in T) (T, error) {
 	}
 	err = sonic.Unmarshal(b, &out)
 	return out, err
+}
+// validateModelRateLimitLinkOwnership verifies that a config-file rate limit is
+// a single-metric rule and is not already owned by another model config or
+// singular governance owner.
+func validateModelRateLimitLinkOwnership(tx *gorm.DB, rateLimitID, mcID string) (string, error) {
+	var rateLimit configstoreTables.TableRateLimit
+	if err := tx.Where("id = ?", rateLimitID).First(&rateLimit).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", fmt.Errorf("rate_limit_id %q referenced by model config %q does not exist", rateLimitID, mcID)
+		}
+		return "", fmt.Errorf("failed to validate model rate_limit %q: %w", rateLimitID, err)
+	}
+	key, err := modelRateLimitReferenceKey(rateLimit)
+	if err != nil {
+		return "", fmt.Errorf("rate limit %q is not a valid single-metric model rule: %w", rateLimitID, err)
+	}
+	if rateLimit.ModelConfigID != nil && *rateLimit.ModelConfigID != mcID {
+		return "", fmt.Errorf("rate limit %q is already owned by model config %q", rateLimitID, *rateLimit.ModelConfigID)
+	}
+	var other configstoreTables.TableModelConfig
+	if err := tx.Where("id <> ? AND rate_limit_id = ?", mcID, rateLimitID).Select("id").First(&other).Error; err == nil {
+		return "", fmt.Errorf("rate limit %q is already linked to model config %q", rateLimitID, other.ID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("failed to validate legacy rate limit ownership: %w", err)
+	}
+	var providerOwner configstoreTables.TableProvider
+	if err := tx.Where("rate_limit_id = ?", rateLimitID).Select("name").First(&providerOwner).Error; err == nil {
+		return "", fmt.Errorf("rate limit %q is already linked to provider %q", rateLimitID, providerOwner.Name)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("failed to validate provider rate limit ownership: %w", err)
+	}
+	var teamOwner configstoreTables.TableTeam
+	if err := tx.Where("rate_limit_id = ?", rateLimitID).Select("id").First(&teamOwner).Error; err == nil {
+		return "", fmt.Errorf("rate limit %q is already linked to team %q", rateLimitID, teamOwner.ID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("failed to validate team rate limit ownership: %w", err)
+	}
+	var vkOwner configstoreTables.TableVirtualKey
+	if err := tx.Where("rate_limit_id = ?", rateLimitID).Select("id").First(&vkOwner).Error; err == nil {
+		return "", fmt.Errorf("rate limit %q is already linked to virtual key %q", rateLimitID, vkOwner.ID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("failed to validate virtual key rate limit ownership: %w", err)
+	}
+	var customerOwner configstoreTables.TableCustomer
+	if err := tx.Where("rate_limit_id = ?", rateLimitID).Select("id").First(&customerOwner).Error; err == nil {
+		return "", fmt.Errorf("rate limit %q is already linked to customer %q", rateLimitID, customerOwner.ID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("failed to validate customer rate limit ownership: %w", err)
+	}
+	return key, nil
+}
+
+func modelRateLimitReferenceKey(rateLimit configstoreTables.TableRateLimit) (string, error) {
+	var maxLimit *int64
+	var resetDuration *string
+	switch rateLimit.Metric {
+	case configstoreTables.ModelRateLimitMetricTokens:
+		maxLimit = rateLimit.TokenMaxLimit
+		resetDuration = rateLimit.TokenResetDuration
+		if rateLimit.RequestMaxLimit != nil || rateLimit.RequestResetDuration != nil {
+			return "", fmt.Errorf("token rule cannot contain request fields")
+		}
+	case configstoreTables.ModelRateLimitMetricRequests:
+		maxLimit = rateLimit.RequestMaxLimit
+		resetDuration = rateLimit.RequestResetDuration
+		if rateLimit.TokenMaxLimit != nil || rateLimit.TokenResetDuration != nil {
+			return "", fmt.Errorf("request rule cannot contain token fields")
+		}
+	default:
+		return "", fmt.Errorf("metric must be tokens or requests")
+	}
+	if maxLimit == nil || *maxLimit <= 0 {
+		return "", fmt.Errorf("max limit must be greater than zero")
+	}
+	if resetDuration == nil {
+		return "", fmt.Errorf("reset duration is required")
+	}
+	duration, err := configstoreTables.ParseDuration(*resetDuration)
+	if err != nil || duration <= 0 {
+		return "", fmt.Errorf("reset duration must be a positive duration: %s", *resetDuration)
+	}
+	return fmt.Sprintf("%s:%s", rateLimit.Metric, duration.String()), nil
+}
+
+// linkModelConfigRateLimits links the complete desired config-file rule set
+// and clears stale model-owned rows. Empty arrays intentionally clear all
+// multi-rule ownership.
+func linkModelConfigRateLimits(tx *gorm.DB, mcID string, rateLimitIDs []string) error {
+	seen := make(map[string]struct{}, len(rateLimitIDs))
+	normalized := make([]string, 0, len(rateLimitIDs))
+	for _, raw := range rateLimitIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+	unlink := tx.Model(&configstoreTables.TableRateLimit{}).Where("model_config_id = ?", mcID)
+	if len(normalized) > 0 {
+		unlink = unlink.Where("id NOT IN ?", normalized)
+	}
+	if err := unlink.UpdateColumn("model_config_id", nil).Error; err != nil {
+		return fmt.Errorf("failed to unlink stale model rate limits for %q: %w", mcID, err)
+	}
+	for _, id := range normalized {
+		if err := tx.Model(&configstoreTables.TableRateLimit{}).
+			Where("id = ?", id).
+			UpdateColumn("model_config_id", mcID).Error; err != nil {
+			return fmt.Errorf("failed to link rate limit %q to model config %q: %w", id, mcID, err)
+		}
+	}
+	return nil
 }
