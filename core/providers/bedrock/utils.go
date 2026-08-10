@@ -1339,6 +1339,9 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 				return nil, fmt.Errorf("invalid s3:// document reference %q: expected s3://bucket/key", *block.File.FileURL)
 			}
 		}
+		if format != "" {
+			documentSource.Format = format
+		}
 
 		// URL-sourced document: fetch and inline the bytes. Converse has no url member
 		// on DocumentSource, so an http(s) reference must travel as bytes.

@@ -4812,6 +4812,26 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 							return nil, fmt.Errorf("invalid s3:// document reference %q: expected s3://bucket/key", *file.FileURL)
 						}
 					}
+					if format != "" {
+						doc.Format = format
+					}
+
+					// URL-sourced document: fetch and inline the bytes (Bedrock Converse
+					// only accepts inline source bytes, not remote URLs).
+					if file.FileURL != nil && *file.FileURL != "" {
+						fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *file.FileURL)
+						if fetchErr != nil {
+							return nil, fetchErr
+						}
+						// Refine format from response Content-Type when present (more
+						// reliable than file extension or upstream-declared media type).
+						if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
+							doc.Format = fetchedFormat
+						}
+						doc.Source.Bytes = &fetchedB64
+						bedrockBlock.Document = doc
+						break
+					}
 
 					// URL-sourced document: fetch and inline the bytes. Converse has no
 					// url member on DocumentSource.
