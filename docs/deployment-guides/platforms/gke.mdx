@@ -234,7 +234,7 @@ export BIFROST_HOST="$(kubectl get service bifrost \
   --namespace bifrost \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}')"
 
-curl --fail --show-error "http://${BIFROST_HOST}/health"
+curl --fail --show-error "http://${BIFROST_HOST}:8080/health"
 ```
 
 This creates an HTTP endpoint. Configure TLS through the selected Google Cloud or Kubernetes frontend before exposing Bifrost to untrusted clients.

@@ -232,10 +232,14 @@ export BIFROST_HOST="$(kubectl get service bifrost \
   --namespace bifrost \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}')"
 
-curl --fail --show-error "http://${BIFROST_HOST}/health"
+curl --fail --show-error "http://${BIFROST_HOST}:8080/health"
 ```
 
 This creates an HTTP endpoint. Configure TLS through the selected Azure or Kubernetes frontend before exposing Bifrost to untrusted clients.
+
+<Note>
+AKS-managed Azure Load Balancers use a 30-minute TCP idle timeout by default. For streams that might remain idle longer, configure TCP keepalive or adjust the load balancer idle timeout.
+</Note>
 
 </Tab>
 <Tab title="With ingress">
