@@ -87,6 +87,11 @@ type Profile struct {
 	// a disabled profile builds no trace client or metrics exporter, so no traces/metrics
 	// are sent for it. Defaults to true when omitted.
 	Enabled      bool               `json:"enabled"`
+
+	// TracesEnabled gates trace export. When false, no trace client is built and
+	// CollectorURL is not required: a metrics-only profile. Defaults to true when omitted.
+	TracesEnabled bool `json:"traces_enabled"`
+
 	ServiceName  string             `json:"service_name"`
 	CollectorURL *schemas.SecretVar `json:"collector_url"`
 	Headers      map[string]string  `json:"headers,omitempty"`
@@ -137,8 +142,9 @@ type Profile struct {
 func (p *Profile) UnmarshalJSON(data []byte) error {
 	type alias Profile
 	aux := struct {
-		Enabled  *bool `json:"enabled"`
-		Insecure *bool `json:"insecure"`
+		Enabled       *bool `json:"enabled"`
+		Insecure      *bool `json:"insecure"`
+		TracesEnabled *bool `json:"traces_enabled"`
 		*alias
 	}{
 		alias: (*alias)(p),
@@ -155,6 +161,12 @@ func (p *Profile) UnmarshalJSON(data []byte) error {
 		p.Enabled = true
 	} else {
 		p.Enabled = *aux.Enabled
+	}
+	// Default traces on so existing configs keep exporting spans.
+	if aux.TracesEnabled == nil {
+		p.TracesEnabled = true
+	} else {
+		p.TracesEnabled = *aux.TracesEnabled
 	}
 	return nil
 }
@@ -238,6 +250,7 @@ func hoistSpanFilter(data []byte) *PluginSpanFilter {
 // persistence.
 type profileForStorage struct {
 	Enabled                bool              `json:"enabled"`
+	TracesEnabled          bool              `json:"traces_enabled"`
 	ServiceName            string            `json:"service_name"`
 	CollectorURL           string            `json:"collector_url"`
 	Headers                map[string]string `json:"headers,omitempty"`
@@ -276,6 +289,7 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 		}
 		out.Profiles = append(out.Profiles, profileForStorage{
 			Enabled:                p.Enabled,
+			TracesEnabled:          p.TracesEnabled,
 			ServiceName:            p.ServiceName,
 			CollectorURL:           schemas.SecretVarAsString(p.CollectorURL),
 			Headers:                p.Headers,
@@ -509,13 +523,20 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	if profile == nil {
 		return nil, fmt.Errorf("profile %d is nil", index)
 	}
-	if profile.CollectorURL == nil || profile.CollectorURL.GetValue() == "" {
-		return nil, fmt.Errorf("profile %d: collector url is required", index)
-	}
 
 	serviceName := profile.ServiceName
 	if serviceName == "" {
 		serviceName = "bifrost"
+	}
+
+	// Both traces and metrics dial with this protocol, so validate it once. A profile
+	// with neither enabled is a no-op, so skip the check.
+	if profile.TracesEnabled || profile.MetricsEnabled {
+		switch profile.Protocol {
+		case ProtocolGRPC, ProtocolHTTP:
+		default:
+			return nil, fmt.Errorf("profile %d: invalid protocol type %q", index, profile.Protocol)
+		}
 	}
 
 	// Copy headers before resolving so the stored config is never mutated, then resolve
@@ -531,10 +552,8 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		return nil, fmt.Errorf("profile %d: %w", index, err)
 	}
 
-	url := profile.CollectorURL.GetValue()
 	target := &otelTarget{
 		serviceName:            serviceName,
-		url:                    url,
 		traceType:              profile.TraceType,
 		requestHeaders:         slices.Clone(profile.RequestHeaders),
 		disableContentLogging:  profile.DisableContentLogging,
@@ -543,31 +562,41 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 		exportTimeout:          exportTimeout,
 	}
 
-	switch profile.Protocol {
-	case ProtocolGRPC:
-		// gRPC has no client-side timeout of its own; the per-export context deadline
-		// applied in Inject is what bounds it.
-		target.client, err = NewOtelClientGRPC(url, headers, profile.TLSCACert, profile.Insecure)
-	case ProtocolHTTP:
-		target.client, err = NewOtelClientHTTP(url, headers, profile.TLSCACert, profile.Insecure, exportTimeout)
-	default:
-		return nil, fmt.Errorf("profile %d: invalid protocol type %q", index, profile.Protocol)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("profile %d: %w", index, err)
+	// Build the trace client only when traces are enabled; Inject skips a nil client.
+	if profile.TracesEnabled {
+		if profile.CollectorURL == nil || profile.CollectorURL.GetValue() == "" {
+			return nil, fmt.Errorf("profile %d: collector url is required when traces_enabled is true", index)
+		}
+		url := profile.CollectorURL.GetValue()
+		target.url = url
+		switch profile.Protocol {
+		case ProtocolGRPC:
+			// gRPC has no client-side timeout of its own; the per-export context deadline
+			// applied in Inject is what bounds it.
+			target.client, err = NewOtelClientGRPC(url, headers, profile.TLSCACert, profile.Insecure)
+		case ProtocolHTTP:
+			target.client, err = NewOtelClientHTTP(url, headers, profile.TLSCACert, profile.Insecure, exportTimeout)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("profile %d: %w", index, err)
+		}
 	}
 
 	// Initialize metrics exporter if enabled
 	if profile.MetricsEnabled {
 		if profile.MetricsEndpoint.GetValue() == "" {
-			target.client.Close()
+			if target.client != nil {
+				target.client.Close()
+			}
 			return nil, fmt.Errorf("profile %d: metrics_endpoint is required when metrics_enabled is true", index)
 		}
 		pushInterval := profile.MetricsPushInterval
 		if pushInterval <= 0 {
 			pushInterval = 15 // default 15 seconds
 		} else if pushInterval > 300 {
-			target.client.Close()
+			if target.client != nil {
+				target.client.Close()
+			}
 			return nil, fmt.Errorf("profile %d: metrics_push_interval must be between 1 and 300 seconds, got %d", index, pushInterval)
 		}
 		metricsConfig := &MetricsConfig{
