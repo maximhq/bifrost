@@ -717,3 +717,127 @@ func TestQuarterDefinitionSurvivesVirtualKeyReload(t *testing.T) {
 		assertQuarterly(t, store.LoadBudget(ctx, "vk-quarterly-budget"), 250)
 	})
 }
+
+// TestResetBudgetUsageInMemory covers the primitive behind an operator-triggered
+// usage reset.
+//
+// It must zero usage without touching LastReset. Moving the boundary is ruled
+// out: every persistence path guards it forward-only, and the intended target
+// would often be earlier than the current value. Clearing the LastDBUsages
+// baseline alongside is not optional - the dump path writes the delta between
+// in-memory usage and that baseline, so a stale baseline would immediately
+// re-add the spend that was just cleared.
+func TestResetBudgetUsageInMemory(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+
+	anchor := cycleTestAnchor()
+	budget := buildBudgetWithUsage("operator-reset", 1000, 425, "1M")
+	budget.LastReset = anchor
+	store.budgets.Store(budget.ID, budget)
+	store.LastDBUsagesBudgetsMu.Lock()
+	store.LastDBUsagesBudgets[budget.ID] = 300
+	store.LastDBUsagesBudgetsMu.Unlock()
+
+	reset, ok := store.ResetBudgetUsageInMemory(ctx, budget.ID)
+	require.True(t, ok, "reset should apply to a budget that exists")
+	require.NotNil(t, reset)
+
+	assert.Zero(t, reset.CurrentUsage, "usage must be cleared")
+	assert.True(t, reset.LastReset.Equal(anchor), "the reset boundary must not move")
+
+	loaded := store.LoadBudget(ctx, budget.ID)
+	require.NotNil(t, loaded)
+	assert.Zero(t, loaded.CurrentUsage, "the stored budget must reflect the reset")
+	assert.True(t, loaded.LastReset.Equal(anchor))
+
+	store.LastDBUsagesBudgetsMu.RLock()
+	baseline := store.LastDBUsagesBudgets[budget.ID]
+	store.LastDBUsagesBudgetsMu.RUnlock()
+	assert.Zero(t, baseline, "a stale baseline would re-add the cleared spend on the next dump")
+}
+
+// TestResetBudgetUsageInMemoryMissingBudget verifies an unknown ID is reported
+// rather than silently succeeding, so a caller cannot believe it reset something
+// that does not exist.
+func TestResetBudgetUsageInMemoryMissingBudget(t *testing.T) {
+	store := newStandaloneStore(t)
+	reset, ok := store.ResetBudgetUsageInMemory(context.Background(), "does-not-exist")
+	assert.False(t, ok)
+	assert.Nil(t, reset)
+}
+
+// TestDumpBudgetsCannotUndoOperatorReset covers the interleaving where an operator
+// reset lands after a dump has snapshotted a budget but before that snapshot
+// reaches the database.
+//
+// The two halves of a dump are separated by one database transaction per batch, so
+// this window is real work, not an instant. A reset installs a fresh pointer via
+// CAS, which the snapshot cannot see, and deliberately leaves LastReset alone, so
+// the "<=" guard still matches. Without the reset generation the stale usage is
+// written straight back over the operator's reset, and nothing reports an error:
+// the number simply reappears.
+func TestDumpBudgetsCannotUndoOperatorReset(t *testing.T) {
+	ctx := context.Background()
+	logger := NewMockLogger()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	newStore := func(t *testing.T, seeded *configstoreTables.TableBudget) (*LocalGovernanceStore, configstore.ConfigStore) {
+		t.Helper()
+		configStore, err := configstore.NewConfigStore(ctx, &configstore.Config{
+			Enabled: true,
+			Type:    configstore.ConfigStoreTypeSQLite,
+			Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/resetrace.db"},
+		}, logger)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
+		require.NoError(t, configStore.CreateBudget(ctx, seeded))
+		store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+		require.NoError(t, err)
+		return store, configStore
+	}
+
+	seed := buildBudgetWithUsage("dump-reset-race-budget", 1000, 500, "24h")
+	seed.CreatedAt = now
+	seed.UpdatedAt = now
+	seed.LastReset = now
+
+	store, configStore := newStore(t, seed)
+
+	live := store.LoadBudget(ctx, seed.ID)
+	require.NotNil(t, live)
+	require.Equal(t, 500.0, live.CurrentUsage, "precondition: the budget carries spend to be reset")
+	require.True(t, live.LastReset.Equal(now), "precondition: no sweep moved the boundary")
+
+	// The dump reads the pre-reset usage, then stalls before writing.
+	rows, gens := store.snapshotBudgetRows(nil)
+	require.NotEmpty(t, rows)
+
+	// The operator reset lands in the gap: memory is cleared here, and the handler's
+	// own transaction clears the database.
+	reset, ok := store.ResetBudgetUsageInMemory(ctx, seed.ID)
+	require.True(t, ok)
+	require.Zero(t, reset.CurrentUsage)
+	require.True(t, reset.LastReset.Equal(now),
+		"an operator reset must leave the boundary alone, which is why the <= guard cannot catch this")
+	require.NoError(t, configStore.UpdateBudgetUsage(ctx, seed.ID, 0))
+
+	// The stalled dump now writes. Its rows are stale and must be dropped.
+	require.NoError(t, store.writeBudgetRows(ctx, rows, gens))
+
+	persisted, err := configStore.GetBudget(ctx, seed.ID)
+	require.NoError(t, err)
+	assert.Zero(t, persisted.CurrentUsage,
+		"a dump that snapshotted before the reset wrote %.2f back and silently undid the operator's reset", persisted.CurrentUsage)
+	assert.True(t, persisted.LastReset.UTC().Equal(now),
+		"dropping a stale row must not disturb the boundary")
+
+	// The drop is scoped to the reset, not permanent: the next cycle persists the
+	// post-reset value normally.
+	require.NoError(t, store.BumpBudgetUsage(ctx, seed.ID, 7.5))
+	require.NoError(t, store.DumpBudgets(ctx, nil))
+	persisted, err = configStore.GetBudget(ctx, seed.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 7.5, persisted.CurrentUsage,
+		"the dump after a reset must resume persisting usage, or a reset would stop accounting for good")
+}

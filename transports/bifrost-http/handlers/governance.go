@@ -47,6 +47,10 @@ func dbForUpdate(db *gorm.DB) *gorm.DB {
 type GovernanceManager interface {
 	GetGovernanceData(ctx context.Context) *governance.GovernanceData
 	ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error)
+	// ResetBudgetUsageInMemory clears usage for the given budgets in the store that
+	// enforces spend, leaving each reset boundary untouched. Enterprise also
+	// propagates the reset to cluster peers.
+	ResetBudgetUsageInMemory(ctx context.Context, vkID string, budgetIDs []string) error
 	RemoveVirtualKey(ctx context.Context, id string) error
 	ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
@@ -533,11 +537,41 @@ func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
 		req.TokenResetDuration == nil && req.RequestResetDuration == nil
 }
 
+// budgetUsageReset carries an operator's explicit "reset usage" choice through
+// budget reconciliation and collects the budgets it was applied to.
+//
+// Two things make this necessary rather than a plain bool. UpdateBudget cannot
+// clear usage - it copies CurrentUsage and LastReset back from the stored row on
+// every config write, deliberately, so a config.json sync cannot replay stale
+// values over live accounting - so the reset has to go through UpdateBudgetUsage,
+// the store method that owns that column. And the in-memory governance store is
+// what actually enforces spend, so the caller needs the list of budgets to clear
+// there once the transaction has committed.
+//
+// A nil pointer means the caller is not resetting anything.
+type budgetUsageReset struct {
+	requested bool
+	budgetIDs []string
+}
+
+// apply zeroes one budget's persisted usage and records it for the in-memory
+// pass. No-op when the operator did not ask for a reset.
+func (r *budgetUsageReset) apply(ctx context.Context, store configstore.ConfigStore, budgetID string, tx *gorm.DB) error {
+	if r == nil || !r.requested {
+		return nil
+	}
+	if err := store.UpdateBudgetUsage(ctx, budgetID, 0, tx); err != nil {
+		return fmt.Errorf("failed to reset usage for budget %s: %w", budgetID, err)
+	}
+	r.budgetIDs = append(r.budgetIDs, budgetID)
+	return nil
+}
+
 // reconcileModelConfigBudgets upserts the desired set of budgets owned by a model config
 // (via TableBudget.ModelConfigID), preserving usage on matched rows and deleting removed
 // ones. It mutates mc.Budgets to the reconciled set. The model config row must already
 // exist (callers create it first). Mirrors the VK/team multi-budget reconciliation.
-func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig, requests []CreateBudgetRequest) error {
+func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx *gorm.DB, mc *configstoreTables.TableModelConfig, requests []CreateBudgetRequest, usageReset *budgetUsageReset) error {
 	seenDurations := make(map[string]bool, len(requests))
 	for _, b := range requests {
 		if b.MaxLimit < 0 {
@@ -569,6 +603,14 @@ func (h *GovernanceHandler) reconcileModelConfigBudgets(ctx context.Context, tx 
 			}
 			if err := h.configStore.UpdateBudget(ctx, &existing, tx); err != nil {
 				return err
+			}
+			// Usage is runtime-owned, so UpdateBudget above cannot clear it. Route
+			// the operator's explicit choice through the method that owns the column.
+			if err := usageReset.apply(ctx, h.configStore, existing.ID, tx); err != nil {
+				return err
+			}
+			if usageReset != nil && usageReset.requested {
+				existing.CurrentUsage = 0
 			}
 			reconciled = append(reconciled, existing)
 			matchedIDs[existing.ID] = true
@@ -680,8 +722,8 @@ type vkModelConfigDesired struct {
 // handling: true treats perProvider as the full desired set (reconciling and removing absent
 // providers); false leaves all per-provider configs untouched (for a partial VK update that
 // omits provider_configs).
-func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, top vkModelConfigDesired, perProvider []vkModelConfigDesired, reconcileProviders bool) error {
-	if err := h.reconcileVKModelConfig(ctx, tx, vk, top); err != nil {
+func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, top vkModelConfigDesired, perProvider []vkModelConfigDesired, reconcileProviders bool, usageReset *budgetUsageReset) error {
+	if err := h.reconcileVKModelConfig(ctx, tx, vk, top, usageReset); err != nil {
 		return err
 	}
 	if !reconcileProviders {
@@ -693,7 +735,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 			continue
 		}
 		keep[*pg.provider] = true
-		if err := h.reconcileVKModelConfig(ctx, tx, vk, pg); err != nil {
+		if err := h.reconcileVKModelConfig(ctx, tx, vk, pg, usageReset); err != nil {
 			return err
 		}
 	}
@@ -717,7 +759,7 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 }
 
 // reconcileVKModelConfig reconciles a single VK-scoped model config to the desired state.
-func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkModelConfigDesired) error {
+func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkModelConfigDesired, usageReset *budgetUsageReset) error {
 	q := tx.Preload("Budgets").Where("scope = ? AND scope_id = ? AND model_name = ?",
 		configstoreTables.ModelConfigScopeVirtualKey, vk.ID, configstoreTables.ModelConfigAllModels)
 	if d.provider == nil {
@@ -835,7 +877,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	}
 
 	if d.budgetsProvided {
-		if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, d.budgets); err != nil {
+		if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, d.budgets, usageReset); err != nil {
 			return err
 		}
 	}
@@ -1526,7 +1568,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			budgets:           req.Budgets,
 			rateLimitProvided: req.RateLimit != nil,
 			rateLimit:         topRateLimit,
-		}, vkGovProviders, true); err != nil {
+		}, vkGovProviders, true, nil); err != nil {
 			return err
 		}
 		if req.MCPConfigs != nil {
@@ -1738,6 +1780,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "VirtualKey cannot be attached to both Team and Customer")
 		return
 	}
+	// The operator's explicit "reset usage" choice, surfaced by the UI's
+	// Preserve / Reset dialog. Carried into budget reconciliation and collected
+	// there, so the in-memory store can be cleared once the transaction commits.
+	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
 	// Parse expires_at when provided: a timestamp must be in the future, "" clears the expiry.
 	var newExpiresAt *time.Time
 	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
@@ -2010,7 +2056,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				top.rateLimit = rateLimitFromRequestFields(req.RateLimit.TokenMaxLimit, req.RateLimit.TokenResetDuration, req.RateLimit.RequestMaxLimit, req.RateLimit.RequestResetDuration)
 			}
 		}
-		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, vk, top, vkGovProviders, req.ProviderConfigs != nil); err != nil {
+		if err := h.syncVKGovernanceToModelConfigs(ctx, tx, vk, top, vkGovProviders, req.ProviderConfigs != nil, usageReset); err != nil {
 			return err
 		}
 		if req.MCPConfigs != nil {
@@ -2137,6 +2183,17 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to reload virtual key after update: %v", err)
 		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
 		return
+	}
+	// Clear usage in the store that actually enforces spend. This must run after
+	// the reload, not before: ReloadVirtualKey rebuilds the virtual key in memory
+	// and deliberately carries the cached CurrentUsage forward, which would undo
+	// the reset. Enterprise additionally propagates this to cluster peers.
+	if len(usageReset.budgetIDs) > 0 {
+		if err := h.governanceManager.ResetBudgetUsageInMemory(ctx, vk.ID, usageReset.budgetIDs); err != nil {
+			logger.Error("failed to reset in-memory budget usage after update: %v", err)
+			SendError(ctx, 500, "Virtual key updated but budget usage reset did not take effect")
+			return
+		}
 	}
 
 	// Per-user credential reconciliation when the VK's MCP allowlist
@@ -3603,7 +3660,7 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		// slice removes all budgets; omitting the field leaves them unchanged. Budgets
 		// are owned via ModelConfigID, so no model-config FK juggling is needed.
 		if req.Budgets != nil {
-			if err := h.reconcileModelConfigBudgets(ctx, tx, mc, req.Budgets); err != nil {
+			if err := h.reconcileModelConfigBudgets(ctx, tx, mc, req.Budgets, nil); err != nil {
 				return err
 			}
 		}
@@ -3953,7 +4010,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 		// Budget reconciliation (mc row exists at this point for create cases).
 		if !deleted && effectiveBudgets != nil {
-			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets); err != nil {
+			if err := h.reconcileModelConfigBudgets(ctx, tx, &mc, *effectiveBudgets, nil); err != nil {
 				return err
 			}
 		}
