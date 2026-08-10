@@ -1,0 +1,1 @@
+- feat: parse the `x-bf-request-timeout` header (duration string or seconds integer) into `BifrostContextKeyRequestTimeout`, clamped to 30m, mirroring the existing `x-bf-session-ttl` / proposed `x-bf-stream-idle-timeout` (#4805) parsing shape [@public-aanp-tanium](https://github.com/public-aanp-tanium)
