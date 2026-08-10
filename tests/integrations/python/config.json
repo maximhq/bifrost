@@ -113,6 +113,7 @@
           },
           "weight": 1,
           "models": ["*"],
+          "use_for_batch_api": true,
           "blacklisted_models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
         },
         {
@@ -249,7 +250,8 @@
             }
           },
           "weight": 1,
-          "models": ["*"]
+          "models": ["*"],
+          "use_for_batch_api": true
         }
       ],
       "network_config": {
@@ -347,14 +349,14 @@
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/integrations/python/config.db"
+      "path": "/home/akshay-deo/Codebase/bifrost/tests/integrations/python/config.db"
     }
   },
   "logs_store": {
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/integrations/python/logs.db"
+      "path": "/home/akshay-deo/Codebase/bifrost/tests/integrations/python/logs.db"
     },
     "writer": {
       "max_batch_size":  100,

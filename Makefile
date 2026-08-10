@@ -1378,7 +1378,7 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 		$(ECHO) "$(CYAN)Bifrost logs: /tmp/bifrost-test.log$(NC)"; \
 		(tail -f /tmp/bifrost-test.log 2>/dev/null | grep -E "error|panic|Error|ERRO|fatal|Fatal|FATAL" --line-buffered &) & \
 		TAIL_PID=$$!; \
-		for i in 1 2 3 4 5 6 7 8 9 10; do \
+		for i in $$(seq 1 30); do \
 			if curl -s -o /dev/null http://$$TEST_HOST:$$TEST_PORT/health 2>/dev/null; then \
 				$(ECHO) "$(GREEN)✓ Bifrost is ready (PID: $$BIFROST_PID)$(NC)"; \
 				break; \
@@ -1409,7 +1409,12 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 		if [ -n "$(INTEGRATION)" ]; then \
 			if [ -n "$(TESTCASE)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
-				cd tests/integrations/python && pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				cd tests/integrations/python && \
+				if [[ "$(TESTCASE)" == *::* ]]; then \
+					pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				else \
+					pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				fi; \
 			elif [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
 				cd tests/integrations/python && pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
@@ -1432,7 +1437,11 @@ test-integrations-py: ## Run Python integration tests (Usage: make test-integrat
 		if [ -n "$(INTEGRATION)" ]; then \
 			if [ -n "$(TESTCASE)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
-				uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				if [[ "$(TESTCASE)" == *::* ]]; then \
+					uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				else \
+					uv run pytest tests/test_$(INTEGRATION).py -k "$(TESTCASE)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				fi; \
 			elif [ -n "$(PATTERN)" ]; then \
 				$(ECHO) "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
 				uv run pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
@@ -1505,7 +1514,7 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 		$(ECHO) "$(CYAN)Bifrost logs: /tmp/bifrost-test.log$(NC)"; \
 		(tail -f /tmp/bifrost-test.log 2>/dev/null | grep -E "error|panic|Error|ERRO|fatal|Fatal|FATAL" --line-buffered &) & \
 		TAIL_PID=$$!; \
-		for i in 1 2 3 4 5 6 7 8 9 10; do \
+		for i in $$(seq 1 30); do \
 			if curl -s -o /dev/null http://$$TEST_HOST:$$TEST_PORT/health 2>/dev/null; then \
 				$(ECHO) "$(GREEN)✓ Bifrost is ready (PID: $$BIFROST_PID)$(NC)"; \
 				break; \

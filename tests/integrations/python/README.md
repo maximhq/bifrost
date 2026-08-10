@@ -9,7 +9,7 @@ Production-ready end-to-end test suite for testing AI integrations through Bifro
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Install dependencies
-cd bifrost/tests/integrations
+cd bifrost/tests/integrations/python
 uv sync
 
 # 3. Set environment variables
@@ -19,7 +19,7 @@ export ANTHROPIC_API_KEY="your-key"
 
 # 4. Run tests
 uv run pytest                          # All tests
-uv run pytest tests/integrations/test_openai.py -v  # Specific integration
+uv run pytest tests/test_openai.py -v  # Specific integration
 uv run pytest -k "tool_call" -v       # By pattern
 uv run pytest -n auto                  # Parallel execution
 ```
@@ -133,7 +133,7 @@ integrations/
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd bifrost/tests/integrations
+cd bifrost/tests/integrations/python
 
 # Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -157,7 +157,7 @@ uv sync
 uv run pytest
 
 # Run specific integration tests
-uv run pytest tests/integrations/test_openai.py -v
+uv run pytest tests/test_openai.py -v
 
 # Run specific test categories
 uv run pytest -k "tool_call" -v
