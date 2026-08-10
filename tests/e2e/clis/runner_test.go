@@ -604,11 +604,11 @@ func appendJSONText(v any, out *strings.Builder) {
 	}
 }
 
-// ---- Codex: chained `exec` + `resume --last` ----
+// ---- Codex: chained `exec` + `exec resume --last` ----
 //
 // Codex doesn't expose a bidirectional stream-json mode, so we drive multi-
 // turn by spawning one process per turn: the first turn uses `codex exec`,
-// subsequent turns use `codex resume --last`. To isolate "last" from the
+// subsequent turns use `codex exec resume --last`. To isolate "last" from the
 // user's actual codex history we redirect CODEX_HOME to a per-cell temp dir.
 
 type codexResume struct {
@@ -667,7 +667,7 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 		}
 		args = append(args, prompt)
 	} else {
-		args = []string{"resume", "--last", prompt}
+		args = []string{"exec", "resume", "--json", "--last", prompt}
 	}
 	d.turnIndex++
 
