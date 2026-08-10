@@ -1310,6 +1310,14 @@ type ResponsesResponseUsage struct {
 	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
 }
 
+// NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the responses path.
+func (u *ResponsesResponseUsage) NormalizeProviderCost() {
+	if u == nil || u.Cost != nil {
+		return
+	}
+	u.Cost = costFromUSDTicks(u.CostInUsdTicks)
+}
+
 // ResponsesServerSideToolUsageDetails holds per-tool call counts returned by xAI.
 type ResponsesServerSideToolUsageDetails struct {
 	WebSearchCalls       int `json:"web_search_calls"`
