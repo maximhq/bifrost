@@ -3242,7 +3242,21 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+          "description": "Custom headers sent to both the trace and metrics endpoints. Supports env.VAR_NAME prefix for environment variable substitution."
+        },
+        "trace_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the trace endpoint, overlaid on headers (same key wins). Supports env.VAR_NAME prefix."
+        },
+        "metrics_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the metrics endpoint, overlaid on headers (same key wins). Useful when a collector requires a per-signal header, e.g. a Databricks table name. Supports env.VAR_NAME prefix."
         },
         "tls_ca_cert": {
           "type": "string",
