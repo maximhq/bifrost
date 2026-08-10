@@ -68,7 +68,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test cli-harness-report test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -1863,6 +1863,20 @@ cli-harness-report: ## Regenerate tests/e2e/clis/reports/index.html from existin
 	@$(ECHO) "$(GREEN)Rendering CLI harness report from existing reports/*.json...$(NC)"
 	@cd tests/e2e/clis && GOWORK=off go test -run "^TestRenderReport$$" -v ./...
 
+# The harness runner unit tests are plain node scripts with no framework (the
+# tests/e2e/api dir configures no test runner), so nothing discovers them
+# automatically. Without a target they are only ever run by hand, which is how
+# they rot - and they cover the parsing that produces the status table's numbers.
+test-harness-runner-lib: ## Run the provider-harness runner unit tests (tests/e2e/api/runners/lib/*.test.mjs). No network, no Bifrost, no credentials.
+	@$(ECHO) "$(GREEN)Running provider-harness runner lib tests...$(NC)"
+	@$(USE_NODE); RC=0; \
+	for t in tests/e2e/api/runners/lib/*.test.mjs; do \
+		printf '%s\n' "$(CYAN)-> $$t$(NC)"; \
+		node "$$t" || RC=1; \
+	done; \
+	if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)harness runner lib tests failed$(NC)"; else $(ECHO) "$(GREEN)harness runner lib tests passed$(NC)"; fi; \
+	exit $$RC
+
 # Versions pinned to match the CI installs in .github/workflows/release-pipeline.yml
 # (test-core, test-api-integrations, test-docker-image-*). Keep them in sync.
 NEWMAN_VERSION ?= 6.2.1
@@ -1902,10 +1916,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  in that folder are skipped cleanly instead of forked-then-failed - use with PROVIDER=<one> to run a single fork."; \
 		printf '  %-18s %s\n' "ENV_FILE=<path>" "Postman environment JSON with real keys (kept out of git)."; \
 		printf '  %-18s %s\n' "VIEWER_PORT=N"   "Port for the interactive HTML viewer (default: 8090). Ignored if CI=1."; \
-		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only. Prints NOTHING but the provider status table"; \
-		printf '  %-18s %s\n' ""                "  (provider x total/pass/failed), reprinted every MONITOR_INTERVAL seconds. Everything the run would"; \
+		printf '  %-18s %s\n' "CI=1"            "CI mode: skip the interactive viewer, emit artifacts only. Prints a one-line heartbeat every"; \
+		printf '  %-18s %s\n' ""                "  MONITOR_INTERVAL seconds and the provider status table (provider x total/pass/failed) exactly ONCE,"; \
+		printf '  %-18s %s\n' ""                "  at the end - an Actions log is append-only, so reprinting the table left hundreds of stale copies."; \
+		printf '  %-18s %s\n' ""                "  Everything the run would"; \
 		printf '  %-18s %s\n' ""                "  otherwise have echoed goes to tmp/harness-quiet.log; newman's own output goes to tmp/newman-cli*.log."; \
-		printf '  %-18s %s\n' "MONITOR_INTERVAL=N" "Seconds between status-table reprints in CI mode (default 5, clamped to 5..2700)."; \
+		printf '  %-18s %s\n' "MONITOR_INTERVAL=N" "Seconds between heartbeat lines in CI mode (default 5, clamped to 5..2700)."; \
+		printf '  %-18s %s\n' "MONITOR_TABLE_REPRINT=1" "Restore the old CI behaviour of reprinting the whole table on every interval. Debugging only."; \
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
@@ -1952,7 +1969,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/newman-report.json"      "Machine-readable run report (used by RERUN_FAILED and the analyzer)."; \
 		printf '  %-30s %s\n' "tmp/newman-cli.log"          "Captured newman CLI output (stdout+stderr)."; \
 		printf '  %-30s %s\n' "tmp/newman-cli-cache-parity.log" "Newman CLI output of the deferred sequential cache-parity pass (also appended to tmp/newman-cli.log)."; \
-		printf '  %-30s %s\n' "tmp/harness-quiet.log"       "Everything the target would have echoed, when CI=1 suppressed it in favour of the status table."; \
+		printf '  %-30s %s\n' "tmp/harness-quiet.log"       "Everything the target would have echoed, when CI=1 or a live status table suppressed it."; \
+		printf '  %-30s %s\n' "tmp/harness-monitor-passes.jsonl" "Pass manifest the single run-wide status table follows (one record per newman invocation)."; \
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
@@ -1979,25 +1997,51 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	mkdir -p tmp; \
 	QUIET_LOG="$(CURDIR)/tmp/harness-quiet.log"; \
 	: > "$$QUIET_LOG"; \
-	say() { [ "$$HARNESS_QUIET" = "1" ] || printf '%b\n' "$$@"; }; \
+	MONITOR_ROSTER="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
+	MONITOR_PASSES="tmp/harness-monitor-passes.jsonl"; \
+	MONITOR_LIVE=0; \
+	: > "$$MONITOR_PASSES"; \
+	if [ -f tmp/harness-monitor.pid ]; then \
+		kill $$(cat tmp/harness-monitor.pid) 2>/dev/null || true; \
+		rm -f tmp/harness-monitor.pid; \
+	fi; \
+	say() { \
+		if [ "$$HARNESS_QUIET" = "1" ] || [ "$$MONITOR_LIVE" = "1" ]; then \
+			printf '%b\n' "$$@" >> "$$QUIET_LOG"; \
+		else printf '%b\n' "$$@"; fi; \
+	}; \
 	run_quiet() { \
-		if [ "$$HARNESS_QUIET" = "1" ]; then "$$@" >> "$$QUIET_LOG" 2>&1; \
+		if [ "$$HARNESS_QUIET" = "1" ] || [ "$$MONITOR_LIVE" = "1" ]; then "$$@" >> "$$QUIET_LOG" 2>&1; \
 		else "$$@"; fi; \
 	}; \
 	start_monitor() { \
+		if [ -f tmp/harness-monitor.pid ]; then return 0; fi; \
 		if [ "$$HARNESS_QUIET" != "1" ] && [ ! -t 1 ]; then return 0; fi; \
 		$(USE_NODE); \
 		if [ "$$HARNESS_QUIET" = "1" ]; then \
 			node tests/e2e/api/runners/harness-monitor.mjs \
-				--mode "$$1" --providers "$$2" --tmp-dir tmp --log "$$3" --collection "$$4" \
-				--ci --ci-interval "$(or $(MONITOR_INTERVAL),5)" < /dev/null & \
+				--providers "$$MONITOR_ROSTER" --tmp-dir tmp --passes "$$MONITOR_PASSES" \
+				--ci --ci-interval "$(or $(MONITOR_INTERVAL),5)" \
+				$(if $(MONITOR_TABLE_REPRINT),--ci-reprint-table,) < /dev/null & \
 		else \
 			node tests/e2e/api/runners/harness-monitor.mjs \
-				--mode "$$1" --providers "$$2" --tmp-dir tmp --log "$$3" --collection "$$4" \
+				--providers "$$MONITOR_ROSTER" --tmp-dir tmp --passes "$$MONITOR_PASSES" \
 				< /dev/null > /dev/tty 2>&1 & \
 		fi; \
 		echo $$! > tmp/harness-monitor.pid; \
-		HARNESS_MONITORED=1; \
+		HARNESS_MONITORED=1; MONITOR_LIVE=1; \
+	}; \
+	add_pass() { \
+		printf '%s\n' "$$1" >> "$$MONITOR_PASSES"; \
+		start_monitor; \
+	}; \
+	end_pass() { \
+		[ -f tmp/harness-monitor.pid ] || return 0; \
+		printf '{"t":"pass-end","id":"%s"}\n' "$$1" >> "$$MONITOR_PASSES"; \
+	}; \
+	monitor_note() { \
+		[ -f tmp/harness-monitor.pid ] || return 0; \
+		printf '{"t":"note","text":"%s"}\n' "$$1" >> "$$MONITOR_PASSES"; \
 	}; \
 	stop_monitor() { \
 		if [ -f tmp/harness-monitor.pid ]; then \
@@ -2006,6 +2050,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			wait $$MPID 2>/dev/null || true; \
 			rm -f tmp/harness-monitor.pid; \
 		fi; \
+		MONITOR_LIVE=0; \
 	}; \
 	if [ "$(COMPAT)" = "both" ]; then \
 		mkdir -p tmp; \
@@ -2202,7 +2247,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status; \
 		: > tmp/parallel-pids; \
 		: > tmp/parallel-status; \
-		PROVIDERS="openai anthropic bedrock gemini vertex azure passthrough openrouter"; \
+		PROVIDERS="$(HARNESS_PROVIDERS)"; \
 		if [ -n "$(PROVIDER)" ]; then PROVIDERS="$(PROVIDER)"; fi; \
 		LAUNCHED=0; \
 		for p in $$PROVIDERS; do \
@@ -2255,27 +2300,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
 			exit 1; \
 		fi; \
-		if [ "$$HARNESS_QUIET" = "1" ]; then \
-			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
-				--mode parallel \
-				--providers "$$PROVIDERS" \
-				--tmp-dir tmp \
-				--status-file tmp/parallel-status \
-				--launched $$LAUNCHED \
-				--ci --ci-interval "$(or $(MONITOR_INTERVAL),5)" \
-				< /dev/null & \
-			echo $$! > tmp/harness-monitor.pid; \
-		elif [ -t 1 ]; then \
-			$(USE_NODE); node tests/e2e/api/runners/harness-monitor.mjs \
-				--mode parallel \
-				--providers "$$PROVIDERS" \
-				--tmp-dir tmp \
-				--status-file tmp/parallel-status \
-				--launched $$LAUNCHED \
-				< /dev/null > /dev/tty 2>&1 & \
-			echo $$! > tmp/harness-monitor.pid; \
-		fi; \
-		if [ -f tmp/harness-monitor.pid ]; then HARNESS_MONITORED=1; fi; \
+		add_pass "$$(printf '{"t":"pass","id":"main","mode":"parallel","statusFile":"tmp/parallel-status","launched":%s}' "$$LAUNCHED")"; \
 		PFAILED=0; \
 		while read pidp; do \
 			pid="$${pidp%%:*}"; \
@@ -2293,7 +2318,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				tail -n 20 "tmp/newman-cli-$$p.log" 2>/dev/null; \
 			fi; \
 		done < tmp/parallel-pids; \
-		stop_monitor; \
+		end_pass main; \
+		monitor_note "Merging per-provider reports"; \
 		say "$(CYAN)Merging per-provider reports into tmp/newman-report.json...$(NC)"; \
 		if command -v jq >/dev/null 2>&1 && ls tmp/newman-report-*.json >/dev/null 2>&1; then \
 			jq -s -f tmp/newman-merge.jq tmp/newman-report-*.json > tmp/newman-report.json || say "$(YELLOW)Report merge failed; per-provider reports remain at tmp/newman-report-*.json$(NC)"; \
@@ -2318,7 +2344,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	else \
 		SEQ_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 		: > tmp/newman-cli.log; \
-		start_monitor sequential "$$SEQ_PROVIDERS" tmp/newman-cli.log "$$COLLECTION_FILE"; \
+		add_pass "$$(printf '{"t":"pass","id":"main","mode":"sequential","log":"tmp/newman-cli.log","collection":"%s"}' "$$COLLECTION_FILE")"; \
 		newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
@@ -2346,7 +2372,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				--reporter-htmlextra-title "Bifrost Provider Harness" \
 				--reporter-htmlextra-darkTheme > tmp/newman-cli.log 2>&1; \
 		NEWMAN_EXIT=$$?; \
-		stop_monitor; \
+		end_pass main; \
 		if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli.log; fi; \
 		if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report.json ]; then \
 			say "$(CYAN)Sanitizing tmp/newman-report.json (newman embeds the whole parent folder in every failure)...$(NC)"; \
@@ -2369,7 +2395,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		if [ -f tmp/harness-cache-filtered.json ]; then \
 			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 			: > tmp/newman-cli-cache-parity.log; \
-			start_monitor sequential "$$CACHE_PROVIDERS" tmp/newman-cli-cache-parity.log tmp/harness-cache-filtered.json; \
+			add_pass '{"t":"pass","id":"cache-parity","mode":"sequential","log":"tmp/newman-cli-cache-parity.log","collection":"tmp/harness-cache-filtered.json"}'; \
 			newman run tmp/harness-cache-filtered.json \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
 				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
@@ -2389,7 +2415,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				$${CACHE_PARITY_REPORTER:+--reporter-cache-parity-out "tmp/harness-cache-parity-pass.json"} \
 				--reporter-json-export tmp/newman-report-cache-parity.json > tmp/newman-cli-cache-parity.log 2>&1; \
 			CACHE_EXIT=$$?; \
-			stop_monitor; \
+			end_pass cache-parity; \
+			: "end_pass above is load-bearing, not tidiness: under PARALLEL=0 the main"; \
+			: "pass tails tmp/newman-cli.log, and the append below would otherwise be"; \
+			: "replayed into the counters - every cache row counted a second time."; \
 			cat tmp/newman-cli-cache-parity.log >> tmp/newman-cli.log 2>/dev/null || true; \
 			if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli-cache-parity.log; fi; \
 			if [ "$$CACHE_EXIT" -ne 0 ]; then NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); fi; \
@@ -2400,6 +2429,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			fi; \
 		fi; \
 	fi; \
+	stop_monitor; \
+	: "The single teardown for the whole run: one alt-screen exit, one persistent"; \
+	: "table snapshot, one \$$GITHUB_STEP_SUMMARY block. Everything after this point"; \
+	: "prints normally to a restored main screen."; \
 	say "$(GREEN)Newman finished. Reports: tmp/newman-report.{json,html} + tmp/newman-cli.log$(NC)"; \
 	STREAM_CANCEL_EXIT=0; \
 	if [ -z "$(SKIP_STREAM_CANCEL)" ] && [ -z "$(RERUN_FAILED)" ] && [ "$(PROVIDER)" != "passthrough" ] && { [ -z "$(FOLDER)" ] || printf '%s' "$(FOLDER)" | grep -qi 'stream'; }; then \
