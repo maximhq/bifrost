@@ -71,7 +71,9 @@ jobs:
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
       BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
-      BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+      # Do not source short, non-sensitive values from secrets: Actions would
+      # redact every matching digit in test output and progress tables.
+      BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION || '1' }}
       AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
       AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
       BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}

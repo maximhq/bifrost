@@ -33,6 +33,12 @@ cleanup() {
   local exit_code=$?
   echo ""
   echo "🧹 Cleaning up..."
+
+  if [ "$exit_code" -ne 0 ] && [ -s "${LOG_FILE:-}" ]; then
+    echo ""
+    echo "📋 Bifrost server log:"
+    cat "$LOG_FILE"
+  fi
   
   # Kill Bifrost server if running
   if [ -n "${BIFROST_PID:-}" ]; then
