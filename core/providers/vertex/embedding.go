@@ -1,10 +1,32 @@
 package vertex
 
 import (
+	"strings"
+
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI format
+// usesGeminiEmbedContentAPI reports whether the model should be called via the
+// Gemini Generative Language embedding surface on Vertex
+// (:batchEmbedContents / :embedContent) rather than the legacy Vertex
+// prediction embedding API (:predict + instances).
+//
+// Legacy :predict models include text-embedding-004, text-embedding-005,
+// text-multilingual-embedding-002, multimodalembedding@001, etc.
+// Gemini-native embedding models are named gemini-embedding-* (e.g.
+// gemini-embedding-001, gemini-embedding-2). Calling those with :predict and an
+// instances body yields 400 "Precondition check failed" from Vertex.
+// See https://github.com/maximhq/bifrost/issues/5003.
+func usesGeminiEmbedContentAPI(model string) bool {
+	normalized := strings.ToLower(gemini.NormalizeModelName(model))
+	// GenAI / some clients pass "models/{id}" — strip before matching.
+	normalized = strings.TrimPrefix(normalized, "models/")
+	return strings.HasPrefix(normalized, "gemini-embedding")
+}
+
+// ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI
+// legacy :predict format (instances/parameters).
 func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *VertexEmbeddingRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
@@ -69,7 +91,35 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 	return vertexReq
 }
 
-// ToBifrostEmbeddingResponse converts a Vertex AI embedding response to Bifrost format
+// ToVertexGeminiBatchEmbeddingRequest converts a Bifrost embedding request to
+// the Gemini :batchEmbedContents body used on Vertex for gemini-embedding-* models.
+//
+// On Vertex the model field inside each request must be a fully-qualified
+// publisher model resource name (projects/.../locations/.../publishers/google/models/...).
+// Google AI Studio accepts the short "models/{id}" form; Vertex rejects it.
+func ToVertexGeminiBatchEmbeddingRequest(
+	bifrostReq *schemas.BifrostEmbeddingRequest,
+	projectID string,
+	region string,
+) *gemini.GeminiBatchEmbeddingRequest {
+	batch := gemini.ToGeminiEmbeddingRequest(bifrostReq)
+	if batch == nil {
+		return nil
+	}
+	raw := gemini.NormalizeModelName(bifrostReq.Model)
+	if len(raw) >= len("models/") && strings.EqualFold(raw[:len("models/")], "models/") {
+		raw = raw[len("models/"):]
+	}
+	modelID := raw
+	fqModel := "projects/" + projectID + "/locations/" + region + "/publishers/google/models/" + modelID
+	for i := range batch.Requests {
+		batch.Requests[i].Model = fqModel
+	}
+	return batch
+}
+
+// ToBifrostEmbeddingResponse converts a Vertex AI legacy :predict embedding
+// response to Bifrost format.
 func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
 	if response == nil || len(response.Predictions) == 0 {
 		return nil
