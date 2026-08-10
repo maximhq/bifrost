@@ -138,13 +138,28 @@ func (TableBudget) TableName() string { return "governance_budgets" }
 // budget, and the two would disagree only for the six months of the year when
 // the quarters happen not to coincide.
 func (b *TableBudget) QuarterStartMonth() time.Month {
-	if b == nil || b.ResetConfig == nil {
+	if b == nil {
 		return time.January
 	}
-	if b.ResetConfig.QuarterStartMonth < int(time.January) || b.ResetConfig.QuarterStartMonth > int(time.December) {
+	return b.ResetConfig.QuarterStart()
+}
+
+// QuarterStart returns the configured first month of Q1, defaulting to January
+// for a nil config, an unset month, or a month outside 1-12.
+//
+// Defined on the config rather than only on the budget so a caller comparing an
+// old definition against a new one - the reconciler deciding whether a quarter
+// boundary moved - can read both through the same normalisation. Comparing the
+// raw ints instead would report a change between an unset config and an explicit
+// January, which are the same window.
+func (c *BudgetResetConfig) QuarterStart() time.Month {
+	if c == nil {
 		return time.January
 	}
-	return time.Month(b.ResetConfig.QuarterStartMonth)
+	if c.QuarterStartMonth < int(time.January) || c.QuarterStartMonth > int(time.December) {
+		return time.January
+	}
+	return time.Month(c.QuarterStartMonth)
 }
 
 // IsQuarterlyDuration reports whether a duration string denotes a quarter window.
@@ -210,7 +225,7 @@ func (b *TableBudget) WindowStart(now time.Time) time.Time {
 		return b.LastReset
 	}
 	if b.IsCalendarAligned && IsCalendarAlignableDuration(b.ResetDuration) {
-		return GetCalendarPeriodStart(b.ResetDuration, now)
+		return GetCalendarPeriodStart(b.ResetDuration, now, b.QuarterStartMonth())
 	}
 	duration, err := ParseDuration(b.ResetDuration)
 	if err != nil || duration <= 0 {
@@ -366,6 +381,7 @@ func (b *TableBudget) WindowsSinceAnchor() int {
 			b.ResetDuration,
 			anchor.Add(boundaryJitterTolerance),
 			b.LastReset.Add(boundaryJitterTolerance),
+			b.QuarterStartMonth(),
 		)
 	}
 	duration, err := ParseDuration(b.ResetDuration)

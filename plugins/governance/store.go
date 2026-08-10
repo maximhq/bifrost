@@ -2065,11 +2065,14 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context,
 }
 
 // rateLimitResetTarget returns the LastReset value to write when a rate-limit counter is expired.
-// Calendar alignment only applies to durations with a calendar boundary (d/w/M/Y);
+// Calendar alignment only applies to durations with a calendar boundary (d/w/M/Q/Y);
 // sub-day durations fall back to rolling-window semantics even when the owner is
 // calendar-aligned, mirroring the handler-side snap logic. Without this guard
 // GetCalendarPeriodStart returns now for sub-day durations, making the reset
 // target perpetually due and spinning BumpRateLimitUsage forever (issue #4851).
+//
+// Rate limits carry no quarter definition - quarters are configured per budget -
+// so the quarter start is not applicable here and plain calendar quarters apply.
 // The returned value is a window boundary anchored on the rate limit's
 // CreatedAt, never the caller's wall clock, so every cluster node computes the
 // same instant from the same persisted row. See budgetResetTarget for why that
@@ -2080,7 +2083,7 @@ func (gs *LocalGovernanceStore) rateLimitResetTarget(resetDuration *string, cale
 		return nil
 	}
 	if calendarAligned && configstoreTables.IsCalendarAlignableDuration(*resetDuration) {
-		period := configstoreTables.GetCalendarPeriodStart(*resetDuration, now)
+		period := configstoreTables.GetCalendarPeriodStart(*resetDuration, now, configstoreTables.QuarterStartNotApplicable)
 		if period.After(lastReset) {
 			return &period
 		}

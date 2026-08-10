@@ -506,7 +506,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 		if reset := store.ResetExpiredRateLimitsInMemory(ctx, false, rl.ID); len(reset) != 1 {
 			t.Fatalf("expected one reset, got %d", len(reset))
 		}
-		wantPeriodStart := configstoreTables.GetCalendarPeriodStart(duration, now)
+		wantPeriodStart := configstoreTables.GetCalendarPeriodStart(duration, now, configstoreTables.QuarterStartNotApplicable)
 		got := store.LoadRateLimit(ctx, rl.ID)
 		if !got.TokenLastReset.Equal(wantPeriodStart) {
 			t.Fatalf("calendar reset must snap TokenLastReset to the period start %v, got %v", wantPeriodStart, got.TokenLastReset)
@@ -520,7 +520,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 		rl.TokenResetDuration = &duration
 		rl.RequestResetDuration = &duration
 		rl.IsCalendarAligned = true
-		periodStart := configstoreTables.GetCalendarPeriodStart(duration, now)
+		periodStart := configstoreTables.GetCalendarPeriodStart(duration, now, configstoreTables.QuarterStartNotApplicable)
 		rl.TokenLastReset = periodStart
 		rl.RequestLastReset = periodStart
 		tok, req := store.rateLimitResetTargets(rl, now)
@@ -714,8 +714,8 @@ func TestBudgetResetAccuracyAt100kKeysAllDue(t *testing.T) {
 			// Calendar-aligned: LastReset must snap exactly to the period start
 			// (computed before or after the sweep - identical unless the sweep
 			// straddles a period boundary).
-			want1 := configstoreTables.GetCalendarPeriodStart(duration, beforeSweep)
-			want2 := configstoreTables.GetCalendarPeriodStart(duration, afterSweep)
+			want1 := configstoreTables.GetCalendarPeriodStart(duration, beforeSweep, configstoreTables.QuarterStartNotApplicable)
+			want2 := configstoreTables.GetCalendarPeriodStart(duration, afterSweep, configstoreTables.QuarterStartNotApplicable)
 			if !budget.LastReset.Equal(want1) && !budget.LastReset.Equal(want2) {
 				t.Fatalf("budget %06d (%s, calendar) LastReset %v, want period start %v", i, duration, budget.LastReset, want1)
 			}

@@ -294,7 +294,7 @@ func TestCheckBudgetHonoursResetSemantics(t *testing.T) {
 
 	t.Run("calendar aligned budget expires on the calendar boundary", func(t *testing.T) {
 		now := time.Now().UTC()
-		periodStart := configstoreTables.GetCalendarPeriodStart("1Y", now)
+		periodStart := configstoreTables.GetCalendarPeriodStart("1Y", now, configstoreTables.QuarterStartNotApplicable)
 		// Guard against the final hours of the year, where the rolling
 		// approximation of a year coincides with the calendar boundary and the
 		// two predicates would agree by accident.
@@ -537,4 +537,112 @@ func TestDumpBudgetsPersistsUsageAndNeverRewindsBoundary(t *testing.T) {
 		assert.True(t, persisted.LastReset.UTC().Equal(now),
 			"a stale snapshot rewound the persisted boundary to %s, re-opening a spent window", persisted.LastReset.UTC())
 	})
+}
+
+// newQuarterlyBudget builds a calendar-aligned quarterly budget with the given
+// fiscal start, created well before the window under test.
+func newQuarterlyBudget(id string, quarterStartMonth time.Month, usage float64) *configstoreTables.TableBudget {
+	createdAt := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	budget := buildBudgetWithUsage(id, 1000, usage, "1Q")
+	budget.CreatedAt = createdAt
+	budget.UpdatedAt = createdAt
+	budget.IsCalendarAligned = true
+	budget.ResetConfig = &configstoreTables.BudgetResetConfig{QuarterStartMonth: int(quarterStartMonth)}
+	budget.LastReset = configstoreTables.GetCalendarPeriodStart("1Q", createdAt, quarterStartMonth)
+	return budget
+}
+
+// TestQuarterlyBudgetResetTargetIsDeterministicAcrossNodes proves two nodes
+// holding the same quarterly budget converge on the same boundary even when
+// their reset tickers fire days apart.
+//
+// This is the cluster property the whole feature rests on. Each node derives the
+// boundary from its own copy of the row, so if a peer failed to load the quarter
+// definition - the AfterFind hook not firing on a preload, or an access profile
+// materialising a managed key without copying it - the two nodes would land on
+// different boundaries and reset each other's usage repeatedly.
+func TestQuarterlyBudgetResetTargetIsDeterministicAcrossNodes(t *testing.T) {
+	for _, quarterStart := range []time.Month{time.January, time.February, time.April, time.November} {
+		t.Run(quarterStart.String(), func(t *testing.T) {
+			nodeA := newStandaloneStore(t)
+			nodeB := newStandaloneStore(t)
+			nodeA.budgets.Store("shared-quarterly", newQuarterlyBudget("shared-quarterly", quarterStart, 250))
+			nodeB.budgets.Store("shared-quarterly", newQuarterlyBudget("shared-quarterly", quarterStart, 250))
+
+			// Sweep across two years. Node A's ticker lands early in each month,
+			// node B's lands late, so any dependence on wall-clock phase shows up.
+			for month := 0; month < 24; month++ {
+				base := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC).AddDate(0, month, 0)
+				sweepBudgetAt(t, nodeA, "shared-quarterly", base.Add(2*time.Hour))
+				sweepBudgetAt(t, nodeB, "shared-quarterly", base.AddDate(0, 0, 19).Add(21*time.Hour))
+			}
+
+			ctx := context.Background()
+			gotA := nodeA.LoadBudget(ctx, "shared-quarterly")
+			gotB := nodeB.LoadBudget(ctx, "shared-quarterly")
+			require.NotNil(t, gotA)
+			require.NotNil(t, gotB)
+
+			assert.True(t, gotA.LastReset.Equal(gotB.LastReset),
+				"nodes disagree on the quarter boundary: A at %s, B at %s",
+				gotA.LastReset.UTC(), gotB.LastReset.UTC())
+
+			// The boundary must be a real fiscal quarter start, not a ticker instant.
+			assert.Equal(t, 1, gotA.LastReset.UTC().Day(), "boundary is not the 1st: %s", gotA.LastReset.UTC())
+			assert.Zero(t, gotA.LastReset.UTC().Hour())
+			expectedMonthOffset := (int(gotA.LastReset.UTC().Month()) - int(quarterStart) + 12) % 3
+			assert.Zero(t, expectedMonthOffset,
+				"boundary month %s is not a quarter start for fiscal year opening in %s",
+				gotA.LastReset.UTC().Month(), quarterStart)
+		})
+	}
+}
+
+// TestQuarterlyBudgetIsNotDueImmediatelyAfterReset is the runtime guard against
+// the perpetually-due failure (issue #4851 class).
+//
+// If WindowStart ever falls through to returning now for a quarterly budget, the
+// reset path finds it due on every ticker tick and zeroes usage continuously,
+// which reads as "the budget never enforces" rather than as an error.
+func TestQuarterlyBudgetIsNotDueImmediatelyAfterReset(t *testing.T) {
+	store := newStandaloneStore(t)
+	store.budgets.Store("quarterly", newQuarterlyBudget("quarterly", time.February, 500))
+
+	// First sweep well inside a quarter: the budget is due because LastReset is
+	// still on the 2025 boundary.
+	now := time.Date(2026, time.June, 15, 12, 0, 0, 0, time.UTC)
+	require.NotNil(t, sweepBudgetAt(t, store, "quarterly", now), "expected the stale window to reset")
+
+	// Every subsequent sweep inside the same quarter must be a no-op.
+	for _, offset := range []time.Duration{time.Second, time.Hour, 24 * time.Hour, 20 * 24 * time.Hour} {
+		assert.Nil(t, sweepBudgetAt(t, store, "quarterly", now.Add(offset)),
+			"budget reported due again %s into the same quarter", offset)
+	}
+
+	ctx := context.Background()
+	got := store.LoadBudget(ctx, "quarterly")
+	require.NotNil(t, got)
+	// February start puts 15 June in the May-Jul quarter.
+	assert.Equal(t, time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC), got.LastReset.UTC())
+	assert.Zero(t, got.CurrentUsage)
+}
+
+// TestQuarterlyBudgetResetsExactlyOncePerQuarter verifies the cadence: sweeping
+// daily across a year produces four resets, not one per sweep and not one per
+// month.
+func TestQuarterlyBudgetResetsExactlyOncePerQuarter(t *testing.T) {
+	store := newStandaloneStore(t)
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	budget := newQuarterlyBudget("quarterly", time.April, 100)
+	budget.LastReset = configstoreTables.GetCalendarPeriodStart("1Q", start, time.April)
+	store.budgets.Store("quarterly", budget)
+
+	resets := 0
+	for day := 1; day <= 365; day++ {
+		if sweepBudgetAt(t, store, "quarterly", start.AddDate(0, 0, day)) != nil {
+			resets++
+		}
+	}
+
+	assert.Equal(t, 4, resets, "a year must contain exactly four quarterly resets")
 }
