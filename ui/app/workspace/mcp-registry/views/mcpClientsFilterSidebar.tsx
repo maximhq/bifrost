@@ -22,7 +22,7 @@ const VK_PAGE_SIZE = 25;
 export interface MCPClientFilters {
 	connection_types: string[];
 	auth_types: string[];
-	states: string[]; // subset of ["connected", "disconnected"]
+	states: string[]; // subset of ["healthy", "unstable"]
 	code_mode: string[]; // subset of ["true", "false"] → is_code_mode_client
 	status: string[]; // subset of ["false", "true"] → disabled column value
 	only_all_vks: boolean; // VK access toggle → allow_on_all_virtual_keys
@@ -58,13 +58,14 @@ const AUTH_TYPE_OPTIONS: FilterOption[] = [
 	{ value: "oauth", label: "OAuth" },
 	{ value: "per_user_oauth", label: "Per-User OAuth" },
 	{ value: "per_user_headers", label: "Per-User Headers" },
+	{ value: "token_exchange", label: "Token Exchange" },
 ];
 
 // Connection state is runtime, not a column — the backend resolves these
-// against live engine state. "disconnected" covers everything not connected.
+// against live engine state. "unstable" covers everything not healthy.
 const STATE_OPTIONS: FilterOption[] = [
-	{ value: "connected", label: "Connected" },
-	{ value: "disconnected", label: "Disconnected" },
+	{ value: "healthy", label: "Healthy" },
+	{ value: "unstable", label: "Unstable" },
 ];
 
 const CODE_MODE_OPTIONS: FilterOption[] = [

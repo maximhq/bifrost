@@ -236,7 +236,12 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
 	}
 	if filters.ParentRequestID != "" {
-		baseQuery = baseQuery.Where("parent_request_id = ?", filters.ParentRequestID)
+		// A row is never its own child: parent_request_id is client-settable, and
+		// a self-referencing row already lists as a root (see applyRootsOnlyFilter),
+		// so without this it would also appear inside its own expansion.
+		baseQuery = baseQuery.Where("parent_request_id = ? AND id <> parent_request_id", filters.ParentRequestID)
+	} else if filters.RootsOnly {
+		baseQuery = s.applyRootsOnlyFilter(baseQuery, filters)
 	}
 	if len(filters.SelectedKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("selected_key_id IN ?", filters.SelectedKeyIDs)
@@ -436,6 +441,51 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		}
 	}
 	return baseQuery
+}
+
+// applyRootsOnlyFilter hides rows that nest under another row already present in
+// this same result set, so each fallback chain lists as its root request.
+//
+// The parent set is the *filtered, scoped* population, not the whole table: a
+// row is only hidden when the row it points at would itself be listed. This is
+// what keeps a chain from vanishing when a filter matches only part of it —
+// with `status=success` over a chain whose root errored and whose retry
+// succeeded, the root fails the filter, so the retry is not hidden and lists as
+// its own root instead of disappearing. It also means the subquery inherits the
+// caller's QueryScope and time window: a child whose parent is invisible to
+// this caller, or falls outside the range, is promoted rather than dropped.
+//
+// Rows whose parent_request_id is a client/provider session string (baggage,
+// realtime `sess_…`) match no log id and stay top-level, as do self-referencing
+// rows — parent_request_id is client-settable, and a row that points at itself
+// would otherwise be unreachable from any view.
+func (s *RDBLogStore) applyRootsOnlyFilter(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	ctx := baseQuery.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Same filters, minus the two that describe *this* query's shape rather than
+	// which rows are listable. Clearing RootsOnly also stops the recursion.
+	parentFilters := filters
+	parentFilters.RootsOnly = false
+	parentFilters.ParentRequestID = ""
+
+	if s.db.Dialector.Name() == "clickhouse" {
+		// ClickHouse has no correlated subqueries, so the parent id set is built
+		// once per query. The inherited filters (crucially the time window) bound
+		// it — an unfiltered `SELECT id FROM logs` would materialize every id in
+		// the table on every page load.
+		parents := s.applyFilters(s.ScopedDB(ctx).Model(&Log{}).Select("id"), parentFilters)
+		return baseQuery.Where("(parent_request_id IS NULL OR parent_request_id = id OR parent_request_id NOT IN (?))", parents)
+	}
+
+	// Correlated form elsewhere: the PK lookup on parent.id keeps this an index
+	// probe per candidate row rather than a materialized anti-join. Unqualified
+	// columns in the filter predicates bind to the inner `parent` scope.
+	parents := s.applyFilters(s.ScopedDB(ctx).Table("logs AS parent").Select("1"), parentFilters).
+		Where("parent.id = logs.parent_request_id")
+	return baseQuery.Where("(parent_request_id IS NULL OR parent_request_id = id OR NOT EXISTS (?))", parents)
 }
 
 // Create inserts a new log entry into the database.
@@ -861,6 +911,12 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 		return nil, err
 	}
 
+	if filters.RootsOnly {
+		if err := s.attachChildAggregates(ctx, logs, filters); err != nil {
+			return nil, err
+		}
+	}
+
 	hasLogs := len(logs) > 0
 	if !hasLogs {
 		var err error
@@ -879,6 +935,65 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 		},
 		HasLogs: hasLogs,
 	}, nil
+}
+
+// attachChildAggregates populates ChildCount/ChildrenCost/ChildrenTokens on the
+// given page of logs with one grouped query over the page's IDs. The index on
+// parent_request_id keeps this cheap (bounded by the page size), and the
+// rolled-up cost/tokens let the UI summarize a collapsed fallback chain.
+//
+// The same filters that produced the page are applied to the children, so a
+// collapsed chain summarizes exactly the rows that expanding it lists (the
+// expand call re-queries with these filters plus parent_request_id). A root
+// whose children all fail the filters reports ChildCount 0 and offers nothing
+// to expand.
+func (s *RDBLogStore) attachChildAggregates(ctx context.Context, logs []Log, filters SearchFilters) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(logs))
+	for _, log := range logs {
+		ids = append(ids, log.ID)
+	}
+
+	var aggs []struct {
+		ParentRequestID string  `gorm:"column:parent_request_id"`
+		ChildCount      int64   `gorm:"column:child_count"`
+		ChildrenCost    float64 `gorm:"column:children_cost"`
+		ChildrenTokens  int64   `gorm:"column:children_tokens"`
+	}
+	// Clear the two filters that describe the shape of the roots query rather
+	// than which rows are listable; the rest carry over verbatim. Clearing
+	// RootsOnly also keeps the parent-existence subquery out of this query — a
+	// child is counted against its own parent, not re-tested for one.
+	childFilters := filters
+	childFilters.RootsOnly = false
+	childFilters.ParentRequestID = ""
+
+	err := s.applyFilters(s.ScopedDB(ctx).Model(&Log{}), childFilters).
+		Select("parent_request_id, COUNT(*) AS child_count, COALESCE(SUM(cost), 0) AS children_cost, COALESCE(SUM(total_tokens), 0) AS children_tokens").
+		Where("parent_request_id IN ? AND id <> parent_request_id", ids).
+		Group("parent_request_id").
+		Scan(&aggs).Error
+	if err != nil {
+		return fmt.Errorf("failed to aggregate child logs: %w", err)
+	}
+	if len(aggs) == 0 {
+		return nil
+	}
+
+	byParent := make(map[string]int, len(aggs))
+	for i, agg := range aggs {
+		byParent[agg.ParentRequestID] = i
+	}
+	for i := range logs {
+		if aggIdx, ok := byParent[logs[i].ID]; ok {
+			logs[i].ChildCount = aggs[aggIdx].ChildCount
+			logs[i].ChildrenCost = aggs[aggIdx].ChildrenCost
+			logs[i].ChildrenTokens = aggs[aggIdx].ChildrenTokens
+		}
+	}
+	return nil
 }
 
 // GetSessionLogs returns paginated logs for a single parent_request_id session.

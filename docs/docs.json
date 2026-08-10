@@ -181,6 +181,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/connections",
               {
                 "group": "Authentication",
                 "icon": "shield-check",
@@ -190,7 +191,8 @@
                   "mcp/auth/headers",
                   "mcp/auth/per-user-headers",
                   "mcp/auth/oauth",
-                  "mcp/auth/per-user-oauth"
+                  "mcp/auth/per-user-oauth",
+                  "mcp/auth/token-exchange"
                 ]
               },
               "mcp/sessions",
@@ -325,6 +327,7 @@
                     "icon": "shield-check",
                     "pages": [
                       "enterprise/guardrails/secrets-detection",
+                      "enterprise/guardrails/prompt-guardrails",
                       "enterprise/guardrails/custom-regex",
                       "integrations/guardrails/presidio",
                       "integrations/guardrails/azure-language-pii",
@@ -417,6 +420,14 @@
         "tab": "Integrations",
         "icon": "plug",
         "groups": [
+          {
+            "group": "Runbooks",
+            "icon": "book-open",
+            "pages": [
+              "runbooks/claude-code-bedrock",
+              "runbooks/codex-bedrock"
+            ]
+          },
           {
             "group": "CLI Agents & Editors",
             "icon": "command",
@@ -557,6 +568,7 @@
             "icon": "road-barrier",
             "pages": [
               "enterprise/guardrails/secrets-detection",
+              "enterprise/guardrails/prompt-guardrails",
               "enterprise/guardrails/custom-regex",
               "integrations/guardrails/presidio",
               "integrations/guardrails/azure-language-pii",

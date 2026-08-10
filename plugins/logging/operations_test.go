@@ -347,7 +347,6 @@ func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook() error = %v", err)
 	}
-
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: true,
@@ -395,7 +394,8 @@ func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 }
 
 // TestPostLLMHookCancelledStreamLogsCost verifies #3357 at the logging layer: a
-// streaming request cancelled mid-flight (result==nil) whose error carries the
+// streaming request cancelled mid-flight (including when a chunk is returned)
+// whose error carries the
 // partial usage the provider already processed (BifrostError.ExtraFields.BilledUsage)
 // must produce a log row with status="cancelled", the consumed tokens, AND an
 // accurate cost computed from the datasheet rates.
@@ -433,6 +433,26 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 	if _, _, err = plugin.PreLLMHook(ctx, req); err != nil {
 		t.Fatalf("PreLLMHook() error = %v", err)
 	}
+	embeddingProvider := "openai"
+	embeddingModel := "text-embedding-3-small"
+	embeddingTokens := 12
+	if !schemas.SetCacheDebugOnContext(ctx, &schemas.BifrostCacheDebug{
+		ProviderUsed: &embeddingProvider,
+		ModelUsed:    &embeddingModel,
+		InputTokens:  &embeddingTokens,
+	}) {
+		t.Fatal("expected semantic cache debug to be stored on context")
+	}
+	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, schemas.BifrostGuardrailJudgeCall{
+		JudgeProvider:    schemas.OpenAI,
+		JudgeModel:       "gpt-4o",
+		JudgeRequestType: schemas.ChatCompletionRequest,
+		PromptTokens:     10,
+		CompletionTokens: 5,
+		TotalTokens:      15,
+	}) {
+		t.Fatal("expected guardrail judge call to be stored on context")
+	}
 
 	const promptTokens, completionTokens = 100, 50
 	statusCode := 499 // client closed request (mid-stream cancel)
@@ -453,7 +473,17 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 			},
 		},
 	}
-	if _, _, err = plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+	streamChunk := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionStreamRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
+			},
+		},
+	}
+	if _, _, err = plugin.PostLLMHook(ctx, streamChunk, bifrostErr); err != nil {
 		t.Fatalf("PostLLMHook() error = %v", err)
 	}
 	if err := plugin.Cleanup(); err != nil {
@@ -477,7 +507,10 @@ func TestPostLLMHookCancelledStreamLogsCost(t *testing.T) {
 		t.Fatalf("expected a cost to be logged for a cancelled request that consumed tokens (#3357)")
 	}
 	// gpt-4o testdata rates: input 2.5e-6/token, output 1e-5/token.
-	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5
+	// text-embedding-3-small is 2e-8/token. The cache lookup and the judge call
+	// must both be added even though the stream ended with an error chunk.
+	want := float64(promptTokens)*2.5e-6 + float64(completionTokens)*1e-5 +
+		float64(embeddingTokens)*2e-8 + float64(10)*2.5e-6 + float64(5)*1e-5
 	if diff := *entry.Cost - want; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("logged cost %v does not match datasheet-computed cost %v", *entry.Cost, want)
 	}
@@ -2287,4 +2320,23 @@ func TestApplyNonStreamingOutputToEntryVideoOutputs(t *testing.T) {
 			t.Error("expected VideoGenerationOutputParsed to be nil when contentLoggingEnabled=false")
 		}
 	})
+// TestGuardrailDebugForLogReadsContextWithoutResponse verifies input blocks remain observable.
+func TestGuardrailDebugForLogReadsContextWithoutResponse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	requireCall := schemas.BifrostGuardrailJudgeCall{
+		JudgeProvider: schemas.OpenAI,
+		JudgeModel:    "gpt-test",
+		TotalTokens:   18,
+	}
+	if !schemas.AppendGuardrailJudgeCallOnContext(ctx, requireCall) {
+		t.Fatal("failed to append guardrail judge call")
+	}
+
+	debug := guardrailDebugForLog(ctx, nil)
+	if debug == nil || len(debug.JudgeCalls) != 1 {
+		t.Fatalf("guardrail debug = %#v; want one context judge call", debug)
+	}
+	if debug.JudgeCalls[0] != requireCall {
+		t.Fatalf("guardrail call = %#v; want %#v", debug.JudgeCalls[0], requireCall)
+	}
 }

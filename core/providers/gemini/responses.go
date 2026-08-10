@@ -546,10 +546,13 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			if bifrostResp.StopReason != nil {
 				candidate.FinishReason = ConvertBifrostFinishReasonToGemini(*bifrostResp.StopReason)
 			} else if bifrostResp.IncompleteDetails != nil {
+				// Match the schema's incomplete-reason vocabulary; a literal
+				// "max_tokens" never occurs here, so truncations reported OTHER
+				// instead of MAX_TOKENS (issue #5978).
 				switch bifrostResp.IncompleteDetails.Reason {
-				case "max_tokens":
+				case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
 					candidate.FinishReason = FinishReasonMaxTokens
-				case "content_filter":
+				case schemas.ResponsesResponseIncompleteReasonContentFilter:
 					candidate.FinishReason = FinishReasonSafety
 				default:
 					candidate.FinishReason = FinishReasonOther
