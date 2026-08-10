@@ -6008,7 +6008,8 @@
         "perUserHeaderKeys": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "pattern": "\\S"
           },
           "description": "Header names each caller must individually supply when authType is 'per_user_headers' (e.g. ['Authorization']). Required (non-empty) for that auth type; ignored otherwise."
         },
@@ -6082,6 +6083,24 @@
           },
           "then": {
             "required": ["connectionString"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authType": {
+                "const": "per_user_headers"
+              }
+            },
+            "required": ["authType"]
+          },
+          "then": {
+            "required": ["perUserHeaderKeys"],
+            "properties": {
+              "perUserHeaderKeys": {
+                "minItems": 1
+              }
+            }
           }
         }
       ]
