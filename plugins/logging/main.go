@@ -264,6 +264,40 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 }
 
+// guardrailDebugForLog returns the request's guardrail debug snapshot.
+func guardrailDebugForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostGuardrailDebug {
+	if debug, ok := schemas.GuardrailDebugFromContext(ctx); ok {
+		return debug
+	}
+	if result == nil {
+		return nil
+	}
+	return result.GetExtraFields().GuardrailDebug.Clone()
+}
+
+// applyInternalCallCosts adds sidecar costs when no response exists to carry them.
+func (p *LoggerPlugin) applyInternalCallCosts(ctx *schemas.BifrostContext, entry *logstore.Log, guardrailDebug *schemas.BifrostGuardrailDebug) {
+	if entry == nil || p.pricingManager == nil {
+		return
+	}
+	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+	var cost float64
+	if cacheDebug, ok := schemas.CacheDebugFromContext(ctx); ok {
+		cost += p.pricingManager.CalculateCacheEmbeddingCost(cacheDebug, pricingScopes)
+	}
+	if guardrailDebug != nil {
+		cost += p.pricingManager.CalculateGuardrailCost(guardrailDebug, pricingScopes)
+	}
+	if cost <= 0 {
+		return
+	}
+	if entry.Cost == nil {
+		entry.Cost = &cost
+		return
+	}
+	*entry.Cost += cost
+}
+
 const (
 	// maxDeferredUsageWatchers caps goroutines parked waiting for trailing usage on
 	// large-payload requests. Generous, because each one is idle on a channel receive;
@@ -1140,6 +1174,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
+	guardrailDebug := guardrailDebugForLog(ctx, result)
+	if result != nil && guardrailDebug != nil {
+		result.GetExtraFields().GuardrailDebug = guardrailDebug.Clone()
+	}
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -1187,6 +1225,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
 			applyResolvedAliasInfo(entry, resolvedKeyAlias)
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
+			entry.GuardrailDebugParsed = guardrailDebug
+			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 			if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
 				entry.ClusterNodeID = &nodeID
 			}
@@ -1250,6 +1290,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
+	entry.GuardrailDebugParsed = guardrailDebug
 	// Apply common output fields. For cache hits, prefer the cache-serve
 	// latency stamped by the semantic cache plugin over the original provider
 	// latency preserved in the cached response.
@@ -1354,6 +1395,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// logs DB reflects what we were actually billed, mirroring the governance
 		// budget.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+		p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
@@ -1407,11 +1449,18 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					}
 				}
 			}
+			// A stream error can arrive with a response chunk, bypassing Path A.
+			// Preserve provider-billed usage and the sidecar calls in that case.
+			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 		} else if streamResponse == nil {
 			// tracer or traceID not available, or accumulator returned nil - still write what we have
 			entry.Status = logStatusSuccess
 			entry.Stream = true
 			applyModelAlias(entry, originalModelRequested, resolvedModelUsed)
+			// Without an accumulated response, CalculateCost cannot see cache or
+			// guardrail debug. Normal accumulated streams already include both.
+			p.applyInternalCallCosts(ctx, entry, guardrailDebug)
 		} else if isFinalChunk {
 			// Apply streaming output fields to the entry
 			entry.Stream = true
