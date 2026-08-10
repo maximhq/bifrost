@@ -465,6 +465,9 @@
         },
         "sarvam": {
           "$ref": "#/$defs/provider"
+        },
+        "munsit": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -7251,7 +7254,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "munsit"
           ],
           "description": "Base provider type to extend"
         },

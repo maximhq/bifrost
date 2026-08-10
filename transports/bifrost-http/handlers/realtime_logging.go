@@ -284,7 +284,13 @@ type realtimeResponseDoneOutputTokenUsage struct {
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens"`
 }
 
-func extractRealtimeTurnUsage(provider schemas.RealtimeProvider, rawMessage []byte) *schemas.BifrostLLMUsage {
+func extractRealtimeTurnUsage(provider schemas.RealtimeProvider, rawRequest string, rawMessage []byte) *schemas.BifrostLLMUsage {
+	// Optional TTS billing (e.g. Munsit): only runs for providers that opt in.
+	if billing, ok := provider.(schemas.RealtimeSpeechBillingProvider); ok {
+		if usage := billing.EstimateRealtimeSpeechUsageFromRawRequest(rawRequest); usage != nil {
+			return usage
+		}
+	}
 	if extractor, ok := provider.(schemas.RealtimeUsageExtractor); ok {
 		if usage := extractor.ExtractRealtimeTurnUsage(rawMessage); usage != nil {
 			return usage

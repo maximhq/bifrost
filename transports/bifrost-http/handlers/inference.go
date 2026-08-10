@@ -1337,6 +1337,26 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 	}, nil
 }
 
+// munsitAudioResponseHeaders derives the correct Content-Type and filename
+// for a unary Munsit speech response. Non-streaming Munsit requests return a
+// real audio container (WAV for pcm/wav request formats after round-trip through
+// pcm_44100, MP3/Opus otherwise). Headerless PCM16 is streaming-only and does
+// not use this helper — see SpeechStream.
+func munsitAudioResponseHeaders(responseFormat string) (contentType, filename string) {
+	format := strings.ToLower(strings.TrimSpace(responseFormat))
+	switch {
+	case strings.HasPrefix(format, "mp3"):
+		return "audio/mpeg", "speech.mp3"
+	case strings.HasPrefix(format, "opus"):
+		return "audio/opus", "speech.opus"
+	case strings.HasPrefix(format, "pcm"):
+		// Unary pcm_* maps to a WAV container, not headerless PCM.
+		return "audio/wav", "speech.wav"
+	default:
+		return "audio/wav", "speech.wav"
+	}
+}
+
 // speechAttachmentFilename derives the download filename from the requested
 // audio format so non-MP3 responses aren't mislabeled as "speech.mp3". The
 // format may be OpenAI-style ("opus", "wav", "flac", ...) or ElevenLabs-style
@@ -1397,10 +1417,18 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	contentType := "audio/mpeg"
+	filename := attachmentFilename
+	if bifrostSpeechReq.Provider == schemas.Munsit && resp != nil {
+		// Resolve from the response format so pcm→wav mapping applies to both the
+		// large-response Content-Disposition shortcut and the normal binary path.
+		contentType, filename = munsitAudioResponseHeaders(resp.ResponseFormat)
+	}
+
 	// Preserve the attachment header through the large-response shortcut; the
 	// normal binary path sets this explicitly after the stream check.
 	if !(bifrostSpeechReq.Provider == schemas.Elevenlabs && req.WithTimestamps != nil && *req.WithTimestamps) {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename="+attachmentFilename)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyLargeResponseContentDisposition, "attachment; filename="+filename)
 	}
 
 	if resp != nil {
@@ -1426,8 +1454,8 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
-	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+attachmentFilename)
+	ctx.Response.Header.Set("Content-Type", contentType)
+	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+filename)
 	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
 	ctx.Response.SetBody(resp.Audio)
 }

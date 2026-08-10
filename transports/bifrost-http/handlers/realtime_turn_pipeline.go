@@ -264,7 +264,7 @@ func buildRealtimeTurnPostResponse(
 			Latency:                latency,
 		},
 	}
-	if usage := extractRealtimeTurnUsage(rtProvider, rawResponse); usage != nil {
+	if usage := extractRealtimeTurnUsage(rtProvider, rawRequest, rawResponse); usage != nil {
 		resp.Usage = buildRealtimeResponsesUsage(usage)
 	}
 	if strings.TrimSpace(rawRequest) != "" {
@@ -454,6 +454,7 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 		InputTokens:  usage.PromptTokens,
 		OutputTokens: usage.CompletionTokens,
 		TotalTokens:  usage.TotalTokens,
+		Cost:         usage.Cost, // optional; only set when provider reports cost
 	}
 	if usage.PromptTokensDetails != nil {
 		result.InputTokensDetails = &schemas.ResponsesResponseInputTokens{

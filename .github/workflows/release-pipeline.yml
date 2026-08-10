@@ -188,6 +188,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.munsit.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -279,6 +280,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -454,6 +456,7 @@ jobs:
             _grpc_config.cluster.qdrant.io:443
             _grpc_config.localhost:443
             api.github.com:443
+            api.munsit.com:443
             auth.docker.io:443
             cluster.qdrant.io:443
             cluster.weaviate.network:443
@@ -519,6 +522,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
@@ -555,6 +559,7 @@ jobs:
             production.cloudfront.docker.com:443
             dl.google.com:443
             api.github.com:443
+            api.munsit.com:443
             api.openai.com:443
             auth.docker.io:443
             azure.archive.ubuntu.com:80
@@ -627,6 +632,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
@@ -668,6 +674,7 @@ jobs:
             172.38.0.12:8301
             iojs.org:443
             api.github.com:443
+            api.munsit.com:443
             auth.docker.io:443
             codecov.io:443
             cr.weaviate.io:443
@@ -725,6 +732,7 @@ jobs:
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
         run: ./.github/workflows/scripts/test-bifrost-http.sh
 
   # Migration tests - validates database migrations from previous versions
@@ -840,6 +848,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.munsit.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -926,6 +935,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
@@ -1137,6 +1147,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.munsit.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -1212,6 +1223,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
@@ -1265,6 +1277,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.munsit.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -1340,6 +1353,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
@@ -1449,6 +1463,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1564,6 +1579,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1707,6 +1723,7 @@ jobs:
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   # Prep: update dependencies, validate build, commit/push
