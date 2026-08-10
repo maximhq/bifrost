@@ -1525,8 +1525,18 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 }
 
 // Embedding generates embeddings for the given input text(s) using Vertex AI.
-// All Vertex AI embedding models use the same response format regardless of the model type.
-// Returns a BifrostResponse containing the embedding(s) and any error that occurred.
+//
+// Two upstream contracts are supported:
+//   - Legacy prediction embeddings (text-embedding-004, text-multilingual-*, …):
+//     POST …/models/{model}:predict with {instances, parameters}.
+//   - Gemini-native embeddings (gemini-embedding-*):
+//     POST …/models/{model}:batchEmbedContents with Gemini content.parts body.
+//     Using :predict for these models returns 400 "Precondition check failed"
+//     (https://github.com/maximhq/bifrost/issues/5003).
+//
+// GenAI :embedContent is classified as EmbeddingRequest by the transport and
+// therefore also flows through this method — fixing the branch above unblocks
+// both /v1/embeddings and /genai/…:embedContent for gemini-embedding-*.
 func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	projectID := resolveVertexProjectID(ctx, key)
 	if projectID == "" {
@@ -1538,13 +1548,29 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToVertexEmbeddingRequest(request), nil
-		},
-	)
+	useGeminiEmbedAPI := usesGeminiEmbedContentAPI(request.Model)
+	forceSingleRegion := resolveVertexForceSingleRegion(ctx, key)
+	effectiveRegion := getVertexEffectiveRegion(region, request.Model, forceSingleRegion)
+
+	var jsonBody []byte
+	var bifrostErr *schemas.BifrostError
+	if useGeminiEmbedAPI {
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return ToVertexGeminiBatchEmbeddingRequest(request, projectID, effectiveRegion), nil
+			},
+		)
+	} else {
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return ToVertexEmbeddingRequest(request), nil
+			},
+		)
+	}
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1560,7 +1586,19 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if key.Value.GetValue() != "" {
 		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 	}
-	completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":predict")
+	var completeURL string
+	if useGeminiEmbedAPI {
+		// Model-aware host so multi-region-only embedding models (e.g. on eu/us
+		// pools via rep.googleapis.com) are routed correctly when the key is
+		// configured with a single region such as europe-west1.
+		completeURL = getVertexModelAwarePublisherModelURL(
+			region, "v1", projectID, "google",
+			gemini.NormalizeModelName(request.Model), ":batchEmbedContents",
+			forceSingleRegion, provider.logger,
+		)
+	} else {
+		completeURL = getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":predict")
+	}
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -1660,14 +1698,28 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		}, nil
 	}
 
-	// Parse Vertex's native embedding response using typed response
-	var vertexResponse VertexEmbeddingResponse
-	if err := sonic.Unmarshal(responseBody, &vertexResponse); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	var bifrostResponse *schemas.BifrostEmbeddingResponse
+	if useGeminiEmbedAPI {
+		// Gemini :batchEmbedContents response shape (embeddings[]), same as Google AI Studio.
+		var geminiResponse gemini.GeminiEmbeddingResponse
+		if err := sonic.Unmarshal(responseBody, &geminiResponse); err != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
+		bifrostResponse = gemini.ToBifrostEmbeddingResponse(&geminiResponse, request.Model)
+		if bifrostResponse == nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, fmt.Errorf("failed to convert Gemini embedding response to Bifrost format")), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
+	} else {
+		// Legacy :predict response shape (predictions[].embeddings).
+		var vertexResponse VertexEmbeddingResponse
+		if err := sonic.Unmarshal(responseBody, &vertexResponse); err != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
+		bifrostResponse = vertexResponse.ToBifrostEmbeddingResponse()
+		if bifrostResponse == nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, fmt.Errorf("failed to convert Vertex embedding response to Bifrost format")), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
 	}
-
-	// Use centralized Vertex converter
-	bifrostResponse := vertexResponse.ToBifrostEmbeddingResponse()
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
@@ -1676,8 +1728,8 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		var rawResponseMap map[string]interface{}
-		if err := sonic.Unmarshal(resp.Body(), &rawResponseMap); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err), jsonBody, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+		if err := sonic.Unmarshal(responseBody, &rawResponseMap); err != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		bifrostResponse.ExtraFields.RawResponse = rawResponseMap
 	}
