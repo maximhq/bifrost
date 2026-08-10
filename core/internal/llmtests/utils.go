@@ -49,6 +49,17 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 		default:
 			return "alloy"
 		}
+	case schemas.Deepgram:
+		switch voiceType {
+		case "primary":
+			return "Haley"
+		case "secondary":
+			return "Heather"
+		case "tertiary":
+			return "Cole"
+		default:
+			return "Haley"
+		}
 	case schemas.Gemini:
 		switch voiceType {
 		case "primary":

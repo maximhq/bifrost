@@ -175,6 +175,32 @@ type RealtimeSessionRoute struct {
 	DefaultProvider ModelProvider
 }
 
+// ListenWebSocketProvider is an optional interface for native speech-to-text
+// WebSocket proxies (e.g. Deepgram GET /v1/listen). Unlike RealtimeProvider,
+// these endpoints speak the provider's native protocol: binary audio frames
+// from the client and provider-native JSON events back, with query-string
+// configuration forwarded as-is. Checked via type assertion.
+type ListenWebSocketProvider interface {
+	SupportsListenWebSocket() bool
+	// ListenWebSocketURL builds the upstream WSS URL. rawQuery is the client
+	// request query string without a leading '?', forwarded unchanged.
+	// key is used to resolve per-key base URLs when configured.
+	ListenWebSocketURL(key Key, rawQuery string) string
+	ListenHeaders(ctx *BifrostContext, key Key) (map[string]string, *BifrostError)
+}
+
+// ListenBillingProvider is an optional interface for listen WebSocket providers
+// that bill differently from the datasheet's default (usually pre-recorded)
+// audio_transcription rates. Checked via type assertion; when ok is true,
+// CalculateCost trusts the returned USD amount via TranscriptionUsage.Cost
+// (including an explicit zero).
+type ListenBillingProvider interface {
+	// ListenCostUSD returns the live-session cost in USD for the given model,
+	// audio duration, and language query value. ok=true means use the returned
+	// USD amount as-is (including 0); ok=false means fall back to datasheet pricing.
+	ListenCostUSD(model string, seconds float64, language string) (cost float64, ok bool)
+}
+
 // RealtimeProvider is an optional interface that providers can implement to
 // indicate support for bidirectional Realtime API (audio/text streaming).
 // Checked via type assertion: provider.(RealtimeProvider).

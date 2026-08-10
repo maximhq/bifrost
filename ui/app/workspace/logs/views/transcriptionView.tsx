@@ -10,6 +10,15 @@ interface TranscriptionViewProps {
 	isStreaming?: boolean;
 }
 
+const AUDIO_FORMAT_EXTENSIONS = new Set(["wav", "ogg", "webm", "pcm16", "mp3"]);
+
+function audioFormatFromFilename(filename?: string): string | undefined {
+	if (!filename) return undefined;
+	const ext = filename.toLowerCase().split(".").pop();
+	if (!ext || !AUDIO_FORMAT_EXTENSIONS.has(ext)) return undefined;
+	return ext;
+}
+
 export default function TranscriptionView({ transcriptionInput, transcriptionOutput, isStreaming }: TranscriptionViewProps) {
 	const formatTime = (seconds: number) => {
 		const mins = Math.floor(seconds / 60);
@@ -28,8 +37,14 @@ export default function TranscriptionView({ transcriptionInput, transcriptionOut
 					</div>
 					<div className="space-y-4 p-6">
 						<div className="text-muted-foreground mb-2 text-xs font-medium">AUDIO FILE</div>
-						{/* Audio Controls */}
-						<AudioPlayer src={transcriptionInput.file} />
+						{transcriptionInput.file ? (
+							<AudioPlayer
+								src={transcriptionInput.file}
+								format={audioFormatFromFilename(transcriptionInput.filename)}
+							/>
+						) : (
+							<div className="text-muted-foreground font-mono text-xs">No audio available for this session.</div>
+						)}
 					</div>
 				</div>
 			)}

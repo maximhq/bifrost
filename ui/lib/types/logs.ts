@@ -15,6 +15,7 @@ export interface SpeechInput {
 
 export interface TranscriptionInput {
 	file: string; // base64 encoded (send empty string when using input_audio)
+	filename?: string; // original filename / extension hint (e.g. listen.wav)
 }
 
 export interface AudioTokenDetails {

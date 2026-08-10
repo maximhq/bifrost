@@ -183,6 +183,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
@@ -288,6 +289,7 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
           AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
           # Additional vars the provider harness forwards to newman:
           # AWS_REGION + GOOGLE_LOCATION drive the direct-provider token-parity
@@ -453,6 +455,7 @@ jobs:
           allowed-endpoints: >
             _grpc_config.cluster.qdrant.io:443
             _grpc_config.localhost:443
+            api.deepgram.com:443
             api.github.com:443
             auth.docker.io:443
             cluster.qdrant.io:443
@@ -531,6 +534,7 @@ jobs:
           VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
         run: ./.github/workflows/scripts/test-framework.sh
 
@@ -554,6 +558,7 @@ jobs:
             _https._tcp.packages.microsoft.com:443
             production.cloudfront.docker.com:443
             dl.google.com:443
+            api.deepgram.com:443
             api.github.com:443
             api.openai.com:443
             auth.docker.io:443
@@ -639,6 +644,7 @@ jobs:
           VERTEX_GCS_PREFIX: ${{ secrets.VERTEX_GCS_PREFIX }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
@@ -667,6 +673,7 @@ jobs:
             172.38.0.12:8080
             172.38.0.12:8301
             iojs.org:443
+            api.deepgram.com:443
             api.github.com:443
             auth.docker.io:443
             codecov.io:443
@@ -725,6 +732,8 @@ jobs:
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          MUNSIT_API_KEY: ${{ secrets.MUNSIT_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
         run: ./.github/workflows/scripts/test-bifrost-http.sh
 
   # Migration tests - validates database migrations from previous versions
@@ -836,6 +845,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -937,6 +947,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-api-integrations.sh
           ./.github/workflows/scripts/test-api-integrations.sh
@@ -1133,6 +1144,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1223,6 +1235,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/amd64
@@ -1261,6 +1274,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.deepgram.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1351,6 +1365,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/arm64
@@ -1393,6 +1408,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.deepgram.com:443
             api.github.com:443
             github.com:443
             nodejs.org:443
@@ -1463,6 +1479,7 @@ jobs:
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
   framework-release:
@@ -1496,6 +1513,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
+            api.deepgram.com:443
             api.github.com:443
             github.com:443
             proxy.golang.org:443
@@ -1576,6 +1594,7 @@ jobs:
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
   plugins-release:
@@ -1613,6 +1632,7 @@ jobs:
             _https._tcp.esm.ubuntu.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            api.deepgram.com:443
             api.github.com:443
             azure.archive.ubuntu.com:80
             esm.ubuntu.com:443
@@ -1688,6 +1708,7 @@ jobs:
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
