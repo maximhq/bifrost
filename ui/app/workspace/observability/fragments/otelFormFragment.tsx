@@ -29,6 +29,8 @@ interface StoredOtelProfile {
 	service_name?: string;
 	collector_url?: string | SecretVar;
 	headers?: Record<string, string | SecretVar>;
+	trace_headers?: Record<string, string | SecretVar>;
+	metrics_headers?: Record<string, string | SecretVar>;
 	trace_type?: "genai_extension" | "vercel" | "open_inference";
 	protocol?: "http" | "grpc";
 	tls_ca_cert?: string;
@@ -95,6 +97,8 @@ const emptyProfile = (): ProfileForm => ({
 	service_name: "bifrost",
 	collector_url: emptySecretVar(),
 	headers: {},
+	trace_headers: {},
+	metrics_headers: {},
 	trace_type: "genai_extension",
 	protocol: "http",
 	tls_ca_cert: "",
@@ -116,6 +120,8 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	service_name: p?.service_name ?? "bifrost",
 	collector_url: toSecretVarFormValue(p?.collector_url),
 	headers: toSecretVarMapFormValue(p?.headers),
+	trace_headers: toSecretVarMapFormValue(p?.trace_headers),
+	metrics_headers: toSecretVarMapFormValue(p?.metrics_headers),
 	trace_type: p?.trace_type ?? "genai_extension",
 	protocol: p?.protocol ?? "http",
 	tls_ca_cert: p?.tls_ca_cert ?? "",
@@ -438,8 +444,15 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 						render={({ field }) => (
 							<FormItem className="w-full">
 								<FormControl>
-									<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} useSecretVarInput />
+									<HeadersTable
+										label="Common Headers"
+										value={field.value || {}}
+										onChange={field.onChange}
+										disabled={!hasOtelAccess}
+										useSecretVarInput
+									/>
 								</FormControl>
+								<FormDescription>Sent to both the trace and metrics endpoints.</FormDescription>
 								<FormMessage />
 							</FormItem>
 						)}
@@ -564,6 +577,25 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 														{...field}
 													/>
 												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name={`${base}.trace_headers`}
+										render={({ field }) => (
+											<FormItem className="w-full">
+												<FormControl>
+													<HeadersTable
+														label="Trace Headers"
+														value={field.value || {}}
+														onChange={field.onChange}
+														disabled={!hasOtelAccess}
+														useSecretVarInput
+													/>
+												</FormControl>
+												<FormDescription>Sent only to the trace endpoint, in addition to the common headers.</FormDescription>
 												<FormMessage />
 											</FormItem>
 										)}
@@ -776,6 +808,28 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 														{...field}
 													/>
 												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+
+									<FormField
+										control={control}
+										name={`${base}.metrics_headers`}
+										render={({ field }) => (
+											<FormItem className="w-full">
+												<FormControl>
+													<HeadersTable
+														label="Metrics Headers"
+														value={field.value || {}}
+														onChange={field.onChange}
+														disabled={!hasOtelAccess}
+														useSecretVarInput
+													/>
+												</FormControl>
+												<FormDescription>
+													Sent only to the metrics endpoint, in addition to the common headers (e.g. a Databricks table name).
+												</FormDescription>
 												<FormMessage />
 											</FormItem>
 										)}
