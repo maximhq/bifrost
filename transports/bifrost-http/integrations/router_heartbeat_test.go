@@ -54,7 +54,8 @@ func Test_handleStreamingSSESendsHeartbeatDuringIdleGap(t *testing.T) {
 
 		result := <-readDone
 		require.NoError(t, result.err)
-		assert.Contains(t, result.body, ": heartbeat\n\n", "expected at least one heartbeat comment frame during the idle gap")
+		assert.Contains(t, result.body, ": heartbeat\n", "expected at least one heartbeat comment frame during the idle gap")
+		assert.NotContains(t, result.body, ": heartbeat\n\n", "heartbeat must not carry a blank line, which non-conforming decoders dispatch as an empty event (#5874)")
 	})
 }
 

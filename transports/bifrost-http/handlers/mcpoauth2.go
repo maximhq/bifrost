@@ -99,20 +99,27 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 }
 
 // handleCallbackError handles ?error= responses from upstream providers.
-// Marks the OAuth config row as failed (for admin UI's pending-setup display),
-// then redirects to the route that matches the originating flow:
+// Marks the admin-mode flow row as failed (for admin UI's pending-setup
+// display), then redirects to the route that matches the originating flow:
 //   - admin-test popup flow → /workspace/mcp-registry/oauth-callback (posts a
 //     message to window.opener and closes itself)
 //   - per-user runtime flow → /workspace/mcp-sessions (full-page, no opener)
 //
-// We infer the flow by looking up the state in oauth_configs; if it's there
-// it's the admin-test flow, otherwise we assume per-user. The upstream-supplied
-// error code/description is logged server-side; only a generic message reaches
+// Every flow — admin and per-user alike — shares one state-token namespace on
+// mcp_oauth_flows, so classifying by FlowMode on a single lookup replaces the
+// old two-step "does a row exist in oauth_configs, else assume per-user"
+// inference (oauth_configs no longer carries a state column at all). Only
+// the admin-mode row's status is written here: a per-user flow row is
+// deliberately left 'pending' on an upstream error/deny so the same link can
+// still be retried within its TTL, matching today's behavior for that path
+// (CompleteUserOAuthFlow's own expiry/failure handling covers the cases that
+// do need a per-user row mutated or removed). The upstream-supplied error
+// code/description is logged server-side; only a generic message reaches
 // the URL so provider error text doesn't leak into history / Referer.
 func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, errorParam, errorDescription string) {
 	isAdminTestFlow := false
 	if state != "" {
-		oauthConfig, err := h.store.ConfigStore.GetOauthConfigByState(ctx, state)
+		flow, err := h.store.ConfigStore.GetOauthUserSessionByState(ctx, state)
 		switch {
 		case err != nil:
 			// Lookup failed — we can't reliably classify the flow. Default
@@ -120,12 +127,14 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 			// case; the popup-callback page expects window.opener and would
 			// strand a per-user caller on a "you can close this tab" view.
 			// Log the underlying cause for diagnostics.
-			logger.Error("[oauth] failed to look up oauth config by state for callback error: err=%v", err)
-		case oauthConfig != nil:
-			isAdminTestFlow = true
-			oauthConfig.Status = "failed"
-			if updateErr := h.store.ConfigStore.UpdateOauthConfig(ctx, oauthConfig); updateErr != nil {
-				logger.Warn("[oauth] failed to mark oauth config as failed: id=%s err=%v", oauthConfig.ID, updateErr)
+			logger.Error("[oauth] failed to look up oauth flow by state for callback error: err=%v", err)
+		case flow != nil:
+			isAdminTestFlow = flow.FlowMode == "admin"
+			if isAdminTestFlow {
+				flow.Status = "failed"
+				if updateErr := h.store.ConfigStore.UpdateOauthUserSession(ctx, flow); updateErr != nil {
+					logger.Warn("[oauth] failed to mark oauth flow as failed: id=%s err=%v", flow.ID, updateErr)
+				}
 			}
 		}
 	}
@@ -177,19 +186,23 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// expires_at (the flow's own PKCE-attempt deadline) lived on this row
+	// before the flow table split it out onto TableMCPOauthFlow — dropped
+	// from this response rather than joined in: the popup UI that polls this
+	// endpoint (oauth2Authorizer.tsx) only ever branches on status, never
+	// reads a deadline for a live countdown.
 	response := map[string]interface{}{
 		"id":         oauthConfig.ID,
 		"status":     oauthConfig.Status,
 		"created_at": oauthConfig.CreatedAt,
-		"expires_at": oauthConfig.ExpiresAt,
 	}
 
-	if oauthConfig.Status == "authorized" && oauthConfig.TokenID != nil {
-		response["token_id"] = *oauthConfig.TokenID
-
-		// Get token metadata
-		token, err := h.store.ConfigStore.GetOauthTokenByID(ctx, *oauthConfig.TokenID)
+	if oauthConfig.Status == "authorized" {
+		// Resolve the shared token row via (oauth_config_id, auth_mode='shared')
+		// — the replacement for the retired TableOauthConfig.TokenID FK shortcut.
+		token, err := h.store.ConfigStore.GetSharedOauthTokenByConfigID(ctx, configID)
 		if err == nil && token != nil {
+			response["token_id"] = token.ID
 			if token.ExpiresAt != nil {
 				response["token_expires_at"] = token.ExpiresAt
 			}
@@ -236,22 +249,9 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		registrationURL = &req.RegistrationURL
 	}
 
-	clientID := ""
-	if req.ClientID != nil {
-		if v, _ := req.ClientID.Value(); v != nil {
-			clientID, _ = v.(string)
-		}
-	}
-	clientSecret := ""
-	if req.ClientSecret != nil {
-		if v, _ := req.ClientSecret.Value(); v != nil {
-			clientSecret, _ = v.(string)
-		}
-	}
-
 	config := &schemas.OAuth2Config{
-		ClientID:        clientID,
-		ClientSecret:    clientSecret,
+		ClientID:        req.ClientID,
+		ClientSecret:    req.ClientSecret,
 		AuthorizeURL:    req.AuthorizeURL,
 		TokenURL:        req.TokenURL,
 		RegistrationURL: registrationURL,
@@ -273,11 +273,6 @@ func (h *OAuthHandler) StorePendingMCPClient(oauthConfigID string, mcpClientConf
 // GetPendingMCPClient retrieves a pending MCP client config by oauth_config_id
 func (h *OAuthHandler) GetPendingMCPClient(oauthConfigID string) (*schemas.MCPClientConfig, error) {
 	return h.oauthProvider.GetPendingMCPClient(oauthConfigID)
-}
-
-// GetPendingMCPClientByState retrieves a pending MCP client config by OAuth state token
-func (h *OAuthHandler) GetPendingMCPClientByState(state string) (*schemas.MCPClientConfig, string, error) {
-	return h.oauthProvider.GetPendingMCPClientByState(state)
 }
 
 // RemovePendingMCPClient removes a pending MCP client after OAuth completion.

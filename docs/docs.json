@@ -181,6 +181,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/connections",
               {
                 "group": "Authentication",
                 "icon": "shield-check",
@@ -190,7 +191,8 @@
                   "mcp/auth/headers",
                   "mcp/auth/per-user-headers",
                   "mcp/auth/oauth",
-                  "mcp/auth/per-user-oauth"
+                  "mcp/auth/per-user-oauth",
+                  "mcp/auth/token-exchange"
                 ]
               },
               "mcp/sessions",

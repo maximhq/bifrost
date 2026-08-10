@@ -1321,12 +1321,20 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			// Extract trace ID from W3C traceparent header (if present)
 			// This is the 32-char trace ID that links all spans in a distributed trace
 			inheritedTraceID := tracing.ExtractParentID(&ctx.Request.Header)
-			// Create trace in store - only ID returned (trace data stays in store)
+			// Create trace in store - the returned value is a per-request store key,
+			// not necessarily the W3C trace ID (concurrent requests may share an
+			// inherited trace ID, so the store keys them uniquely).
 			traceID := tracer.CreateTrace(inheritedTraceID, requestID)
 			// Surface correlation IDs back to the caller so a request can be pivoted
 			// into its logs (Loki) and trace (Tempo) in Grafana and similar stacks.
+			// The header must carry the W3C trace ID (that is what Tempo indexes),
+			// which equals the store key only when no traceparent was inherited.
+			headerTraceID := inheritedTraceID
+			if headerTraceID == "" {
+				headerTraceID = traceID
+			}
 			ctx.Response.Header.Set("x-request-id", requestID)
-			ctx.Response.Header.Set("x-bifrost-trace-id", traceID)
+			ctx.Response.Header.Set("x-bifrost-trace-id", headerTraceID)
 			// Store dimensions and session ID at the trace level (not as span
 			// attributes) so connectors like BigQuery can export them without
 			// changing the OTEL/Datadog span payloads.
@@ -1341,6 +1349,10 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			}
 			// Only trace ID goes into context (lightweight, no bloat)
 			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
+			// Also expose the W3C trace ID (the value in the x-bifrost-trace-id
+			// response header) so plugins that forward correlation IDs to external
+			// services advertise what Tempo indexes, not the internal store handle.
+			ctx.SetUserValue(schemas.BifrostContextKeyExportTraceID, headerTraceID)
 			// Extract parent span ID from W3C traceparent header (if present)
 			// This is the 16-char span ID from the upstream service that should be
 			// set as the ParentID of our root span for proper trace linking in Datadog/etc.

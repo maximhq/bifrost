@@ -3993,6 +3993,41 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 // These operations involve network I/O and connection management that require mutex locks
 // which can block briefly during execution.
 
+// MCPClientRequiresPerCallConnection reports whether config resolves to a
+// per-call connection (true) or a persistent shared one (false), taking auth
+// type, connection type, and needs_session_stickiness into account together.
+// Returns false (the persistent-connection default) if MCP is not configured.
+func (bifrost *Bifrost) MCPClientRequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
+	if bifrost.MCPManager == nil {
+		return false
+	}
+	return bifrost.MCPManager.RequiresPerCallConnection(config)
+}
+
+// SetMCPStateChangeCallback registers cb to be invoked on every reactive
+// (non-admin-driven) MCP client connection-state transition — periodic
+// checker transitions and reactive connect-failure classification into
+// NeedsReauth. Pass nil to clear a previously registered callback. A no-op
+// if MCP is not configured.
+func (bifrost *Bifrost) SetMCPStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState)) {
+	if bifrost.MCPManager == nil {
+		return
+	}
+	bifrost.MCPManager.SetStateChangeCallback(cb)
+}
+
+// SetMCPToolsChangeCallback registers cb to be invoked whenever an MCP
+// client's tool map is freshly (re)discovered — connect/reconnect, per-call
+// discovery, and the periodic checker's own refresh. core/mcp has no DB
+// access; this is the seam the transport layer persists through. Pass nil to
+// clear a previously registered callback. A no-op if MCP is not configured.
+func (bifrost *Bifrost) SetMCPToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+	if bifrost.MCPManager == nil {
+		return
+	}
+	bifrost.MCPManager.SetToolsChangeCallback(cb)
+}
+
 // GetMCPClients returns all MCP clients managed by the Bifrost instance.
 //
 // Returns:
@@ -4181,12 +4216,12 @@ func (bifrost *Bifrost) UpdateMCPClient(id string, updatedConfig *schemas.MCPCli
 	return bifrost.MCPManager.UpdateClient(id, updatedConfig)
 }
 
-// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
-func (bifrost *Bifrost) UpdateMCPClientConnection(id string, newConfig *schemas.MCPClientConfig) error {
+// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
+func (bifrost *Bifrost) UpdateMCPClientCredentials(id string, newConfig *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
-	return bifrost.MCPManager.UpdateClientConnection(id, newConfig)
+	return bifrost.MCPManager.UpdateClientCredentials(id, newConfig)
 }
 
 // ReconnectMCPClient attempts to reconnect an MCP client if it is disconnected.
@@ -4202,6 +4237,22 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	}
 
 	return bifrost.MCPManager.ReconnectClient(id)
+}
+
+// CloseAndMarkNeedsReauth closes a shared MCP client's live upstream
+// connection and flips it to needs_reauth, without attempting a new dial.
+// Used after OAuth credential rotation.
+//
+// Parameters:
+//   - id: ID of the client to close and flip to needs_reauth
+//
+// Returns:
+//   - error: if the client does not exist or has no persistent connection
+func (bifrost *Bifrost) CloseAndMarkNeedsReauth(id string) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	return bifrost.MCPManager.CloseAndMarkNeedsReauth(id)
 }
 
 // DisableMCPClient shuts down an MCP client's connection, health monitor, and tool
@@ -4615,6 +4666,8 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 
@@ -4749,6 +4802,8 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 
@@ -5579,6 +5634,8 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		traceID := tracer.CreateTrace("")
 		if traceID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
+			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
 		}
 	}
 
@@ -5907,8 +5964,19 @@ func executeRequestWithRetries[T any](
 	// Index in BifrostContextKeyAttemptTrail of an attempt that hit a rate limit and is waiting
 	// to learn whether the *next* key selection actually picks a different key. -1 = no pending.
 	pendingRotationAttemptIdx := -1
+	// Attempts granted outside the configured retry budget. Only the encrypted-reasoning
+	// fail-soft below adds one: MaxRetries defaults to 0, and a request that would
+	// otherwise die on a rejected replay deserves its one stripped attempt regardless of
+	// how the retry budget is tuned.
+	extraAttempts := 0
+	// True once encrypted_content has been stripped from the request, so the fail-soft
+	// fires at most once per request and an upstream that keeps rejecting cannot loop.
+	strippedEncryptedContent := false
+	// True iff the previous attempt failed on rejected encrypted reasoning and we stripped
+	// it. Used to skip backoff: the payload changed, so there is nothing to wait out.
+	lastWasEncryptedContentStrip := false
 
-	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
+	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
 		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
@@ -6038,7 +6106,9 @@ func executeRequestWithRetries[T any](
 					retryMsg += ", type=" + *bifrostError.Type
 				}
 			}
-			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
+			// Report the budget including any extra attempt granted by the
+			// encrypted-reasoning fail-soft, so the counter never reads "1/0".
+			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries+extraAttempts, model, retryMsg)
 
 			// Skip backoff only when (a) we genuinely rotated to a different credential AND
 			// (b) the previous failure was a *permanent* per-key error (401/402/403) where
@@ -6068,9 +6138,9 @@ func executeRequestWithRetries[T any](
 				}
 				keyNote = fmt.Sprintf("; %s=%s", rotationNote, currentKey.Name)
 			}
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries, providerKey, model, routingErrorSummary(bifrostError), keyNote))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries+extraAttempts, providerKey, model, routingErrorSummary(bifrostError), keyNote))
 
-			if !(lastWasPermanentKeyFailure && keyChanged) {
+			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
 				time.Sleep(backoff)
@@ -6371,6 +6441,25 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
 		}
 
+		// Fail soft when the upstream refuses replayed encrypted reasoning. The ciphertext
+		// is bound to the identity that minted it (item id, organization, serving
+		// endpoint), and a gateway routinely changes that between turns -- key rotation
+		// across a multi-key pool, a fallback that served an earlier turn from another
+		// provider, or a client whose traffic starts or stops being proxied mid-session.
+		// Retrying the same payload cannot help, so drop the encrypted half and give the
+		// request one more attempt on the same key: the turn continues with summaries
+		// only instead of failing outright. Runs once per request.
+		lastWasEncryptedContentStrip = false
+		if !shouldRetry && !strippedEncryptedContent && isEncryptedReasoningRejection(bifrostError) &&
+			stripResponsesEncryptedContent(ctx, req) {
+			strippedEncryptedContent = true
+			lastWasEncryptedContentStrip = true
+			extraAttempts++
+			shouldRetry = true
+			logger.Warn("upstream rejected replayed encrypted reasoning content for %s/%s; retrying once without it: %s", providerKey, model, errMessage)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped unverifiable encrypted reasoning content from the request to %s/%s and retrying once", providerKey, model))
+		}
+
 		if !shouldRetry {
 			break
 		}
@@ -6407,8 +6496,11 @@ func executeRequestWithRetries[T any](
 		// confirm it (and set TriggeredRotation=true) only if key selection actually picks a
 		// different key — this avoids false positives for fixed-key providers whose keyProvider
 		// is non-nil but returns the same key. Network-error retries reuse the same key, and
-		// terminal attempts (attempts == MaxRetries) won't run another iteration.
-		if lastWasPerKeyFailure && keyProvider != nil && attempts < config.NetworkConfig.MaxRetries {
+		// terminal attempts won't run another iteration — so the bound has to match the loop's
+		// own MaxRetries+extraAttempts. A fail-soft strip grants an extra attempt, which makes
+		// what would otherwise have been the final attempt non-terminal; comparing against
+		// MaxRetries alone would drop its rotation candidate and under-report the trail.
+		if lastWasPerKeyFailure && keyProvider != nil && attempts < config.NetworkConfig.MaxRetries+extraAttempts {
 			if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
 				pendingRotationAttemptIdx = len(trail) - 1
 			}
@@ -6505,6 +6597,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			baseProvider = cfg.BaseProviderType
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
+		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 
 		// Disable Anthropic raw-body passthrough when this attempt's provider isn't Anthropic-native (e.g. Bedrock).
 		clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider)

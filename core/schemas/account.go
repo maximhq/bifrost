@@ -462,6 +462,20 @@ func ResolveCanonicalModel(ctx *BifrostContext, fallbackModel string) string {
 	return fallbackModel
 }
 
+// ResolveBaseProvider returns the built-in provider that actually served this
+// attempt. Custom providers surface their own key (e.g. "my-openai") wherever a
+// ModelProvider is reported, so provider-family gating must resolve through the
+// base type Bifrost records on the context. Falls back to provider when the
+// context carries none (direct converter calls, tests).
+func ResolveBaseProvider(ctx *BifrostContext, provider ModelProvider) ModelProvider {
+	if ctx != nil {
+		if base, ok := ctx.Value(BifrostContextKeyBaseProviderType).(ModelProvider); ok && base != "" {
+			return base
+		}
+	}
+	return provider
+}
+
 // IsAnthropicModelFamily reports whether the current attempt resolves to the
 // Anthropic model family. Thin wrapper over ResolveFamily so provider code
 // reads uniformly at the many call sites that branch on Anthropic vs

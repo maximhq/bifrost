@@ -2091,18 +2091,16 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	// Reverse-map governance from VK-scoped model configs for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
-	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
-		// Should never happen but just in case
-		logger.Error("failed to reload virtual key after update: %v", err)
-		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
-		return
-	}
 
 	// Per-user credential reconciliation when the VK's MCP allowlist
 	// changed. Mirrors the AP-propagation path: enterprise orphans /
 	// reactivates credentials keyed to this VK (vk-keyed creds) and to the
 	// VK's owner (user-keyed creds) against the new effective allowlist
 	// (explicit rows ∪ MCPs with AllowOnAllVirtualKeys=true). OSS no-ops.
+	// Must run before ReloadVirtualKey: the reload also evicts this VK's
+	// cached OAuth tokens and header credentials, and an eviction that lands
+	// before these writes could be refilled from the pre-reconcile rows and
+	// then never dropped.
 	if req.MCPConfigs != nil && h.configStore != nil {
 		if err := h.configStore.ReconcileOauthAfterVKChange(ctx, vk.ID); err != nil {
 			logger.Error("reconcile OAuth credentials after VK %s update failed: %v", vk.ID, err)
@@ -2110,6 +2108,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		if err := h.configStore.ReconcileMCPHeadersAfterVKChange(ctx, vk.ID); err != nil {
 			logger.Error("reconcile per-user-headers credentials after VK %s update failed: %v", vk.ID, err)
 		}
+	}
+
+	if _, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID); err != nil {
+		// Should never happen but just in case
+		logger.Error("failed to reload virtual key after update: %v", err)
+		SendError(ctx, 500, "Virtual key updated in database but failed to reload in-memory state")
+		return
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -2239,7 +2244,9 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to delete virtual key")
 		return
 	}
-	// Removing key from in-memory store
+	// Removing key from in-memory store. RemoveVirtualKey also evicts the
+	// VK's cached OAuth access tokens and header credentials internally,
+	// covering the rows the database delete above cascaded over.
 	err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
 	if err != nil {
 		// But we ignore this error because its not

@@ -124,8 +124,8 @@ type ServerCallbacks interface {
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
-	// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
-	UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
+	// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
+	UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error
 	// VerifyPerUserOAuthConnection verifies an MCP server using a temporary token and discovers tools.
 	VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error)
@@ -133,9 +133,36 @@ type ServerCallbacks interface {
 	VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error)
 	// SetClientTools updates the tool map for an existing client.
 	SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)
+	// RequiresPerCallConnection reports whether config resolves to a
+	// per-call connection (true) or a persistent shared one (false), taking
+	// auth type, connection type, and needs_session_stickiness into account
+	// together.
+	RequiresPerCallConnection(config *schemas.MCPClientConfig) bool
 	ReconnectMCPClient(ctx context.Context, id string) error
+	// CloseAndMarkNeedsReauth closes a shared client's live upstream
+	// connection and flips it to needs_reauth, without attempting a new
+	// dial. Used after OAuth credential rotation.
+	CloseAndMarkNeedsReauth(ctx context.Context, id string) error
 	DisableMCPClient(ctx context.Context, id string) error
 	EnableMCPClient(ctx context.Context, id string) error
+	// EvictOauthTokenCacheByID drops the cached per-user MCP OAuth access
+	// token backed by the given token row ID after a database write that
+	// bypassed the OAuth provider's own write paths.
+	EvictOauthTokenCacheByID(ctx context.Context, tokenID string)
+	// EvictOauthTokenCacheByMCPClient drops every cached per-user MCP OAuth
+	// access token bound to the given MCP client after a client-level
+	// mutation that invalidates its token rows as a set (credential
+	// rotation, access reconciliation, client deletion).
+	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
+	// EvictMCPHeaderCredentialCacheByID drops the cached per-user MCP header
+	// credential backed by the given credential row ID after a database
+	// write that bypassed the headers provider's own write paths.
+	EvictMCPHeaderCredentialCacheByID(ctx context.Context, credentialID string)
+	// EvictMCPHeaderCredentialCacheByMCPClient drops every cached per-user
+	// MCP header credential bound to the given MCP client after a
+	// client-level mutation that invalidates its credential rows as a set
+	// (needs_update schema flip, access reconciliation, client deletion).
+	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
 }
 
 // LogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to log-detail responses.
@@ -300,9 +327,41 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	return nil
 }
 
-// UpdateMCPClientConnection reconnects an existing MCP client using updated headers
-func (s *BifrostHTTPServer) UpdateMCPClientConnection(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
-	if err := s.Config.UpdateMCPClientConnection(ctx, id, newConfig); err != nil {
+// PersistMCPClientTools writes a freshly (re)discovered tool set to the DB
+// via ConfigStore's targeted column update. core/mcp has no DB access of its
+// own; this is registered as the MCP manager's tools-change callback so
+// every discovery path — connect/reconnect, per-call discovery, and the
+// periodic checker's own refresh — persists uniformly. Best-effort: a
+// failure here is logged, not propagated, since this runs from a callback
+// with no caller to return an error to — the next discovery event (or the
+// periodic checker's own retry) tries again.
+func (s *BifrostHTTPServer) PersistMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return
+	}
+	if err := s.Config.ConfigStore.UpdateMCPClientTools(ctx, clientID, tools, toolNameMapping); err != nil {
+		logger.Error(fmt.Sprintf("Failed to persist discovered tools for MCP client %s: %v", clientID, err))
+	}
+}
+
+// SyncMCPServersAfterToolsChange re-syncs Bifrost's own hosted MCP server(s)
+// so a freshly (re)discovered tool list is immediately visible via /mcp.
+// SetClientTools (below) already does this for handler-driven updates
+// (verify-headers, complete-oauth, admin-repair) — this is the same resync,
+// reachable from the tools-change callback so periodic-checker refreshes and
+// sticky reconnects get it too, not just one-time admin actions. Best-effort,
+// same reasoning as PersistMCPClientTools.
+func (s *BifrostHTTPServer) SyncMCPServersAfterToolsChange(ctx context.Context, clientID string) {
+	if s.MCPServerHandler == nil {
+		return
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to sync MCP servers after tools change for client %s: %v", clientID, err))
+	}
+}
+
+func (s *BifrostHTTPServer) UpdateMCPClientCredentials(ctx context.Context, id string, newConfig *schemas.MCPClientConfig) error {
+	if err := s.Config.UpdateMCPClientCredentials(ctx, id, newConfig); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
@@ -319,7 +378,16 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
 		logger.Warn("failed to sync MCP servers after removing client: %v", err)
 	}
+	s.Config.OAuthProvider.EvictUserTokensByMCPClient(id)
+	s.Config.MCPHeadersProvider.EvictCredentialsByMCPClient(id)
 	return nil
+}
+
+// CloseAndMarkNeedsReauth closes a shared MCP client's live upstream
+// connection and flips it to needs_reauth, without attempting a new dial.
+// Used after OAuth credential rotation.
+func (s *BifrostHTTPServer) CloseAndMarkNeedsReauth(_ context.Context, id string) error {
+	return s.Client.CloseAndMarkNeedsReauth(id)
 }
 
 // DisableMCPClient shuts down an MCP client's connection and workers without removing it.
@@ -363,6 +431,14 @@ func (s *BifrostHTTPServer) SetClientTools(clientID string, tools map[string]sch
 	if err := s.MCPServerHandler.SyncAllMCPServers(context.Background()); err != nil {
 		logger.Warn("failed to sync MCP servers after setting client tools: %v", err)
 	}
+}
+
+// RequiresPerCallConnection delegates to the Bifrost client to report
+// whether config resolves to a per-call connection or a persistent shared
+// one, taking auth type, connection type, and needs_session_stickiness into
+// account together.
+func (s *BifrostHTTPServer) RequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
+	return s.Client.MCPClientRequiresPerCallConnection(config)
 }
 
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
@@ -471,6 +547,8 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		store.DeleteModelConfigInMemory(ctx, mcID)
 	}
 	s.MCPServerHandler.SyncVKMCPServer(virtualKey)
+	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
+	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 	return virtualKey, nil
 }
 
@@ -489,10 +567,14 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 	if preloadedVk == nil {
 		// This could be broadcast message from other server, so we will just clean up in-memory store
 		governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
+		s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
+		s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(ctx, id)
 	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value.GetValue())
+	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(id)
+	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(id)
 	return nil
 }
 
@@ -933,6 +1015,89 @@ func (s *BifrostHTTPServer) ReloadWebhookEndpoint(ctx context.Context, id string
 func (s *BifrostHTTPServer) RemoveWebhookEndpoint(ctx context.Context, id string) error {
 	s.Config.RemoveWebhookEndpoint(id)
 	return nil
+}
+
+// EvictOauthTokenCacheByID drops the cached per-user MCP OAuth access token
+// backed by the given token row ID from the in-memory cache after a database
+// write. A clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictOauthTokenCacheByID(ctx context.Context, tokenID string) {
+	if s.Config == nil || s.Config.OAuthProvider == nil {
+		return
+	}
+	s.Config.OAuthProvider.EvictUserTokenByID(tokenID)
+}
+
+// EvictOauthTokenCacheByMCPClient drops every cached per-user MCP OAuth
+// access token bound to the given MCP client from the in-memory cache. A
+// clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string) {
+	if s.Config == nil || s.Config.OAuthProvider == nil {
+		return
+	}
+	s.Config.OAuthProvider.EvictUserTokensByMCPClient(mcpClientID)
+}
+
+// EvictOauthTokenCacheByVirtualKey drops every cached vk-mode MCP OAuth
+// access token bound to the given virtual key from the in-memory cache. A
+// clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictOauthTokenCacheByVirtualKey(ctx context.Context, virtualKeyID string) {
+	if s.Config == nil || s.Config.OAuthProvider == nil {
+		return
+	}
+	s.Config.OAuthProvider.EvictUserTokensByVirtualKey(virtualKeyID)
+}
+
+// FlushOauthTokenCache drops every cached per-user MCP OAuth access token
+// from the in-memory cache. The coarse fallback for mutations whose blast
+// radius cannot be scoped to one client or virtual key. A clustered
+// deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) FlushOauthTokenCache(ctx context.Context) {
+	if s.Config == nil || s.Config.OAuthProvider == nil {
+		return
+	}
+	s.Config.OAuthProvider.FlushUserTokenCache()
+}
+
+// EvictMCPHeaderCredentialCacheByID drops the cached per-user MCP header
+// credential backed by the given credential row ID from the in-memory cache
+// after a database write. A clustered deployment overrides this to also
+// notify peers.
+func (s *BifrostHTTPServer) EvictMCPHeaderCredentialCacheByID(ctx context.Context, credentialID string) {
+	if s.Config == nil || s.Config.MCPHeadersProvider == nil {
+		return
+	}
+	s.Config.MCPHeadersProvider.EvictCredentialByID(credentialID)
+}
+
+// EvictMCPHeaderCredentialCacheByMCPClient drops every cached per-user MCP
+// header credential bound to the given MCP client from the in-memory cache.
+// A clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string) {
+	if s.Config == nil || s.Config.MCPHeadersProvider == nil {
+		return
+	}
+	s.Config.MCPHeadersProvider.EvictCredentialsByMCPClient(mcpClientID)
+}
+
+// EvictMCPHeaderCredentialCacheByVirtualKey drops every cached vk-mode MCP
+// header credential bound to the given virtual key from the in-memory cache.
+// A clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) EvictMCPHeaderCredentialCacheByVirtualKey(ctx context.Context, virtualKeyID string) {
+	if s.Config == nil || s.Config.MCPHeadersProvider == nil {
+		return
+	}
+	s.Config.MCPHeadersProvider.EvictCredentialsByVirtualKey(virtualKeyID)
+}
+
+// FlushMCPHeaderCredentialCache drops every cached per-user MCP header
+// credential from the in-memory cache. The coarse fallback for mutations
+// whose blast radius cannot be scoped to one client or virtual key. A
+// clustered deployment overrides this to also notify peers.
+func (s *BifrostHTTPServer) FlushMCPHeaderCredentialCache(ctx context.Context) {
+	if s.Config == nil || s.Config.MCPHeadersProvider == nil {
+		return
+	}
+	s.Config.MCPHeadersProvider.FlushCredentialCache()
 }
 
 // ReloadClientConfigFromConfigStore reloads the client config from config store
@@ -1863,9 +2028,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler := handlers.NewHealthHandler(s.Config)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
-	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler)
+	mcpHandler := handlers.NewMCPHandler(callbacks, callbacks, s.Client, s.Config, oauthHandler, callbacks)
 	mcpPerUserHeadersHandler := handlers.NewMCPPerUserHeadersHandler(callbacks, s.Config, s.TempTokens)
-	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config)
+	mcpSessionsHandler := handlers.NewMCPSessionsHandler(s.Config, callbacks)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
@@ -2052,8 +2217,15 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 	return commonMiddlewares
 }
 
-func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config) {
+// shouldRun, when non-nil, is consulted once before the sweep starts;
+// returning false skips it entirely. Deployments running several instances
+// against one config store can use it to restrict the sweep to a single
+// instance. nil means always run.
+func startSkillsOrphanCleanupWorker(ctx context.Context, config *lib.Config, shouldRun func() bool) {
 	if config == nil || config.ConfigStore == nil {
+		return
+	}
+	if shouldRun != nil && !shouldRun() {
 		return
 	}
 
@@ -2356,6 +2528,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
+	// Registered before ConnectConfiguredMCPClients so even the very first
+	// boot dial's discovered tools get persisted, not just later reconnects.
+	s.Client.SetMCPToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+		go s.PersistMCPClientTools(s.Ctx, clientID, tools, toolNameMapping)
+		go s.SyncMCPServersAfterToolsChange(s.Ctx, clientID)
+	})
 	// Dial configured MCP clients now that every plugin is registered in the core.
 	// Construction (bifrost.Init) no longer connects MCP, so connecting here ensures
 	// each client's PreMCPConnectionHook runs against the full plugin set rather than
@@ -2363,6 +2541,41 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// enterprise ones — registered after that snapshot, causing the client to fail
 	// and only recover on a later health-monitor reconnect).
 	s.Client.ConnectConfiguredMCPClients(s.Ctx)
+	// A proactively refreshed shared OAuth token leaves the live MCP connection
+	// still holding the old bearer (the credential is baked into the transport
+	// at connect time), so recycle the connection as soon as the refresh worker
+	// lands a fresh token instead of waiting for a call to fail. Installed only
+	// after the boot dial above so the worker's first sweep cannot race client
+	// construction. In-flight calls on the old connection may fail once during
+	// the recycle; the reactive auth-failure retry covers them. Per-user
+	// (non-shared) tokens have no persistent connection, so they are skipped.
+	if s.Config.OAuthTokenRefreshWorker != nil {
+		s.Config.OAuthTokenRefreshWorker.SetOnTokenRefreshed(func(mcpClientID, authMode string) {
+			if authMode != "shared" {
+				return
+			}
+			// Run in a goroutine: a reconnect can take minutes worst-case and
+			// must not block the worker's sequential refresh loop. Expected
+			// no-op outcomes (a reconnect already in progress, or a client
+			// type reconnect does not apply to) surface here as errors and
+			// are deliberately logged at Debug only.
+			go func() {
+				if err := s.ReconnectMCPClient(s.Ctx, mcpClientID); err != nil {
+					logger.Debug("MCP client %s was not reconnected after a proactive token refresh: %v", mcpClientID, err)
+					return
+				}
+				logger.Debug("recycled shared MCP connection for client %s after a proactive token refresh", mcpClientID)
+			}()
+		})
+		// Started here, not at construction (lib/config.go): Start's first
+		// refresh sweep runs immediately, synchronously with launching its
+		// goroutine. Starting any earlier — before the callback above is
+		// wired up and before the boot dial above has run — would let a
+		// refresh land with nothing to trigger the affected client's
+		// reconnect, leaving a live connection on the old bearer until the
+		// next scheduled sweep or a call happens to fail.
+		s.Config.OAuthTokenRefreshWorker.Start(s.Ctx)
+	}
 	// Serve a minimal robots.txt so crawlers/CLI tools (e.g. Claude Code) don't
 	// trigger 404 warnings when probing the host before marketplace fetches.
 	s.Router.GET("/robots.txt", func(ctx *fasthttp.RequestCtx) {
@@ -2387,7 +2600,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
-	startSkillsOrphanCleanupWorker(s.Ctx, s.Config)
+	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an
 	// upstream starts serving mid-uptime stays invisible until a restart or a
 	// key edit, since nothing else re-fetches list-models.

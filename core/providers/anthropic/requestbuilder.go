@@ -323,8 +323,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// support. ToAnthropicResponsesRequest doesn't do this internally
 		// (unlike ToAnthropicChatRequest), so the builder must — keeping
 		// behaviour symmetric across raw and typed paths and across both
-		// chat/responses APIs.
-		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, request.Model)
+		// chat/responses APIs. Gate on capModel, not request.Model: the
+		// model-capability predicates match on canonical Anthropic model names,
+		// so a Bifrost alias would otherwise match none of them and skip every
+		// model-level strip. The raw path above already uses capModel.
+		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
@@ -574,8 +577,10 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		// routed through a custom-provider alias whose name doesn't match
 		// the ProviderFeatures map entry. Idempotent — ToAnthropicChatRequest
 		// already strips using bifrostReq.Provider, so this only changes
-		// behaviour when the two diverge.
-		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, request.Model)
+		// behaviour when the two diverge. Gate on capModel for the same reason
+		// as the responses builder: the model predicates match canonical
+		// Anthropic model names, not Bifrost aliases.
+		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 

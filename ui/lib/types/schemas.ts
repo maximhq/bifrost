@@ -430,6 +430,12 @@ export const networkConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z
+			.number()
+			.int("HTTP/2 ping interval must be a whole number of seconds")
+			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
+			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
@@ -489,6 +495,12 @@ export const networkFormConfigSchema = z
 			.max(10000, "Max connections must be at most 10000")
 			.optional(),
 		enforce_http2: z.boolean().optional(),
+		http2_ping_interval_in_seconds: z.coerce
+			.number("HTTP/2 ping interval must be a number")
+			.int("HTTP/2 ping interval must be a whole number of seconds")
+			.min(0, "HTTP/2 ping interval must be at least 0 seconds")
+			.max(3600, "HTTP/2 ping interval must be at most 3600 seconds i.e. 60 minutes")
+			.optional(),
 		allow_private_network: z.boolean().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
@@ -1085,98 +1097,140 @@ export const prometheusFormSchema = z
 	});
 
 // MCP Client update schema
-export const mcpClientUpdateSchema = z.object({
-	is_code_mode_client: z.boolean().optional(),
-	is_ping_available: z.boolean().optional(),
-	allow_on_all_virtual_keys: z.boolean().optional(),
-	disabled: z.boolean().optional(),
-	name: z
-		.string()
-		.min(1, "Name is required")
-		.refine((val) => !val.includes("-"), {
-			message: "Client name cannot contain hyphens",
-		})
-		.refine((val) => !val.includes(" "), {
-			message: "Client name cannot contain spaces",
-		})
-		.refine((val) => !/^[0-9]/.test(val), {
-			message: "Client name cannot start with a number",
-		}),
-	headers: z.record(z.string(), secretVarSchema).optional().nullable(),
-	per_user_header_keys: z
-		.array(z.string().trim().min(1, "Header name cannot be empty"))
-		.optional()
-		.refine(
-			(headers) => {
-				if (!headers) return true;
-				const normalized = headers.map((h) => h.trim().toLowerCase());
-				return normalized.length === new Set(normalized).size;
-			},
-			{ message: "Duplicate header names are not allowed" },
-		),
-	tools_to_execute: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(tools) => {
-				if (!tools || tools.length === 0) return true;
-				const hasWildcard = tools.includes("*");
-				return !hasWildcard || tools.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with other tool names" },
-		)
-		.refine(
-			(tools) => {
-				if (!tools) return true;
-				return tools.length === new Set(tools).size;
-			},
-			{ message: "Duplicate tool names are not allowed" },
-		),
-	tools_to_auto_execute: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(tools) => {
-				if (!tools || tools.length === 0) return true;
-				const hasWildcard = tools.includes("*");
-				return !hasWildcard || tools.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with other tool names" },
-		)
-		.refine(
-			(tools) => {
-				if (!tools) return true;
-				return tools.length === new Set(tools).size;
-			},
-			{ message: "Duplicate tool names are not allowed" },
-		),
-	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
-	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
-	tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
-	allowed_extra_headers: z
-		.array(z.string())
-		.optional()
-		.refine(
-			(headers) => {
-				if (!headers || headers.length === 0) return true;
-				const hasWildcard = headers.includes("*");
-				return !hasWildcard || headers.length === 1;
-			},
-			{ message: "Wildcard '*' cannot be combined with specific header names" },
-		),
-	oauth_config: z
-		.object({
-			client_id: secretVarSchema.optional(),
-			client_secret: secretVarSchema.optional(),
-		})
-		.optional(),
-	tls_config: z
-		.object({
-			insecure_skip_verify: z.boolean().optional(),
-			ca_cert_pem: secretVarSchema.optional(),
-		})
-		.optional(),
-});
+export const mcpClientUpdateSchema = z
+	.object({
+		is_code_mode_client: z.boolean().optional(),
+		is_ping_available: z.boolean().optional(),
+		needs_session_stickiness: z.boolean().optional(),
+		allow_on_all_virtual_keys: z.boolean().optional(),
+		disabled: z.boolean().optional(),
+		name: z
+			.string()
+			.min(1, "Name is required")
+			.refine((val) => !val.includes("-"), {
+				message: "Client name cannot contain hyphens",
+			})
+			.refine((val) => !val.includes(" "), {
+				message: "Client name cannot contain spaces",
+			})
+			.refine((val) => !/^[0-9]/.test(val), {
+				message: "Client name cannot start with a number",
+			}),
+		headers: z.record(z.string(), secretVarSchema).optional().nullable(),
+		per_user_header_keys: z
+			.array(z.string().trim().min(1, "Header name cannot be empty"))
+			.optional()
+			.refine(
+				(headers) => {
+					if (!headers) return true;
+					const normalized = headers.map((h) => h.trim().toLowerCase());
+					return normalized.length === new Set(normalized).size;
+				},
+				{ message: "Duplicate header names are not allowed" },
+			),
+		tools_to_execute: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(tools) => {
+					if (!tools || tools.length === 0) return true;
+					const hasWildcard = tools.includes("*");
+					return !hasWildcard || tools.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with other tool names" },
+			)
+			.refine(
+				(tools) => {
+					if (!tools) return true;
+					return tools.length === new Set(tools).size;
+				},
+				{ message: "Duplicate tool names are not allowed" },
+			),
+		tools_to_auto_execute: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(tools) => {
+					if (!tools || tools.length === 0) return true;
+					const hasWildcard = tools.includes("*");
+					return !hasWildcard || tools.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with other tool names" },
+			)
+			.refine(
+				(tools) => {
+					if (!tools) return true;
+					return tools.length === new Set(tools).size;
+				},
+				{ message: "Duplicate tool names are not allowed" },
+			),
+		tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
+		tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
+		tool_execution_timeout: z.number().int().min(0).optional(), // 0 = use global, >0 = per-server timeout in seconds
+		allowed_extra_headers: z
+			.array(z.string())
+			.optional()
+			.refine(
+				(headers) => {
+					if (!headers || headers.length === 0) return true;
+					const hasWildcard = headers.includes("*");
+					return !hasWildcard || headers.length === 1;
+				},
+				{ message: "Wildcard '*' cannot be combined with specific header names" },
+			),
+		oauth_config: z
+			.object({
+				client_id: secretVarSchema.optional(),
+				client_secret: secretVarSchema.optional(),
+				authorize_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Authorize URL must start with http:// or https://" }),
+				token_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Token URL must start with http:// or https://" }),
+				registration_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), { message: "Registration URL must start with http:// or https://" }),
+				scopes: z.array(z.string()).optional(),
+				resource: z.string().optional(),
+			})
+			.optional(),
+		token_exchange: z
+			.object({
+				audience: z.string().trim().min(1, "Audience is required"),
+				client_id: secretVarSchema.optional(),
+				client_secret: secretVarSchema.optional(),
+				authorization_server_url: z
+					.string()
+					.optional()
+					.refine((val) => !val || /^https?:\/\/.+$/.test(val), {
+						message: "Authorization Server URL must start with http:// or https://",
+					}),
+				scopes: z.array(z.string()).optional(),
+			})
+			.optional(),
+		tls_config: z
+			.object({
+				insecure_skip_verify: z.boolean().optional(),
+				ca_cert_pem: secretVarSchema.optional(),
+			})
+			.optional(),
+	})
+	.superRefine((data, ctx) => {
+		// per_user_header_keys is only ever set on the form for per_user_headers
+		// auth clients (undefined otherwise), so an empty array here means the
+		// admin cleared every entry, not that the field doesn't apply.
+		if (data.per_user_header_keys !== undefined && data.per_user_header_keys.length === 0) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["per_user_header_keys"],
+				message: "Declare at least one header name users must supply.",
+			});
+		}
+	});
 
 // Global proxy type schema
 export const globalProxyTypeSchema = z.enum(["http", "socks5", "tcp"]);

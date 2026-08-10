@@ -2443,16 +2443,41 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 	case schemas.ResponsesStreamResponseTypeCreated:
 		// Only convert response.created back to message_start (not response.in_progress to avoid duplicates)
 		streamResp.Type = AnthropicStreamEventTypeMessageStart
-		if bifrostResp.Response != nil {
+		{
+			// The message object is built unconditionally, even when the created event
+			// carries no BifrostResponsesResponse at all: a bare {"type":"message_start"}
+			// fails the same strict-client validation as one missing usage, and there is
+			// always enough in ExtraFields to render a usable frame.
+			//
 			// Use actual usage if available (forwarded from upstream message_start).
-			// When unknown (e.g. Bedrock Converse, which only reports usage on its
-			// terminal event), omit the field entirely rather than fabricating
-			// zeros — Anthropic's own documented streaming contract tolerates usage
-			// being absent from message_start, and reporting zeros would misrepresent
-			// cost/usage telemetry to clients that read input_tokens from here.
+			// When unknown — Bedrock Converse reports usage only on its terminal event,
+			// and every provider routed through providerUtils.SendCreatedEventResponsesChunk
+			// hands us an empty BifrostResponsesResponse — the key must still be emitted.
+			// message_start.usage is not optional in practice: Anthropic populates it on
+			// every real stream, and @ai-sdk/anthropic's message_start schema marks
+			// usage.input_tokens required (id/model/role are nullish), so omitting it
+			// aborts the stream before the first token reaches the client (see #5885).
+			//
+			// Zeros rather than Anthropic's own output_tokens:1 placeholder: the frame is
+			// provisional either way, but Bifrost's Bedrock message_delta carries absolute
+			// totals rather than Anthropic's cumulative deltas, so a client that sums the
+			// two would over-count. Zero is neutral under both readings, and the terminal
+			// message_delta remains the authoritative source of the real figures.
 			var messageUsage *AnthropicUsage
-			if bifrostResp.Response.Usage != nil {
+			if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
 				messageUsage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+			}
+			if messageUsage == nil {
+				messageUsage = &AnthropicUsage{
+					InputTokens:              0,
+					OutputTokens:             0,
+					CacheReadInputTokens:     0,
+					CacheCreationInputTokens: 0,
+					CacheCreation: AnthropicUsageCacheCreation{
+						Ephemeral5mInputTokens: 0,
+						Ephemeral1hInputTokens: 0,
+					},
+				}
 			}
 			streamMessage := &AnthropicMessageResponse{
 				Type:    "message",
@@ -2460,7 +2485,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				Content: []AnthropicContentBlock{}, // Always empty array in message_start
 				Usage:   messageUsage,
 			}
-			if bifrostResp.Response.ID != nil {
+			if bifrostResp.Response != nil && bifrostResp.Response.ID != nil {
 				streamMessage.ID = *bifrostResp.Response.ID
 			}
 			// Prefer Response.Model, then ResolvedModelUsed, then OriginalModelRequested
@@ -2472,7 +2497,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				streamMessage.Model = bifrostResp.ExtraFields.OriginalModelRequested
 			}
 			// Cache diagnostics arrives on message_start (cache-diagnosis-2026-04-07).
-			if bifrostResp.Response.Diagnostics != nil {
+			if bifrostResp.Response != nil && bifrostResp.Response.Diagnostics != nil {
 				streamMessage.Diagnostics = bifrostResp.Response.Diagnostics
 			}
 			streamResp.Message = streamMessage
@@ -2640,7 +2665,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						// embedID gates smuggling the real OpenAI reasoning item id into
 						// signature/data (see providerUtils.ShouldEmbedReasoningItemID and
 						// convertBifrostReasoningToAnthropicThinking for why).
-						embedID := providerUtils.ShouldEmbedReasoningItemID(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.RoutingInfo.Model)
+						embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.RoutingInfo.Model)
 						contentBlock.Type = AnthropicContentBlockTypeThinking
 						contentBlock.Thinking = schemas.Ptr("")
 						signature := ""
@@ -2665,7 +2690,7 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 						// When thinking is enabled, reasoning content might be incorrectly classified as FunctionCall
 						if bifrostResp.Item.ResponsesReasoning != nil {
 							// This is actually reasoning content, not a function call
-							embedID := providerUtils.ShouldEmbedReasoningItemID(bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.RoutingInfo.Model)
+							embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, bifrostResp.ExtraFields.Provider, bifrostResp.ExtraFields.RoutingInfo.Model)
 							contentBlock.Type = AnthropicContentBlockTypeThinking
 							contentBlock.Thinking = schemas.Ptr("")
 							signature := ""
@@ -3461,6 +3486,25 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
+	// Lift the mixed server/client tool opt-in onto the typed parameter: the
+	// Gemini declaration-drop gate reads Params.IncludeServerSideToolInvocations,
+	// so leaving it in ExtraParams silently drops function tools when a request
+	// combines them with a server-side tool (issue #5679). Unregistered fields
+	// are captured as json.RawMessage holding the bare true/false token, so a
+	// string comparison is enough.
+	if raw, exists := req.ExtraParams["include_server_side_tool_invocations"]; exists {
+		switch v := raw.(type) {
+		case bool:
+			params.IncludeServerSideToolInvocations = schemas.Ptr(v)
+		case json.RawMessage:
+			switch strings.TrimSpace(string(v)) {
+			case "true":
+				params.IncludeServerSideToolInvocations = schemas.Ptr(true)
+			case "false":
+				params.IncludeServerSideToolInvocations = schemas.Ptr(false)
+			}
+		}
+	}
 	if req.ServiceTier != nil {
 		mapped := MapAnthropicRequestServiceTierToBifrost(*req.ServiceTier)
 		params.ServiceTier = &mapped
@@ -3941,6 +3985,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		anthropicReq.Messages = anthropicMessages
 	}
 
+	// See the same call in ToAnthropicChatRequest: over the cap the provider rejects the request
+	// outright, so trim the earliest markers instead of failing.
+	clampAnthropicCacheBreakpoints(anthropicReq)
+
 	return anthropicReq, nil
 }
 
@@ -4351,6 +4399,13 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// role:"system" in the messages array when the provider+model supports it.
 	seenConversation := false
 	midConvSystemSupported := isRequestMessage && SupportsMidConversationSystem(provider, model)
+	// When the native role:"system" form isn't available, inline the reminder as a user turn
+	// rather than hoisting it into the top-level system block — hoisting preserves the
+	// breakpoint but invalidates the cached prefix behind it, costing roughly half the prompt on
+	// a warm conversation. Gated on the Anthropic model family because these call sites also
+	// serve DeepSeek/Fireworks/SGL over the Anthropic wire shape, and the <system-reminder>
+	// envelope is a Claude convention those models never asked for; they keep hoisting.
+	inlineMidConvSystem := isRequestMessage && schemas.IsAnthropicModelFamily(ctx, model)
 
 	var anthropicMessages []AnthropicMessage
 	var systemContent *AnthropicContent
@@ -4375,6 +4430,29 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// previous_response_id pattern without its originating function_call) and must
 	// NOT be emitted as a tool_result, or Anthropic rejects the whole request.
 	knownToolUseIDs := make(map[string]bool)
+
+	// midConvPlacementOK reports whether a mid-conversation system message at input index i can
+	// legally be forwarded as role:"system". Anthropic enforces two clauses and rejects a
+	// violation of either with "messages.N: role 'system' must follow a 'user' message ...":
+	// the turn must FOLLOW a user message (or an assistant message ending in server-tool use),
+	// and it must be either the last entry or be followed by an assistant turn.
+	//
+	// The check is deliberately conservative — it looks at what has actually been emitted rather
+	// than trying to predict how the remaining input items will map to output messages, and it
+	// does not attempt to recognize the assistant-ending-in-server-tool-use exception. A
+	// false negative costs nothing: the caller falls back to inlining, which is cache-preserving
+	// and always accepted. A false positive would be a 400.
+	midConvPlacementOK := func(i int) bool {
+		if len(anthropicMessages) == 0 ||
+			anthropicMessages[len(anthropicMessages)-1].Role != AnthropicMessageRoleUser {
+			return false
+		}
+		if i == len(bifrostMessages)-1 {
+			return true
+		}
+		next := bifrostMessages[i+1]
+		return next.Role != nil && *next.Role == schemas.ResponsesInputMessageRoleAssistant
+	}
 
 	// Helper to emit orphaned tool results (no matching tool_use) as a single user
 	// text message so their content is preserved without violating Anthropic's
@@ -4548,13 +4626,22 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					seenConversation = true
 				}
 				if content := convertBifrostMessageToAnthropicSystemContent(&msg); content != nil {
-					if seenConversation && midConvSystemSupported {
+					switch {
+					case seenConversation && midConvSystemSupported && midConvPlacementOK(i):
 						// Mid-conversation system message — emit as role:"system" in messages array.
 						anthropicMessages = append(anthropicMessages, AnthropicMessage{
 							Role:    AnthropicMessageRoleSystem,
 							Content: *content,
 						})
-					} else {
+					case seenConversation && inlineMidConvSystem:
+						// Native form unavailable (unsupported model, or a placement Anthropic
+						// rejects). Inline in place so the cache anchor stays inside `messages`
+						// instead of collapsing the prefix from the system block.
+						if inlined := inlineMidConversationSystem(content); inlined != nil {
+							anthropicMessages = append(anthropicMessages, *inlined)
+						}
+					default:
+						// Leading system run, or a non-Anthropic model: hoist (historical behavior).
 						systemContent = appendToSystemContent(systemContent, *content)
 					}
 				}
@@ -4597,7 +4684,7 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			flushPendingToolResults()
 
 			// Handle reasoning as thinking content
-			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(&msg, provider, model)
+			reasoningBlocks := convertBifrostReasoningToAnthropicThinking(ctx, &msg, provider, model)
 			pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 
 		case schemas.ResponsesMessageTypeFunctionCall:
@@ -5312,6 +5399,15 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesImageBlock())
 								}
+							case AnthropicContentBlockTypeDocument:
+								// A tool returning a PDF (Claude Code's Read tool, for one)
+								// nests a document block here. Dropping it leaves the
+								// function_call_output with an empty content array, which
+								// OpenAI rejects outright:
+								// "Missing required parameter: 'input[N].content[0]'".
+								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
+									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
+								}
 							}
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
@@ -5748,6 +5844,15 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesImageBlock())
 								}
+							case AnthropicContentBlockTypeDocument:
+								// A tool returning a PDF (Claude Code's Read tool, for one)
+								// nests a document block here. Dropping it leaves the
+								// function_call_output with an empty content array, which
+								// OpenAI rejects outright:
+								// "Missing required parameter: 'input[N].content[0]'".
+								if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
+									toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
+								}
 							}
 						}
 						bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
@@ -6103,9 +6208,9 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 // echoes the block back on a later turn, a fresh random id gets minted and paired
 // with the original (still real) encrypted_content -- a mismatch OpenAI rejects
 // with "Encrypted content item_id did not match the target item id."
-func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string) []AnthropicContentBlock {
+func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage, sourceProvider schemas.ModelProvider, model string) []AnthropicContentBlock {
 	var thinkingBlocks []AnthropicContentBlock
-	embedID := providerUtils.ShouldEmbedReasoningItemID(sourceProvider, model)
+	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model)
 
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
@@ -8017,7 +8122,47 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 		}
 	}
 
+	// Anthropic's document block has an optional `title`; OpenAI's Responses
+	// API rejects an input_file that carries inline file_data without a
+	// filename. Synthesize one so a title-less document (the common case when
+	// a tool returns a PDF) still converts into an acceptable request.
+	file := resultBlock.ResponsesInputMessageContentBlockFile
+	if file.FileData != nil && (file.Filename == nil || *file.Filename == "") {
+		file.Filename = schemas.Ptr(defaultDocumentFilename(src))
+	}
+
 	return resultBlock
+}
+
+// defaultDocumentFilename builds a filename for a document block that has no
+// title, picking the extension from the source's media type. Anthropic
+// defaults document blocks to PDF, so that's the fallback.
+func defaultDocumentFilename(src *AnthropicSource) string {
+	mediaType := ""
+	if src != nil && src.MediaType != nil {
+		mediaType = *src.MediaType
+	}
+	if src != nil && src.Type == "text" {
+		mediaType = "text/plain"
+	}
+
+	ext := ".pdf"
+	switch mediaType {
+	case "", "application/pdf":
+		ext = ".pdf"
+	case "text/plain":
+		ext = ".txt"
+	default:
+		// "application/json" -> ".json", "text/markdown" -> ".markdown".
+		if _, subtype, found := strings.Cut(mediaType, "/"); found && subtype != "" {
+			// Strip vendor/suffix decorations: "vnd.ms-excel+xml" -> "xml".
+			if _, suffix, hasSuffix := strings.Cut(subtype, "+"); hasSuffix && suffix != "" {
+				subtype = suffix
+			}
+			ext = "." + subtype
+		}
+	}
+	return "document" + ext
 }
 
 // Helper functions for MCP tool/server conversion

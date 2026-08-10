@@ -56,6 +56,9 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePromptSessionMessage{},
 		&tables.TableOauthUserSession{},
 		&tables.TableOauthUserToken{},
+		&tables.TableOauthToken{},
+		&tables.TableMCPOauthToken{},
+		&tables.TableMCPOauthFlow{},
 		&tables.TableMCPPerUserHeaderCredential{},
 		&tables.TableMCPPerUserHeaderFlow{},
 		&tables.TableOAuth2RefreshToken{},
@@ -749,6 +752,46 @@ func TestUpdateBudget(t *testing.T) {
 	assert.Equal(t, 200.0, result.MaxLimit)
 }
 
+// TestUpdateBudgetPreservesRuntimeCounters verifies a configuration-shaped update
+// cannot clobber the runtime-owned counters.
+//
+// CurrentUsage and LastReset are advanced by the governance dump path, never by
+// config.json, which is why GenerateBudgetHash deliberately excludes them. A
+// source_of_truth=config.json startup force-sync replays the file row through
+// UpdateBudget with those fields at their Go zero values, so UpdateBudget must
+// carry the persisted values forward the same way it already does for the
+// override grant and the owner FKs.
+func TestUpdateBudgetPreservesRuntimeCounters(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	lastReset := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	require.NoError(t, store.CreateBudget(ctx, &tables.TableBudget{
+		ID:            "budget-runtime-counters",
+		MaxLimit:      100.0,
+		ResetDuration: "1h",
+		CurrentUsage:  42.5,
+		LastReset:     lastReset,
+	}))
+
+	// The shape config.json produces: configuration-owned fields only, with the
+	// runtime counters absent and therefore zero.
+	require.NoError(t, store.UpdateBudget(ctx, &tables.TableBudget{
+		ID:            "budget-runtime-counters",
+		MaxLimit:      200.0,
+		ResetDuration: "1h",
+	}))
+
+	result, err := store.GetBudget(ctx, "budget-runtime-counters")
+	require.NoError(t, err)
+	assert.Equal(t, 200.0, result.MaxLimit, "configuration-owned max_limit must follow the file")
+	assert.Equal(t, "1h", result.ResetDuration, "configuration-owned reset_duration must follow the file")
+	assert.Equal(t, 42.5, result.CurrentUsage, "runtime-owned current_usage must survive a config-shaped update")
+	assert.True(t, result.LastReset.Equal(lastReset),
+		"runtime-owned last_reset must survive a config-shaped update: got %s, want %s",
+		result.LastReset.UTC(), lastReset)
+}
+
 // TestCreateBudgetWithOverride verifies finite and permanent override state round-trips through the config store.
 func TestCreateBudgetWithOverride(t *testing.T) {
 	store := setupRDBTestStore(t)
@@ -991,6 +1034,56 @@ func TestUpdateRateLimit(t *testing.T) {
 	result, err := store.GetRateLimit(ctx, "rate-limit-update")
 	require.NoError(t, err)
 	assert.Equal(t, int64(200000), *result.TokenMaxLimit)
+}
+
+// TestUpdateRateLimitPreservesRuntimeCounters is the rate-limit counterpart of
+// TestUpdateBudgetPreservesRuntimeCounters: the same startup force-sync replays
+// the file-shaped rate limit, and the token/request counters are runtime-owned
+// for the same reason (GenerateRateLimitHash excludes them).
+func TestUpdateRateLimitPreservesRuntimeCounters(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	tokenMax := int64(100000)
+	tokenDuration := "1h"
+	requestMax := int64(500)
+	requestDuration := "1h"
+	tokenLastReset := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	requestLastReset := time.Date(2026, time.August, 1, 0, 30, 0, 0, time.UTC)
+
+	require.NoError(t, store.CreateRateLimit(ctx, &tables.TableRateLimit{
+		ID:                   "rate-limit-runtime-counters",
+		TokenMaxLimit:        &tokenMax,
+		TokenResetDuration:   &tokenDuration,
+		TokenCurrentUsage:    1234,
+		TokenLastReset:       tokenLastReset,
+		RequestMaxLimit:      &requestMax,
+		RequestResetDuration: &requestDuration,
+		RequestCurrentUsage:  56,
+		RequestLastReset:     requestLastReset,
+	}))
+
+	newTokenMax := int64(200000)
+	require.NoError(t, store.UpdateRateLimit(ctx, &tables.TableRateLimit{
+		ID:                   "rate-limit-runtime-counters",
+		TokenMaxLimit:        &newTokenMax,
+		TokenResetDuration:   &tokenDuration,
+		RequestMaxLimit:      &requestMax,
+		RequestResetDuration: &requestDuration,
+	}))
+
+	result, err := store.GetRateLimit(ctx, "rate-limit-runtime-counters")
+	require.NoError(t, err)
+	require.NotNil(t, result.TokenMaxLimit)
+	assert.Equal(t, int64(200000), *result.TokenMaxLimit, "configuration-owned token_max_limit must follow the file")
+	assert.Equal(t, int64(1234), result.TokenCurrentUsage, "runtime-owned token_current_usage must survive a config-shaped update")
+	assert.Equal(t, int64(56), result.RequestCurrentUsage, "runtime-owned request_current_usage must survive a config-shaped update")
+	assert.True(t, result.TokenLastReset.Equal(tokenLastReset),
+		"runtime-owned token_last_reset must survive a config-shaped update: got %s, want %s",
+		result.TokenLastReset.UTC(), tokenLastReset)
+	assert.True(t, result.RequestLastReset.Equal(requestLastReset),
+		"runtime-owned request_last_reset must survive a config-shaped update: got %s, want %s",
+		result.RequestLastReset.UTC(), requestLastReset)
 }
 
 // =============================================================================

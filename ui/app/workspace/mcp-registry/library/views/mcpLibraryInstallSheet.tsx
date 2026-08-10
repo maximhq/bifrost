@@ -113,6 +113,8 @@ function authLabel(authType?: MCPAuthType | string): string {
 			return "Per-user OAuth";
 		case "per_user_headers":
 			return "User headers";
+		case "token_exchange":
+			return "Token exchange";
 		default:
 			return "No auth";
 	}
@@ -128,6 +130,8 @@ function authHelpText(authType?: MCPAuthType | string): string {
 			return "Create the MCP client, then authorize the first user OAuth connection.";
 		case "per_user_headers":
 			return "Declare the header names each caller must supply, then verify a sample set on install.";
+		case "token_exchange":
+			return "Set the identity-provider audience for this server; each caller's identity token is exchanged automatically.";
 		default:
 			return "No credentials are required for this catalog entry.";
 	}
@@ -931,8 +935,10 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 						setHeadersFlow(null);
 						setError("name", { message: error });
 					}}
-					payload={headersFlow.payload}
 					perUserHeaderKeys={perUserHeaderKeys}
+					submitHandler={async (values) => {
+						await createMCPClient({ ...headersFlow.payload, user_headers: values }).unwrap();
+					}}
 				/>
 			)}
 		</Sheet>

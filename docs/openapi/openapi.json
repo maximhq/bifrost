@@ -42703,10 +42703,10 @@
           {
             "name": "state",
             "in": "query",
-            "description": "Comma-separated runtime connection states to include (OR semantics),\nresolved against live engine state. `connected` matches clients the engine\ncurrently reports as connected; `disconnected` matches everything else.\n",
+            "description": "Comma-separated runtime connection states to include (OR semantics),\nresolved against live engine state. Only `healthy` and\n`unstable` are meaningful filter values: `healthy` matches\nclients the engine currently reports as healthy; `unstable`\nmatches everything else (error, pending states, needs_reauth,\ndisabled, not present in the engine). Selecting both, or neither,\napplies no state filter. Note the response-only needs_reauth\nprojection on per-user clients happens after filtering, so such\nclients still match `healthy`.\n",
             "schema": {
               "type": "string",
-              "example": "connected"
+              "example": "healthy"
             }
           },
           {
@@ -42818,7 +42818,7 @@
       "post": {
         "operationId": "addMCPClient",
         "summary": "Add MCP client",
-        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client as tools are fetched after client creation.\n",
+        "description": "Adds a new MCP client with the specified configuration.\nNote: tool_pricing is not available when creating a new client; tool\npricing can only be set once the tool list is known. For shared-connection\nclients tools are fetched after client creation; for per-user auth types\nthey are discovered during the create/verify flow itself.\n",
         "tags": [
           "MCP"
         ],
@@ -42864,6 +42864,46 @@
                               },
                               "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "token_exchange"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "token_exchange"
+                              ],
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "token_exchange"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "token_exchange"
+                                ]
+                              },
+                              "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -42883,6 +42923,27 @@
                             "default": true,
                             "description": "Whether the MCP server supports ping for health checks.\nIf true, uses lightweight ping method for health checks.\nIf false, uses listTools method for health checks instead.\n"
                           },
+                          "needs_session_stickiness": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HTTP-only. Only meaningful for auth_type \"oauth\", \"headers\", or \"none\"\n(a server-level connection) — per-user auth types are always per-call\nregardless of this field. When true, Bifrost holds one persistent\nupstream connection, reused for every tool call. When false or\nomitted (the default), a fresh connection is dialed per tool call.\nCannot be set to false for connection_type \"sse\" or \"stdio\" — both\nare always sticky.\n"
+                          },
+                          "tool_sync_interval": {
+                            "type": "integer",
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                          },
+                          "tool_execution_timeout": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Per-client tool execution timeout in seconds. 0 (or omitted) falls back\nto the global mcp_tool_execution_timeout client config.\n"
+                          },
+                          "allowed_extra_headers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Allowlist of request-level headers callers may forward to this MCP\nserver at execution time.\n[\"*\"] => any header may be forwarded\n[] or omitted => no extra headers are forwarded\n[\"header1\", \"header2\"] => only the specified headers\n"
+                          },
                           "connection_type": {
                             "type": "string",
                             "enum": [
@@ -42900,7 +42961,8 @@
                               "headers",
                               "oauth",
                               "per_user_oauth",
-                              "per_user_headers"
+                              "per_user_headers",
+                              "token_exchange"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -42917,7 +42979,7 @@
                           },
                           "oauth_config": {
                             "$ref": "#/components/schemas/OAuthConfigRequest",
-                            "description": "OAuth configuration for initiating OAuth flow.\nOnly include this when creating a client with auth_type \"oauth\".\nThis will trigger the OAuth flow and return an authorization URL.\n"
+                            "description": "OAuth configuration for initiating OAuth flow.\nRequired when creating a client with auth_type \"oauth\" or \"per_user_oauth\".\nThis will trigger the OAuth flow and return an authorization URL\n(see the pending_oauth response variant).\n"
                           },
                           "tools_to_execute": {
                             "type": "array",
@@ -42959,12 +43021,47 @@
                             },
                             "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
                           },
+                          "token_exchange": {
+                            "type": "object",
+                            "required": [
+                              "audience",
+                              "client_id"
+                            ],
+                            "properties": {
+                              "audience": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+                              },
+                              "authorization_server_url": {
+                                "type": "string",
+                                "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+                              }
+                            },
+                            "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
+                          },
                           "user_headers": {
                             "type": "object",
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Discarded after the create\ncall — not persisted. Mirrors how the admin's temp OAuth token is used\nfor `per_user_oauth` setup.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
                           }
                         }
                       },
@@ -43024,6 +43121,46 @@
                               },
                               "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "token_exchange"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "token_exchange"
+                              ],
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "token_exchange"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "token_exchange"
+                                ]
+                              },
+                              "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -43043,6 +43180,27 @@
                             "default": true,
                             "description": "Whether the MCP server supports ping for health checks.\nIf true, uses lightweight ping method for health checks.\nIf false, uses listTools method for health checks instead.\n"
                           },
+                          "needs_session_stickiness": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HTTP-only. Only meaningful for auth_type \"oauth\", \"headers\", or \"none\"\n(a server-level connection) — per-user auth types are always per-call\nregardless of this field. When true, Bifrost holds one persistent\nupstream connection, reused for every tool call. When false or\nomitted (the default), a fresh connection is dialed per tool call.\nCannot be set to false for connection_type \"sse\" or \"stdio\" — both\nare always sticky.\n"
+                          },
+                          "tool_sync_interval": {
+                            "type": "integer",
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                          },
+                          "tool_execution_timeout": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Per-client tool execution timeout in seconds. 0 (or omitted) falls back\nto the global mcp_tool_execution_timeout client config.\n"
+                          },
+                          "allowed_extra_headers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Allowlist of request-level headers callers may forward to this MCP\nserver at execution time.\n[\"*\"] => any header may be forwarded\n[] or omitted => no extra headers are forwarded\n[\"header1\", \"header2\"] => only the specified headers\n"
+                          },
                           "connection_type": {
                             "type": "string",
                             "enum": [
@@ -43060,7 +43218,8 @@
                               "headers",
                               "oauth",
                               "per_user_oauth",
-                              "per_user_headers"
+                              "per_user_headers",
+                              "token_exchange"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -43077,7 +43236,7 @@
                           },
                           "oauth_config": {
                             "$ref": "#/components/schemas/OAuthConfigRequest",
-                            "description": "OAuth configuration for initiating OAuth flow.\nOnly include this when creating a client with auth_type \"oauth\".\nThis will trigger the OAuth flow and return an authorization URL.\n"
+                            "description": "OAuth configuration for initiating OAuth flow.\nRequired when creating a client with auth_type \"oauth\" or \"per_user_oauth\".\nThis will trigger the OAuth flow and return an authorization URL\n(see the pending_oauth response variant).\n"
                           },
                           "tools_to_execute": {
                             "type": "array",
@@ -43119,12 +43278,47 @@
                             },
                             "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
                           },
+                          "token_exchange": {
+                            "type": "object",
+                            "required": [
+                              "audience",
+                              "client_id"
+                            ],
+                            "properties": {
+                              "audience": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+                              },
+                              "authorization_server_url": {
+                                "type": "string",
+                                "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+                              }
+                            },
+                            "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
+                          },
                           "user_headers": {
                             "type": "object",
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Discarded after the create\ncall — not persisted. Mirrors how the admin's temp OAuth token is used\nfor `per_user_oauth` setup.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
                           }
                         }
                       },
@@ -43184,6 +43378,46 @@
                               },
                               "description": "When `auth_type` is `per_user_headers`, `per_user_header_keys` must\ndeclare at least one header name — the submission flow has nothing\nto ask the end-user for otherwise.\n"
                             }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "const": "token_exchange"
+                                }
+                              }
+                            },
+                            "then": {
+                              "required": [
+                                "token_exchange"
+                              ],
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                            }
+                          },
+                          {
+                            "if": {
+                              "required": [
+                                "auth_type"
+                              ],
+                              "properties": {
+                                "auth_type": {
+                                  "not": {
+                                    "const": "token_exchange"
+                                  }
+                                }
+                              }
+                            },
+                            "then": {
+                              "not": {
+                                "required": [
+                                  "token_exchange"
+                                ]
+                              },
+                              "description": "A `token_exchange` block only applies to auth_type \"token_exchange\";\nreject it for every other auth_type instead of silently ignoring it.\n"
+                            }
                           }
                         ],
                         "properties": {
@@ -43203,6 +43437,27 @@
                             "default": true,
                             "description": "Whether the MCP server supports ping for health checks.\nIf true, uses lightweight ping method for health checks.\nIf false, uses listTools method for health checks instead.\n"
                           },
+                          "needs_session_stickiness": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HTTP-only. Only meaningful for auth_type \"oauth\", \"headers\", or \"none\"\n(a server-level connection) — per-user auth types are always per-call\nregardless of this field. When true, Bifrost holds one persistent\nupstream connection, reused for every tool call. When false or\nomitted (the default), a fresh connection is dialed per tool call.\nCannot be set to false for connection_type \"sse\" or \"stdio\" — both\nare always sticky.\n"
+                          },
+                          "tool_sync_interval": {
+                            "type": "integer",
+                            "description": "Per-client tool-list sync interval in minutes. 0 (or omitted) falls back\nto the global mcp_tool_sync_interval client config; a negative value\ndisables periodic tool sync for this client.\n"
+                          },
+                          "tool_execution_timeout": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Per-client tool execution timeout in seconds. 0 (or omitted) falls back\nto the global mcp_tool_execution_timeout client config.\n"
+                          },
+                          "allowed_extra_headers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Allowlist of request-level headers callers may forward to this MCP\nserver at execution time.\n[\"*\"] => any header may be forwarded\n[] or omitted => no extra headers are forwarded\n[\"header1\", \"header2\"] => only the specified headers\n"
+                          },
                           "connection_type": {
                             "type": "string",
                             "enum": [
@@ -43220,7 +43475,8 @@
                               "headers",
                               "oauth",
                               "per_user_oauth",
-                              "per_user_headers"
+                              "per_user_headers",
+                              "token_exchange"
                             ],
                             "description": "Authentication type for the MCP connection"
                           },
@@ -43237,7 +43493,7 @@
                           },
                           "oauth_config": {
                             "$ref": "#/components/schemas/OAuthConfigRequest",
-                            "description": "OAuth configuration for initiating OAuth flow.\nOnly include this when creating a client with auth_type \"oauth\".\nThis will trigger the OAuth flow and return an authorization URL.\n"
+                            "description": "OAuth configuration for initiating OAuth flow.\nRequired when creating a client with auth_type \"oauth\" or \"per_user_oauth\".\nThis will trigger the OAuth flow and return an authorization URL\n(see the pending_oauth response variant).\n"
                           },
                           "tools_to_execute": {
                             "type": "array",
@@ -43279,12 +43535,47 @@
                             },
                             "description": "Required when `auth_type` is `per_user_headers`. List of header names each\nend-user must supply the first time they hit this MCP server. Values are\nsubmitted per user via the inline-401 flow — never persisted on the MCP\nclient config.\n"
                           },
+                          "token_exchange": {
+                            "type": "object",
+                            "required": [
+                              "audience",
+                              "client_id"
+                            ],
+                            "properties": {
+                              "audience": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+                              },
+                              "client_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "client_secret": {
+                                "type": "string",
+                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                              },
+                              "scopes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                },
+                                "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+                              },
+                              "authorization_server_url": {
+                                "type": "string",
+                                "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+                              }
+                            },
+                            "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
+                          },
                           "user_headers": {
                             "type": "object",
                             "additionalProperties": {
                               "type": "string"
                             },
-                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Discarded after the create\ncall — not persisted. Mirrors how the admin's temp OAuth token is used\nfor `per_user_oauth` setup.\n"
+                            "description": "Used only at create time when `auth_type` is `per_user_headers`. A sample\nset of header values the admin supplies so Bifrost can run a one-time\nupstream verify and discover the tool list. Not persisted by the create\ncall; each end-user submits their own values at runtime. To have Bifrost\nretain an admin discovery credential for periodic tool-list refresh,\nuse POST /api/mcp/client/{id}/verify-headers, which stores the sample\nvalues as that credential.\n"
                           }
                         }
                       },
@@ -43349,11 +43640,18 @@
         ],
         "responses": {
           "200": {
-            "description": "MCP client added successfully",
+            "description": "MCP client added successfully. For auth_type \"oauth\" and\n\"per_user_oauth\" the client is not created yet — the response is the\npending_oauth variant carrying authorize_url plus status_url /\ncomplete_url / next_steps hints; the client is created when the flow\nis completed via complete_url.\n",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OAuthFlowInitiation"
+                    }
+                  ]
                 }
               }
             }
@@ -43385,7 +43683,7 @@
       "put": {
         "operationId": "editMCPClient",
         "summary": "Edit MCP client",
-        "description": "Updates an existing MCP client's configuration.\nUnlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.\nOptionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.\nSet disabled: true to shut down the client's connection and workers without removing it. Set disabled: false to reconnect a previously disabled client.\n",
+        "description": "Updates an existing MCP client's configuration. All fields are optional\n(PATCH semantics); connection_type, auth_type, connection_string,\nstdio_config, and oauth_config_id are immutable after creation.\nUnlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.\nFor OAuth-based clients, providing oauth_config rotates the stored OAuth\nconfiguration in place and flips every bound token to needs_reauth when\na field actually changes (see MCPClientUpdateRequest.oauth_config).\nOptionally provide vk_configs to manage which virtual keys have access to this MCP server and with which tools. When provided, this fully replaces all existing VK assignments in a single atomic transaction.\nSet disabled: true to shut down the client's connection and workers without removing it. Set disabled: false to reconnect a previously disabled client.\n",
         "tags": [
           "MCP"
         ],
@@ -43406,41 +43704,8 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "MCP client configuration for updating an existing client (includes tool_pricing)",
-                "allOf": [
-                  {
-                    "if": {
-                      "required": [
-                        "auth_type"
-                      ],
-                      "properties": {
-                        "auth_type": {
-                          "const": "per_user_headers"
-                        }
-                      }
-                    },
-                    "then": {
-                      "required": [
-                        "per_user_header_keys"
-                      ],
-                      "properties": {
-                        "per_user_header_keys": {
-                          "type": "array",
-                          "minItems": 1,
-                          "items": {
-                            "type": "string",
-                            "minLength": 1
-                          }
-                        }
-                      }
-                    }
-                  }
-                ],
+                "description": "MCP client configuration for updating an existing client (includes tool_pricing).\nAll fields are optional; omitting a field retains its existing value (PATCH\nsemantics). Immutable fields (connection_type, auth_type, connection_string,\nstdio_config, oauth_config_id) are not accepted here; they cannot be changed\nafter creation.\n",
                 "properties": {
-                  "client_id": {
-                    "type": "string",
-                    "description": "Unique identifier for the MCP client"
-                  },
                   "name": {
                     "type": "string",
                     "description": "Display name for the MCP client"
@@ -43449,65 +43714,40 @@
                     "type": "boolean",
                     "description": "Whether this client is available in code mode"
                   },
-                  "connection_type": {
-                    "type": "string",
-                    "enum": [
-                      "http",
-                      "stdio",
-                      "sse",
-                      "inprocess"
-                    ],
-                    "description": "Connection type for MCP client"
+                  "is_ping_available": {
+                    "type": "boolean",
+                    "description": "Whether the MCP server supports ping for health checks.\nIf true, uses lightweight ping method for health checks.\nIf false, uses listTools method for health checks instead.\n"
                   },
-                  "connection_string": {
-                    "type": "string",
-                    "description": "HTTP or SSE URL (required for HTTP or SSE connections)"
+                  "needs_session_stickiness": {
+                    "type": "boolean",
+                    "description": "HTTP-only. Only meaningful for auth_type \"oauth\", \"headers\", or \"none\"\n— per-user auth types are always per-call regardless of this field.\nWhen true, Bifrost holds one persistent upstream connection, reused\nfor every tool call. When false, a fresh connection is dialed per\ntool call. Cannot be set to false for connection_type \"sse\" or\n\"stdio\" — both are always sticky.\n"
                   },
-                  "stdio_config": {
-                    "type": "object",
-                    "description": "STDIO configuration for MCP client",
-                    "properties": {
-                      "command": {
-                        "type": "string",
-                        "description": "Executable command to run"
-                      },
-                      "args": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "description": "Command line arguments"
-                      },
-                      "envs": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        },
-                        "description": "Environment variables required"
-                      }
-                    }
+                  "tool_sync_interval": {
+                    "type": "integer",
+                    "description": "Per-client tool-list sync interval in minutes. 0 falls back to the\nglobal mcp_tool_sync_interval client config; a negative value disables\nperiodic tool sync for this client.\n"
                   },
-                  "auth_type": {
-                    "type": "string",
-                    "enum": [
-                      "none",
-                      "headers",
-                      "oauth",
-                      "per_user_oauth",
-                      "per_user_headers"
-                    ],
-                    "description": "Authentication type for the MCP connection"
-                  },
-                  "oauth_config_id": {
-                    "type": "string",
-                    "description": "OAuth config ID for OAuth authentication.\nReferences the oauth_configs table.\nOnly relevant when auth_type is \"oauth\".\n"
+                  "tool_execution_timeout": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Per-client tool execution timeout in seconds. 0 falls back to the\nglobal mcp_tool_execution_timeout client config.\n"
                   },
                   "headers": {
                     "type": "object",
                     "additionalProperties": {
                       "type": "string"
                     },
-                    "description": "Custom headers to include in requests.\nOnly used when auth_type is \"headers\".\n"
+                    "description": "Custom headers to include in requests.\nOnly used when auth_type is \"headers\". Supports env./vault. references.\nValues echoed back redacted from a GET response are recognized and\npreserve the stored value, so a fetch-modify-put round trip is safe.\n"
+                  },
+                  "allowed_extra_headers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Allowlist of request-level headers callers may forward to this MCP\nserver at execution time.\n[\"*\"] => any header may be forwarded\n[] => no extra headers are forwarded\n[\"header1\", \"header2\"] => only the specified headers\n"
+                  },
+                  "oauth_config": {
+                    "$ref": "#/components/schemas/OAuthConfigRequest",
+                    "description": "Rotates the stored OAuth configuration in place. Only accepted for\nauth_type \"oauth\" or \"per_user_oauth\" (400 otherwise). Any provided\nfield replaces the stored value; no new config row is created and no\nre-discovery or re-registration runs. Unset fields preserve stored\nvalues: client_id/client_secret follow the SecretVar masked-placeholder\nconvention (send back the redacted placeholder from a GET response to\nkeep the stored secret), while empty strings / empty arrays on the\nremaining fields mean \"not provided\".\n\nWhen any field actually changes, every token bound to the OAuth config\nis flipped to needs_reauth regardless of auth mode, shared and\nper-user sessions alike must re-authenticate. A round trip that\nresolves to the stored values is a no-op and does not cascade.\nRotation cannot run while the client is (or is being) disabled\n(400); send those as two separate requests.\n"
                   },
                   "tools_to_execute": {
                     "type": "array",
@@ -43541,7 +43781,42 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "For `per_user_headers` clients only. Updating this list flips every existing\nactive per-user credential row to `needs_update`; callers will be sent back to\nthe submission form on their next tool call to satisfy the new schema.\n"
+                    "description": "For `per_user_headers` clients only. Cannot be set to an empty list.\nUpdating this list flips every existing active per-user credential row\nto `needs_update`; callers will be sent back to the submission form on\ntheir next tool call to satisfy the new schema. The retained admin\ndiscovery credential is flipped the same way; repair it by calling\nPOST /api/mcp/client/{id}/verify-headers with fresh sample values.\n"
+                  },
+                  "token_exchange": {
+                    "type": "object",
+                    "required": [
+                      "audience",
+                      "client_id"
+                    ],
+                    "properties": {
+                      "audience": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                      },
+                      "client_secret": {
+                        "type": "string",
+                        "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                      },
+                      "scopes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+                      },
+                      "authorization_server_url": {
+                        "type": "string",
+                        "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+                      }
+                    },
+                    "description": "For `token_exchange` clients only. Omitted preserves the stored\nconfiguration. A redacted `client_id` / `client_secret` round-tripped\nfrom a prior GET is resolved back to the stored value rather than\noverwriting it; any other change re-scopes future exchanges and\ninvalidates cached exchanged tokens for this client.\n"
                   },
                   "disabled": {
                     "type": "boolean",
@@ -43691,7 +43966,7 @@
       "post": {
         "operationId": "reconnectMCPClient",
         "summary": "Reconnect MCP client",
-        "description": "Reconnects an MCP client that is in an error or disconnected state.",
+        "description": "Reconnects an MCP client that is in an error or unstable state.\nNot applicable (400) to any per-call client — a shared client running\nper-call (needs_session_stickiness false/omitted) as well as any\nper-user auth type — since none of them hold a shared upstream\nconnection to re-establish. Also not applicable to clients in\npending_verification state — complete the admin verification instead.\n",
         "tags": [
           "MCP"
         ],
@@ -43749,7 +44024,86 @@
       "post": {
         "operationId": "completeMCPClientOAuth",
         "summary": "Complete MCP client OAuth flow",
-        "description": "Completes the OAuth flow for an MCP client after the user has authorized the request.\nThis endpoint should be called after the OAuth provider redirects back to the callback endpoint\nand the OAuth token has been stored. It retrieves the pending MCP client configuration and\nestablishes the connection with the OAuth-provided credentials.\n",
+        "description": "Completes an OAuth flow for an MCP client after the admin has authorized\nthe request upstream. Call it once the flow's status_url reports\n\"authorized\". It serves every admin-side OAuth completion with one\nendpoint:\n\n- Create-time and config.json-bootstrap flows: retrieves the pending MCP\n  client configuration and establishes the connection with the\n  OAuth-provided credentials (per_user_oauth clients instead verify with\n  the admin token, discover tools, and retain the token as the admin\n  discovery credential).\n- Reauthorize flows (started via POST /api/mcp/client/{id}/reauthorize):\n  for shared \"oauth\" clients, reconnects the client with the fresh\n  credential; for per_user_oauth clients, verifies the fresh admin token\n  upstream, re-discovers tools, and promotes it to the retained admin\n  discovery credential.\n\nReplays are rejected with 409: hitting the endpoint again after the flow\nalready completed (no pending configuration and no freshly-written\ntoken) returns \"OAuth flow has already been completed\". A shared\n\"oauth\" reauthorize is also rejected with 409 if its flow never\nactually resolved via a real callback — e.g. the upstream authorization\nserver rejected the request outright before ever redirecting back —\nreturning \"Authorization has not completed yet\". This is detected via\nthe flow's own row rather than the client's overall OAuth status,\nwhich never regresses once a client has been authorized once and so\ncan't distinguish a stale prior authorization from a fresh one.\n",
+        "tags": [
+          "MCP",
+          "OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The oauth_config_id of the flow being completed (as returned in the\ninitiation response's oauth_config_id / complete_url), not the MCP\nclient ID.\n",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "MCP client connected (or re-authorized) successfully with OAuth",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "OAuth flow not authorized yet, or the OAuth config does not belong to an OAuth-based MCP client",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "OAuth config not found, or no MCP client is linked to this OAuth flow",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Either \"OAuth flow has already been completed for this MCP client\"\n(replay), or \"Authorization has not completed yet: the browser\nflow may still be open, or the upstream provider rejected it\nbefore redirecting back\" (a shared \"oauth\" reauthorize whose flow\nnever actually resolved via a callback).\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{id}/initiate-verification": {
+      "post": {
+        "operationId": "initiateMCPClientVerification",
+        "summary": "Initiate verification for a pending MCP client",
+        "description": "Starts the one-time admin OAuth authorization for an MCP client sitting\nin pending_verification state (declared via config.json with auth_type\n\"oauth\" or \"per_user_oauth\"). Runs OAuth metadata discovery (RFC 8414)\nand dynamic client registration (RFC 7591) against the client's\nconnection_string when the declared oauth_config omits those fields,\ncreates a fresh OAuth flow, and returns the authorization URL.\n\nComplete the flow like a create-time OAuth flow: open authorize_url in a\nbrowser, poll status_url until \"authorized\", then POST complete_url.\nSafe to call again if a previous attempt expired or was abandoned — each\ncall starts a fresh flow.\n",
         "tags": [
           "MCP",
           "OAuth"
@@ -43772,17 +44126,17 @@
         ],
         "responses": {
           "200": {
-            "description": "MCP client connected successfully with OAuth",
+            "description": "OAuth flow initiated",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/OAuthFlowInitiation"
                 }
               }
             }
           },
           "400": {
-            "description": "OAuth not authorized yet or MCP client not found in pending OAuth clients",
+            "description": "Client is not in pending_verification state, is not an OAuth-based auth type, has no pending bootstrap configuration, or has no connection_string",
             "content": {
               "application/json": {
                 "schema": {
@@ -43792,7 +44146,7 @@
             }
           },
           "404": {
-            "description": "MCP client not found in pending OAuth clients or OAuth config not found",
+            "description": "Resource not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -43814,10 +44168,307 @@
         }
       }
     },
+    "/api/mcp/client/{id}/reauthorize": {
+      "post": {
+        "operationId": "reauthorizeMCPClient",
+        "summary": "Reauthorize an MCP client",
+        "description": "Redoes the OAuth consent flow for an already-authorized OAuth-based MCP\nclient, without delete-and-recreate. The flow always runs against the\ncredentials currently stored on the client's OAuth config.\n\n- auth_type \"oauth\": serves both a standalone admin-triggered reauth\n  (e.g. the upstream provider revoked the credential and the client sits\n  in needs_reauth) and the follow-up to rotating oauth_config via\n  PUT /api/mcp/client/{id} (which cascades every bound token to\n  needs_reauth).\n- auth_type \"per_user_oauth\": repairs the retained admin discovery\n  credential used for periodic tool-list refresh. Only allowed while\n  that credential actually sits in needs_reauth (409 otherwise);\n  end-user credentials are untouched either way.\n\nComplete the returned flow like any other admin OAuth flow: open\nauthorize_url in a browser, poll status_url until \"authorized\", then\nPOST complete_url.\n",
+        "tags": [
+          "MCP",
+          "OAuth"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reauthorization flow initiated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthFlowInitiation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Client is not an OAuth-based auth type (oauth, per_user_oauth), or has never completed initial OAuth authorization (use initiate-verification instead)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "MCP client not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The admin discovery credential for this per_user_oauth client does not need repair or does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "OAuth provider not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{id}/verify-headers": {
+      "post": {
+        "operationId": "verifyMCPClientHeaders",
+        "summary": "Verify a pending per-user-headers MCP client",
+        "description": "Completes the admin verification for an MCP client with auth_type\n\"per_user_headers\". The admin supplies sample values for every declared\nper_user_header_keys entry; Bifrost opens an upstream connection with\nthem, discovers the tool list, persists it, and transitions the client\nto connected. The sample values are retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list; each\nend-user still submits their own values at runtime. Synchronous; no\nbrowser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification (declared via config.json), and a\nvoluntary refresh of an already-verified client's retained admin\ndiscovery credential — resubmitting sample values always re-runs\nverification and upserts the credential back to active, whether or not\nit currently needs repair (mirrors POST /reauthorize for OAuth-based\nclients).\n",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "user_headers"
+                ],
+                "properties": {
+                  "user_headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Sample value for every header name declared in the client's\nper_user_header_keys. Used for the verification connection,\nthen retained as the admin discovery credential for periodic\ntool-list refresh. Never used for end-user traffic and never\nsurfaced on /api/mcp/sessions.\n"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client verified; tools discovered and client connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "success"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "tools_count": {
+                      "type": "integer",
+                      "description": "Number of tools discovered during verification"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Client is not auth_type \"per_user_headers\", has no per_user_header_keys declared, or user_headers is missing required keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Upstream verification failed with the supplied header values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mcp/client/{id}/verify-exchange": {
+      "post": {
+        "operationId": "verifyMCPClientExchange",
+        "summary": "Verify a pending or repair a needs_reauth token_exchange MCP client",
+        "description": "Completes admin verification for an MCP client with auth_type\n\"token_exchange\". No request body: the subject of the exchange is\nalways the signed-in admin's own identity-provider token (from an SSO\nsession or an identity-authenticated bearer request) — there is no\nmanual token input. Bifrost exchanges it exactly like a real caller's\ntoken would be exchanged, opens an upstream connection with the result,\ndiscovers the tool list, persists it, and transitions the client to\nconnected. The exchanged token (and any refresh token the identity\nprovider issued alongside it) is retained as the admin discovery\ncredential the periodic tool syncer uses to refresh the tool list;\nend-user tool calls always exchange the caller's own token instead.\nSynchronous; no browser flow.\n\nServes two situations: the one-time bootstrap verification for a client\nsitting in pending_verification, and a voluntary refresh of an\nalready-verified client's retained admin discovery credential —\nresubmitting always re-runs verification and retains a fresh\ncredential, whether or not it currently needs repair (mirrors POST\n/reauthorize for OAuth-based clients).\n",
+        "tags": [
+          "MCP"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "MCP client ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client verified; tools discovered and client connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "success"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "tools_count": {
+                      "type": "integer",
+                      "description": "Number of tools discovered during verification"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Client is not auth_type \"token_exchange\", token exchange is\nunavailable (no identity-provider integration configured), or the\nrequest carries no identity-provider token to exchange (sign in\nwith your identity provider and retry)\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The identity provider rejected the exchange, or the upstream verification connection failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagementErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mcp/sessions": {
       "get": {
         "summary": "List MCP sessions",
-        "description": "Returns every per-user MCP authentication artifact visible to the caller —\nOAuth tokens, header credentials, and pending submission / consent flows.\n\nRow visibility is scoped to the caller's identity (Virtual Key, signed-in\nuser, or asserted session ID). Server-level `headers` / `oauth` clients\nare not surfaced here; their credentials live on the MCP client config.\n\nWhen both a credential and a pending flow exist for the same\n`(identity, mcp_client)` binding, the credential is returned and the\nflow is suppressed to avoid duplicate entries.\n",
+        "description": "Returns every per-user MCP authentication artifact visible to the caller:\nOAuth tokens, header credentials, and pending submission / consent flows.\n\nRow visibility is scoped to the caller's identity (Virtual Key, signed-in\nuser, or asserted session ID). Server-level `headers` / `oauth` clients\nare not surfaced here; their credentials live on the MCP client config.\nAdmin discovery credentials (the retained bootstrap credential Bifrost\nuses for periodic tool-list refresh on per-user clients) never appear\nhere either; only user-, vk-, and session-keyed rows are listed.\n\nWhen both a credential and a pending flow exist for the same\n`(identity, mcp_client)` binding, the credential is returned and the\nflow is suppressed to avoid duplicate entries.\n",
         "operationId": "listMcpSessions",
         "tags": [
           "MCP"
@@ -44512,7 +45163,7 @@
       "delete": {
         "operationId": "revokeOAuthConfig",
         "summary": "Revoke OAuth config",
-        "description": "Revokes a server-level OAuth configuration and its associated access token.\nAfter revocation, the MCP client will no longer be able to use this OAuth token.\n",
+        "description": "Revokes a server-level OAuth configuration and its associated access token.\nAfter revocation, the MCP client will no longer be able to use this OAuth token.\nRevocation is not terminal for the client: an admin can restore access by\nredoing consent via POST /api/mcp/client/{id}/reauthorize, which runs\nagainst the credentials currently stored on the client's OAuth config.\n",
         "tags": [
           "OAuth"
         ],
@@ -67432,6 +68083,16 @@
           }
         }
       },
+      "Conflict": {
+        "description": "Conflict with the current state of the resource",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
       "InternalError": {
         "description": "Internal server error",
         "content": {
@@ -79194,6 +79855,10 @@
                 "type": "integer",
                 "description": "Timeout for MCP tool execution in seconds"
               },
+              "mcp_tool_sync_interval": {
+                "type": "integer",
+                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it and a per-client negative value disables syncing for that client. When 0 or unset, a 10-minute default applies.\n"
+              },
               "mcp_code_mode_binding_level": {
                 "type": "string",
                 "description": "Binding level for MCP code mode"
@@ -79519,6 +80184,10 @@
               "mcp_tool_execution_timeout": {
                 "type": "integer",
                 "description": "Timeout for MCP tool execution in seconds"
+              },
+              "mcp_tool_sync_interval": {
+                "type": "integer",
+                "description": "Global tool-list sync interval in minutes for MCP clients. Applies to clients whose per-client tool_sync_interval is 0 or omitted; a per-client positive value overrides it and a per-client negative value disables syncing for that client. When 0 or unset, a 10-minute default applies.\n"
               },
               "mcp_code_mode_binding_level": {
                 "type": "string",
@@ -80236,13 +80905,21 @@
             "description": "API key value (redacted in responses)",
             "properties": {
               "value": {
-                "type": "string"
+                "type": "string",
+                "description": "Resolved value (redacted in GET responses for secret fields)"
               },
-              "env_var": {
-                "type": "string"
+              "ref": {
+                "type": "string",
+                "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
               },
-              "from_env": {
-                "type": "boolean"
+              "type": {
+                "type": "string",
+                "enum": [
+                  "plain_text",
+                  "env",
+                  "vault"
+                ],
+                "description": "Source type of the value"
               }
             }
           },
@@ -80281,76 +80958,116 @@
             "properties": {
               "endpoint": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "api_version": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "client_id": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "client_secret": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "tenant_id": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -80369,61 +81086,93 @@
             "properties": {
               "project_id": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "project_number": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "region": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "auth_credentials": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               }
@@ -80435,76 +81184,116 @@
             "properties": {
               "access_key": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "secret_key": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "session_token": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "region": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
               "arn": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -80538,16 +81327,24 @@
             "properties": {
               "url": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -80565,16 +81362,24 @@
             "properties": {
               "url": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               }
@@ -80589,16 +81394,24 @@
             "properties": {
               "url": {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               }
@@ -80920,13 +81733,15 @@
           "state": {
             "type": "string",
             "enum": [
-              "connected",
-              "disconnected",
+              "healthy",
+              "unstable",
               "error",
-              "pending_tools",
-              "disabled"
+              "pending_verification",
+              "needs_reauth",
+              "disabled",
+              "degraded"
             ],
-            "description": "Connection state of an MCP client:\n- connected: Client is connected and ready to use\n- disconnected: Client is not connected (will be auto-recovered by health monitor)\n- error: Client is in an unrecoverable error state\n- pending_tools: Connected but tools not yet populated (per-user OAuth clients)\n- disabled: Client has been intentionally disabled; no connection or workers are active\n"
+            "description": "Connection state of an MCP client:\n- healthy: Bifrost's own periodic connection check (ping/list_tools for\n  sticky clients, list_tools for per-call clients) most recently\n  succeeded.\n- unstable: The periodic connection check most recently failed with a\n  transient-classified error. Purely informational — unlike\n  needs_reauth, this never gates execution; tool calls are still\n  attempted normally. Self-heals to healthy on the next successful\n  check, no human action required.\n- error: A data-consistency fallback used only when a client is\n  registered in the config store but missing from the runtime manager\n  entirely — a deeper anomaly than anything in the normal\n  connect/health-check lifecycle, which never assigns this value itself.\n- pending_verification: Declared (typically via config.json) but the one-time\n  admin verification has not been completed yet. Complete it via\n  POST /api/mcp/client/{id}/initiate-verification (auth_type oauth /\n  per_user_oauth) or POST /api/mcp/client/{id}/verify-headers\n  (auth_type per_user_headers).\n- needs_reauth: Setup completed at least once, but a credential an admin is\n  responsible for has permanently died and needs a human to repair it.\n  For shared OAuth clients the connection credential itself was\n  rejected/expired with no silent recovery; the state is sticky (the health\n  monitor will not clobber it) until an admin runs\n  POST /api/mcp/client/{id}/reauthorize. For per-user clients this is a\n  response-only projection — computed at list-time, never stored in the\n  runtime manager — meaning the retained admin discovery credential\n  needs repair; end-user credentials and tool calls keep working, only\n  periodic tool-list refresh pauses. Overlays onto both healthy and\n  unstable runtime readings, never onto disabled or\n  pending_verification. Repair via reauthorize (per_user_oauth),\n  verify-headers with fresh sample values (per_user_headers), or\n  verify-exchange (token_exchange, which re-exchanges the signed-in\n  admin's own identity token — no sample values to supply).\n- disabled: Client has been intentionally disabled; no connection or workers are active\n- degraded: A read-time cluster aggregate, never a single node's own\n  local state — multiple instances of a distributed deployment each\n  currently hold a different self-reported state for the same client.\n  Only meaningful for states that can genuinely vary per instance\n  (healthy, unstable, pending_verification); needs_reauth/disabled are\n  config-sourced facts expected to already agree everywhere. Never\n  appears in a single-instance deployment.\n"
           },
           "vk_configs": {
             "type": "array",
@@ -81030,7 +81845,8 @@
               "headers",
               "oauth",
               "per_user_oauth",
-              "per_user_headers"
+              "per_user_headers",
+              "token_exchange"
             ],
             "description": "Authentication type for the MCP connection"
           },
@@ -81078,6 +81894,41 @@
               "type": "string"
             },
             "description": "For `per_user_headers` clients only. The list of header names each end-user\nmust supply via the inline-401 flow. Header values themselves are stored\nper-user in a separate table (surfaced on `/api/mcp/sessions`).\n"
+          },
+          "token_exchange": {
+            "type": "object",
+            "required": [
+              "audience",
+              "client_id"
+            ],
+            "properties": {
+              "audience": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
+              },
+              "client_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+              },
+              "client_secret": {
+                "type": "string",
+                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Optional scopes to request on the exchanged token. Include\n\"offline_access\" (where the identity provider supports it) so the\nretained admin discovery credential gets a refresh token and stays\nself-renewing.\n"
+              },
+              "authorization_server_url": {
+                "type": "string",
+                "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
+              }
+            },
+            "description": "For `token_exchange` clients only. `client_id` and `client_secret` are\nredacted in this response.\n"
           },
           "disabled": {
             "type": "boolean",
@@ -81164,21 +82015,70 @@
           "headers",
           "oauth",
           "per_user_oauth",
-          "per_user_headers"
+          "per_user_headers",
+          "token_exchange"
         ],
-        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n"
+        "description": "Authentication type for MCP connections:\n- none: No authentication\n- headers: Static header-based authentication (admin sets API keys / custom headers once, shared by all callers)\n- oauth: OAuth 2.0 authentication (server-level, admin authenticates once)\n- per_user_oauth: Per-user OAuth 2.0 authentication (each user authenticates individually)\n- per_user_headers: Per-user headers (each user submits their own header values; admin declares the schema)\n- token_exchange: Delegated token exchange (each caller's own identity-provider token is\n  exchanged for a short-lived token scoped to this server on every call; nothing is\n  stored per caller). Requires an enabled identity-provider integration (enterprise).\n"
       },
       "OAuthConfigRequest": {
         "type": "object",
-        "description": "OAuth configuration for MCP client creation",
+        "description": "OAuth configuration for an MCP client. Used both when creating a client\n(initiates the OAuth flow) and when updating one (rotates the stored\nOAuth config in place; see MCPClientUpdateRequest.oauth_config).\n",
         "properties": {
           "client_id": {
-            "type": "string",
-            "description": "OAuth client ID. Optional if client supports dynamic client registration (RFC 7591).\nIf not provided, the server_url must be set for OAuth discovery and dynamic registration.\n"
+            "allOf": [
+              {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              }
+            ],
+            "description": "OAuth client ID. Optional if client supports dynamic client registration (RFC 7591).\nIf not provided, the server_url must be set for OAuth discovery and dynamic registration.\nSupports env./vault. references.\n"
           },
           "client_secret": {
-            "type": "string",
-            "description": "OAuth client secret. Optional for public clients using PKCE or clients obtained via dynamic registration.\n"
+            "allOf": [
+              {
+                "type": "object",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
+                  },
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
+                  }
+                }
+              }
+            ],
+            "description": "OAuth client secret. Optional for public clients using PKCE or clients obtained via dynamic registration.\nSupports env./vault. references.\n"
           },
           "authorize_url": {
             "type": "string",
@@ -81198,6 +82098,10 @@
               "type": "string"
             },
             "description": "OAuth scopes requested. Optional - can be discovered from server_url if not provided.\nExample: [\"read\", \"write\"]\n"
+          },
+          "resource": {
+            "type": "string",
+            "description": "Resource indicator (RFC 8707) sent on authorization and token requests.\nOptional - identifies the protected MCP resource the token is intended\nfor, when the upstream provider supports resource indicators.\n"
           }
         }
       },
@@ -81230,6 +82134,21 @@
           "mcp_client_id": {
             "type": "string",
             "description": "The MCP client ID that initiated this OAuth flow"
+          },
+          "complete_url": {
+            "type": "string",
+            "description": "Relative URL to POST once the flow is authorized\n(/api/mcp/client/{oauth_config_id}/complete-oauth). Note the path\nparameter is the oauth_config_id, not the MCP client ID.\n"
+          },
+          "status_url": {
+            "type": "string",
+            "description": "Relative URL to poll for the flow status\n(/api/oauth/config/{oauth_config_id}/status). Wait for\nstatus \"authorized\" before calling complete_url.\n"
+          },
+          "next_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Human-readable steps to complete the flow (authorize, poll, complete)"
           }
         }
       },
@@ -81254,11 +82173,6 @@
             "type": "string",
             "format": "date-time",
             "description": "When this OAuth config was created"
-          },
-          "expires_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "When this OAuth config expires (becomes invalid if not completed)"
           },
           "token_id": {
             "type": "string",
@@ -83289,16 +84203,24 @@
           },
           "value": {
             "type": "object",
-            "description": "Environment variable configuration",
+            "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
             "properties": {
               "value": {
-                "type": "string"
+                "type": "string",
+                "description": "Resolved value (redacted in GET responses for secret fields)"
               },
-              "env_var": {
-                "type": "string"
+              "ref": {
+                "type": "string",
+                "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
               },
-              "from_env": {
-                "type": "boolean"
+              "type": {
+                "type": "string",
+                "enum": [
+                  "plain_text",
+                  "env",
+                  "vault"
+                ],
+                "description": "Source type of the value"
               }
             }
           },
@@ -83346,16 +84268,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83368,16 +84298,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83390,16 +84328,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83412,16 +84358,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83434,16 +84388,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83456,16 +84418,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83478,16 +84448,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83500,16 +84478,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83522,16 +84508,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83544,16 +84538,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83566,16 +84568,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83588,16 +84598,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },
@@ -83610,16 +84628,24 @@
             "oneOf": [
               {
                 "type": "object",
-                "description": "Environment variable configuration",
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
                 "properties": {
                   "value": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Resolved value (redacted in GET responses for secret fields)"
                   },
-                  "env_var": {
-                    "type": "string"
+                  "ref": {
+                    "type": "string",
+                    "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
                   },
-                  "from_env": {
-                    "type": "boolean"
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ],
+                    "description": "Source type of the value"
                   }
                 }
               },

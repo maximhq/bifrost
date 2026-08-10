@@ -294,6 +294,73 @@ func TestToAnthropicInvokeStreamBytes_MessageDeltaCarriesUsage(t *testing.T) {
 	assert.False(t, hasCreation, "no cache write occurred on this turn")
 }
 
+// TestToAnthropicInvokeStreamBytes_MessageStartCarriesUsage is the /invoke-with-response-stream
+// half of #5885. The sibling test above pins the authoritative figures on message_delta, which
+// is correct — but message_start was being built with no usage key at all, and Anthropic-dialect
+// clients that validate the frame (e.g. @ai-sdk/anthropic, whose schema marks
+// message.usage.input_tokens required) abort the stream before the first token. Bedrock Converse
+// has no counts this early, so the placeholder is all-zero: neutral for clients that sum, and
+// superseded by the real message_delta figures for clients that follow Anthropic's contract.
+func TestToAnthropicInvokeStreamBytes_MessageStartCarriesUsage(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCreated,
+		Response: &schemas.BifrostResponsesResponse{
+			ID: schemas.Ptr("msg_bedrock_1"),
+			// Usage intentionally nil — Converse reports nothing until its terminal event.
+		},
+	}
+
+	frames, err := toAnthropicInvokeStreamBytes(resp)
+	require.NoError(t, err)
+	require.Len(t, frames, 1, "expected a single message_start frame")
+
+	var messageStart map[string]interface{}
+	require.NoError(t, json.Unmarshal(frames[0], &messageStart))
+
+	message, ok := messageStart["message"].(map[string]interface{})
+	require.True(t, ok, "message_start must carry a message object")
+
+	usage, ok := message["usage"].(map[string]interface{})
+	require.True(t, ok, "message_start.message must carry a usage object, got %v", message)
+
+	assert.EqualValues(t, 0, usage["input_tokens"])
+	assert.EqualValues(t, 0, usage["output_tokens"])
+}
+
+// TestToAnthropicInvokeStreamBytes_MessageStartPrefersKnownUsage guards the other direction:
+// when a provider does hand Bifrost usage at created time, message_start must report those
+// figures rather than the zero placeholder.
+func TestToAnthropicInvokeStreamBytes_MessageStartPrefersKnownUsage(t *testing.T) {
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCreated,
+		Response: &schemas.BifrostResponsesResponse{
+			ID: schemas.Ptr("msg_bedrock_2"),
+			Usage: &schemas.ResponsesResponseUsage{
+				InputTokens:  8666,
+				OutputTokens: 1,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					CachedReadTokens: 8336,
+				},
+			},
+		},
+	}
+
+	frames, err := toAnthropicInvokeStreamBytes(resp)
+	require.NoError(t, err)
+	require.Len(t, frames, 1)
+
+	var messageStart map[string]interface{}
+	require.NoError(t, json.Unmarshal(frames[0], &messageStart))
+
+	message := messageStart["message"].(map[string]interface{})
+	usage, ok := message["usage"].(map[string]interface{})
+	require.True(t, ok, "message_start.message must carry a usage object, got %v", message)
+
+	assert.EqualValues(t, 330, usage["input_tokens"], "input_tokens must be net of the cache read")
+	assert.EqualValues(t, 1, usage["output_tokens"])
+	assert.EqualValues(t, 8336, usage["cache_read_input_tokens"])
+}
+
 // TestToBedrockInvokeAnthropicResponse_IncludesCacheFields covers the gap found during
 // investigation: even the non-streaming /invoke response never surfaced cache_creation/
 // cache_read fields at all, so a client couldn't observe caching working even after the

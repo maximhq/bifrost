@@ -39,3 +39,39 @@ export function registerUserPicker(component: ComponentType<UserPickerProps>): v
 export function getUserPicker(): ComponentType<UserPickerProps> | undefined {
 	return userPicker;
 }
+
+// ---------------------------------------------------------------------------
+// Raw search hook — for surfaces that need to drive their own inline
+// search+checkbox list (e.g. a filter sidebar matching the VK/MCP-client
+// filter UI) rather than the single-select popover above. Same OSS gap: no
+// user directory exists here, so nothing is registered by default and
+// getUserSearchQuery() returns undefined.
+// ---------------------------------------------------------------------------
+
+export interface UserSearchResult {
+	id: string;
+	label: string;
+}
+
+export interface UserSearchQueryResult {
+	data?: { users: UserSearchResult[] };
+	isFetching: boolean;
+}
+
+/** Shape of an RTK Query search hook: same calling convention as `useGetXQuery(params, options)`. */
+export type UseUserSearchQuery = (
+	params: { search?: string; limit?: number },
+	options?: { skip?: boolean },
+) => UserSearchQueryResult;
+
+let userSearchQuery: UseUserSearchQuery | undefined;
+
+/** Registers (or replaces) the user search hook. Same load-once contract as registerUserPicker. */
+export function registerUserSearchQuery(hook: UseUserSearchQuery): void {
+	userSearchQuery = hook;
+}
+
+/** Returns the registered user search hook, or undefined in builds without one. */
+export function getUserSearchQuery(): UseUserSearchQuery | undefined {
+	return userSearchQuery;
+}
