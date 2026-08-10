@@ -420,6 +420,14 @@
         "icon": "plug",
         "groups": [
           {
+            "group": "Runbooks",
+            "icon": "book-open",
+            "pages": [
+              "runbooks/claude-code-bedrock",
+              "runbooks/codex-bedrock"
+            ]
+          },
+          {
             "group": "CLI Agents & Editors",
             "icon": "command",
             "pages": [
