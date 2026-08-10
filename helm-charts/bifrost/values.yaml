@@ -583,7 +583,8 @@ bifrost:
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
       # - name: "example-per-user-headers-mcp"
       #   connectionType: "http"
-      #   connectionString: "https://my-mcp.corp/mcp"
+      #   httpConfig:
+      #     url: "https://my-mcp.corp/mcp"
       #   # authType "per_user_headers": each caller submits their own header values (API keys,
       #   # signed tokens) through the Bifrost auth flow; perUserHeaderKeys declares which header
       #   # names are required. Values are collected and stored per-identity by Bifrost, not here.
