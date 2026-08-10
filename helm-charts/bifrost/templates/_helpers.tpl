@@ -1231,6 +1231,9 @@ false
 {{- if $client.allowedExtraHeaders }}
 {{- $_ := set $cc "allowed_extra_headers" $client.allowedExtraHeaders }}
 {{- end }}
+{{- if $client.perUserHeaderKeys }}
+{{- $_ := set $cc "per_user_header_keys" $client.perUserHeaderKeys }}
+{{- end }}
 {{- if hasKey $client "allowOnAllVirtualKeys" }}
 {{- $_ := set $cc "allow_on_all_virtual_keys" $client.allowOnAllVirtualKeys }}
 {{- end }}

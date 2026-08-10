@@ -6155,6 +6155,13 @@
           },
           "description": "Allowlist of request-level headers that callers may forward to this MCP server. Use ['*'] to allow all headers."
         },
+        "perUserHeaderKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Header names each caller must individually supply when authType is 'per_user_headers' (e.g. ['Authorization']). Required (non-empty) for that auth type; ignored otherwise."
+        },
         "allowOnAllVirtualKeys": {
           "type": "boolean",
           "description": "When true, this MCP server is accessible to all virtual keys without requiring explicit per-key assignment.",

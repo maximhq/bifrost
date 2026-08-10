@@ -26,6 +26,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Documented `endpoints` on the `bedrock` and `bedrock_mantle` key examples (AWS PrivateLink interface VPC endpoint hosts: `runtime`, `control_plane`, `mantle`, `agent_runtime`, `s3`). Passes through into `bedrock_key_config.endpoints` / `bedrock_mantle_key_config.endpoints`.
 - Extended `bifrost.governance.budgets[]` with quarterly resets (`reset_duration: "1Q"`) and `reset_config.quarter_start_month` (1–12, sets the fiscal Q1 month). Passes through into `budgets[].reset_config`.
 - Added `target` (`llm` default, or `mcp`) to `bifrost.governance` guardrail rules to select the rule's execution target. Passes through into the rule's `target`.
+- Added `mcp.clientConfigs[].perUserHeaderKeys` — the header names each caller must individually supply under `authType: per_user_headers` (e.g. `["Authorization"]`). This field already existed in `transports/config.schema.json` and the per-user-headers auth flow, but was never mapped through `_helpers.tpl`, so it silently dropped out of the rendered `config.json` and `authType: per_user_headers` clients could not be fully configured via Helm. Renders into `per_user_header_keys`.
 
 
 ### 2.1.34
