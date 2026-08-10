@@ -142,7 +142,9 @@ func ParseFallbacks(fallbacks []string) []Fallback {
 
 // dataURIRegex is a precompiled regex for matching data URI format patterns.
 // It matches patterns like: data:image/png;base64,iVBORw0KGgo...
-var dataURIRegex = regexp.MustCompile(`^data:([^;]+)(;base64)?,(.+)$`)
+// Group 1 is the header (media type plus any parameters, e.g. ";charset=utf-8;base64"),
+// group 2 the payload.
+var dataURIRegex = regexp.MustCompile(`^data:([^,]*),([\s\S]+)$`)
 
 // base64Regex is a precompiled regex for matching base64 strings.
 // It matches strings containing only valid base64 characters with optional padding.
@@ -207,7 +209,7 @@ func sanitizeImageURL(rawURL string, allowedSchemes []string) (string, error) {
 	// Check if it's already a proper data URL
 	if strings.HasPrefix(rawURL, "data:") {
 		// Validate data URL format
-		if !dataURIRegex.MatchString(rawURL) {
+		if _, _, _, ok := ParseDataURL(rawURL); !ok {
 			return rawURL, fmt.Errorf("invalid data URL format")
 		}
 		return rawURL, nil
@@ -267,21 +269,41 @@ func ExtractURLTypeInfo(sanitizedURL string) URLTypeInfo {
 	return extractRegularURLInfo(sanitizedURL)
 }
 
+// ParseDataURL splits a data URL (data:[<mediatype>][;<param>=<value>][;base64],<data>)
+// into its media type, base64 flag and payload. Media type parameters such as
+// ";charset=utf-8" are dropped from mediaType and the payload is returned as-is
+// (still base64-encoded when isBase64 is true, percent-encoded otherwise).
+// ok is false when the input is not a data URL carrying both a media type and a payload.
+func ParseDataURL(dataURL string) (mediaType string, isBase64 bool, payload string, ok bool) {
+	matches := dataURIRegex.FindStringSubmatch(dataURL)
+	if len(matches) != 3 {
+		return "", false, "", false
+	}
+
+	segments := strings.Split(matches[1], ";")
+	mediaType = strings.ToLower(strings.TrimSpace(segments[0]))
+	if mediaType == "" {
+		return "", false, "", false
+	}
+	for _, segment := range segments[1:] {
+		if strings.EqualFold(strings.TrimSpace(segment), "base64") {
+			isBase64 = true
+		}
+	}
+
+	return mediaType, isBase64, matches[2], true
+}
+
 // extractDataURLInfo extracts information from a data URL
 func extractDataURLInfo(dataURL string) URLTypeInfo {
-	// Parse data URL: data:[<mediatype>][;base64],<data>
-	matches := dataURIRegex.FindStringSubmatch(dataURL)
-
-	if len(matches) != 4 {
+	mediaType, isBase64, payload, ok := ParseDataURL(dataURL)
+	if !ok {
 		return URLTypeInfo{Type: ImageContentTypeBase64}
 	}
 
-	mediaType := matches[1]
-	isBase64 := matches[2] == ";base64"
-
 	dataURLWithoutPrefix := dataURL
 	if isBase64 {
-		dataURLWithoutPrefix = dataURL[len("data:")+len(mediaType)+len(";base64,"):]
+		dataURLWithoutPrefix = payload
 	}
 
 	info := URLTypeInfo{
