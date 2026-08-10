@@ -104,6 +104,7 @@ The container has defaults for its basic runtime settings:
 | `LOG_STYLE` | `json` | Process log format: `json` or `pretty` |
 | `GOMEMLIMIT` | Unset | Go runtime memory target; a common starting point is about 90% of the container memory limit |
 | `BIFROST_ENCRYPTION_KEY` | No generated value | Stable secret used to protect persisted sensitive configuration |
+| `BIFROST_SETUP_TOKEN` | Unset | Bootstrap secret used only to create the first admin account; `setup_token` in `config.json` can reference this variable |
 
 The official container entrypoint uses `APP_HOST`, `APP_PORT`, and `APP_DIR`. Use those names when configuring a container platform.
 
@@ -113,6 +114,7 @@ Provider keys and integration credentials can be referenced from `config.json` w
 {
   "$schema": "https://www.getbifrost.ai/schema",
   "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "setup_token": "env.BIFROST_SETUP_TOKEN",
   "providers": {
     "openai": {
       "keys": [
@@ -128,6 +130,8 @@ Provider keys and integration credentials can be referenced from `config.json` w
 ```
 
 Keep the encryption key stable across restarts, replicas, upgrades, backups, and restores. Losing or changing it can make persisted encrypted values unreadable.
+
+Configure `setup_token` before starting a deployment that does not have an admin account. It accepts a literal value, an `env.VARIABLE_NAME` reference, or a `vault.path` reference; `BIFROST_SETUP_TOKEN` is also used when `setup_token` is absent. The token is never persisted or logged, must be identical across replicas, and is required only when [creating the first admin account](/quickstart/gateway/setting-up-auth).
 
 Use [config.json](/deployment-guides/config-json) for application configuration and [Helm Values](/deployment-guides/helm/values) for Kubernetes configuration.
 

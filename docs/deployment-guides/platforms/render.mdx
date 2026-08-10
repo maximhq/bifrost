@@ -34,6 +34,10 @@ cat > config.json <<'JSON'
 {
   "$schema": "https://www.getbifrost.ai/schema",
   "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "setup_token": "env.BIFROST_SETUP_TOKEN",
+  "client": {
+    "enforce_auth_on_inference": true
+  },
   "config_store": {
     "enabled": true,
     "type": "postgres",
@@ -64,7 +68,7 @@ In Render, choose **New → Web Service → Existing Image**, then set:
 
 ### Step 3: Add environment variables and deploy
 
-Add these values in **Environment**. Mark the password, encryption key, and encoded configuration as secret.
+Add these values in **Environment**. Mark the password, encryption key, setup token, and encoded configuration as secret.
 
 ```text
 APP_HOST=0.0.0.0
@@ -76,9 +80,10 @@ PG_USER=<POSTGRES_USER>
 PG_PASSWORD=<POSTGRES_PASSWORD>
 PG_DATABASE=<POSTGRES_DATABASE>
 BIFROST_ENCRYPTION_KEY=<STABLE_ENCRYPTION_KEY>
+BIFROST_SETUP_TOKEN=<SETUP_TOKEN>
 ```
 
-Deploy one instance. Render Postgres is one option; any PostgreSQL 16 or later server reachable from the service is valid.
+Deploy one instance. Render Postgres is one option; any PostgreSQL 16 or later server reachable from the service is valid. The configuration requires authentication on inference routes. Use the setup token to [create the first admin account](/quickstart/gateway/setting-up-auth), then [create a virtual key](/features/governance/virtual-keys) before sending inference traffic or sharing the public service URL with clients.
 
 ### Step 4: Verify
 

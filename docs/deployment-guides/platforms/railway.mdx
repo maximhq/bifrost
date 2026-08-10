@@ -48,6 +48,10 @@ cat > config.json <<'JSON'
 {
   "$schema": "https://www.getbifrost.ai/schema",
   "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "setup_token": "env.BIFROST_SETUP_TOKEN",
+  "client": {
+    "enforce_auth_on_inference": true
+  },
   "config_store": {
     "enabled": true,
     "type": "postgres",
@@ -68,6 +72,7 @@ JSON
 export BIFROST_CONFIG_B64="$(base64 < config.json | tr -d '\n')"
 read -r -s -p 'PostgreSQL password: ' PG_PASSWORD; echo
 read -r -s -p 'Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
+read -r -s -p 'Bifrost setup token: ' BIFROST_SETUP_TOKEN; echo
 
 printf '%s' "$BIFROST_CONFIG_B64" | railway variable set BIFROST_CONFIG_B64 --stdin
 railway variable set 'PG_HOST=<POSTGRES_HOST>'
@@ -75,6 +80,7 @@ railway variable set 'PG_USER=<POSTGRES_USER>'
 printf '%s' "$PG_PASSWORD" | railway variable set PG_PASSWORD --stdin
 railway variable set 'PG_DATABASE=<POSTGRES_DATABASE>'
 printf '%s' "$BIFROST_ENCRYPTION_KEY" | railway variable set BIFROST_ENCRYPTION_KEY --stdin
+printf '%s' "$BIFROST_SETUP_TOKEN" | railway variable set BIFROST_SETUP_TOKEN --stdin
 ```
 
 In the service settings, set the start command to:
@@ -83,7 +89,7 @@ In the service settings, set the start command to:
 /bin/sh -c 'printf "%s" "$BIFROST_CONFIG_B64" | base64 -d > /app/data/config.json && exec /app/docker-entrypoint.sh'
 ```
 
-Set the health-check path to `/health`, generate a public domain if external access is needed, and deploy one replica.
+Set the health-check path to `/health` and deploy one replica. The configuration requires authentication on inference routes. If external access is needed, generate a public domain, use the configured setup token to [create the first admin account](/quickstart/gateway/setting-up-auth), and [create a virtual key](/features/governance/virtual-keys) before sending inference traffic or sharing the hostname with clients.
 
 ### Step 4: Verify
 
