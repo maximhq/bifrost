@@ -37,11 +37,13 @@ var (
 // complexity-routed session. It deliberately carries no switching thresholds
 // or other policy; callers apply the current session config to these facts.
 type SessionRouteObservation struct {
-	// CachedReadTokens is the cached input-token count most recently reported by
-	// the provider for this route.
+	// CachedReadTokens is the positive cached input-token count most recently
+	// observed for this route. Zero carries no cache-presence claim.
 	CachedReadTokens int `json:"cached_read_tokens"`
-	// CacheObserved distinguishes a provider-reported zero from a response that
-	// did not include cache telemetry at all.
+	// CacheObserved is true only when the normalized response proves cache reuse.
+	// False means unknown: the provider may have omitted cache telemetry, or it may
+	// have reported a zero that the normalized usage type cannot distinguish from
+	// an absent field.
 	CacheObserved bool `json:"cache_observed"`
 	// LastSeenAt is when this route most recently produced the observation.
 	LastSeenAt time.Time `json:"last_seen_at"`
