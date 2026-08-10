@@ -609,15 +609,30 @@ func TestSetupStreamCancellation_NoPanicOnCancelledContext(t *testing.T) {
 type countingStreamCloser struct {
 	closeCount atomic.Int32
 	readCount  atomic.Int32
+	lastErr    atomic.Value // holds closeErrBox, set by CloseWithError
 }
+
+// closeErrBox wraps the error passed to CloseWithError so a nil error can
+// still be stored in the atomic.Value (Store panics on a bare nil interface).
+type closeErrBox struct{ err error }
 
 func (c *countingStreamCloser) Read([]byte) (int, error) {
 	c.readCount.Add(1)
 	return 0, io.EOF
 }
 
-func (c *countingStreamCloser) CloseWithError(error) error {
+func (c *countingStreamCloser) CloseWithError(err error) error {
 	c.closeCount.Add(1)
+	c.lastErr.Store(closeErrBox{err})
+	return nil
+}
+
+// LastCloseError returns the error passed to the most recent CloseWithError
+// call, or nil if CloseWithError has not been called yet.
+func (c *countingStreamCloser) LastCloseError() error {
+	if box, ok := c.lastErr.Load().(closeErrBox); ok {
+		return box.err
+	}
 	return nil
 }
 
@@ -715,6 +730,119 @@ func TestReleaseStreamingResponse_SkipsWhenAlreadyClaimed(t *testing.T) {
 	// The claim was lost, so resp was intentionally not released (the
 	// production GC-leak trade-off). Release it here to keep the test clean.
 	fasthttp.ReleaseResponse(resp)
+}
+
+// blockingErrCloser models an upstream body stream that never terminates on
+// its own (e.g. bedrock_mantle holding its chunked body open past the
+// terminal SSE event): Read blocks until CloseWithError is called. It
+// implements fasthttp's ReadCloserWithError (Read + CloseWithError), the
+// interface resp.bodyStream satisfies for a real streaming response.
+type blockingErrCloser struct {
+	unblock chan struct{}
+	errCh   chan error
+	once    sync.Once
+}
+
+func newBlockingErrCloser() *blockingErrCloser {
+	return &blockingErrCloser{unblock: make(chan struct{}), errCh: make(chan error, 1)}
+}
+
+func (c *blockingErrCloser) Read([]byte) (int, error) {
+	<-c.unblock
+	return 0, io.EOF
+}
+
+func (c *blockingErrCloser) CloseWithError(err error) error {
+	c.once.Do(func() {
+		c.errCh <- err
+		close(c.unblock)
+	})
+	return nil
+}
+
+// TestReleaseStreamingResponse_BoundsDrainAndDropsConnection reproduces the
+// bedrock_mantle hang: the upstream body stream never terminates, so an
+// unbounded io.Copy in the drain would block ReleaseStreamingResponse (and
+// thus the whole defer chain that closes the provider's response channel)
+// forever. The drain must be bounded by the configured stream idle timeout
+// and force-close the connection with a non-nil error on timeout, so
+// fasthttp drops it instead of returning it to the idle pool.
+func TestReleaseStreamingResponse_BoundsDrainAndDropsConnection(t *testing.T) {
+	t.Parallel()
+
+	const idleTimeout = 30 * time.Millisecond
+	// CI-safe slack over the configured idle timeout: generous enough to
+	// absorb scheduler jitter on a loaded CI runner, but tight enough to
+	// prove the drain is bounded by idleTimeout rather than some much larger
+	// (or absent) fallback.
+	const upperBound = 20 * idleTimeout
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, idleTimeout)
+
+	body := newBlockingErrCloser()
+	resp := fasthttp.AcquireResponse()
+	resp.SetBodyStream(body, -1)
+
+	start := time.Now()
+	ReleaseStreamingResponse(ctx, resp)
+	elapsed := time.Since(start)
+
+	if elapsed > upperBound {
+		t.Fatalf("ReleaseStreamingResponse blocked for %v on a never-terminating body stream; want it bounded by ~%v (%v idle timeout + CI slack)", elapsed, upperBound, idleTimeout)
+	}
+
+	select {
+	case err := <-body.errCh:
+		// Measured from the same start as elapsed above, so this pins down
+		// *when* the forced close happened, not just that ReleaseStreamingResponse
+		// eventually returned — the two are distinct because the drain goroutine
+		// races the idle timer independently of the caller.
+		closedAt := time.Since(start)
+		if closedAt > upperBound {
+			t.Fatalf("CloseWithError fired %v after start; want within %v of the %v idle timeout", closedAt, upperBound, idleTimeout)
+		}
+		// ReleaseStreamingResponse reuses ErrStreamIdleTimeout for this forced
+		// close (the same sentinel NewIdleTimeoutReader's timer uses) rather
+		// than a drain-specific error, since both are the same failure mode:
+		// no data within the configured stream idle timeout.
+		if !errors.Is(err, ErrStreamIdleTimeout) {
+			t.Fatalf("expected ErrStreamIdleTimeout on the forced close, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drain timeout never force-closed the body stream")
+	}
+
+	// resp is intentionally leaked here (not released): the drain goroutine
+	// may still be shutting down and could race a concurrent ReleaseResponse,
+	// same GC-leak trade-off as TestReleaseStreamingResponse_SkipsWhenAlreadyClaimed.
+}
+
+// TestReleaseStreamingResponse_NormalDrainReleasesWithoutForcingClose asserts
+// that when the upstream body terminates promptly, ReleaseStreamingResponse
+// takes its original fast path unchanged: it drains via resp.CloseBodyStream()
+// (not the forced-close branch), so the connection remains eligible for reuse.
+func TestReleaseStreamingResponse_NormalDrainReleasesWithoutForcingClose(t *testing.T) {
+	t.Parallel()
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, time.Second)
+
+	body := &countingStreamCloser{}
+	resp := fasthttp.AcquireResponse()
+	resp.SetBodyStream(body, -1)
+
+	ReleaseStreamingResponse(ctx, resp)
+
+	if got := body.readCount.Load(); got == 0 {
+		t.Fatal("expected ReleaseStreamingResponse to drain the body stream")
+	}
+	if got := body.closeCount.Load(); got != 1 {
+		t.Fatalf("expected exactly one CloseWithError call via the normal resp.CloseBodyStream() path, got %d", got)
+	}
+	if err := body.LastCloseError(); err != nil {
+		t.Fatalf("expected the normal drain path to close with a nil error (not the idle-timeout forced-close branch), got %v", err)
+	}
 }
 
 // TestReleaseStreamingResponse_NoBodyDoesNotClaimConnection covers the

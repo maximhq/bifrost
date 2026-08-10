@@ -2008,6 +2008,30 @@ func TestSanitizeAnthropicToolUseIDPtr(t *testing.T) {
 	}
 }
 
+func TestProviderSendsDoneMarker(t *testing.T) {
+	cases := []struct {
+		provider schemas.ModelProvider
+		want     bool
+	}{
+		{schemas.Cerebras, false},
+		{schemas.Perplexity, false},
+		{schemas.HuggingFace, false},
+		{schemas.Bedrock, false},
+		// bedrock_mantle ends its stream after finish_reason without a [DONE]
+		// marker, same as the legacy mantle routing under the bedrock key.
+		{schemas.BedrockMantle, false},
+		{schemas.OpenAI, true},
+		{schemas.Anthropic, true},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			if got := ProviderSendsDoneMarker(tc.provider); got != tc.want {
+				t.Errorf("ProviderSendsDoneMarker(%q) = %v, want %v", tc.provider, got, tc.want)
+			}
+		})
+	}
+}
+
 // finalizerTestTracer is a minimal schemas.Tracer that models only the
 // deferred-span lifecycle: a span stays parked until ClearDeferredSpan runs.
 // It records the status passed to EndSpan so tests can assert span outcomes.
