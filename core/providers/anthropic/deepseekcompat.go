@@ -9,6 +9,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// deepSeekV4FlashModel is the exact model identity supported by these
+// Anthropic-compatibility adaptations.
 const deepSeekV4FlashModel = "deepseek-v4-flash"
 
 // isDeepSeekV4FlashRequest is deliberately narrower than Anthropic's
@@ -20,10 +22,14 @@ func isDeepSeekV4FlashRequest(provider schemas.ModelProvider, model string) bool
 	return provider == schemas.DeepSeek && model == deepSeekV4FlashModel
 }
 
+// shouldValidateDeepSeekV4FlashUsage resolves aliases before deciding whether
+// the response requires the V4 Flash usage-fidelity checks.
 func shouldValidateDeepSeekV4FlashUsage(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) bool {
 	return isDeepSeekV4FlashRequest(provider, schemas.ResolveCanonicalModel(ctx, model))
 }
 
+// shouldValidateDeepSeekV4FlashUsageFromBody extracts the requested model from
+// a serialized request and applies the same exact, alias-aware validation gate.
 func shouldValidateDeepSeekV4FlashUsageFromBody(ctx *schemas.BifrostContext, provider schemas.ModelProvider, body []byte) bool {
 	if provider != schemas.DeepSeek || len(body) == 0 {
 		return false
@@ -51,28 +57,38 @@ type deepSeekUsageMetadata struct {
 	ProviderPromptTokens     *int `json:"prompt_tokens"`
 }
 
+// deepSeekResponseMetadata contains the model identity and accounting fields
+// needed to validate a non-streaming response.
 type deepSeekResponseMetadata struct {
 	Model string                 `json:"model"`
 	Usage *deepSeekUsageMetadata `json:"usage"`
 }
 
+// deepSeekStreamMessageMetadata contains the nested model and usage metadata
+// carried by a message_start event.
 type deepSeekStreamMessageMetadata struct {
 	Model string                 `json:"model"`
 	Usage *deepSeekUsageMetadata `json:"usage"`
 }
 
+// deepSeekStreamMetadata is the payload-free subset decoded from each
+// Anthropic-compatible stream event.
 type deepSeekStreamMetadata struct {
 	Type    AnthropicStreamEventType       `json:"type"`
 	Message *deepSeekStreamMessageMetadata `json:"message"`
 	Usage   *deepSeekUsageMetadata         `json:"usage"`
 }
 
+// deepSeekStreamUsageState tracks the required usage-bearing event lifecycle
+// without retaining streamed content.
 type deepSeekStreamUsageState struct {
 	sawMessageStart bool
 	sawMessageDelta bool
 	sawMessageStop  bool
 }
 
+// validateDeepSeekV4FlashResponseMetadata verifies the exact served model and
+// complete, internally consistent usage metadata on a unary response.
 func validateDeepSeekV4FlashResponseMetadata(data []byte) error {
 	var metadata deepSeekResponseMetadata
 	if err := sonic.Unmarshal(data, &metadata); err != nil {
@@ -84,6 +100,8 @@ func validateDeepSeekV4FlashResponseMetadata(data []byte) error {
 	return validateDeepSeekPromptUsage(metadata.Usage, true)
 }
 
+// validateDeepSeekV4FlashStreamMetadata validates one event and advances the
+// usage lifecycle state when the event is ordered and complete.
 func validateDeepSeekV4FlashStreamMetadata(eventType string, data []byte, state *deepSeekStreamUsageState) error {
 	var metadata deepSeekStreamMetadata
 	if err := sonic.Unmarshal(data, &metadata); err != nil {
@@ -132,6 +150,8 @@ func validateDeepSeekV4FlashStreamMetadata(eventType string, data []byte, state 
 	return nil
 }
 
+// validateDeepSeekV4FlashStreamComplete rejects streams that end before every
+// required usage-bearing lifecycle event has arrived.
 func validateDeepSeekV4FlashStreamComplete(state *deepSeekStreamUsageState) error {
 	if state == nil || !state.sawMessageStart {
 		return fmt.Errorf("stream ended without message_start usage metadata")
@@ -145,6 +165,8 @@ func validateDeepSeekV4FlashStreamComplete(state *deepSeekStreamUsageState) erro
 	return nil
 }
 
+// validateDeepSeekPromptUsage checks prompt-side token presence, non-negativity,
+// and conservation, optionally requiring output tokens on the same envelope.
 func validateDeepSeekPromptUsage(usage *deepSeekUsageMetadata, requireOutput bool) error {
 	if usage == nil {
 		return fmt.Errorf("usage metadata is absent")
@@ -185,6 +207,8 @@ func validateDeepSeekPromptUsage(usage *deepSeekUsageMetadata, requireOutput boo
 	return nil
 }
 
+// validateDeepSeekOutputUsage checks the output-token metadata carried by a
+// streaming message_delta event.
 func validateDeepSeekOutputUsage(usage *deepSeekUsageMetadata) error {
 	if usage == nil {
 		return fmt.Errorf("message_delta usage metadata is absent")
@@ -198,6 +222,8 @@ func validateDeepSeekOutputUsage(usage *deepSeekUsageMetadata) error {
 	return nil
 }
 
+// newDeepSeekUsageFidelityError converts a validation failure into a typed 502
+// that remains eligible for the configured provider fallback chain.
 func newDeepSeekUsageFidelityError(err error) *schemas.BifrostError {
 	statusCode := 502
 	errorType := "upstream_usage_invalid"
@@ -214,6 +240,8 @@ func newDeepSeekUsageFidelityError(err error) *schemas.BifrostError {
 	}
 }
 
+// sendDeepSeekUsageFidelityStreamError terminates the stream and emits the
+// enriched, fallback-eligible fidelity error through the normal post-hook path.
 func sendDeepSeekUsageFidelityStreamError(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,

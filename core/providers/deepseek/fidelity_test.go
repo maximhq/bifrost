@@ -15,8 +15,12 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// validV4FlashResponse is the canonical complete Anthropic-compatible fixture
+// shared by the DeepSeek provider fidelity tests.
 const validV4FlashResponse = `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":23,"prompt_tokens":121}}`
 
+// TestChatCompletionAnthropicV4FlashSendsEffortOnly verifies the provider sends
+// output_config.effort without legacy thinking metadata.
 func TestChatCompletionAnthropicV4FlashSendsEffortOnly(t *testing.T) {
 	t.Parallel()
 	var captured map[string]any
@@ -63,6 +67,8 @@ func TestChatCompletionAnthropicV4FlashSendsEffortOnly(t *testing.T) {
 	}
 }
 
+// TestChatCompletionAnthropicV4FlashRejectsCollapsedUsage verifies incomplete
+// unary Chat usage fails closed instead of producing a success response.
 func TestChatCompletionAnthropicV4FlashRejectsCollapsedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -86,6 +92,8 @@ func TestChatCompletionAnthropicV4FlashRejectsCollapsedUsage(t *testing.T) {
 	assertUsageFidelityError(t, bifrostErr)
 }
 
+// TestResponsesAnthropicV4FlashRejectsCollapsedUsage verifies incomplete unary
+// Responses usage produces the typed fidelity failure.
 func TestResponsesAnthropicV4FlashRejectsCollapsedUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -109,6 +117,8 @@ func TestResponsesAnthropicV4FlashRejectsCollapsedUsage(t *testing.T) {
 	assertUsageFidelityError(t, bifrostErr)
 }
 
+// TestAnthropicV4FlashLargeResponseSkipsTruncatedPreviewValidation verifies a
+// prefix-only large-response preview is not mistaken for missing trailing usage.
 func TestAnthropicV4FlashLargeResponseSkipsTruncatedPreviewValidation(t *testing.T) {
 	largeResponse := `{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"text","text":"` +
 		strings.Repeat("x", 70*1024) +
@@ -158,6 +168,8 @@ func TestAnthropicV4FlashLargeResponseSkipsTruncatedPreviewValidation(t *testing
 	}
 }
 
+// TestResponsesAnthropicUsageGateIsExact verifies nearby DeepSeek models retain
+// stock Responses decoding rather than entering the V4 Flash validator.
 func TestResponsesAnthropicUsageGateIsExact(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -185,6 +197,8 @@ func TestResponsesAnthropicUsageGateIsExact(t *testing.T) {
 	}
 }
 
+// TestResponsesStreamAnthropicV4FlashRejectsCollapsedUsageFirst verifies the
+// first emitted Responses chunk is the typed error when start usage is invalid.
 func TestResponsesStreamAnthropicV4FlashRejectsCollapsedUsageFirst(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -228,6 +242,8 @@ func TestResponsesStreamAnthropicV4FlashRejectsCollapsedUsageFirst(t *testing.T)
 	}
 }
 
+// TestResponsesStreamAnthropicV4FlashAcceptsCompleteUsage verifies a complete
+// Responses event lifecycle streams successfully without a fidelity error.
 func TestResponsesStreamAnthropicV4FlashAcceptsCompleteUsage(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -276,6 +292,8 @@ func TestResponsesStreamAnthropicV4FlashAcceptsCompleteUsage(t *testing.T) {
 	}
 }
 
+// TestChatCompletionStreamAnthropicV4FlashRejectsCollapsedUsageFirst verifies
+// invalid start usage becomes the first Chat stream chunk and ends the stream.
 func TestChatCompletionStreamAnthropicV4FlashRejectsCollapsedUsageFirst(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -319,6 +337,8 @@ func TestChatCompletionStreamAnthropicV4FlashRejectsCollapsedUsageFirst(t *testi
 	}
 }
 
+// anthropicTestKey returns the synthetic key configuration used by provider
+// fidelity tests that exercise Anthropic-compatible endpoints.
 func anthropicTestKey() schemas.Key {
 	return schemas.Key{
 		Value:                 schemas.SecretVar{Val: "test-api-key"},
@@ -326,6 +346,8 @@ func anthropicTestKey() schemas.Key {
 	}
 }
 
+// v4FlashResponsesRequest returns a minimal Responses request for the exact V4
+// Flash model gate.
 func v4FlashResponsesRequest() *schemas.BifrostResponsesRequest {
 	return &schemas.BifrostResponsesRequest{
 		Provider: schemas.DeepSeek,
@@ -340,6 +362,8 @@ func v4FlashResponsesRequest() *schemas.BifrostResponsesRequest {
 	}
 }
 
+// v4FlashChatRequest returns a minimal Chat request for the exact V4 Flash
+// model gate.
 func v4FlashChatRequest() *schemas.BifrostChatRequest {
 	return &schemas.BifrostChatRequest{
 		Provider: schemas.DeepSeek,
@@ -351,10 +375,14 @@ func v4FlashChatRequest() *schemas.BifrostChatRequest {
 	}
 }
 
+// passthroughPostHook preserves stream responses and errors unchanged so the
+// provider tests can observe their native ordering.
 func passthroughPostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	return resp, err
 }
 
+// assertUsageFidelityError checks the typed, fallback-eligible, payload-safe
+// error contract shared by unary and streaming tests.
 func assertUsageFidelityError(t *testing.T, err *schemas.BifrostError) {
 	t.Helper()
 	if err == nil || err.StatusCode == nil || *err.StatusCode != http.StatusBadGateway {

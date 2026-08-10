@@ -8,6 +8,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// TestDeepSeekV4FlashUsesOutputConfigEffort verifies that chat and Responses
+// requests, including forced-tool variants, use effort without legacy thinking.
 func TestDeepSeekV4FlashUsesOutputConfigEffort(t *testing.T) {
 	t.Run("chat", func(t *testing.T) {
 		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -112,6 +114,8 @@ func TestDeepSeekV4FlashUsesOutputConfigEffort(t *testing.T) {
 	})
 }
 
+// TestDeepSeekV4FlashEffortGateIsExact verifies that near-miss models and
+// providers retain the stock effort behavior.
 func TestDeepSeekV4FlashEffortGateIsExact(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -144,6 +148,8 @@ func TestDeepSeekV4FlashEffortGateIsExact(t *testing.T) {
 	}
 }
 
+// TestBuildDeepSeekV4FlashRequestBodyPreservesEffort verifies the final wire
+// body retains output_config.effort and omits unsupported thinking metadata.
 func TestBuildDeepSeekV4FlashRequestBodyPreservesEffort(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
@@ -167,6 +173,7 @@ func TestBuildDeepSeekV4FlashRequestBodyPreservesEffort(t *testing.T) {
 	}
 }
 
+// assertDeepSeekEffortOnly checks the shared effort-only request invariant.
 func assertDeepSeekEffortOnly(t *testing.T, req *AnthropicMessageRequest, want string) {
 	t.Helper()
 	if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != want {

@@ -178,6 +178,8 @@ func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 	}
 }
 
+// TestChatCompletion_V4FlashOmitsThinkingForForcedToolChoice verifies a forced
+// tool does not reintroduce unsupported thinking metadata for V4 Flash.
 func TestChatCompletion_V4FlashOmitsThinkingForForcedToolChoice(t *testing.T) {
 	t.Parallel()
 

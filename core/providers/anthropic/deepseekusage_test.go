@@ -8,6 +8,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// TestValidateDeepSeekV4FlashResponseMetadata covers valid, missing, malformed,
+// inconsistent, and wrong-model unary metadata.
 func TestValidateDeepSeekV4FlashResponseMetadata(t *testing.T) {
 	valid := `{"model":"deepseek-v4-flash","content":[{"type":"text","text":"must not be retained"}],"usage":{"input_tokens":101,"cache_creation_input_tokens":13,"cache_read_input_tokens":7,"output_tokens":23,"prompt_tokens":121}}`
 	if err := validateDeepSeekV4FlashResponseMetadata([]byte(valid)); err != nil {
@@ -35,6 +37,8 @@ func TestValidateDeepSeekV4FlashResponseMetadata(t *testing.T) {
 	}
 }
 
+// TestValidateDeepSeekV4FlashStreamLifecycle verifies a complete ordered stream
+// satisfies the usage-fidelity state machine.
 func TestValidateDeepSeekV4FlashStreamLifecycle(t *testing.T) {
 	state := &deepSeekStreamUsageState{}
 	for _, event := range []struct {
@@ -55,6 +59,8 @@ func TestValidateDeepSeekV4FlashStreamLifecycle(t *testing.T) {
 	}
 }
 
+// TestValidateDeepSeekV4FlashStreamRejectsMalformedUsage covers collapsed,
+// inconsistent, absent, corrupt, and negative stream usage metadata.
 func TestValidateDeepSeekV4FlashStreamRejectsMalformedUsage(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -91,6 +97,8 @@ func TestValidateDeepSeekV4FlashStreamRejectsMalformedUsage(t *testing.T) {
 	}
 }
 
+// TestValidateDeepSeekV4FlashStreamRejectsOutOfOrderEvents verifies duplicate
+// starts and events after the terminal stop are rejected.
 func TestValidateDeepSeekV4FlashStreamRejectsOutOfOrderEvents(t *testing.T) {
 	t.Run("duplicate message_start", func(t *testing.T) {
 		state := &deepSeekStreamUsageState{sawMessageStart: true}
@@ -110,6 +118,8 @@ func TestValidateDeepSeekV4FlashStreamRejectsOutOfOrderEvents(t *testing.T) {
 	})
 }
 
+// TestValidateDeepSeekV4FlashStreamComplete covers every incomplete terminal
+// state recognized by the stream validator.
 func TestValidateDeepSeekV4FlashStreamComplete(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -129,6 +139,8 @@ func TestValidateDeepSeekV4FlashStreamComplete(t *testing.T) {
 	}
 }
 
+// TestDeepSeekUsageValidationGateIsExact verifies alias resolution enables the
+// exact route while provider and model near misses remain untouched.
 func TestDeepSeekUsageValidationGateIsExact(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
@@ -156,6 +168,8 @@ func TestDeepSeekUsageValidationGateIsExact(t *testing.T) {
 	}
 }
 
+// TestResetAnthropicStreamAttemptState verifies connection state cannot leak
+// from one fallback attempt into the next.
 func TestResetAnthropicStreamAttemptState(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	defer cancel()
@@ -167,6 +181,8 @@ func TestResetAnthropicStreamAttemptState(t *testing.T) {
 	}
 }
 
+// TestDeepSeekUsageFidelityErrorIsTypedFallbackEligible verifies the failure is
+// a typed 502 that permits fallback dispatch.
 func TestDeepSeekUsageFidelityErrorIsTypedFallbackEligible(t *testing.T) {
 	err := newDeepSeekUsageFidelityError(context.Canceled)
 	if err.StatusCode == nil || *err.StatusCode != 502 || err.Error == nil || err.Error.Code == nil || *err.Error.Code != "deepseek_usage_fidelity" {
