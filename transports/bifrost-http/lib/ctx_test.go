@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -34,6 +35,61 @@ func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return f
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                { return s.allowDirectKeys }
 func (s testHandlerStore) GetMCPExternalServerURL() string            { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string            { return "" }
+
+// TestConvertToBifrostContext_RequestTimeoutOverride verifies the per-request
+// x-bf-request-timeout header is parsed (duration string or seconds integer),
+// clamped to requestTimeoutOverrideMax, and that invalid/zero values are
+// ignored. Mirrors TestConvertToBifrostContext_StreamIdleTimeoutOverride's
+// structure (maximhq/bifrost#4805) since the two headers are independent but
+// share the same parsing shape.
+func TestConvertToBifrostContext_RequestTimeoutOverride(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   time.Duration
+		set    bool
+	}{
+		{"duration string", "300s", 300 * time.Second, true},
+		{"minutes string", "5m", 5 * time.Minute, true},
+		{"seconds integer", "120", 120 * time.Second, true},
+		{"clamped above max", "9000s", requestTimeoutOverrideMax, true}, // 9000s > 30m -> clamped
+		{"zero ignored", "0", 0, false},
+		{"garbage ignored", "soon", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-request-timeout", tc.header)
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+			got, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestTimeout).(time.Duration)
+			if tc.set {
+				if !ok {
+					t.Fatalf("expected request timeout to be set for header %q", tc.header)
+				}
+				if got != tc.want {
+					t.Fatalf("header %q: got %v, want %v", tc.header, got, tc.want)
+				}
+			} else if ok && got > 0 {
+				t.Fatalf("header %q: expected no override, got %v", tc.header, got)
+			}
+		})
+	}
+}
+
+// TestConvertToBifrostContext_RequestTimeoutIndependentOfStreamIdleTimeout
+// verifies x-bf-request-timeout only ever sets BifrostContextKeyRequestTimeout
+// -- it must never touch the (independent) stream-idle-timeout context key.
+func TestConvertToBifrostContext_RequestTimeoutIndependentOfStreamIdleTimeout(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("x-bf-request-timeout", "300")
+	bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+	defer cancel()
+
+	if _, ok := bifrostCtx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok {
+		t.Fatal("x-bf-request-timeout must not set the stream-idle-timeout context key")
+	}
+}
 
 func TestParseSessionIDFromBaggage(t *testing.T) {
 	tests := []struct {

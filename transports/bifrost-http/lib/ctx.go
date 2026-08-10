@@ -24,6 +24,12 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// requestTimeoutOverrideMax bounds the per-request x-bf-request-timeout
+// override so a client cannot set a pathologically long deadline. Independent
+// of any clamp on x-bf-stream-idle-timeout (#4805) -- the two headers are
+// orthogonal, so their ceilings are set independently too. Tunable.
+const requestTimeoutOverrideMax = 30 * time.Minute
+
 const (
 	// FastHTTPUserValueBifrostContext stores the active *schemas.BifrostContext on fasthttp.RequestCtx.
 	// This allows transport middleware and request handlers to share the same context instance.
@@ -231,6 +237,11 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //   - x-bf-send-back-raw-request: include raw provider request in the BifrostResponse returned to the caller
 //   - x-bf-send-back-raw-response: include raw provider response in the BifrostResponse returned to the caller
 //   - x-bf-store-raw-request-response: capture raw request/response for logging only (stripped from client response)
+//
+// 10. Request Timeout Header:
+//   - x-bf-request-timeout: per-request total request/stream deadline (duration string e.g. "5m" or
+//     seconds integer). Independent of x-bf-stream-idle-timeout -- setting one does not affect the
+//     other. Clamped to requestTimeoutOverrideMax.
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -559,6 +570,28 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			if err == nil && ttlDuration > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySessionTTL, ttlDuration)
+			}
+			return true
+		}
+		// Per-request total request/stream deadline override (duration string or
+		// seconds integer). Independent of x-bf-stream-idle-timeout -- setting one
+		// does not affect the other; a caller wanting both dimensions extended
+		// must set both headers. Enforced in core (see armRequestTimeout).
+		if keyStr == "x-bf-request-timeout" {
+			valueStr := strings.TrimSpace(string(value))
+			var reqDuration time.Duration
+			var err error
+			if reqDuration, err = time.ParseDuration(valueStr); err != nil {
+				if seconds, parseErr := strconv.Atoi(valueStr); parseErr == nil && seconds > 0 {
+					reqDuration = time.Duration(seconds) * time.Second
+					err = nil
+				}
+			}
+			if err == nil && reqDuration > 0 {
+				if reqDuration > requestTimeoutOverrideMax {
+					reqDuration = requestTimeoutOverrideMax
+				}
+				bifrostCtx.SetValue(schemas.BifrostContextKeyRequestTimeout, reqDuration)
 			}
 			return true
 		}
