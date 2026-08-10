@@ -1713,9 +1713,14 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
-	useGeminiEmbedAPI := usesGeminiEmbedContentAPI(request.Model)
+	// One canonical model id for URL path, FQ resource name in the body, and
+	// multi-region host promotion. Stripping models/ here avoids
+	// …/models/models/gemini-embedding-2 when GenAI clients pass models/{id}.
+	modelID := canonicalVertexModelID(request.Model)
+	useGeminiEmbedAPI := usesGeminiEmbedContentAPI(modelID)
 	forceSingleRegion := resolveVertexForceSingleRegion(ctx, key)
-	effectiveRegion := getVertexEffectiveRegion(region, request.Model, forceSingleRegion)
+	// Host/region promotion keys off the bare model id (not models/…).
+	effectiveRegion := getVertexEffectiveRegion(region, modelID, forceSingleRegion)
 
 	var jsonBody []byte
 	var bifrostErr *schemas.BifrostError
@@ -1724,7 +1729,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 			ctx,
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return ToVertexGeminiBatchEmbeddingRequest(request, projectID, effectiveRegion), nil
+				return ToVertexGeminiBatchEmbeddingRequest(request, projectID, effectiveRegion, modelID), nil
 			},
 		)
 	} else {
@@ -1742,7 +1747,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 
 	// For custom/fine-tuned models, validate projectNumber is set
 	projectNumber := resolveVertexProjectNumber(ctx, key)
-	if schemas.IsAllDigitsASCII(request.Model) && projectNumber == "" {
+	if schemas.IsAllDigitsASCII(modelID) && projectNumber == "" {
 		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 	}
 
@@ -1758,11 +1763,11 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		// configured with a single region such as europe-west1.
 		completeURL = getVertexModelAwarePublisherModelURL(
 			region, "v1", projectID, "google",
-			gemini.NormalizeModelName(request.Model), ":batchEmbedContents",
+			modelID, ":batchEmbedContents",
 			forceSingleRegion, provider.logger,
 		)
 	} else {
-		completeURL = getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":predict")
+		completeURL = getCompleteURLForGeminiEndpoint(modelID, region, projectID, projectNumber, ":predict")
 	}
 
 	// Create HTTP request for streaming

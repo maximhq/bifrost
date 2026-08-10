@@ -5,8 +5,34 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestCanonicalVertexModelID(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"gemini-embedding-2", "gemini-embedding-2"},
+		{"models/gemini-embedding-2", "gemini-embedding-2"},
+		{"Models/gemini-embedding-2", "gemini-embedding-2"},
+		{"  models/gemini-embedding-001  ", "gemini-embedding-001"},
+		{"google/gemini-embedding-2", "gemini-embedding-2"},
+		{"text-embedding-004", "text-embedding-004"},
+		{"models/text-embedding-004", "text-embedding-004"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
+			if got := canonicalVertexModelID(tc.in); got != tc.want {
+				t.Fatalf("canonicalVertexModelID(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestUsesGeminiEmbedContentAPI(t *testing.T) {
 	t.Parallel()
@@ -19,6 +45,7 @@ func TestUsesGeminiEmbedContentAPI(t *testing.T) {
 		{"gemini-embedding-001", true},
 		{"Gemini-Embedding-2", true},
 		{"models/gemini-embedding-2", true},
+		{"google/gemini-embedding-2", true},
 		{"text-embedding-004", false},
 		{"text-embedding-005", false},
 		{"text-multilingual-embedding-002", false},
@@ -42,14 +69,16 @@ func TestToVertexGeminiBatchEmbeddingRequest_FullyQualifiedModel(t *testing.T) {
 	text := "Hello world"
 	dims := 768
 	req := &schemas.BifrostEmbeddingRequest{
-		Model: "gemini-embedding-2",
+		// Client may pass models/…; URL + body must both use the bare id.
+		Model: "models/gemini-embedding-2",
 		Input: &schemas.EmbeddingInput{Text: &text},
 		Params: &schemas.EmbeddingParameters{
 			Dimensions: &dims,
 		},
 	}
+	modelID := canonicalVertexModelID(req.Model)
 
-	batch := ToVertexGeminiBatchEmbeddingRequest(req, "my-project", "europe-west1")
+	batch := ToVertexGeminiBatchEmbeddingRequest(req, "my-project", "europe-west1", modelID)
 	if batch == nil {
 		t.Fatal("expected non-nil batch request")
 	}
@@ -60,6 +89,9 @@ func TestToVertexGeminiBatchEmbeddingRequest_FullyQualifiedModel(t *testing.T) {
 	wantModel := "projects/my-project/locations/europe-west1/publishers/google/models/gemini-embedding-2"
 	if batch.Requests[0].Model != wantModel {
 		t.Fatalf("model = %q, want %q", batch.Requests[0].Model, wantModel)
+	}
+	if strings.Contains(batch.Requests[0].Model, "models/models/") {
+		t.Fatalf("double models/ prefix in FQ model: %q", batch.Requests[0].Model)
 	}
 	if batch.Requests[0].Content == nil || len(batch.Requests[0].Content.Parts) != 1 {
 		t.Fatalf("expected one content part, got %#v", batch.Requests[0].Content)
@@ -85,6 +117,40 @@ func TestToVertexGeminiBatchEmbeddingRequest_FullyQualifiedModel(t *testing.T) {
 	}
 	if !strings.Contains(s, wantModel) {
 		t.Fatalf("batch body missing FQ model: %s", s)
+	}
+}
+
+func TestGeminiBatchEmbeddingURL_UsesCanonicalModelID(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors Embedding(): both URL path and body FQ name use the same modelID.
+	for _, clientModel := range []string{
+		"gemini-embedding-2",
+		"models/gemini-embedding-2",
+		"google/gemini-embedding-2",
+	} {
+		modelID := canonicalVertexModelID(clientModel)
+		url := getVertexModelAwarePublisherModelURL(
+			"europe-west1", "v1", "proj", "google", modelID, ":batchEmbedContents",
+			false, nil,
+		)
+		if !strings.HasSuffix(url, "/publishers/google/models/gemini-embedding-2:batchEmbedContents") {
+			t.Fatalf("clientModel=%q modelID=%q URL=%q", clientModel, modelID, url)
+		}
+		if strings.Contains(url, "/models/models/") {
+			t.Fatalf("double models/ in URL for clientModel=%q: %q", clientModel, url)
+		}
+
+		text := "x"
+		req := &schemas.BifrostEmbeddingRequest{
+			Model: clientModel,
+			Input: &schemas.EmbeddingInput{Text: &text},
+		}
+		batch := ToVertexGeminiBatchEmbeddingRequest(req, "proj", "europe-west1", modelID)
+		wantFQ := "projects/proj/locations/europe-west1/publishers/google/models/gemini-embedding-2"
+		if batch.Requests[0].Model != wantFQ {
+			t.Fatalf("clientModel=%q body model=%q want %q", clientModel, batch.Requests[0].Model, wantFQ)
+		}
 	}
 }
 
@@ -131,5 +197,85 @@ func TestGetVertexEmbeddingURL_MethodByModel(t *testing.T) {
 	legacyURL := getCompleteURLForGeminiEndpoint("text-embedding-004", "europe-west1", "proj", "", ":predict")
 	if !strings.HasSuffix(legacyURL, "/publishers/google/models/text-embedding-004:predict") {
 		t.Fatalf("legacy URL = %q", legacyURL)
+	}
+}
+
+// TestGeminiBatchEmbedContentsResponse_PreservesOrder is a fixture regression
+// for the new :batchEmbedContents response path (CodeRabbit nit on #6016).
+// Each embeddings[] item must map to BifrostEmbeddingResponse.Data in source
+// order with values and indexes preserved.
+func TestGeminiBatchEmbedContentsResponse_PreservesOrder(t *testing.T) {
+	t.Parallel()
+
+	// Wire fixture matching Vertex/Google AI Studio batchEmbedContents JSON.
+	const fixture = `{
+  "embeddings": [
+    {
+      "values": [0.11, 0.22, 0.33],
+      "statistics": { "tokenCount": 3 }
+    },
+    {
+      "values": [0.44, 0.55],
+      "statistics": { "tokenCount": 2 }
+    },
+    {
+      "values": [0.66]
+    }
+  ],
+  "metadata": {
+    "billableCharacterCount": 12
+  }
+}`
+
+	var geminiResp gemini.GeminiEmbeddingResponse
+	if err := json.Unmarshal([]byte(fixture), &geminiResp); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	if len(geminiResp.Embeddings) != 3 {
+		t.Fatalf("fixture embeddings len = %d, want 3", len(geminiResp.Embeddings))
+	}
+
+	// Same converter used by VertexProvider.Embedding for the Gemini branch.
+	got := gemini.ToBifrostEmbeddingResponse(&geminiResp, "gemini-embedding-2")
+	if got == nil {
+		t.Fatal("ToBifrostEmbeddingResponse returned nil")
+	}
+	if got.Model != "gemini-embedding-2" {
+		t.Fatalf("model = %q", got.Model)
+	}
+	if got.Object != "list" {
+		t.Fatalf("object = %q", got.Object)
+	}
+	if len(got.Data) != 3 {
+		t.Fatalf("Data len = %d, want 3", len(got.Data))
+	}
+
+	wantVectors := [][]float64{
+		{0.11, 0.22, 0.33},
+		{0.44, 0.55},
+		{0.66},
+	}
+	for i, want := range wantVectors {
+		item := got.Data[i]
+		if item.Index != i {
+			t.Fatalf("Data[%d].Index = %d, want %d", i, item.Index, i)
+		}
+		if item.Object != "embedding" {
+			t.Fatalf("Data[%d].Object = %q", i, item.Object)
+		}
+		gotVec := item.Embedding.EmbeddingArray
+		if len(gotVec) != len(want) {
+			t.Fatalf("Data[%d] len = %d, want %d (%v)", i, len(gotVec), len(want), gotVec)
+		}
+		for j := range want {
+			if gotVec[j] != want[j] {
+				t.Fatalf("Data[%d][%d] = %v, want %v", i, j, gotVec[j], want[j])
+			}
+		}
+	}
+
+	// Usage falls back to first embedding's tokenCount when present.
+	if got.Usage == nil || got.Usage.PromptTokens != 3 || got.Usage.TotalTokens != 3 {
+		t.Fatalf("usage = %#v, want prompt/total 3 from first embedding statistics", got.Usage)
 	}
 }

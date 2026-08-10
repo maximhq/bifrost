@@ -7,6 +7,24 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// canonicalVertexModelID normalizes a client-supplied model string for Vertex
+// publisher model paths and resource names.
+//
+// Handles:
+//   - whitespace trim + gemini.NormalizeModelName (strips google/ when applicable)
+//   - optional "models/" prefix used by GenAI clients / Gemini wire format
+//
+// Does not lower-case the id — Vertex model resource names are case-sensitive
+// as published (e.g. gemini-embedding-2). Callers that only need family matching
+// should still compare with equal-fold / ToLower themselves.
+func canonicalVertexModelID(model string) string {
+	id := gemini.NormalizeModelName(model)
+	if len(id) >= len("models/") && strings.EqualFold(id[:len("models/")], "models/") {
+		id = id[len("models/"):]
+	}
+	return id
+}
+
 // usesGeminiEmbedContentAPI reports whether the model should be called via the
 // Gemini Generative Language embedding surface on Vertex
 // (:batchEmbedContents / :embedContent) rather than the legacy Vertex
@@ -19,10 +37,7 @@ import (
 // instances body yields 400 "Precondition check failed" from Vertex.
 // See https://github.com/maximhq/bifrost/issues/5003.
 func usesGeminiEmbedContentAPI(model string) bool {
-	normalized := strings.ToLower(gemini.NormalizeModelName(model))
-	// GenAI / some clients pass "models/{id}" — strip before matching.
-	normalized = strings.TrimPrefix(normalized, "models/")
-	return strings.HasPrefix(normalized, "gemini-embedding")
+	return strings.HasPrefix(strings.ToLower(canonicalVertexModelID(model)), "gemini-embedding")
 }
 
 // ToVertexEmbeddingRequest converts a Bifrost embedding request to Vertex AI
@@ -94,23 +109,30 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 // ToVertexGeminiBatchEmbeddingRequest converts a Bifrost embedding request to
 // the Gemini :batchEmbedContents body used on Vertex for gemini-embedding-* models.
 //
-// On Vertex the model field inside each request must be a fully-qualified
-// publisher model resource name (projects/.../locations/.../publishers/google/models/...).
-// Google AI Studio accepts the short "models/{id}" form; Vertex rejects it.
+// modelID must already be a canonical publisher model id (see canonicalVertexModelID),
+// without a "models/" prefix. On Vertex each request.model must be a fully-qualified
+// publisher model resource name
+// (projects/.../locations/.../publishers/google/models/...). Google AI Studio
+// accepts the short "models/{id}" form; Vertex rejects it.
 func ToVertexGeminiBatchEmbeddingRequest(
 	bifrostReq *schemas.BifrostEmbeddingRequest,
 	projectID string,
 	region string,
+	modelID string,
 ) *gemini.GeminiBatchEmbeddingRequest {
-	batch := gemini.ToGeminiEmbeddingRequest(bifrostReq)
+	if bifrostReq == nil {
+		return nil
+	}
+	// Build the batch from a request whose Model is the bare id so
+	// gemini.ToGeminiEmbeddingRequest does not re-introduce a models/ prefix
+	// based on a client-supplied "models/…" string (we overwrite Model below
+	// with the FQ resource name anyway).
+	reqCopy := *bifrostReq
+	reqCopy.Model = modelID
+	batch := gemini.ToGeminiEmbeddingRequest(&reqCopy)
 	if batch == nil {
 		return nil
 	}
-	raw := gemini.NormalizeModelName(bifrostReq.Model)
-	if len(raw) >= len("models/") && strings.EqualFold(raw[:len("models/")], "models/") {
-		raw = raw[len("models/"):]
-	}
-	modelID := raw
 	fqModel := "projects/" + projectID + "/locations/" + region + "/publishers/google/models/" + modelID
 	for i := range batch.Requests {
 		batch.Requests[i].Model = fqModel
