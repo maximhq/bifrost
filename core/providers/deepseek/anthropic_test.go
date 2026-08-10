@@ -43,6 +43,8 @@ func newTestDeepSeekProvider(baseURL string) (*deepseek.DeepSeekProvider, error)
 	}, testLogger{})
 }
 
+// newAnthropicResponse returns the complete V4 Flash fixture shared by the
+// Anthropic-compatible endpoint tests.
 func newAnthropicResponse() string {
 	return validV4FlashResponse
 }
@@ -109,6 +111,8 @@ func TestChatCompletion_UsesAnthropicEndpoint(t *testing.T) {
 	}
 }
 
+// TestResponses_UsesAnthropicEndpointAndKeepsWebSearch verifies the DeepSeek
+// Responses route preserves Anthropic-native web-search tools.
 func TestResponses_UsesAnthropicEndpointAndKeepsWebSearch(t *testing.T) {
 	t.Parallel()
 
