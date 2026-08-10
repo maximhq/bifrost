@@ -39,6 +39,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 		VideoListOutput:         `{"videos":[]}`,
 		VideoDeleteOutput:       `{"deleted":true}`,
 		CacheDebug:              `{"hit":true}`,
+		GuardrailDebug:          `{"judge_calls":[{"total_tokens":18}]}`,
 		TokenUsage:              `{"total_tokens":100}`,
 		ErrorDetails:            `{"error":"bad"}`,
 		RawRequest:              `{"method":"POST"}`,
@@ -53,6 +54,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Equal(t, len(payloadFields)+1, len(payload), "payload map should have all payload fields plus metadata")
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, payload["input_history"])
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, payload["output_message"])
+	assert.Equal(t, `{"judge_calls":[{"total_tokens":18}]}`, payload["guardrail_debug"])
 	assert.Equal(t, `routing log`, payload["routing_engine_logs"])
 	assert.Equal(t, metadata, payload["metadata"], "metadata must be written to the snapshot for object consumers")
 
@@ -61,6 +63,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	assert.Empty(t, log.InputHistory)
 	assert.Empty(t, log.OutputMessage)
 	assert.Empty(t, log.RawRequest)
+	assert.Empty(t, log.GuardrailDebug)
 	assert.Empty(t, log.RoutingEngineLogs)
 	require.NotNil(t, log.Metadata)
 	assert.Equal(t, metadata, *log.Metadata)
@@ -80,6 +83,7 @@ func TestExtractPayload_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `[{"role":"user","content":"hello"}]`, log.InputHistory)
 	assert.Equal(t, `{"role":"assistant","content":"world"}`, log.OutputMessage)
+	assert.Equal(t, `{"judge_calls":[{"total_tokens":18}]}`, log.GuardrailDebug)
 	assert.Equal(t, `routing log`, log.RoutingEngineLogs)
 	require.NotNil(t, log.Metadata)
 	assert.Equal(t, dbMetadata, *log.Metadata, "merge must not override DB-authoritative metadata with the snapshot")
