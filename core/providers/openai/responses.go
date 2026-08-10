@@ -420,43 +420,59 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
 // defaultImageDetail fills "auto" into any input_image content block missing the
-// detail field. Clones content on write — the Content pointer and the image block
-// pointers inside it are shared with the caller's input.
+// detail field in Content or ResponsesToolMessage.Output. Clones Content,
+// ResponsesToolMessage, and Output on write — their pointers and the image block
+// pointers inside them are shared with the caller's input.
 func defaultImageDetail(message schemas.ResponsesMessage) schemas.ResponsesMessage {
-	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
-		return message
-	}
-
 	needsDetail := func(block schemas.ResponsesMessageContentBlock) bool {
 		return block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
 			block.ResponsesInputMessageContentBlockImage != nil &&
 			block.ResponsesInputMessageContentBlockImage.Detail == nil
 	}
 
-	fixNeeded := false
-	for _, block := range message.Content.ContentBlocks {
-		if needsDetail(block) {
-			fixNeeded = true
-			break
+	defaultBlockDetails := func(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
+		fixNeeded := false
+		for _, block := range blocks {
+			if needsDetail(block) {
+				fixNeeded = true
+				break
+			}
 		}
-	}
-	if !fixNeeded {
-		return message
+		if !fixNeeded {
+			return blocks, false
+		}
+
+		newBlocks := make([]schemas.ResponsesMessageContentBlock, len(blocks))
+		copy(newBlocks, blocks)
+		for i, block := range newBlocks {
+			if needsDetail(block) {
+				imageCopy := *block.ResponsesInputMessageContentBlockImage
+				imageCopy.Detail = schemas.Ptr("auto")
+				newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
+			}
+		}
+		return newBlocks, true
 	}
 
-	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
-	copy(newBlocks, message.Content.ContentBlocks)
-	for i, block := range newBlocks {
-		if needsDetail(block) {
-			imageCopy := *block.ResponsesInputMessageContentBlockImage
-			imageCopy.Detail = schemas.Ptr("auto")
-			newBlocks[i].ResponsesInputMessageContentBlockImage = &imageCopy
+	if message.Content != nil {
+		if newBlocks, changed := defaultBlockDetails(message.Content.ContentBlocks); changed {
+			contentCopy := *message.Content
+			contentCopy.ContentBlocks = newBlocks
+			message.Content = &contentCopy
 		}
 	}
 
-	contentCopy := *message.Content
-	contentCopy.ContentBlocks = newBlocks
-	message.Content = &contentCopy
+	if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.Output != nil {
+		output := message.ResponsesToolMessage.Output
+		if newBlocks, changed := defaultBlockDetails(output.ResponsesFunctionToolCallOutputBlocks); changed {
+			outputCopy := *output
+			outputCopy.ResponsesFunctionToolCallOutputBlocks = newBlocks
+			toolMessageCopy := *message.ResponsesToolMessage
+			toolMessageCopy.Output = &outputCopy
+			message.ResponsesToolMessage = &toolMessageCopy
+		}
+	}
+
 	return message
 }
 
