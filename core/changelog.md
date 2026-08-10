@@ -48,3 +48,4 @@
 - [fix]: Bedrock invoke-with-response-stream ends a tool-call turn with stop_reason tool_use instead of end_turn, matching the non-streaming invoke response (thanks [@pcbeingused333](https://github.com/pcbeingused333)!) (#8550)
 - feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
 - feat: BytePlus ModelArk provider for Seed chat, native Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation
+- feat: add native `x-bf-request-timeout` header for a total request/stream deadline, independent of the `x-bf-stream-idle-timeout` proposed in #4805 -- arms once per call across every fallback attempt, sets `BifrostContextKeyRequestTimeoutFired` before cancelling so plugins can distinguish it from an arbitrary cancellation [@public-aanp-tanium](https://github.com/public-aanp-tanium)
