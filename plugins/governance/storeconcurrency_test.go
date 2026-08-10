@@ -145,3 +145,64 @@ func TestResetBudgetAt_ConcurrentResettersCollapse(t *testing.T) {
 	assert.True(t, final.LastReset.Equal(newLastReset))
 	assert.Equal(t, 4, final.OverrideCyclesRemaining, "the single winning reset should consume exactly one override cycle")
 }
+
+// TestAdoptCalendarAlignmentInMemoryPreservesConcurrentSpend pins that adopting a
+// budget onto the calendar grid keeps whatever usage landed while the switch was
+// in flight.
+//
+// Adoption cannot read usage, then write it back: a request bumping the same
+// budget between those two steps would have its spend silently dropped. The CAS
+// loop has to carry the usage it observed at swap time, which is what this test
+// forces by bumping usage from another goroutine during the adoption.
+func TestAdoptCalendarAlignmentInMemoryPreservesConcurrentSpend(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	now := time.Date(2026, time.February, 5, 12, 0, 0, 0, time.UTC)
+	monthStart := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+
+	budget := &configstoreTables.TableBudget{
+		ID:                "adopt-live-budget",
+		MaxLimit:          1000,
+		CurrentUsage:      0,
+		ResetDuration:     "1M",
+		IsCalendarAligned: true,
+		CreatedAt:         time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC),
+		LastReset:         time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC),
+	}
+	store.budgets.Store(budget.ID, budget)
+
+	// Usage is bumped by direct CAS rather than through BumpBudgetUsage, which
+	// consults the real clock: a January window is long overdue against it, so the
+	// request path would reset the budget onto the current real month and the fixed
+	// `now` below could no longer move it. The property under test is that the
+	// adoption CAS carries whatever usage it observed, and a plain increment races
+	// it just as well without dragging real time into the fixture.
+	const bumps = 50
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < bumps; i++ {
+			for {
+				raw, ok := store.budgets.Load(budget.ID)
+				require.True(t, ok)
+				current := raw.(*configstoreTables.TableBudget)
+				clone := *current
+				clone.CurrentUsage++
+				if store.budgets.CompareAndSwap(budget.ID, raw, &clone) {
+					break
+				}
+			}
+		}
+	}()
+	adopted := store.AdoptCalendarAlignmentInMemory(ctx, budget.ID, now)
+	wg.Wait()
+
+	assert.True(t, adopted, "a window opened before the boundary must be adopted")
+
+	live := store.LoadBudget(ctx, budget.ID)
+	require.NotNil(t, live)
+	assert.True(t, live.LastReset.Equal(monthStart), "the window is re-anchored on the boundary")
+	assert.Equal(t, float64(bumps), live.CurrentUsage,
+		"every concurrent bump survived: adoption changed the boundary, not the accounting")
+}

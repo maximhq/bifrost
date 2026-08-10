@@ -607,3 +607,145 @@ func TestQuarterlyBudgetResetIsNotPerpetuallyDue(t *testing.T) {
 			fmt.Sprintf("quarter start %s: budget became due an hour into its quarter", quarterStart))
 	}
 }
+
+// TestAdoptCalendarAlignmentPreservesTheOpenWindow pins the switch-over contract:
+// turning calendar alignment on must not cost the owner its accumulated usage.
+//
+// Without adoption, a window opened before the current boundary is already due
+// the moment the flag flips, because budgetResetTarget resets whenever
+// WindowStart(now) is after LastReset. Adoption moves LastReset forward onto the
+// boundary instead, which the forward-only guard permits, so the window becomes
+// current rather than overdue and its usage survives to the next real boundary.
+func TestAdoptCalendarAlignmentPreservesTheOpenWindow(t *testing.T) {
+	now := time.Date(2026, time.February, 5, 12, 0, 0, 0, time.UTC)
+	monthStart := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+
+	newBudget := func(duration string, lastReset time.Time) *TableBudget {
+		return &TableBudget{
+			ID:                "adopt-budget",
+			MaxLimit:          100,
+			CurrentUsage:      42,
+			ResetDuration:     duration,
+			IsCalendarAligned: true,
+			CreatedAt:         lastReset,
+			LastReset:         lastReset,
+		}
+	}
+
+	t.Run("a window opened before the boundary is adopted onto it", func(t *testing.T) {
+		budget := newBudget("1M", time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC))
+
+		assert.True(t, budget.AdoptCalendarAlignment(now), "the window moved, so adoption reports a change")
+		assert.True(t, budget.LastReset.Equal(monthStart), "the window is re-anchored on the boundary it now follows")
+		assert.Equal(t, 42.0, budget.CurrentUsage, "adoption must never spend the operator's usage")
+		assert.False(t, budget.WindowStart(now).After(budget.LastReset),
+			"and the budget must no longer read as due, which is the whole point")
+	})
+
+	t.Run("a window opened after the boundary is left alone", func(t *testing.T) {
+		lastReset := time.Date(2026, time.February, 3, 9, 0, 0, 0, time.UTC)
+		budget := newBudget("1M", lastReset)
+
+		assert.False(t, budget.AdoptCalendarAlignment(now), "nothing to move")
+		assert.True(t, budget.LastReset.Equal(lastReset), "an already-current window keeps its own start")
+	})
+
+	t.Run("the boundary is never moved backwards", func(t *testing.T) {
+		lastReset := time.Date(2026, time.February, 20, 9, 0, 0, 0, time.UTC)
+		budget := newBudget("1M", lastReset)
+
+		assert.False(t, budget.AdoptCalendarAlignment(now))
+		assert.True(t, budget.LastReset.Equal(lastReset),
+			"rewinding would re-open a window the cluster already agreed was spent")
+	})
+
+	t.Run("a sub-day window is not adopted", func(t *testing.T) {
+		lastReset := time.Date(2026, time.February, 5, 9, 30, 0, 0, time.UTC)
+		budget := newBudget("1h", lastReset)
+
+		assert.False(t, budget.AdoptCalendarAlignment(now),
+			"an hourly window has no calendar boundary, so alignment leaves it rolling")
+		assert.True(t, budget.LastReset.Equal(lastReset))
+	})
+
+	t.Run("an unaligned budget is not adopted", func(t *testing.T) {
+		lastReset := time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC)
+		budget := newBudget("1M", lastReset)
+		budget.IsCalendarAligned = false
+
+		assert.False(t, budget.AdoptCalendarAlignment(now),
+			"adoption belongs to the switch-over, not to every config write")
+		assert.True(t, budget.LastReset.Equal(lastReset))
+	})
+
+	t.Run("a quarterly budget adopts its fiscal boundary", func(t *testing.T) {
+		budget := newBudget("1Q", time.Date(2025, time.December, 10, 9, 0, 0, 0, time.UTC))
+		budget.ResetConfig = &BudgetResetConfig{QuarterStartMonth: int(time.February)}
+
+		assert.True(t, budget.AdoptCalendarAlignment(now))
+		assert.True(t, budget.LastReset.Equal(time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)),
+			"a February fiscal year opens Q1 on Feb 1, not on the calendar quarter")
+	})
+}
+
+// TestAdoptCalendarAlignmentOnRateLimits mirrors the budget contract for the two
+// counters a rate limit carries.
+//
+// Token and request counters keep independent durations and independent
+// LastReset values, so adoption is decided per counter. rateLimitResetTarget
+// applies the same "boundary after last reset" rule as budgets, which means the
+// same switch-over would otherwise clear a counter the operator was still using.
+func TestAdoptCalendarAlignmentOnRateLimits(t *testing.T) {
+	now := time.Date(2026, time.February, 5, 12, 0, 0, 0, time.UTC)
+	monthStart := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+	dayStart := time.Date(2026, time.February, 5, 0, 0, 0, 0, time.UTC)
+	stale := time.Date(2026, time.January, 10, 9, 0, 0, 0, time.UTC)
+
+	newRateLimit := func(tokenDuration, requestDuration string) *TableRateLimit {
+		return &TableRateLimit{
+			ID:                   "adopt-rate-limit",
+			TokenResetDuration:   &tokenDuration,
+			TokenCurrentUsage:    900,
+			TokenLastReset:       stale,
+			RequestResetDuration: &requestDuration,
+			RequestCurrentUsage:  17,
+			RequestLastReset:     stale,
+			IsCalendarAligned:    true,
+		}
+	}
+
+	t.Run("each counter adopts its own boundary", func(t *testing.T) {
+		rl := newRateLimit("1M", "1d")
+
+		assert.True(t, rl.AdoptCalendarAlignment(now), "both counters moved")
+		assert.True(t, rl.TokenLastReset.Equal(monthStart), "the monthly counter adopts the month boundary")
+		assert.True(t, rl.RequestLastReset.Equal(dayStart), "the daily counter adopts midnight, not the month boundary")
+		assert.Equal(t, int64(900), rl.TokenCurrentUsage, "adoption must not clear a counter")
+		assert.Equal(t, int64(17), rl.RequestCurrentUsage)
+	})
+
+	t.Run("a sub-day counter is left rolling while its sibling adopts", func(t *testing.T) {
+		rl := newRateLimit("1M", "1h")
+
+		assert.True(t, rl.AdoptCalendarAlignment(now), "the monthly counter still moves")
+		assert.True(t, rl.TokenLastReset.Equal(monthStart))
+		assert.True(t, rl.RequestLastReset.Equal(stale),
+			"an hourly counter has no calendar boundary, so it keeps its rolling anchor")
+	})
+
+	t.Run("an unaligned rate limit is not adopted", func(t *testing.T) {
+		rl := newRateLimit("1M", "1d")
+		rl.IsCalendarAligned = false
+
+		assert.False(t, rl.AdoptCalendarAlignment(now))
+		assert.True(t, rl.TokenLastReset.Equal(stale))
+		assert.True(t, rl.RequestLastReset.Equal(stale))
+	})
+
+	t.Run("counters with no duration are skipped", func(t *testing.T) {
+		rl := &TableRateLimit{ID: "no-durations", IsCalendarAligned: true, TokenLastReset: stale, RequestLastReset: stale}
+
+		assert.False(t, rl.AdoptCalendarAlignment(now))
+		assert.True(t, rl.TokenLastReset.Equal(stale))
+	})
+}

@@ -51,6 +51,12 @@ type GovernanceManager interface {
 	// enforces spend, leaving each reset boundary untouched. Enterprise also
 	// propagates the reset to cluster peers, which is what owner addresses.
 	ResetBudgetUsageInMemory(ctx context.Context, owner BudgetUsageResetOwner, budgetIDs []string) error
+	// AdoptCalendarAlignmentInMemory re-anchors the given budgets and rate limit
+	// onto the calendar boundaries they have just been told to follow, preserving
+	// their usage. Called only on the transition from rolling to calendar-aligned;
+	// without it that switch clears the usage of every window that opened before
+	// the current boundary.
+	AdoptCalendarAlignmentInMemory(ctx context.Context, owner BudgetUsageResetOwner, budgetIDs []string, rateLimitIDs []string) error
 	RemoveVirtualKey(ctx context.Context, id string) error
 	ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
@@ -586,6 +592,38 @@ func (r *budgetUsageReset) apply(ctx context.Context, store configstore.ConfigSt
 	}
 	r.budgetIDs = append(r.budgetIDs, budgetID)
 	return nil
+}
+
+// adoptCalendarAlignment re-anchors an owner's open windows after calendar
+// alignment was switched on, and is a no-op on every other write.
+//
+// The switch is otherwise destructive. The reset sweep treats a window as due
+// whenever its boundary is later than its last reset, and a freshly aligned window
+// is measured against the most recent calendar boundary, so anything that opened
+// before that boundary is due immediately and its usage is cleared on the next
+// tick. For a monthly budget that is most of the month.
+//
+// Adoption moves each window's boundary forward onto the grid instead, which the
+// forward-only guard permits, so the window reads as current and its usage
+// survives until the next real boundary. Every window is judged on its own
+// duration, so a monthly budget can adopt while an hourly counter beside it stays
+// rolling untouched.
+//
+// Runs after the in-memory reload, for the same reason the usage reset does: the
+// reload carries cached values forward and would otherwise overwrite the change.
+func (h *GovernanceHandler) adoptCalendarAlignment(ctx context.Context, switchedOn bool, owner BudgetUsageResetOwner, budgets []configstoreTables.TableBudget, rateLimitID *string) error {
+	if !switchedOn {
+		return nil
+	}
+	budgetIDs := make([]string, 0, len(budgets))
+	for _, budget := range budgets {
+		budgetIDs = append(budgetIDs, budget.ID)
+	}
+	var rateLimitIDs []string
+	if rateLimitID != nil && *rateLimitID != "" {
+		rateLimitIDs = append(rateLimitIDs, *rateLimitID)
+	}
+	return h.governanceManager.AdoptCalendarAlignmentInMemory(ctx, owner, budgetIDs, rateLimitIDs)
 }
 
 // reconcileModelConfigBudgets upserts the desired set of budgets owned by a model config
@@ -1820,6 +1858,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	// Preserve / Reset dialog. Carried into budget reconciliation and collected
 	// there, so the in-memory store can be cleared once the transaction commits.
 	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
+	// See adoptCalendarAlignment: captured before the update so open windows are
+	// re-anchored rather than reset when alignment is switched on.
+	alignmentSwitchedOn := false
 	// Parse expires_at when provided: a timestamp must be in the future, "" clears the expiry.
 	var newExpiresAt *time.Time
 	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
@@ -1894,6 +1935,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			vk.ExpiresAt = newExpiresAt
 		}
 		if req.CalendarAligned != nil {
+			alignmentSwitchedOn = !vk.CalendarAligned && *req.CalendarAligned
 			vk.CalendarAligned = *req.CalendarAligned
 		}
 		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
@@ -2229,6 +2271,36 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			logger.Error("failed to reset in-memory budget usage after update: %v", err)
 			SendError(ctx, 500, "Virtual key updated but budget usage reset did not take effect")
 			return
+		}
+	}
+	if alignmentSwitchedOn {
+		// The VK's own windows, plus every model config that inherits the flag from
+		// it: provider governance carries no alignment field of its own, so a VK
+		// switch is the only event that aligns those budgets and their rate limits.
+		// Reload is allowed to return no entity; fall back to the row already held.
+		adoptBudgets, adoptRateLimitID := vk.Budgets, vk.RateLimitID
+		if preloadedVk != nil {
+			adoptBudgets, adoptRateLimitID = preloadedVk.Budgets, preloadedVk.RateLimitID
+		}
+		if err := h.adoptCalendarAlignment(ctx, true,
+			BudgetUsageResetOwner{Kind: BudgetOwnerVirtualKey, ID: vk.ID}, adoptBudgets, adoptRateLimitID); err != nil {
+			logger.Error("failed to adopt calendar alignment for virtual key: %v", err)
+			SendError(ctx, 500, "Virtual key updated but calendar alignment did not take effect")
+			return
+		}
+		modelConfigs, err := h.configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vk.ID})
+		if err != nil {
+			logger.Error("failed to load model configs for calendar alignment adoption: %v", err)
+			SendError(ctx, 500, "Virtual key updated but calendar alignment did not take effect")
+			return
+		}
+		for i := range modelConfigs {
+			if err := h.adoptCalendarAlignment(ctx, true,
+				BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: modelConfigs[i].ID}, modelConfigs[i].Budgets, modelConfigs[i].RateLimitID); err != nil {
+				logger.Error("failed to adopt calendar alignment for model config %s: %v", modelConfigs[i].ID, err)
+				SendError(ctx, 500, "Virtual key updated but calendar alignment did not take effect")
+				return
+			}
 		}
 	}
 
@@ -2581,6 +2653,10 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	// reconciliation and collected there, so the in-memory store can be cleared
 	// once the transaction commits.
 	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
+	// Whether this request switches alignment on. Captured before the update so the
+	// open windows can be adopted onto the calendar grid afterwards instead of
+	// being reset out from under the operator; see adoptCalendarAlignment.
+	alignmentSwitchedOn := false
 	// Fetching team from database
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
@@ -2611,6 +2687,7 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		//   - explicit team-level field wins (req.CalendarAligned != nil)
 		//   - else leave existing team.CalendarAligned untouched
 		if req.CalendarAligned != nil {
+			alignmentSwitchedOn = !team.CalendarAligned && *req.CalendarAligned
 			team.CalendarAligned = *req.CalendarAligned
 		}
 		// Snap-to-calendar-period happens after budget/rate-limit reconciliation
@@ -2783,6 +2860,17 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Team updated but budget usage reset did not take effect")
 			return
 		}
+	}
+	// Reload is allowed to return no entity; fall back to the row already held.
+	adoptBudgets, adoptRateLimitID := team.Budgets, team.RateLimitID
+	if preloadedTeam != nil {
+		adoptBudgets, adoptRateLimitID = preloadedTeam.Budgets, preloadedTeam.RateLimitID
+	}
+	if err := h.adoptCalendarAlignment(ctx, alignmentSwitchedOn,
+		BudgetUsageResetOwner{Kind: BudgetOwnerTeam, ID: team.ID}, adoptBudgets, adoptRateLimitID); err != nil {
+		logger.Error("failed to adopt calendar alignment for Team: %v", err)
+		SendError(ctx, 500, "Team updated but calendar alignment did not take effect")
+		return
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team updated successfully",
@@ -2998,6 +3086,9 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	// reconciliation and collected there, so the in-memory store can be cleared
 	// once the transaction commits.
 	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
+	// See adoptCalendarAlignment: captured before the update so open windows are
+	// re-anchored rather than reset when alignment is switched on.
+	alignmentSwitchedOn := false
 	if req.Budgets != nil && req.Budget != nil {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
@@ -3021,6 +3112,7 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 			customer.Name = *req.Name
 		}
 		if req.CalendarAligned != nil {
+			alignmentSwitchedOn = !customer.CalendarAligned && *req.CalendarAligned
 			customer.CalendarAligned = *req.CalendarAligned
 		}
 		// Handle budget updates: prefer Budgets slice; coerce legacy Budget if needed.
@@ -3132,6 +3224,18 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Customer updated but budget usage reset did not take effect")
 			return
 		}
+	}
+	// Read the windows off the reload when it produced one, else off the row this
+	// handler already holds: ReloadCustomer is allowed to return no entity.
+	adoptBudgets, adoptRateLimitID := customer.Budgets, customer.RateLimitID
+	if preloadedCustomer != nil {
+		adoptBudgets, adoptRateLimitID = preloadedCustomer.Budgets, preloadedCustomer.RateLimitID
+	}
+	if err := h.adoptCalendarAlignment(ctx, alignmentSwitchedOn,
+		BudgetUsageResetOwner{Kind: BudgetOwnerCustomer, ID: customer.ID}, adoptBudgets, adoptRateLimitID); err != nil {
+		logger.Error("failed to adopt calendar alignment for Customer: %v", err)
+		SendError(ctx, 500, "Customer updated but calendar alignment did not take effect")
+		return
 	}
 
 	SendJSON(ctx, map[string]interface{}{
@@ -3888,6 +3992,9 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 	// reconciliation and collected there, so the in-memory store can be cleared
 	// once the transaction commits.
 	usageReset := &budgetUsageReset{requested: req.ResetBudgetUsage != nil && *req.ResetBudgetUsage}
+	// See adoptCalendarAlignment: captured before the update so open windows are
+	// re-anchored rather than reset when alignment is switched on.
+	alignmentSwitchedOn := false
 	if req.Budget != nil && req.Budgets != nil {
 		SendError(ctx, 400, "only one of 'budget' or 'budgets' may be set")
 		return
@@ -3941,6 +4048,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 		// Apply CalendarAligned if provided.
 		if req.CalendarAligned != nil {
+			alignmentSwitchedOn = !mc.CalendarAligned && *req.CalendarAligned
 			mc.CalendarAligned = *req.CalendarAligned
 		}
 
@@ -4087,6 +4195,14 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		if err := h.governanceManager.ResetBudgetUsageInMemory(ctx, BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: mc.ID}, usageReset.budgetIDs); err != nil {
 			logger.Error("failed to reset in-memory budget usage for provider governance: %v", err)
 			SendError(ctx, 500, "Provider governance updated but budget usage reset did not take effect")
+			return
+		}
+	}
+	if !deleted {
+		if err := h.adoptCalendarAlignment(ctx, alignmentSwitchedOn,
+			BudgetUsageResetOwner{Kind: BudgetOwnerModelConfig, ID: mc.ID}, mc.Budgets, mc.RateLimitID); err != nil {
+			logger.Error("failed to adopt calendar alignment for provider governance: %v", err)
+			SendError(ctx, 500, "Provider governance updated but calendar alignment did not take effect")
 			return
 		}
 	}

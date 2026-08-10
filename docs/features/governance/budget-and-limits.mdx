@@ -183,18 +183,18 @@ It sets the alignment **mode**, not a shared reset instant. An owner holds one w
 Alignment only applies to durations that have a calendar boundary: `1d`, `1w`, `1M`, `1Q` and `1Y`. A **sub-day** window such as a `1h` request limit stays on its rolling schedule even when its owner is aligned, and the flag changes nothing for it.
 </Note>
 
-Turning calendar alignment **on** for an existing owner never moves `last_reset` backwards, so an already-open window is not re-dated. What happens next is decided **per window**, against that window's own boundary:
+Turning calendar alignment **on** for an existing owner **keeps its accumulated usage**. Each open window is adopted onto the calendar grid instead of being reset: its start moves forward to the boundary it now follows, its usage carries over untouched, and its first aligned reset happens at the **next** boundary.
 
-- **Window opened after its most recent boundary** - nothing resets now. It keeps its start and its accumulated usage, and its first aligned reset happens at its next boundary.
-- **Window opened before its most recent boundary** - it is **already due** under the new rule, so the next reset evaluation resets it and **clears its current usage**: spend for a budget, the token or request counter for a rate limit. For a monthly window switched on partway through a month, this is the common case.
+So a monthly budget with $42 of spend, aligned on 5 February, keeps the $42 and resets on 1 March. Nothing is cleared at the switch, and nothing is forgiven.
 
-A reset evaluation is not only the background sweep. The same due-or-not check runs again on the request path, just before a request's usage is recorded, so an already-due window is cleared by the next request even if no sweep has fired yet.
+Two details follow from each window being adopted on its own terms:
 
-Because each window is judged separately, one switch can leave a `1d` limit untouched while clearing a `1M` budget on the same owner.
+- **Windows do not move together.** A `1M` budget adopts the month boundary while a `1d` counter beside it adopts midnight.
+- **Sub-day windows are not adopted at all**, because they have no boundary to adopt. A `1h` counter keeps its rolling schedule, as described above.
 
-<Warning>
-Enabling alignment on an owner with accumulated usage can therefore clear that usage almost immediately, and which of its windows are affected depends on each one's own duration and start. There is generally no moment when every window is freshly reset, so to preserve them all set `calendar_aligned` at **create** time and avoid the switch-over entirely. To protect one specific window, enable alignment just after **that** window resets.
-</Warning>
+<Note>
+The boundary only ever moves **forward**. A window that already opened after its most recent boundary is current, so it is left exactly as it is. This forward-only rule is what keeps every node in a cluster agreeing on which window is open.
+</Note>
 
 ### Quarterly budgets and fiscal quarters
 

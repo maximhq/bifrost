@@ -238,6 +238,40 @@ func (b *TableBudget) WindowStart(now time.Time) time.Time {
 	return RollingWindowStart(anchor, duration, now)
 }
 
+// AdoptCalendarAlignment re-anchors an already-open window onto the calendar grid
+// it has just been told to follow, and reports whether it moved.
+//
+// Called once, on the transition from rolling to calendar-aligned. Without it the
+// switch is destructive: the reset path resets whenever WindowStart(now) is after
+// LastReset, and for a freshly aligned budget WindowStart is the most recent
+// boundary, so any window that opened before that boundary is instantly due and
+// its usage is cleared. That is most of the month for a monthly budget.
+//
+// Moving LastReset up to the boundary makes the window current instead of overdue,
+// so nothing resets now and the first aligned reset lands on the next boundary.
+// The move is forward-only, which is the one direction every persistence path
+// allows: rewinding would re-open a window the cluster already treated as spent.
+// CurrentUsage is deliberately untouched - the operator asked to change a
+// schedule, not to forgive spend.
+//
+// Returns false, changing nothing, when the budget is not aligned, when its
+// duration has no calendar boundary (sub-day windows stay rolling), or when the
+// window already opened at or after the boundary and is therefore current.
+func (b *TableBudget) AdoptCalendarAlignment(now time.Time) bool {
+	if b == nil || !b.IsCalendarAligned || !IsCalendarAlignableDuration(b.ResetDuration) {
+		return false
+	}
+	// Read through WindowStart rather than GetCalendarPeriodStart directly so the
+	// boundary adopted here can never drift from the one the reset path compares
+	// against.
+	start := b.WindowStart(now)
+	if !start.After(b.LastReset) {
+		return false
+	}
+	b.LastReset = start
+	return true
+}
+
 // StampCalendarAlignment copies an owner's calendar-alignment flag onto the
 // budgets and rate limit it owns.
 //

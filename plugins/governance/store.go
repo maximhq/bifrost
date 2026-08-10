@@ -164,6 +164,13 @@ type GovernanceStore interface {
 	// ResetBudgetUsageInMemory clears one budget's usage on operator request,
 	// leaving its reset boundary untouched.
 	ResetBudgetUsageInMemory(ctx context.Context, budgetID string) (*configstoreTables.TableBudget, bool)
+	// AdoptCalendarAlignmentInMemory re-anchors a budget onto the calendar boundary
+	// it has just been told to follow, preserving its usage. Reports whether the
+	// boundary moved.
+	AdoptCalendarAlignmentInMemory(ctx context.Context, budgetID string, now time.Time) bool
+	// AdoptRateLimitCalendarAlignmentInMemory is the rate-limit counterpart,
+	// applying the rule to the token and request counters independently.
+	AdoptRateLimitCalendarAlignmentInMemory(ctx context.Context, rateLimitID string, now time.Time) bool
 	// DB sync for expired items
 	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
@@ -2125,6 +2132,69 @@ func (gs *LocalGovernanceStore) ResetBudgetUsageInMemory(ctx context.Context, bu
 	gs.LastDBUsagesBudgetsMu.Unlock()
 	gs.logger.Debug(fmt.Sprintf("Reset budget %s usage on operator request (boundary unchanged at %s)", budgetID, reset.LastReset))
 	return reset, true
+}
+
+// AdoptCalendarAlignmentInMemory re-anchors a budget onto the calendar grid when
+// its owner has just switched alignment on, and reports whether it moved.
+//
+// Called on the false-to-true transition only. Without it the switch is
+// destructive: budgetResetTarget resets whenever WindowStart(now) is after
+// LastReset, so a window that opened before the current boundary is instantly due
+// and the next sweep clears its usage. See TableBudget.AdoptCalendarAlignment.
+//
+// The usage carried into the swap is the one observed inside the CAS loop, not a
+// value read beforehand: a request bumping this budget between a read and the
+// write would otherwise have its spend dropped. No reset generation is bumped
+// here - nothing was reset, so an in-flight dump's rows are still accurate.
+func (gs *LocalGovernanceStore) AdoptCalendarAlignmentInMemory(ctx context.Context, budgetID string, now time.Time) bool {
+	for {
+		raw, exists := gs.budgets.Load(budgetID)
+		if !exists || raw == nil {
+			return false
+		}
+		old, ok := raw.(*configstoreTables.TableBudget)
+		if !ok || old == nil {
+			return false
+		}
+		clone := *old
+		// The owner's flag has already been applied upstream, but the in-memory
+		// copy predates it, so stamp it here or adoption declines its own work.
+		clone.IsCalendarAligned = true
+		if !clone.AdoptCalendarAlignment(now) {
+			return false
+		}
+		clone.RefreshOverrideCyclesRemaining()
+		if gs.budgets.CompareAndSwap(budgetID, raw, &clone) {
+			gs.logger.Debug(fmt.Sprintf("Adopted budget %s onto its calendar boundary %s (usage %.2f preserved)",
+				budgetID, clone.LastReset, clone.CurrentUsage))
+			return true
+		}
+	}
+}
+
+// AdoptRateLimitCalendarAlignmentInMemory is the rate-limit counterpart, applying
+// the same switch-over rule to the token and request counters independently.
+func (gs *LocalGovernanceStore) AdoptRateLimitCalendarAlignmentInMemory(ctx context.Context, rateLimitID string, now time.Time) bool {
+	for {
+		raw, exists := gs.rateLimits.Load(rateLimitID)
+		if !exists || raw == nil {
+			return false
+		}
+		old, ok := raw.(*configstoreTables.TableRateLimit)
+		if !ok || old == nil {
+			return false
+		}
+		clone := *old
+		clone.IsCalendarAligned = true
+		if !clone.AdoptCalendarAlignment(now) {
+			return false
+		}
+		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
+			gs.logger.Debug(fmt.Sprintf("Adopted rate limit %s onto its calendar boundaries (token %s, request %s)",
+				rateLimitID, clone.TokenLastReset, clone.RequestLastReset))
+			return true
+		}
+	}
 }
 
 // ResetExpiredBudgetsInMemory checks and resets budgets that have exceeded their reset duration.
