@@ -17,11 +17,13 @@ The Helm configuration is validated in the repository. The complete guide is not
 |---|---|
 | Container | OSS or supplied Enterprise image on `linux/amd64` or `linux/arm64` Linux nodes |
 | HTTP and health | `ClusterIP` Service on `8080/TCP`; `GET /health` |
-| SQLite | One replica and a `ReadWriteOnce` managed disk or another compatible CSI volume |
-| PostgreSQL | Any reachable supported PostgreSQL, inside or outside Azure |
+| SQLite (OSS only) | One replica and a `ReadWriteOnce` managed disk or another compatible CSI volume |
+| PostgreSQL | PostgreSQL 16 or later reachable from the cluster, inside or outside Azure |
 | External access | Gateway API, ingress, Service `LoadBalancer`, service mesh, Application Gateway, or external proxy |
 | Enterprise mesh | Kubernetes discovery plus bidirectional `10101/TCP+UDP` and `10102/TCP` |
 | Image pull | Public Docker Hub for OSS; customer Enterprise registry federation/pull secret from [Enterprise Azure](/deployment-guides/enterprise/azure) |
+
+Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support SQLite. The SQLite path below is available only for OSS deployments.
 
 ## Deploy Bifrost
 
@@ -126,12 +128,12 @@ kubectl exec --namespace bifrost -it postgres-check -- psql
 kubectl delete pod --namespace bifrost postgres-check
 ```
 
-Enter the PostgreSQL password when psql prompts. A successful connection confirms DNS, TCP, TLS, and database authentication from the pod network.
+Enter the PostgreSQL password when psql prompts. A successful connection confirms DNS, TCP, TLS, and database authentication from the pod network. Confirm that `SHOW server_version;` reports PostgreSQL 16 or later.
 
 </Tab>
-<Tab title="SQLite">
+<Tab title="SQLite (OSS only)">
 
-Use SQLite only for a single Bifrost replica. On AKS, select a compatible ReadWriteOnce StorageClass such as an approved managed-disk CSI class.
+This option is available only for OSS Bifrost. Use SQLite for a single replica and select a compatible ReadWriteOnce StorageClass such as an approved managed-disk CSI class.
 
 ```bash
 kubectl get storageclass
@@ -158,7 +160,7 @@ bifrost:
 EOF
 ```
 
-Replace `<STORAGE_CLASS>` with a class returned by `kubectl get storageclass`. This creates persistent `/app/data` storage for SQLite. PostgreSQL is not required for this option.
+Replace `<STORAGE_CLASS>` with a class returned by `kubectl get storageclass`. This creates persistent `/app/data` storage for the OSS SQLite deployment. PostgreSQL is not required for this OSS option.
 
 </Tab>
 </Tabs>
@@ -275,7 +277,7 @@ Point the hostname to the ingress address, configure TLS through the application
 
 ## Scale Bifrost
 
-- SQLite: one replica.
+- OSS with SQLite: one replica.
 - OSS with database-managed configuration: one replica, or use [file-only OSS multinode](/deployment-guides/how-to/multinode).
 - Enterprise: PostgreSQL plus [Cluster Mode and HA](/deployment-guides/helm/cluster), pod-discovery RBAC, and internal mesh ports.
 
@@ -292,7 +294,7 @@ kubectl describe pvc --namespace bifrost
 kubectl logs --namespace bifrost -l app.kubernetes.io/name=bifrost --tail=200
 ```
 
-- Pending SQLite pod: inspect the PVC, CSI driver, StorageClass, and zone/node-pool constraints.
+- Pending OSS SQLite pod: inspect the PVC, CSI driver, StorageClass, and zone/node-pool constraints.
 - `ImagePullBackOff`: verify the image repository/tag and Enterprise registry token refresh.
 - `/health` `503`: verify configured stores from the pod network and inspect startup logs.
 - Fixed streaming cutoff: inspect all ingress, gateway, and Azure frontend timeouts/buffering.
