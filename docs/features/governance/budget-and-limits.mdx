@@ -171,9 +171,30 @@ Budgets and rate limits support flexible reset durations:
 
 By default, a budget **rolls**: after `reset_duration` elapses since `last_reset`, usage resets. With **`calendar_aligned`: `true`**, the budget resets at the **start of each calendar period in UTC** instead (same instant for every customer of that configuration).
 
-**Supported `reset_duration` suffixes:** only day (`d`), week (`w`), month (`M`), quarter (`Q`), and year (`Y`). Examples: `1d` → midnight UTC each day; `1w` → Monday 00:00 UTC each week; `1M` → first day of each month; `1Q` → first day of the fiscal quarter; `1Y` → January 1 each year. Sub-day durations (for example `1h`, `30m`) **cannot** use calendar alignment; the API rejects invalid combinations.
+**Supported `reset_duration` suffixes:** only day (`d`), week (`w`), month (`M`), quarter (`Q`), and year (`Y`). Examples: `1d` → midnight UTC each day; `1w` → Monday 00:00 UTC each week; `1M` → first day of each month; `1Q` → first day of the fiscal quarter; `1Y` → January 1 each year. Sub-day durations (for example `1h`, `30m`) have no calendar boundary to snap to. Setting `calendar_aligned` alongside one is **accepted rather than rejected**, and simply has no effect: that window keeps resetting on its rolling schedule.
 
-Calendar alignment applies to budgets on **customers**, **teams**, **virtual keys**, and **per–provider-config** budgets. You can set it when creating a budget (`calendar_aligned` on create) or toggle it on update (`calendar_aligned` on the budget in `PUT` requests). Turning calendar alignment **on** for an existing budget resets **current usage to zero** and snaps **`last_reset`** to the current period start.
+Calendar alignment applies to budgets on **customers**, **teams**, **virtual keys**, and **per-provider-config** budgets. `calendar_aligned` is an **owner-level** field, not a per-budget one: send it at the top level of the customer, team, virtual key, or provider-governance request body, on both `POST` (create) and `PUT` (update). Omitting it on a `PUT` leaves the current setting unchanged.
+
+The flag applies to **everything that owner resets**, not to budgets alone. That owner's [rate limits](#rate-limiting) follow the same rule, so its token and request counters align too.
+
+It sets the alignment **mode**, not a shared reset instant. An owner holds one window per budget plus one each for its token and request counters, and every one of them keeps its own `reset_duration` and its own `last_reset`. Each aligns to **its own** boundary: on an aligned owner, a `1M` budget resets on the 1st while a `1d` token limit resets at midnight. They do not reset together.
+
+<Note>
+Alignment only applies to durations that have a calendar boundary: `1d`, `1w`, `1M`, `1Q` and `1Y`. A **sub-day** window such as a `1h` request limit stays on its rolling schedule even when its owner is aligned, and the flag changes nothing for it.
+</Note>
+
+Turning calendar alignment **on** for an existing owner never moves `last_reset` backwards, so an already-open window is not re-dated. What happens next is decided **per window**, against that window's own boundary:
+
+- **Window opened after its most recent boundary** - nothing resets now. It keeps its start and its accumulated usage, and its first aligned reset happens at its next boundary.
+- **Window opened before its most recent boundary** - it is **already due** under the new rule, so the next reset evaluation resets it and **clears its current usage**: spend for a budget, the token or request counter for a rate limit. For a monthly window switched on partway through a month, this is the common case.
+
+A reset evaluation is not only the background sweep. The same due-or-not check runs again on the request path, just before a request's usage is recorded, so an already-due window is cleared by the next request even if no sweep has fired yet.
+
+Because each window is judged separately, one switch can leave a `1d` limit untouched while clearing a `1M` budget on the same owner.
+
+<Warning>
+Enabling alignment on an owner with accumulated usage can therefore clear that usage almost immediately, and which of its windows are affected depends on each one's own duration and start. There is generally no moment when every window is freshly reset, so to preserve them all set `calendar_aligned` at **create** time and avoid the switch-over entirely. To protect one specific window, enable alignment just after **that** window resets.
+</Warning>
 
 ### Quarterly budgets and fiscal quarters
 

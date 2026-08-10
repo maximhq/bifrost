@@ -250,16 +250,19 @@ type BudgetResetConfigRequest struct {
 
 // CreateTeamRequest represents a request to create a team
 type CreateTeamRequest struct {
-	Name            string          `json:"name"`
-	CustomerID      *string         `json:"customer_id,omitempty"`
-	Budgets         []BudgetRequest `json:"budgets,omitempty"`
-	CalendarAligned bool            `json:"calendar_aligned,omitempty"`
+	Name            string                  `json:"name"`
+	CustomerID      *string                 `json:"customer_id,omitempty"`
+	Budgets         []BudgetRequest         `json:"budgets,omitempty"`
+	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
 }
 
 // CreateCustomerRequest represents a request to create a customer
 type CreateCustomerRequest struct {
-	Name    string          `json:"name"`
-	Budgets []BudgetRequest `json:"budgets,omitempty"`
+	Name            string                  `json:"name"`
+	Budgets         []BudgetRequest         `json:"budgets,omitempty"`
+	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+	CalendarAligned bool                    `json:"calendar_aligned,omitempty"`
 }
 
 // UpdateBudgetRequest represents a request to update a budget
@@ -304,8 +307,9 @@ type UpdateTeamRequest struct {
 
 // UpdateCustomerRequest represents a request to update a customer
 type UpdateCustomerRequest struct {
-	Name    *string         `json:"name,omitempty"`
-	Budgets []BudgetRequest `json:"budgets,omitempty"`
+	Name            *string         `json:"name,omitempty"`
+	Budgets         []BudgetRequest `json:"budgets,omitempty"`
+	CalendarAligned *bool           `json:"calendar_aligned,omitempty"`
 }
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request
