@@ -667,6 +667,23 @@ func (bc *BifrostContext) CalculateCost(resp *BifrostResponse) float64 {
 	return catalog.CalculateRequestCost(bc, resp)
 }
 
+// CalculateCostIfAvailable returns the calculated dollar cost, or nil when
+// the catalog cannot determine one. A non-nil pointer may contain zero.
+//
+// This is used when absence must remain distinguishable from a legitimate
+// zero. CalculateCost remains the backward-compatible plugin API.
+func (bc *BifrostContext) CalculateCostIfAvailable(resp *BifrostResponse) *float64 {
+	catalog, _ := bc.Value(BifrostContextKeyModelCatalog).(ModelInfoProvider)
+	if catalog == nil || resp == nil {
+		return nil
+	}
+	resolver, ok := catalog.(requestCostAvailabilityProvider)
+	if !ok {
+		return nil
+	}
+	return resolver.CalculateRequestCostIfAvailable(bc, resp)
+}
+
 // AppendRoutingEngineLog appends a routing engine log entry to the context.
 // Parameters:
 //   - ctx: The Bifrost context

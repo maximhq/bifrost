@@ -25,12 +25,14 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 	t.Run("routed identity emits all headers", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		bifrostCtx := newBifrostCtx()
+		cost := 0.00125
 
 		extra := schemas.BifrostResponseExtraFields{
 			Provider:               schemas.Bedrock,
 			OriginalModelRequested: "claude-sonnet-4-6",
 			ResolvedModelUsed:      "us.anthropic.claude-sonnet-4-6",
 			RequestType:            schemas.ChatCompletionRequest,
+			Cost:                   &cost,
 			ProviderResponseHeaders: map[string]string{
 				"x-amzn-requestid": "req-789",
 			},
@@ -42,9 +44,20 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Equal(t, "claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostOriginalModel)))
 		assert.Equal(t, "us.anthropic.claude-sonnet-4-6", string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
 		assert.Equal(t, string(schemas.ChatCompletionRequest), string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
+		assert.Equal(t, "0.00125", string(ctx.Response.Header.Peek(HeaderBifrostCostUSD)))
 		assert.Equal(t, "req-789", string(ctx.Response.Header.Peek("x-amzn-requestid")))
 		// No fallback fired — header must be absent.
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+	})
+
+	t.Run("calculated zero cost remains distinguishable from missing cost", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		bifrostCtx := newBifrostCtx()
+		cost := 0.0
+
+		ApplyBifrostResponseHeaders(ctx, bifrostCtx, schemas.BifrostResponseExtraFields{Cost: &cost})
+
+		assert.Equal(t, "0", string(ctx.Response.Header.Peek(HeaderBifrostCostUSD)))
 	})
 
 	t.Run("fallback index from context emits when non-zero", func(t *testing.T) {
@@ -73,6 +86,7 @@ func TestApplyBifrostResponseHeaders(t *testing.T) {
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostResolvedModel)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRequestType)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostFallbackIndex)))
+		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostCostUSD)))
 		// No accumulator installed — unmeasured must stay distinguishable from zero.
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostUpstreamLatency)))
 	})

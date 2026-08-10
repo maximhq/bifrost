@@ -49,6 +49,16 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *P
 	return mc.datasheet.CalculateCost(result, (*datasheet.LookupScopes)(scopes))
 }
 
+// CalculateCostIfAvailable computes the dollar cost and returns nil when the
+// pricing required for the calculation cannot be resolved.
+func (mc *ModelCatalog) CalculateCostIfAvailable(result *schemas.BifrostResponse, scopes *PricingLookupScopes) *float64 {
+	cost, available := mc.datasheet.CalculateCostWithStatus(result, (*datasheet.LookupScopes)(scopes))
+	if !available {
+		return nil
+	}
+	return &cost
+}
+
 // CalculateCostForUsage computes the dollar cost from a bare usage object when
 // no full BifrostResponse is available — used to bill partial usage carried on
 // a failed/cancelled request (BifrostError.ExtraFields.BilledUsage).

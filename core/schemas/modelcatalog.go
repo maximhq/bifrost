@@ -23,3 +23,11 @@ type ModelInfoProvider interface {
 	// different signature; a plugin-facing ctx.CalculateCost wraps this.
 	CalculateRequestCost(ctx *BifrostContext, resp *BifrostResponse) float64
 }
+
+// requestCostAvailabilityProvider is an optional extension implemented by
+// catalogs that can distinguish a calculated zero from unavailable pricing.
+// Keeping it separate preserves compatibility with existing ModelInfoProvider
+// implementations, whose CalculateRequestCost method only returns a number.
+type requestCostAvailabilityProvider interface {
+	CalculateRequestCostIfAvailable(ctx *BifrostContext, resp *BifrostResponse) *float64
+}

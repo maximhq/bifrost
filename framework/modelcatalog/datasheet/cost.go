@@ -15,8 +15,16 @@ import (
 // If scopes is nil, an empty LookupScopes is used; global and provider-scoped
 // overrides may still apply since the provider is derived from the response.
 func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupScopes) float64 {
+	cost, _ := s.CalculateCostWithStatus(result, scopes)
+	return cost
+}
+
+// CalculateCostWithStatus calculates cost and reports whether every required
+// pricing entry was resolved. The boolean distinguishes unavailable pricing
+// from a legitimate calculated zero without changing CalculateCost's API.
+func (s *Store) CalculateCostWithStatus(result *schemas.BifrostResponse, scopes *LookupScopes) (float64, bool) {
 	if result == nil {
-		return 0
+		return 0, false
 	}
 
 	var lookupScopes LookupScopes
@@ -60,7 +68,7 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 	input := costInput{usage: usage}
 	input.tier = tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
 
-	return s.computeCostFromInput(
+	cost, _ := s.computeCostFromInput(
 		input,
 		schemas.RoutingInfo{
 			Provider:                provider,
@@ -70,32 +78,33 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 		normalizeStreamRequestType(requestType),
 		lookupScopes,
 	)
+	return cost
 }
 
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
+func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) (float64, bool) {
 	if cacheDebug.CacheHit {
 		// Direct cache hit — no LLM call, no cost
 		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
-			return 0
+			return 0, true
 		}
 		// Semantic cache hit — only the embedding lookup cost
 		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
 			return s.computeCacheEmbeddingCost(cacheDebug, scopes)
 		}
-		return 0
+		return 0, false
 	}
 
 	// Cache miss — full LLM cost + embedding lookup cost
-	baseCost := s.calculateBaseCost(result, scopes)
-	embeddingCost := s.computeCacheEmbeddingCost(cacheDebug, scopes)
-	return baseCost + embeddingCost
+	baseCost, baseAvailable := s.calculateBaseCost(result, scopes)
+	embeddingCost, embeddingAvailable := s.computeCacheEmbeddingCost(cacheDebug, scopes)
+	return baseCost + embeddingCost, baseAvailable && embeddingAvailable
 }
 
 // computeCacheEmbeddingCost calculates the embedding cost for a semantic cache lookup.
-func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) float64 {
+func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes LookupScopes) (float64, bool) {
 	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
-		return 0
+		return 0, false
 	}
 	if scopes.Provider == "" {
 		scopes.Provider = *cacheDebug.ProviderUsed
@@ -108,9 +117,9 @@ func (s *Store) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug,
 		Model:    *cacheDebug.ModelUsed,
 	}, schemas.EmbeddingRequest, scopes)
 	if pricing == nil {
-		return 0
+		return 0, false
 	}
-	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{})
+	return float64(*cacheDebug.InputTokens) * tieredInputRate(pricing, *cacheDebug.InputTokens, serviceTier{}), true
 }
 
 // computeContainerCreationCost returns the cost for creating a container from an already-resolved pricing entry.
@@ -122,10 +131,10 @@ func computeContainerCreationCost(pricing *configstoreTables.TableModelPricing) 
 }
 
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
-func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes LookupScopes) float64 {
+func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes LookupScopes) (float64, bool) {
 	extraFields := result.GetExtraFields()
 	if extraFields == nil {
-		return 0
+		return 0, false
 	}
 
 	// Read routing info populated by core.bifrost at request time.
@@ -151,12 +160,12 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 
 	// If provider already computed cost, use it
 	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
-		return input.usage.Cost.TotalCost
+		return input.usage.Cost.TotalCost, true
 	}
 
 	// If no usage data at all, nothing to price
 	if input.usage == nil && input.audioSeconds == nil && input.audioTokenDetails == nil && input.imageUsage == nil && input.videoSeconds == nil && input.audioTextInputChars == 0 && input.ocrProcessedPages == nil && input.containerIdentifierString == "" {
-		return 0
+		return 0, false
 	}
 
 	if result.PassthroughResponse != nil {
@@ -184,23 +193,25 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 // model it actually routed to, looked up fresh under the served model name so
 // regular per-token/tiered pricing applies to it exactly as if it had been
 // called directly.
-func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) float64 {
+func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) (float64, bool) {
 	pricingRequestType := requestType
 	if pricingRequestType == schemas.TextCompletionRequest {
 		pricingRequestType = schemas.ChatCompletionRequest
 	}
 
-	cost := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
+	cost, available := s.computeCostFromInput(input, routingInfo, pricingRequestType, scopes)
 
 	if servedModel := azureModelRouterServedModel(result); servedModel != "" && servedModel != routingInfo.Model {
 		underlyingRoutingInfo := schemas.RoutingInfo{
 			Provider: routingInfo.Provider,
 			Model:    servedModel,
 		}
-		cost += s.computeCostFromInput(input, underlyingRoutingInfo, pricingRequestType, scopes)
+		underlyingCost, underlyingAvailable := s.computeCostFromInput(input, underlyingRoutingInfo, pricingRequestType, scopes)
+		cost += underlyingCost
+		available = available && underlyingAvailable
 	}
 
-	return cost
+	return cost, available
 }
 
 // azureModelRouterServedModel reads the model Azure Model Router actually
@@ -225,7 +236,7 @@ func azureModelRouterServedModel(result *schemas.BifrostResponse) string {
 // type and routes the extracted usage to the appropriate per-modality compute
 // function. Shared by calculateBaseCost (response-driven) and
 // CalculateCostForUsage (bare-usage-driven, for failed/cancelled requests).
-func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) float64 {
+func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) (float64, bool) {
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
 	// synthetic RoutingInfo that reuses Provider but pins the model fields to
@@ -241,31 +252,31 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 
 	pricing := s.resolvePricing(routingInfo, requestType, scopes)
 	if pricing == nil {
-		return 0
+		return 0, false
 	}
 
 	// Route to the appropriate compute function
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
-		return computeTextCost(pricing, input.usage, input.tier)
+		return computeTextCost(pricing, input.usage, input.tier), true
 	case schemas.EmbeddingRequest:
-		return computeEmbeddingCost(pricing, input.usage, input.tier)
+		return computeEmbeddingCost(pricing, input.usage, input.tier), true
 	case schemas.RerankRequest:
-		return computeRerankCost(pricing, input.usage, input.tier)
+		return computeRerankCost(pricing, input.usage, input.tier), true
 	case schemas.SpeechRequest:
-		return computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
+		return computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier), true
 	case schemas.TranscriptionRequest:
-		return computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
+		return computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier), true
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
-		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
+		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier), true
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
-		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
+		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier), true
 	case schemas.OCRRequest:
-		return computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
+		return computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated), true
 	case schemas.ContainerCreateRequest:
-		return computeContainerCreationCost(pricing)
+		return computeContainerCreationCost(pricing), true
 	default:
-		return 0
+		return 0, false
 	}
 }
 
