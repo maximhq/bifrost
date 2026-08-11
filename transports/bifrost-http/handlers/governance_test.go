@@ -115,6 +115,23 @@ func (m *mockRotateConfigStore) GetModelConfig(_ context.Context, scope string, 
 	return lookupVKModelConfig(m.modelConfigs, scope, scopeID, modelName, provider)
 }
 
+// GetModelConfigsByScopeAndScopeIDs returns the stored configs matching the scope and scope IDs,
+// mirroring the bulk load hydrateVKGovernance performs.
+func (m *mockRotateConfigStore) GetModelConfigsByScopeAndScopeIDs(_ context.Context, scope string, scopeIDs []string) ([]configstoreTables.TableModelConfig, error) {
+	idset := make(map[string]bool, len(scopeIDs))
+	for _, id := range scopeIDs {
+		idset[id] = true
+	}
+	var out []configstoreTables.TableModelConfig
+	for _, mc := range m.modelConfigs {
+		if mc == nil || mc.Scope != scope || mc.ScopeID == nil || !idset[*mc.ScopeID] {
+			continue
+		}
+		out = append(out, *mc)
+	}
+	return out, nil
+}
+
 type mockRotateGovernanceManager struct {
 	GovernanceManager
 	store     *mockRotateConfigStore
@@ -3341,7 +3358,7 @@ func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *te
 	}
 
 	// No VK-scoped model config exists for this VK.
-	applyVKGovernanceFromModelConfigs(vk, map[string]*configstoreTables.TableModelConfig{})
+	applyVKGovernanceFromModelConfigs(vk, map[string]*configstoreTables.TableModelConfig{}, nil)
 
 	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-direct" {
 		t.Fatalf("directly attached budget was wiped: got %+v", vk.Budgets)
@@ -3376,7 +3393,7 @@ func TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance(t *test
 		},
 	}
 
-	applyVKGovernanceFromModelConfigs(vk, byKey)
+	applyVKGovernanceFromModelConfigs(vk, byKey, nil)
 
 	if len(vk.Budgets) != 1 || vk.Budgets[0].ID != "bud-mc" {
 		t.Fatalf("expected model-config budget overlaid, got %+v", vk.Budgets)

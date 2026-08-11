@@ -213,6 +213,7 @@ type CreateVirtualKeyRequest struct {
 		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
 		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
 		RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
+		ModelBudgets      []vkModelBudgetRequest  `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider
 		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs []struct {
@@ -228,19 +229,36 @@ type CreateVirtualKeyRequest struct {
 	ExpiresAt       *time.Time              `json:"expires_at,omitempty"`       // Optional expiry; nil means never expires
 }
 
+// vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
+// on VK create. model_name must be a concrete model (not the "*" wildcard, which is the
+// provider-level tier).
+type vkModelBudgetRequest struct {
+	ModelName string                  `json:"model_name" validate:"required"`
+	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`
+	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+}
+
+// vkModelBudgetUpdateRequest mirrors vkModelBudgetRequest for VK update (removable rate limit).
+type vkModelBudgetUpdateRequest struct {
+	ModelName string                  `json:"model_name" validate:"required"`
+	Budgets   []CreateBudgetRequest   `json:"budgets,omitempty"`
+	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+}
+
 // UpdateVirtualKeyRequest represents the request body for updating a virtual key
 type UpdateVirtualKeyRequest struct {
 	Name            *string `json:"name,omitempty"`
 	Description     *string `json:"description,omitempty"`
 	ProviderConfigs []struct {
-		ID                *uint                   `json:"id,omitempty"` // null for new entries
-		Provider          string                  `json:"provider" validate:"required"`
-		Weight            *float64                `json:"weight,omitempty"`
-		AllowedModels     schemas.WhiteList       `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
-		BlacklistedModels schemas.BlackList       `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
-		Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"`            // Multi-budget for provider config
-		RateLimit         *UpdateRateLimitRequest `json:"rate_limit,omitempty"`         // Provider-level rate limit
-		KeyIDs            schemas.WhiteList       `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
+		ID                *uint                        `json:"id,omitempty"` // null for new entries
+		Provider          string                       `json:"provider" validate:"required"`
+		Weight            *float64                     `json:"weight,omitempty"`
+		AllowedModels     schemas.WhiteList            `json:"allowed_models,omitempty"`     // ["*"] allows all models; empty denies all
+		BlacklistedModels schemas.BlackList            `json:"blacklisted_models,omitempty"` // ["*"] blocks all models; empty blocks none
+		Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"`            // Multi-budget for provider config
+		RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`         // Provider-level rate limit
+		ModelBudgets      []vkModelBudgetUpdateRequest `json:"model_budgets,omitempty"`      // Per-model budgets/rate-limits under this provider (full desired set when provider_configs is supplied)
+		KeyIDs            schemas.WhiteList            `json:"key_ids,omitempty"`            // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"`
 	MCPConfigs []struct {
 		ID             *uint             `json:"id,omitempty"` // null for new entries
@@ -772,12 +790,27 @@ func (h *GovernanceHandler) reconcileCustomerBudgets(ctx context.Context, tx *go
 // "leave unchanged" (false, used by partial VK updates) from "set to the given value" (true).
 // The rateLimit carries only the limit/duration fields (no ID/usage).
 type vkModelConfigDesired struct {
-	provider          *string
+	provider *string
+	// modelName is the model tier this config governs. Empty defaults to the "*" all-models
+	// tier (VK top-level / per-provider); a concrete model name targets a per-model budget.
+	modelName         string
 	budgetsProvided   bool
 	budgets           []CreateBudgetRequest
 	rateLimitProvided bool
 	rateLimitRemove   bool
 	rateLimit         *configstoreTables.TableRateLimit
+	// reconcileModelBudgets applies to a provider's "*" tier entry: when true the request's
+	// per-model budgets for this provider are authoritative and configs absent from them are
+	// pruned; when false (model_budgets omitted) existing per-model configs are left untouched.
+	reconcileModelBudgets bool
+}
+
+// modelNameOrAll returns the desired model tier, defaulting to the "*" all-models tier.
+func (d vkModelConfigDesired) modelNameOrAll() string {
+	if d.modelName == "" {
+		return configstoreTables.ModelConfigAllModels
+	}
+	return d.modelName
 }
 
 // syncVKGovernanceToModelConfigs folds a virtual key's governance (top-level + per-provider
@@ -794,30 +827,48 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 	if !reconcileProviders {
 		return nil
 	}
+	// Keyed by provider + model tier so both the per-provider "*" config and each per-model
+	// config are retained; everything else under this VK's providers is reconciled away.
 	keep := make(map[string]bool, len(perProvider))
+	configuredProviders := make(map[string]bool)
+	pruneModelBudgets := make(map[string]bool)
 	for _, pg := range perProvider {
 		if pg.provider == nil {
 			continue
 		}
-		keep[*pg.provider] = true
+		keep[*pg.provider+"\x00"+pg.modelNameOrAll()] = true
+		if pg.modelName == "" {
+			configuredProviders[*pg.provider] = true
+			if pg.reconcileModelBudgets {
+				pruneModelBudgets[*pg.provider] = true
+			}
+		}
 		if err := h.reconcileVKModelConfig(ctx, tx, vk, pg, usageReset); err != nil {
 			return err
 		}
 	}
-	// Delete VK-scoped provider model configs whose provider is no longer configured.
+	// Delete VK-scoped provider model configs that are no longer desired: all tiers for a
+	// provider dropped from the VK, plus per-model configs pruned from a provider whose
+	// model_budgets set was supplied. Per-model configs of a still-configured provider whose
+	// model_budgets were omitted are left untouched (e.g. ones set via the model-config API).
 	var existing []configstoreTables.TableModelConfig
 	if err := tx.Preload("Budgets").
-		Where("scope = ? AND scope_id = ? AND model_name = ? AND provider IS NOT NULL",
-			configstoreTables.ModelConfigScopeVirtualKey, vk.ID, configstoreTables.ModelConfigAllModels).
+		Where("scope = ? AND scope_id = ? AND provider IS NOT NULL",
+			configstoreTables.ModelConfigScopeVirtualKey, vk.ID).
 		Find(&existing).Error; err != nil {
 		return err
 	}
 	for i := range existing {
 		mc := &existing[i]
-		if mc.Provider != nil && !keep[*mc.Provider] {
-			if err := h.deleteVKModelConfig(ctx, tx, mc); err != nil {
-				return err
-			}
+		if mc.Provider == nil || keep[*mc.Provider+"\x00"+mc.ModelName] {
+			continue
+		}
+		isModelTier := mc.ModelName != configstoreTables.ModelConfigAllModels
+		if isModelTier && configuredProviders[*mc.Provider] && !pruneModelBudgets[*mc.Provider] {
+			continue
+		}
+		if err := h.deleteVKModelConfig(ctx, tx, mc); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -825,8 +876,9 @@ func (h *GovernanceHandler) syncVKGovernanceToModelConfigs(ctx context.Context, 
 
 // reconcileVKModelConfig reconciles a single VK-scoped model config to the desired state.
 func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm.DB, vk *configstoreTables.TableVirtualKey, d vkModelConfigDesired, usageReset *budgetUsageReset) error {
+	modelName := d.modelNameOrAll()
 	q := tx.Preload("Budgets").Where("scope = ? AND scope_id = ? AND model_name = ?",
-		configstoreTables.ModelConfigScopeVirtualKey, vk.ID, configstoreTables.ModelConfigAllModels)
+		configstoreTables.ModelConfigScopeVirtualKey, vk.ID, modelName)
 	if d.provider == nil {
 		q = q.Where("provider IS NULL")
 	} else {
@@ -842,7 +894,7 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 	if isNew {
 		mc = configstoreTables.TableModelConfig{
 			ID:              uuid.NewString(),
-			ModelName:       configstoreTables.ModelConfigAllModels,
+			ModelName:       modelName,
 			Provider:        d.provider,
 			Scope:           configstoreTables.ModelConfigScopeVirtualKey,
 			ScopeID:         &vk.ID,
@@ -986,6 +1038,96 @@ func rateLimitFromRequestFields(tokenMax *int64, tokenDur *string, reqMax *int64
 	}
 }
 
+// maxVKModelBudgetsPerProvider bounds how many per-model budget groups a single provider
+// config on a VK may declare. Mirrors the access-profile limit.
+const maxVKModelBudgetsPerProvider = 100
+
+// validateVKModelBudgetNames enforces the per-provider model-budget invariants: at most
+// maxVKModelBudgetsPerProvider groups, and non-empty, unique (trimmed), non-wildcard model names.
+func validateVKModelBudgetNames(provider string, names []string) error {
+	if len(names) > maxVKModelBudgetsPerProvider {
+		return &badRequestError{err: fmt.Errorf("model_budgets for provider %s exceeds maximum of %d", provider, maxVKModelBudgetsPerProvider)}
+	}
+	seen := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		name := strings.TrimSpace(n)
+		if name == "" {
+			return &badRequestError{err: fmt.Errorf("model_budgets for provider %s contains an entry with an empty model name", provider)}
+		}
+		if name == configstoreTables.ModelConfigAllModels {
+			return &badRequestError{err: fmt.Errorf("model_budgets for provider %s cannot target the %q wildcard tier", provider, configstoreTables.ModelConfigAllModels)}
+		}
+		if _, dup := seen[name]; dup {
+			return &badRequestError{err: fmt.Errorf("model_budgets for provider %s contains duplicate model %q", provider, name)}
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
+}
+
+// buildVKCreateModelBudgets validates and folds a provider config's per-model budgets (create form)
+// into per-model desired model-config states under the given provider.
+func buildVKCreateModelBudgets(provider *string, providerName string, mbs []vkModelBudgetRequest) ([]vkModelConfigDesired, error) {
+	names := make([]string, len(mbs))
+	for i := range mbs {
+		names[i] = mbs[i].ModelName
+	}
+	if err := validateVKModelBudgetNames(providerName, names); err != nil {
+		return nil, err
+	}
+	out := make([]vkModelConfigDesired, 0, len(mbs))
+	for _, mb := range mbs {
+		var rl *configstoreTables.TableRateLimit
+		if mb.RateLimit != nil {
+			rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration)
+		}
+		out = append(out, vkModelConfigDesired{
+			provider:          provider,
+			modelName:         strings.TrimSpace(mb.ModelName),
+			budgetsProvided:   true,
+			budgets:           mb.Budgets,
+			rateLimitProvided: mb.RateLimit != nil,
+			rateLimit:         rl,
+		})
+	}
+	return out, nil
+}
+
+// buildVKUpdateModelBudgets is buildVKCreateModelBudgets for the update form, where a rate limit
+// may be explicitly removed. The supplied list is the full desired set for the provider; models
+// absent from it are reconciled away by syncVKGovernanceToModelConfigs.
+func buildVKUpdateModelBudgets(provider *string, providerName string, mbs []vkModelBudgetUpdateRequest) ([]vkModelConfigDesired, error) {
+	names := make([]string, len(mbs))
+	for i := range mbs {
+		names[i] = mbs[i].ModelName
+	}
+	if err := validateVKModelBudgetNames(providerName, names); err != nil {
+		return nil, err
+	}
+	out := make([]vkModelConfigDesired, 0, len(mbs))
+	for _, mb := range mbs {
+		rlRemove := false
+		var rl *configstoreTables.TableRateLimit
+		if mb.RateLimit != nil {
+			if isRateLimitRemovalRequest(mb.RateLimit) {
+				rlRemove = true
+			} else {
+				rl = rateLimitFromRequestFields(mb.RateLimit.TokenMaxLimit, mb.RateLimit.TokenResetDuration, mb.RateLimit.RequestMaxLimit, mb.RateLimit.RequestResetDuration)
+			}
+		}
+		out = append(out, vkModelConfigDesired{
+			provider:          provider,
+			modelName:         strings.TrimSpace(mb.ModelName),
+			budgetsProvided:   true,
+			budgets:           mb.Budgets,
+			rateLimitProvided: mb.RateLimit != nil,
+			rateLimitRemove:   rlRemove,
+			rateLimit:         rl,
+		})
+	}
+	return out, nil
+}
+
 // vkModelConfigIndexKey builds a lookup key for a VK-scoped model config by scope target + provider.
 func vkModelConfigIndexKey(scopeID string, provider *string) string {
 	if provider == nil {
@@ -996,9 +1138,10 @@ func vkModelConfigIndexKey(scopeID string, provider *string) string {
 
 // applyVKGovernanceFromModelConfigs repopulates a VK's (and each provider config's) budgets and
 // rate-limit from the VK-scoped model configs that own them — for serialization only (so the VK
-// sheet still renders the governance it edits). byKey is keyed by vkModelConfigIndexKey.
+// sheet still renders the governance it edits). byKey holds the "*" (all-models) configs keyed by
+// vkModelConfigIndexKey; perModelByKey holds each provider's per-model budgets keyed the same way.
 // The reverse of syncVKGovernanceToModelConfigs.
-func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, byKey map[string]*configstoreTables.TableModelConfig) {
+func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, byKey map[string]*configstoreTables.TableModelConfig, perModelByKey map[string][]configstoreTables.VKProviderModelBudget) {
 	if mc := byKey[vkModelConfigIndexKey(vk.ID, nil)]; mc != nil {
 		vk.Budgets = mc.Budgets
 		vk.RateLimit = mc.RateLimit
@@ -1011,33 +1154,50 @@ func applyVKGovernanceFromModelConfigs(vk *configstoreTables.TableVirtualKey, by
 			pc.RateLimit = mc.RateLimit
 			pc.RateLimitID = mc.RateLimitID
 		}
+		pc.ModelBudgets = perModelByKey[vkModelConfigIndexKey(vk.ID, &pc.Provider)]
 	}
 }
 
-// hydrateVKGovernance reverse-maps a single VK's governance from its VK-scoped model configs.
+// buildVKModelBudgetsIndex groups the specific-model VK-scoped model configs by
+// vkModelConfigIndexKey(vkID, provider), sorted by model name for stable output.
+func buildVKModelBudgetsIndex(mcs []*configstoreTables.TableModelConfig) map[string][]configstoreTables.VKProviderModelBudget {
+	byKey := make(map[string][]configstoreTables.VKProviderModelBudget)
+	for _, mc := range mcs {
+		if mc == nil || mc.Scope != configstoreTables.ModelConfigScopeVirtualKey || mc.ScopeID == nil {
+			continue
+		}
+		if mc.ModelName == configstoreTables.ModelConfigAllModels || mc.Provider == nil {
+			continue
+		}
+		key := vkModelConfigIndexKey(*mc.ScopeID, mc.Provider)
+		byKey[key] = append(byKey[key], configstoreTables.VKProviderModelBudget{
+			ModelName: mc.ModelName,
+			Budgets:   mc.Budgets,
+			RateLimit: mc.RateLimit,
+		})
+	}
+	for key := range byKey {
+		sort.Slice(byKey[key], func(i, j int) bool { return byKey[key][i].ModelName < byKey[key][j].ModelName })
+	}
+	return byKey
+}
+
+// hydrateVKGovernance reverse-maps a single VK's governance (top-level, per-provider, and
+// per-model budgets) from its VK-scoped model configs in one bulk load.
 func (h *GovernanceHandler) hydrateVKGovernance(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
 	if vk == nil {
 		return
 	}
-	byKey := make(map[string]*configstoreTables.TableModelConfig)
-	add := func(provider *string) {
-		mc, err := h.configStore.GetModelConfig(ctx, configstoreTables.ModelConfigScopeVirtualKey, &vk.ID, configstoreTables.ModelConfigAllModels, provider)
-		if err != nil {
-			if !errors.Is(err, configstore.ErrNotFound) {
-				logger.Error("failed to get model config for VK governance hydration: %v", err)
-			}
-			return
-		}
-		if mc != nil {
-			byKey[vkModelConfigIndexKey(vk.ID, provider)] = mc
-		}
+	mcs, err := h.configStore.GetModelConfigsByScopeAndScopeIDs(ctx, configstoreTables.ModelConfigScopeVirtualKey, []string{vk.ID})
+	if err != nil {
+		logger.Error("failed to load model configs for VK governance hydration: %v", err)
+		return
 	}
-	add(nil)
-	for i := range vk.ProviderConfigs {
-		prov := vk.ProviderConfigs[i].Provider
-		add(&prov)
+	ptrs := make([]*configstoreTables.TableModelConfig, len(mcs))
+	for i := range mcs {
+		ptrs[i] = &mcs[i]
 	}
-	applyVKGovernanceFromModelConfigs(vk, byKey)
+	applyVKGovernanceFromModelConfigs(vk, buildVKModelConfigIndex(ptrs), buildVKModelBudgetsIndex(ptrs))
 }
 
 // buildVKModelConfigIndex builds a lookup map of VK-scoped model configs keyed by
@@ -1063,15 +1223,14 @@ func (h *GovernanceHandler) hydrateVKListGovernance(ctx context.Context, vks []c
 		logger.Error("failed to load model configs for VK governance hydration: %v", err)
 		return
 	}
-	byKey := make(map[string]*configstoreTables.TableModelConfig)
+	ptrs := make([]*configstoreTables.TableModelConfig, len(allMCs))
 	for i := range allMCs {
-		mc := &allMCs[i]
-		if mc.Scope == configstoreTables.ModelConfigScopeVirtualKey && mc.ModelName == configstoreTables.ModelConfigAllModels && mc.ScopeID != nil {
-			byKey[vkModelConfigIndexKey(*mc.ScopeID, mc.Provider)] = mc
-		}
+		ptrs[i] = &allMCs[i]
 	}
+	byKey := buildVKModelConfigIndex(ptrs)
+	perModelByKey := buildVKModelBudgetsIndex(ptrs)
 	for i := range vks {
-		applyVKGovernanceFromModelConfigs(&vks[i], byKey)
+		applyVKGovernanceFromModelConfigs(&vks[i], byKey, perModelByKey)
 	}
 }
 
@@ -1371,13 +1530,14 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
 		})
 		byKey := buildVKModelConfigIndex(data.ModelConfigs)
+		perModelByKey := buildVKModelBudgetsIndex(data.ModelConfigs)
 		hydratedVKs := make([]*configstoreTables.TableVirtualKey, len(virtualKeys))
 		for i, vk := range virtualKeys {
 			clone := *vk
 			pcs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
 			copy(pcs, vk.ProviderConfigs)
 			clone.ProviderConfigs = pcs
-			applyVKGovernanceFromModelConfigs(&clone, byKey)
+			applyVKGovernanceFromModelConfigs(&clone, byKey, perModelByKey)
 			h.applyExternalBudgets(ctx, &clone)
 			hydratedVKs[i] = &clone
 		}
@@ -1624,12 +1784,18 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 					pcRateLimit = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
 				}
 				vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-					provider:          &providerNameStr,
-					budgetsProvided:   true,
-					budgets:           pc.Budgets,
-					rateLimitProvided: pc.RateLimit != nil,
-					rateLimit:         pcRateLimit,
+					provider:              &providerNameStr,
+					budgetsProvided:       true,
+					budgets:               pc.Budgets,
+					rateLimitProvided:     pc.RateLimit != nil,
+					rateLimit:             pcRateLimit,
+					reconcileModelBudgets: true,
 				})
+				modelDesired, err := buildVKCreateModelBudgets(&providerNameStr, providerNameStr, pc.ModelBudgets)
+				if err != nil {
+					return err
+				}
+				vkGovProviders = append(vkGovProviders, modelDesired...)
 			}
 		}
 		// Fold VK top-level + per-provider governance into VK-scoped model configs.
@@ -1712,13 +1878,14 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		byKey := buildVKModelConfigIndex(data.ModelConfigs)
+		perModelByKey := buildVKModelBudgetsIndex(data.ModelConfigs)
 		for _, vk := range data.VirtualKeys {
 			if vk.ID == vkID {
 				clone := *vk
 				pcs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
 				copy(pcs, vk.ProviderConfigs)
 				clone.ProviderConfigs = pcs
-				applyVKGovernanceFromModelConfigs(&clone, byKey)
+				applyVKGovernanceFromModelConfigs(&clone, byKey, perModelByKey)
 				h.applyExternalBudgets(ctx, &clone)
 				SendJSON(ctx, map[string]interface{}{
 					"virtual_key": &clone,
@@ -2029,12 +2196,18 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						pcRL = rateLimitFromRequestFields(pc.RateLimit.TokenMaxLimit, pc.RateLimit.TokenResetDuration, pc.RateLimit.RequestMaxLimit, pc.RateLimit.RequestResetDuration)
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-						provider:          &pName,
-						budgetsProvided:   true,
-						budgets:           pc.Budgets,
-						rateLimitProvided: pc.RateLimit != nil,
-						rateLimit:         pcRL,
+						provider:              &pName,
+						budgetsProvided:       true,
+						budgets:               pc.Budgets,
+						rateLimitProvided:     pc.RateLimit != nil,
+						rateLimit:             pcRL,
+						reconcileModelBudgets: pc.ModelBudgets != nil,
 					})
+					modelDesired, err := buildVKUpdateModelBudgets(&pName, pName, pc.ModelBudgets)
+					if err != nil {
+						return err
+					}
+					vkGovProviders = append(vkGovProviders, modelDesired...)
 				} else {
 					// Update existing provider config
 					existing, ok := existingConfigsMap[*pc.ID]
@@ -2088,13 +2261,19 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						}
 					}
 					vkGovProviders = append(vkGovProviders, vkModelConfigDesired{
-						provider:          &pName,
-						budgetsProvided:   pc.Budgets != nil,
-						budgets:           pc.Budgets,
-						rateLimitProvided: pc.RateLimit != nil,
-						rateLimitRemove:   rlRemove,
-						rateLimit:         pcRL,
+						provider:              &pName,
+						budgetsProvided:       pc.Budgets != nil,
+						budgets:               pc.Budgets,
+						rateLimitProvided:     pc.RateLimit != nil,
+						rateLimitRemove:       rlRemove,
+						rateLimit:             pcRL,
+						reconcileModelBudgets: pc.ModelBudgets != nil,
 					})
+					modelDesired, err := buildVKUpdateModelBudgets(&pName, pName, pc.ModelBudgets)
+					if err != nil {
+						return err
+					}
+					vkGovProviders = append(vkGovProviders, modelDesired...)
 					if err := h.configStore.UpdateVirtualKeyProviderConfig(ctx, &existing, tx); err != nil {
 						return err
 					}
@@ -5163,7 +5342,7 @@ func (h *GovernanceHandler) collectVKModelUsage(ctx context.Context, vk *configs
 	for i := range mcs {
 		ptrs[i] = &mcs[i]
 	}
-	applyVKGovernanceFromModelConfigs(vk, buildVKModelConfigIndex(ptrs))
+	applyVKGovernanceFromModelConfigs(vk, buildVKModelConfigIndex(ptrs), buildVKModelBudgetsIndex(ptrs))
 
 	models := make([]quotaModelUsage, 0)
 	for i := range mcs {
