@@ -706,6 +706,7 @@ curl -X DELETE http://localhost:8080/api/guardrails/bedrock \
           "enabled": true,
           "config": {
             "api_key": "env.GRAYSWAN_API_KEY",
+            "policy_id": "YOUR_GRAYSWAN_POLICY_ID",
             "violation_threshold": 0.5,
             "reasoning_mode": "hybrid",
             "rules": {
@@ -817,6 +818,7 @@ bifrost:
         enabled: true
         config:
           api_key: "env.GRAYSWAN_API_KEY"
+          policy_id: "YOUR_GRAYSWAN_POLICY_ID"
           violation_threshold: 0.5
           reasoning_mode: "hybrid"
           rules:
