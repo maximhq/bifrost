@@ -154,6 +154,52 @@ func TestGetExchangedAccessTokenJWTBearerOBOForm(t *testing.T) {
 	}
 }
 
+// TestGetExchangedAccessTokenJWTBearerOBOOfflineAccessCombinesWithDefault
+// pins the one case where a configured scope must combine with, not replace,
+// the audience-derived default: "offline_access" alone. Per Microsoft's own
+// OBO docs, ".default" cannot be combined with other delegated scopes except
+// offline_access — and our own docs recommend adding exactly that scope for
+// a self-renewing admin credential, so silently dropping resource access in
+// that one case would be a footgun of our own making.
+func TestGetExchangedAccessTokenJWTBearerOBOOfflineAccessCombinesWithDefault(t *testing.T) {
+	var form url.Values
+	server := tokenEndpointStub(t, new(atomic.Int64), &form, "exchanged-offline", 3600)
+	defer server.Close()
+
+	config := exchangeTestClientConfig()
+	config.TokenExchange.Scopes = []string{"offline_access"}
+
+	p := newExchangeProvider(t, server.URL, schemas.TokenExchangeGrantJWTBearerOBO)
+	if _, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), config); err != nil {
+		t.Fatalf("GetExchangedAccessToken returned error: %v", err)
+	}
+	if got, want := form.Get("scope"), "api://client-1/.default offline_access"; got != want {
+		t.Errorf("scope = %q, want %q (default combined with offline_access, not replaced)", got, want)
+	}
+}
+
+// TestGetExchangedAccessTokenJWTBearerOBOCustomScopeReplacesDefault pins the
+// opposite case: any scope other than exactly ["offline_access"] means the
+// caller opted into naming custom scopes, and the audience-derived default
+// must NOT be added alongside it — Microsoft's docs forbid combining
+// .default with arbitrary delegated scopes (AADSTS70011).
+func TestGetExchangedAccessTokenJWTBearerOBOCustomScopeReplacesDefault(t *testing.T) {
+	var form url.Values
+	server := tokenEndpointStub(t, new(atomic.Int64), &form, "exchanged-custom", 3600)
+	defer server.Close()
+
+	config := exchangeTestClientConfig()
+	config.TokenExchange.Scopes = []string{"api://client-1/access_as_user"}
+
+	p := newExchangeProvider(t, server.URL, schemas.TokenExchangeGrantJWTBearerOBO)
+	if _, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), config); err != nil {
+		t.Fatalf("GetExchangedAccessToken returned error: %v", err)
+	}
+	if got, want := form.Get("scope"), "api://client-1/access_as_user"; got != want {
+		t.Errorf("scope = %q, want %q (custom scope must fully replace the default, not combine with it)", got, want)
+	}
+}
+
 func TestGetExchangedAccessTokenCachesUntilExpiry(t *testing.T) {
 	var hits atomic.Int64
 	server := tokenEndpointStub(t, &hits, nil, "exchanged-3", 3600)

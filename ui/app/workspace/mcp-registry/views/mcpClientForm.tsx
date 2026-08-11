@@ -771,7 +771,11 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 																Audience <span className="text-destructive">*</span>
 															</>
 														}
-														audienceTooltip="The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
+														audienceTooltip={
+															isEntraIdp
+																? "The resource app's Application (client) ID at your identity provider - a bare GUID, not the api://... Application ID URI shown under Expose an API. Exchanged tokens are scoped to it."
+																: "The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
+														}
 														audienceTestId="token-exchange-audience-input"
 														onAudienceTouched={() => clearErrors("token_exchange.audience")}
 														useIdPCredentialsLabel="Exchange application"
@@ -818,6 +822,13 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 																<>
 																	Comma-separated scopes to request on exchanged tokens. Include <code>offline_access</code> (where your
 																	identity provider supports it) so the retained discovery credential can renew itself in the background.
+																	{isEntraIdp && (
+																		<>
+																			{" "}
+																			<code>offline_access</code> alone is the only scope combined with the audience&apos;s default resource
+																			access - any other scope replaces the default entirely instead of adding to it.
+																		</>
+																	)}
 																</>
 															),
 															testId: "token-exchange-scopes-textarea",
