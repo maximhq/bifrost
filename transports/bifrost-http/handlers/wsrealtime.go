@@ -393,7 +393,7 @@ func (h *WSRealtimeHandler) relayClientToRealtimeProvider(
 			if inputSummary != "" {
 				session.RecordRealtimeInput(inputItemID, inputSummary, string(message))
 			}
-			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+			if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 				clientConn.writeRealtimeError(bifrostErr)
 				return nil
 			}
@@ -525,7 +525,7 @@ func (h *WSRealtimeHandler) relayRealtimeProviderToClient(
 					session.AppendRealtimeOutputText(event.Delta.Transcript)
 				}
 				if provider.ShouldStartRealtimeTurn(event) && session.PeekRealtimeTurnHooks() == nil {
-					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event.Type); bifrostErr != nil {
+					if bifrostErr := startRealtimeTurnHooks(h.client, bifrostCtx, session, provider, providerKey, model, &key, event); bifrostErr != nil {
 						clientConn.writeRealtimeError(bifrostErr)
 						return nil
 					}
