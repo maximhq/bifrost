@@ -210,6 +210,13 @@ type BifrostHTTPServer struct {
 	Server *fasthttp.Server
 	Router *router.Router
 
+	// ShellRewriter lets a build rewrite the pre-hydration HTML shell before it
+	// is served — the enterprise build uses it to swap in a custom logo.
+	// nil on OSS, where the embedded document is served exactly as bundled. It
+	// must be assigned before RegisterUIRoutes, which builds the UI handler
+	// from it.
+	ShellRewriter handlers.ShellRewriter
+
 	WebSocketHandler   *handlers.WebSocketHandler
 	MCPServerHandler   *handlers.MCPServerHandler
 	devPprofHandler    *handlers.DevPprofHandler
@@ -2192,7 +2199,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 // RegisterUIRoutes registers the UI handler with the specified router
 func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
 	// WARNING: This UI handler needs to be registered after all the other handlers
-	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
+	handlers.NewUIHandler(s.UIContent, s.ShellRewriter).RegisterRoutes(s.Router, middlewares...)
 }
 
 // GetAllRedactedKeys gets all redacted keys from the config store
