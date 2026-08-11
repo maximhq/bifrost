@@ -27,7 +27,8 @@ export default function CompatibilityView() {
 			localCompatConfig.convert_text_to_chat !== baseline.convert_text_to_chat ||
 			localCompatConfig.convert_chat_to_responses !== baseline.convert_chat_to_responses ||
 			localCompatConfig.should_drop_params !== baseline.should_drop_params ||
-			localCompatConfig.should_convert_params !== baseline.should_convert_params
+			localCompatConfig.should_convert_params !== baseline.should_convert_params ||
+			localCompatConfig.count_tokens_fallback !== baseline.count_tokens_fallback
 		);
 	}, [config, localCompatConfig]);
 
@@ -140,6 +141,25 @@ export default function CompatibilityView() {
 						size="md"
 						checked={localCompatConfig.should_convert_params}
 						onCheckedChange={(checked) => handleCompatChange("should_convert_params", checked)}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="compat-count-tokens-fallback" className="text-sm font-medium">
+							Count Tokens Fallback
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Return an estimated token count when the selected provider does not support native token counting.
+						</p>
+					</div>
+					<Switch
+						id="compat-count-tokens-fallback"
+						data-testid="compat-count-tokens-fallback"
+						size="md"
+						checked={localCompatConfig.count_tokens_fallback}
+						onCheckedChange={(checked) => handleCompatChange("count_tokens_fallback", checked)}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>

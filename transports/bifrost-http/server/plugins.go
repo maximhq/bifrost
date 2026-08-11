@@ -124,7 +124,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal compat plugin config: %w", err)
 		}
-		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog)
+		return compat.Init(*compatConfig, logger, bifrostConfig.ModelCatalog, lib.NewBaseAccount(bifrostConfig))
 
 	case modelcatalogresolver.PluginName:
 		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
@@ -252,6 +252,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		ConvertChatToResponses: cc.ConvertChatToResponses,
 		ShouldDropParams:       cc.ShouldDropParams,
 		ShouldConvertParams:    cc.ShouldConvertParams,
+		CountTokensFallback:    cc.CountTokensFallback,
 	}
 	s.registerPluginWithStatus(ctx, compat.PluginName, nil, compatCfg, false)
 	s.Config.SetPluginOrderInfo(compat.PluginName, builtinPlacement, schemas.Ptr(7))
