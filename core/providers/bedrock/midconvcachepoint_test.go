@@ -2,10 +2,13 @@ package bedrock_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -341,4 +344,83 @@ func TestInlinedSystemReminder_PreservesOneHourTTL(t *testing.T) {
 		}
 	}
 	assert.True(t, checked, "expected a cachePoint carrying the requested TTL")
+}
+
+// TestMidconvAnthropicWireShapeReachesBedrockWithAllBreakpoints closes the seam every test above
+// leaves open. They all start from []schemas.ResponsesMessage, which is the shape the
+// /openai/v1/responses leg sends. Claude Code's actual entry point is /anthropic/v1/messages, and
+// that leg runs one extra conversion first: AnthropicMessageRequest.ToBifrostResponsesRequest,
+// which folds the top-level `system` ARRAY into a single Responses message carrying two blocks,
+// while the Responses leg sends two separate single-block system messages.
+//
+// Two shapes converging on one converter is exactly where a defect hides from tests written
+// against only one of them, and the harness measures the two legs separately for that reason.
+// This pins the Anthropic side at the wire level, with no credentials and no spend.
+//
+// The fixture is anthropicBody(midconv) from
+// tests/e2e/api/runners/lib/midconv-system-cache-parity.mjs, shrunk to the structure that matters:
+// two cache_control breakpoints in `system`, a third on a mid-conversation role:"system"
+// reminder, and a conversation body between them.
+func TestMidconvAnthropicWireShapeReachesBedrockWithAllBreakpoints(t *testing.T) {
+	const midconvAnthropicBody = `{
+	  "model": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
+	  "max_tokens": 32,
+	  "system": [
+	    {"type":"text","text":"You are Claude Code. Long stable instructions.","cache_control":{"type":"ephemeral"}},
+	    {"type":"text","text":"Tool definitions and environment details.","cache_control":{"type":"ephemeral"}}
+	  ],
+	  "messages": [
+	    {"role":"user","content":[{"type":"text","text":"Document A. Reply OK."}]},
+	    {"role":"assistant","content":[{"type":"text","text":"OK."}]},
+	    {"role":"user","content":[{"type":"text","text":"Document B. Reply OK."}]},
+	    {"role":"assistant","content":[{"type":"text","text":"OK."}]},
+	    {"role":"system","content":[{"type":"text","text":"Reminder: stay concise.","cache_control":{"type":"ephemeral"}}]},
+	    {"role":"user","content":[{"type":"text","text":"Reply with ONLY the word ACKNOWLEDGED."}]}
+	  ]
+	}`
+
+	convert := func(t *testing.T) ([]bedrock.BedrockMessage, []bedrock.BedrockSystemMessage) {
+		t.Helper()
+		var req anthropic.AnthropicMessageRequest
+		require.NoError(t, json.Unmarshal([]byte(midconvAnthropicBody), &req))
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bifrostReq := req.ToBifrostResponsesRequest(ctx)
+		require.NotNil(t, bifrostReq)
+
+		messages, systemMessages, err := bedrock.ConvertBifrostMessagesToBedrockMessages(
+			context.Background(), bifrostReq.Input, true)
+		require.NoError(t, err)
+		return messages, systemMessages
+	}
+
+	messages, systemMessages := convert(t)
+
+	// Same contract the Responses shape is held to: 3 client breakpoints in, 3 cachePoints out,
+	// and exactly one of them inside `messages`. All three in `system` caches exactly as badly
+	// as two would.
+	inSystem, inMessages := countCachePoints(messages, systemMessages)
+	assert.Equal(t, 2, inSystem, "the top-level system array's two breakpoints must survive the Anthropic ingress")
+	assert.Equal(t, 1, inMessages,
+		"the mid-conversation reminder's breakpoint must survive BOTH conversions; losing it in the Anthropic "+
+			"ingress pins the cacheable prefix at the system floor just as surely as losing it in the Bedrock egress")
+
+	// Determinism is a cache-correctness property, not a style preference. Prompt caching keys on
+	// exact bytes, so a converter that emits semantically equal but byte-unstable output (map
+	// iteration order being the classic source) turns every repeat request into a cache write --
+	// read 0, write the whole prompt, which is a different failure from a dropped breakpoint and
+	// is invisible to any assertion that only counts cachePoints.
+	secondMessages, secondSystem := convert(t)
+	first, err := providerUtils.MarshalSorted(struct {
+		Messages []bedrock.BedrockMessage
+		System   []bedrock.BedrockSystemMessage
+	}{messages, systemMessages})
+	require.NoError(t, err)
+	second, err := providerUtils.MarshalSorted(struct {
+		Messages []bedrock.BedrockMessage
+		System   []bedrock.BedrockSystemMessage
+	}{secondMessages, secondSystem})
+	require.NoError(t, err)
+	assert.Equal(t, string(first), string(second),
+		"two conversions of one request body must be byte-identical, or Bedrock re-writes the cache every turn")
 }

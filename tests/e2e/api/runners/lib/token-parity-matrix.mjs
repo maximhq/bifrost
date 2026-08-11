@@ -61,6 +61,13 @@ const LARGE_CONTEXT = "Fact #1: The station's primary reactor operates at a core
 // Fixed, short, not part of the cacheable prefix - shared across all cells (no salting needed).
 const TOOL_RESULT = "27C, humid, light rain";
 
+// Leg component of the cache salt, kept token-identical across legs on purpose: both
+// values are the same length and differ only in the final digit, which every tokenizer
+// here emits as a single token. The leg still gets its own cold cache (different bytes,
+// different prefix hash) without the two legs of a row differing in prompt-token count.
+// Never substitute the readable leg names back in -- that is the bug this replaced.
+const LEG_SALT = { direct: "leg1", bifrost: "leg2" };
+
 function buildQ(cellId) {
   const ctx = `Test cell ID: ${cellId}.\n\n${LARGE_CONTEXT}`;
   return {
@@ -583,11 +590,24 @@ function buildLegItems({ leg, shape, backendKey, backendLabel, modality, urlFor,
   // (bedrock's {{bedrockModel}}) so the report shows the real resolved value, not the template.
   const resolvedModelExpr = modelExpr || J(model || "");
   const varPrefix = `pt_${backendKey}_${modality.key}_${leg}`;
+  // The cache salt must stay out of varPrefix. "direct" and "bifrost" are different
+  // strings of different lengths, so interpolating the leg name into the prompt made
+  // the two legs of every row cost different token counts -- the one thing a parity
+  // matrix must never do. It put a constant per-backend bias into the Δ column (anthropic +1,
+  // openai/bedrock +2, gemini +2..+3 on every cell), far under the 20% tolerance but
+  // large enough to hide a genuine few-token regression underneath the artifact.
+  //
+  // LEG_SALT keeps each leg its own cold cache (see buildQ) while costing both legs the
+  // same token count: the ids differ only in a single trailing digit, and every
+  // tokenizer in this matrix emits a lone digit as its own token. varPrefix keeps the
+  // readable leg name, because it only ever names Postman variables and report rows,
+  // which are not sent to a model.
+  const promptSalt = `pt_${backendKey}_${modality.key}_${LEG_SALT[leg]}`;
   const isTools = modality.tools;
   const isFinalLegRound = (round) => round === 3;
   // Gives this leg its own cold cache in round 1 - see buildQ's comment for why an unsalted
   // shared LARGE_CONTEXT prefix makes the direct-vs-bifrost cached-token comparison a race.
-  const Q = buildQ(varPrefix);
+  const Q = buildQ(promptSalt);
 
   const round1Turn = isTools
     ? shape.plainTurn(Q.tool1)

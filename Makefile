@@ -68,7 +68,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -703,15 +703,15 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			exit 1; \
 		fi; \
 		if [ -n "$(PATTERN)" ]; then \
-			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' across all providers...$(NC)"; \
+			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' across core and all providers...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all-$(PATTERN).xml"; \
 			if [ -n "$(DEBUG)" ]; then \
-				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 ./providers/... -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
+				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 . ./providers/... -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			else \
 				cd core && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../$$REPORT_FILE \
-					-- -v -timeout 20m -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
+					-- -v -timeout 20m -run ".*$(PATTERN).*" . ./providers/... || TEST_FAILED=1; \
 			fi; \
 		else \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \
@@ -1877,6 +1877,11 @@ test-harness-runner-lib: ## Run the provider-harness runner unit tests (tests/e2
 	if [ "$$RC" -ne 0 ]; then $(ECHO) "$(RED)harness runner lib tests failed$(NC)"; else $(ECHO) "$(GREEN)harness runner lib tests passed$(NC)"; fi; \
 	exit $$RC
 
+# Named target rather than documentation telling people to type SMOKE=1: a smoke
+# set nobody can invoke in one word does not get used before a release.
+smoke-provider-harness-test: ## Run the curated ~100-request provider-harness smoke set (tests/e2e/api/collections/smoke-manifest.json). Same flags as run-provider-harness-test; equivalent to SMOKE=1.
+	@$(MAKE) run-provider-harness-test SMOKE=1
+
 # Versions pinned to match the CI installs in .github/workflows/release-pipeline.yml
 # (test-core, test-api-integrations, test-docker-image-*). Keep them in sync.
 NEWMAN_VERSION ?= 6.2.1
@@ -1925,6 +1930,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' "MONITOR_TABLE_REPRINT=1" "Restore the old CI behaviour of reprinting the whole table on every interval. Debugging only."; \
 		printf '  %-18s %s\n' "INCLUDE_PREVIEW=1" "Run [PREVIEW]-tagged requests (account/region-scoped: vector stores, cached content, MCP servers, preview-model deployments). Off by default."; \
 		printf '  %-18s %s\n' "INCLUDE_SKIP=1"   "Run [SKIP]-tagged criss-cross cells (provider+modality pairs that return NewUnsupportedOperationError by design, e.g., anthropic embeddings, bedrock audio). Off by default."; \
+		printf '  %-18s %s\n' "SMOKE=1"          "Run only the curated smoke set in tests/e2e/api/collections/smoke-manifest.json (~100 requests"; \
+		printf '  %-18s %s\n' ""                "  across all 8 providers) instead of the full ~1900-request sweep. SMOKE=<path> uses a different manifest."; \
+		printf '  %-18s %s\n' ""                "  Rows are matched by (folder, name) against the AUGMENTED collection, which is the only way to reach the"; \
+		printf '  %-18s %s\n' ""                "  generated cache-parity rows - they do not exist in provider-harness.json and cannot be tagged in place."; \
+		printf '  %-18s %s\n' ""                "  Forces the deferred cache-parity pass ON: a third of the smoke set is cache parity, and the default"; \
+		printf '  %-18s %s\n' ""                "  deferral only fires on an unfiltered run. Composes with PROVIDER; RERUN_FAILED wins and skips the defer."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
@@ -1958,6 +1969,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '\n%s\n' "$(YELLOW)EXAMPLES$(NC)"; \
 		printf '  %s\n' "make run-provider-harness-test HELP=1"; \
 		printf '  %s\n' "make run-provider-harness-test                       # full provider sweep"; \
+		printf '  %s\n' "make smoke-provider-harness-test                    # curated ~100-request smoke set (all providers)"; \
+		printf '  %s\n' "make run-provider-harness-test SMOKE=1 PROVIDER=bedrock   # the smoke set, bedrock rows only"; \
 		printf '  %s\n' "make run-provider-harness-test PROVIDER=bedrock      # bedrock-only"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"web search\"                       # all providers, web-search entries"; \
 		printf '  %s\n' "make run-provider-harness-test FEATURE=\"cross-cut,structured output\"      # AND of substrings"; \
@@ -1985,6 +1998,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' ""                                "  Same table is also injected into tmp/newman-report.html when present (sequential mode / PARALLEL=0 only)."; \
 		printf '  %-30s %s\n' "tmp/harness-cache-parity-*.json" "Per-newman-process cache parity fragments (CACHE_ANCHOR_REPORT + CACHE_MATRIX_REPORT blobs)."; \
 		printf '  %-30s %s\n' "tmp/harness-cache-parity.md"     "Round 34 direct-vs-Bifrost cache hit-rate table + Round 35 cross-provider matrix - see Cache Parity Matrices above."; \
+		printf '  %-30s %s\n' ""                                "  Both parity .md files are DELETED at run start alongside their fragments, because rendering is skipped"; \
+		printf '  %-30s %s\n' ""                                "  when a run produces no fragments (scope excluded those rows, or the reporter deps failed to install)."; \
+		printf '  %-30s %s\n' ""                                "  Absent means 'this run measured none'; a leftover from an earlier run reads as current and contradicts"; \
+		printf '  %-30s %s\n' ""                                "  the freshly written tmp/harness-failures.md, which is rewritten unconditionally on every run."; \
 		printf '  %-30s %s\n' "tmp/newman-report-cache-parity.json" "Newman report for the deferred sequential cache pass (merged into tmp/newman-report.json)."; \
 		printf '  %-30s %s\n' "tmp/newman-merge.jq"            "jq program used to merge per-provider + cache-pass reports into tmp/newman-report.json."; \
 		printf '\n'; \
@@ -2100,7 +2117,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		TOKEN_PARITY_REPORTER=",token-parity"; \
 		CACHE_PARITY_REPORTER=",cache-parity"; \
 	fi; \
-	rm -f tmp/harness-token-parity-*.json tmp/harness-cache-parity-*.json; \
+	rm -f tmp/harness-token-parity-*.json tmp/harness-cache-parity-*.json tmp/harness-token-parity.md tmp/harness-cache-parity.md; \
 	cp tests/e2e/api/runners/lib/newman-merge.jq tmp/newman-merge.jq; \
 	if command -v gcloud > /dev/null 2>&1; then \
 		VERTEX_ACCESS_TOKEN_VAL="$$(gcloud auth print-access-token 2>/dev/null)"; \
@@ -2153,7 +2170,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	PICKED_FEATURES=""; \
 	if [ -t 0 ] && [ -t 1 ] && [ -z "$$CI" ] && [ -z "$(CI)" ] \
 	   && [ -z "$(PROVIDER)" ] && [ -z "$(FEATURE)" ] && [ -z "$(FOLDER)" ] \
-	   && [ -z "$(RERUN_FAILED)" ]; then \
+	   && [ -z "$(RERUN_FAILED)" ] && [ -z "$(SMOKE)" ]; then \
 		$(USE_NODE); \
 		PICKED_FEATURES=$$(node tests/e2e/api/runners/pick-features.mjs); \
 		PICK_RC=$$?; \
@@ -2193,6 +2210,20 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		--source tests/e2e/api/collections/provider-harness.json \
 		--out tmp/harness-augmented.json || { say "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
 	COLLECTION_FILE="tmp/harness-augmented.json"; \
+	: "SMOKE_MANIFEST alone carries smoke mode: it is both the truth test and the flag value."; \
+	: "Packing --smoke and the path into one scalar would leave field splitting as the only"; \
+	: "thing separating them, so a manifest path containing a space would arrive truncated."; \
+	SMOKE_MANIFEST=""; \
+	if [ -n "$(SMOKE)" ]; then \
+		case "$(SMOKE)" in \
+			1|true|TRUE|yes|YES|y|Y) SMOKE_MANIFEST="tests/e2e/api/collections/smoke-manifest.json" ;; \
+			*) SMOKE_MANIFEST="$(SMOKE)" ;; \
+		esac; \
+		if [ ! -f "$$SMOKE_MANIFEST" ]; then \
+			say "$(RED)SMOKE manifest not found: $$SMOKE_MANIFEST$(NC)"; exit 1; \
+		fi; \
+		say "$(CYAN)Smoke mode: selecting the curated set in $$SMOKE_MANIFEST.$(NC)"; \
+	fi; \
 	DEFERRED_KEYS="cache-parity"; \
 	MAIN_FEATURES=""; CACHE_PASS=0; SKIP_MAIN=0; PICK_SAW_DEFERRED=0; \
 	for k in $$(printf '%s' "$$PICKED_FEATURES" | tr ',' ' '); do \
@@ -2213,6 +2244,11 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			if [ "$$t" = "$$d" ] && [ -z "$(RERUN_FAILED)" ]; then CACHE_PASS=1; SKIP_MAIN=1; fi; \
 		done; \
 	done; \
+	: "SMOKE forces the deferred cache pass on. The default above turns CACHE_PASS on only when nothing"; \
+	: "is filtering the run, and SMOKE is a filter - so without this line a smoke run would carve the"; \
+	: "cache-parity rows out of the main pass via EXCLUDE_FLAG and then never replay them, silently"; \
+	: "dropping the third of the smoke set that exists to catch a dropped cache breakpoint."; \
+	if [ -n "$${SMOKE_MANIFEST:-}" ] && [ -z "$(RERUN_FAILED)" ]; then CACHE_PASS=1; SKIP_MAIN=0; fi; \
 	EXCLUDE_FLAG=""; \
 	if [ "$$CACHE_PASS" = "1" ]; then \
 		EXCLUDE_FLAG="--exclude-feature-any cache-parity"; \
@@ -2220,8 +2256,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	fi; \
 	FEATURE_ANY_FLAG=""; \
 	if [ -n "$$MAIN_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$MAIN_FEATURES"; fi; \
-	if [ "$$SKIP_MAIN" != "1" ] && { [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$MAIN_FEATURES" ] || [ -n "$$EXCLUDE_FLAG" ]; }; then \
-		say "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
+	if [ "$$SKIP_MAIN" != "1" ] && { [ -n "$(PROVIDER)" ] || [ -n "$(FEATURE)" ] || [ -n "$(FOLDER)" ] || [ -n "$(RERUN_FAILED)" ] || [ -n "$$MAIN_FEATURES" ] || [ -n "$$EXCLUDE_FLAG" ] || [ -n "$$SMOKE_MANIFEST" ]; }; then \
+		say "$(CYAN)Filtering collection (provider=$(PROVIDER), feature=$(FEATURE), folder=$(FOLDER), feature-any=$$MAIN_FEATURES, exclude=$${EXCLUDE_FLAG:+cache-parity}, smoke=$${SMOKE_MANIFEST:--}, rerun-failed=$(RERUN_FAILED))...$(NC)"; \
 		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
 			--source "$$COLLECTION_FILE" \
 			--out tmp/harness-filtered.json \
@@ -2230,6 +2266,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$$FEATURE_ANY_FLAG \
 			$$EXCLUDE_FLAG \
+			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
 			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { say "$(RED)Filter step failed$(NC)"; exit 1; }; \
 		COLLECTION_FILE="tmp/harness-filtered.json"; \
 	fi; \
@@ -2391,6 +2428,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			--feature-any cache-parity \
 			$(if $(FEATURE),--feature "$(FEATURE)",) \
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
+			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
 			$(if $(PROVIDER),--provider $(PROVIDER),) || { say "$(RED)Cache parity filter step failed$(NC)"; }; \
 		if [ -f tmp/harness-cache-filtered.json ]; then \
 			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
