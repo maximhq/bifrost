@@ -360,6 +360,124 @@ func TestRecalculateLogCostsRejectsDuplicateJob(t *testing.T) {
 	}
 }
 
+func TestCancelRecalculateCost(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	// newHandler wires a handler over a store seeded with one recalculation job.
+	newHandler := func(job *tables.TableSidekiqJob) (*LoggingHandler, *fakeSidekiqStore) {
+		store := newFakeSidekiqStore()
+		if job != nil {
+			store.jobs[job.ID] = job
+			if !tables.IsSidekiqTerminalStatus(job.Status) {
+				store.inFlight = job
+			}
+		}
+		h := &LoggingHandler{logManager: &dashboardLogManager{}}
+		h.SetSidekiqBackend(sidekiq.New(store, &mockLogger{}, 1, ""), store)
+		return h, store
+	}
+
+	call := func(h *LoggingHandler, uri string) *fasthttp.RequestCtx {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.SetRequestURI(uri)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+		h.cancelRecalculateCost(ctx)
+		return ctx
+	}
+
+	runningJob := func() *tables.TableSidekiqJob {
+		return &tables.TableSidekiqJob{
+			ID:       "job-1",
+			Kind:     loggingplugin.CostRecalcJobKind,
+			Status:   tables.SidekiqStatusRunning,
+			Metadata: `{"total":10,"processed":4,"updated":3,"skipped":1}`,
+		}
+	}
+
+	t.Run("cancels the in-flight job when no id is given", func(t *testing.T) {
+		h, store := newHandler(runningJob())
+		ctx := call(h, "/api/logs/recalculate-cost/cancel")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", got, ctx.Response.Body())
+		}
+		if got := store.jobs["job-1"].Status; got != tables.SidekiqStatusCancelled {
+			t.Fatalf("job status = %q, want cancelled", got)
+		}
+		var body recalcJobStatus
+		if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if body.Status != tables.SidekiqStatusCancelled {
+			t.Fatalf("response status = %q, want cancelled", body.Status)
+		}
+		// The counters committed before the stop must survive for the UI to report.
+		if body.Updated != 3 || body.Skipped != 1 || body.Processed != 4 {
+			t.Fatalf("partial progress lost: %+v", body)
+		}
+	})
+
+	t.Run("cancels the job named by id", func(t *testing.T) {
+		h, store := newHandler(runningJob())
+		ctx := call(h, "/api/logs/recalculate-cost/cancel?id=job-1")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", got, ctx.Response.Body())
+		}
+		if got := store.jobs["job-1"].Status; got != tables.SidekiqStatusCancelled {
+			t.Fatalf("job status = %q, want cancelled", got)
+		}
+	})
+
+	t.Run("an already-terminal job is returned unchanged", func(t *testing.T) {
+		done := runningJob()
+		done.Status = tables.SidekiqStatusCompleted
+		h, store := newHandler(done)
+		ctx := call(h, "/api/logs/recalculate-cost/cancel?id=job-1")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", got, ctx.Response.Body())
+		}
+		if got := store.jobs["job-1"].Status; got != tables.SidekiqStatusCompleted {
+			t.Fatalf("a completed job must not be rewritten, got %q", got)
+		}
+	})
+
+	t.Run("refuses to cancel a job of another kind", func(t *testing.T) {
+		other := runningJob()
+		other.Kind = "some_other_job"
+		h, store := newHandler(other)
+		ctx := call(h, "/api/logs/recalculate-cost/cancel?id=job-1")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", got, ctx.Response.Body())
+		}
+		if got := store.jobs["job-1"].Status; got != tables.SidekiqStatusRunning {
+			t.Fatalf("unrelated job must be untouched, got %q", got)
+		}
+	})
+
+	t.Run("404 when there is nothing to cancel", func(t *testing.T) {
+		h, _ := newHandler(nil)
+		ctx := call(h, "/api/logs/recalculate-cost/cancel")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusNotFound {
+			t.Fatalf("expected 404, got %d: %s", got, ctx.Response.Body())
+		}
+	})
+
+	t.Run("503 when the background runner is not wired", func(t *testing.T) {
+		h := &LoggingHandler{logManager: &dashboardLogManager{}}
+		ctx := call(h, "/api/logs/recalculate-cost/cancel")
+
+		if got := ctx.Response.StatusCode(); got != fasthttp.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d: %s", got, ctx.Response.Body())
+		}
+	})
+}
+
 // fakeSidekiqStore implements both sidekiq.Store (for the runner) and
 // handlers.SidekiqJobStore (for the endpoints), backed by an in-memory map.
 type fakeSidekiqStore struct {
@@ -428,6 +546,27 @@ func (s *fakeSidekiqStore) FailSidekiqJob(ctx context.Context, id, runnerID, met
 }
 func (s *fakeSidekiqStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
+}
+func (s *fakeSidekiqStore) CancelSidekiqJob(ctx context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[id]
+	if !ok || tables.IsSidekiqTerminalStatus(job.Status) {
+		return false, nil
+	}
+	job.Status = tables.SidekiqStatusCancelled
+	if s.inFlight != nil && s.inFlight.ID == id {
+		s.inFlight = nil
+	}
+	return true, nil
+}
+func (s *fakeSidekiqStore) FinalizeCancelledSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if job, ok := s.jobs[id]; ok && job.Status == tables.SidekiqStatusCancelled && metadata != "" {
+		job.Metadata = metadata
+	}
+	return nil
 }
 
 type dashboardLogManager struct {
