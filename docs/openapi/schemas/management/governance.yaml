@@ -976,6 +976,8 @@ BusinessUnitListItem:
       type: string
     team_count:
       type: integer
+    customer_count:
+      type: integer
     created_at:
       type: string
       format: date-time
@@ -988,19 +990,22 @@ ListBusinessUnitsResponse:
   description: Paginated list of business units
   required:
     - business_units
-    - total
-    - page
+    - count
+    - total_count
     - limit
+    - offset
   properties:
     business_units:
       type: array
       items:
         $ref: '#/BusinessUnitListItem'
-    total:
+    count:
       type: integer
-    page:
+    total_count:
       type: integer
     limit:
+      type: integer
+    offset:
       type: integer
 
 BusinessUnitDetailResponse:
@@ -1056,9 +1061,10 @@ BusinessUnitTeamsResponse:
   description: Paginated list of teams assigned to a business unit
   required:
     - teams
-    - total
-    - page
+    - count
+    - total_count
     - limit
+    - offset
   properties:
     teams:
       type: array
@@ -1069,11 +1075,13 @@ BusinessUnitTeamsResponse:
             type: string
           name:
             type: string
-    total:
+    count:
       type: integer
-    page:
+    total_count:
       type: integer
     limit:
+      type: integer
+    offset:
       type: integer
 
 CreateBusinessUnitGovernanceRequest:
