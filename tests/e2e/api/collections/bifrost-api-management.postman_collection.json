@@ -4333,7 +4333,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"client_id\": \"{{mcp_client_id}}\", \"name\": \"TestMCPClient\", \"connection_type\": \"http\", \"connection_string\": {\"value\": \"http://localhost:3001/\", \"env_var\": \"\", \"from_env\": false}, \"auth_type\": \"none\", \"is_ping_available\": false}"
+              "raw": "{\"client_id\": \"{{mcp_client_id}}\", \"name\": \"TestMCPClient\", \"connection_type\": \"http\", \"connection_string\": {\"value\": \"http://localhost:3001/\", \"env_var\": \"\", \"from_env\": false}, \"auth_type\": \"none\", \"is_ping_available\": false, \"needs_session_stickiness\": true}"
             },
             "url": {
               "raw": "{{base_url}}/api/mcp/client",
