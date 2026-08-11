@@ -209,6 +209,62 @@ test("webhook capture still records the id on success", () => {
   assert.strictEqual(ctx.vars.webhook_id, "wh-1");
 });
 
+// ── Governance / Virtual key budget override ──────────────────────────────────
+// These two requests mutate a real budget, so they must not run against fallback
+// placeholder ids. A non-empty collection-variable default defeats a `!get(...)`
+// skip guard, which would send the override to a made-up budget instead of skipping.
+function collectionVariable(key) {
+  const entry = (collection.variable || []).find((v) => v.key === key);
+  assert.ok(entry, `collection variable not declared: ${key}`);
+  return entry.value;
+}
+
+for (const key of ["vk_budget_id", "vk_budget_max_limit"]) {
+  test(`${key} defaults to empty so the skip guard can fire`, () => {
+    assert.strictEqual(
+      collectionVariable(key),
+      "",
+      "a non-empty default makes the guard's truthiness check always pass",
+    );
+  });
+}
+
+const OVERRIDE_REQUESTS = [
+  "Governance - Virtual Keys / Set Virtual Key Budget Override",
+  "Governance - Virtual Keys / Remove Virtual Key Budget Override",
+];
+
+for (const path of OVERRIDE_REQUESTS) {
+  const prerequest = scriptFor(path, "prerequest");
+  const captured = {
+    vk_id: "vk-real",
+    vk_budget_id: "budget-real",
+    vk_budget_max_limit: "100",
+  };
+
+  for (const missing of ["vk_id", "vk_budget_id", "vk_budget_max_limit"]) {
+    test(`${path.split(" / ")[1]} skips when ${missing} was not captured`, () => {
+      const ctx = run(prerequest, {
+        variables: { ...captured, [missing]: "" },
+      });
+      assert.strictEqual(ctx.state.skipped, true, `expected skipRequest() with no ${missing}`);
+    });
+  }
+
+  test(`${path.split(" / ")[1]} runs when every id was captured`, () => {
+    const ctx = run(prerequest, { variables: { ...captured } });
+    assert.strictEqual(ctx.state.skipped, false, "should not skip a fully captured run");
+  });
+}
+
+test("Set Virtual Key Budget Override still builds its request body", () => {
+  const ctx = run(scriptFor(OVERRIDE_REQUESTS[0], "prerequest"), {
+    variables: { vk_id: "vk-real", vk_budget_id: "budget-real", vk_budget_max_limit: "100" },
+  });
+  assert.deepStrictEqual(JSON.parse(ctx.pm.request.body.raw), { amount: 7.5, mode: "forever" });
+  assert.strictEqual(ctx.vars.vk_override_amount, "7.5");
+});
+
 // ── Collection-level status gate ──────────────────────────────────────────────
 // README.md documents which statuses this gate lets through, including the named
 // requests that are allowed a non-2xx without a "(Coverage Probe)" suffix. Pin
