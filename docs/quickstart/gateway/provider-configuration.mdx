@@ -821,6 +821,60 @@ curl --location --request PUT 'http://localhost:8080/api/providers/vertex' \
 
 Override keys are beta header **prefixes** (e.g. `"redact-thinking-"`), not full header values. This ensures overrides apply regardless of date-versioned header bumps. See the full support matrix in the [Anthropic provider docs](/providers/supported-providers/anthropic#beta-headers).
 
+### Capture Provider Request IDs
+
+Provider APIs commonly return a request identifier in a response header. Bifrost can capture this identifier and store it with request logs, making it easier to correlate a failed or slow request with the provider's support and debugging tools.
+
+Capture is **disabled by default**. Enable it per provider with `provider_request_id`:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "provider_request_id": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+Bifrost uses built-in response-header defaults for OpenAI (`x-request-id`), Anthropic (`request-id`), and Azure (`apim-request-id`). A custom provider inherits the default for its `base_provider_type`:
+
+```json
+{
+  "providers": {
+    "my-anthropic-proxy": {
+      "custom_provider_config": {
+        "base_provider_type": "anthropic"
+      },
+      "provider_request_id": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+For other providers or gateways, set an explicit response header:
+
+```json
+{
+  "providers": {
+    "my-provider": {
+      "provider_request_id": {
+        "enabled": true,
+        "header_name": "x-correlation-id"
+      }
+    }
+  }
+}
+```
+
+Header names are normalized to lowercase and must be valid HTTP header tokens. Authentication and API-key headers, such as `authorization` and `x-api-key`, are rejected. Captured values are limited to 512 characters; oversized values are discarded without logging their contents.
+
+The logs UI shows the ID from the final provider attempt and the request ID trail across retries and fallbacks. You can also filter logs by an exact provider request ID.
+
 ### Setting Up a Proxy
 
 Route requests through proxies for compliance, security, or geographic requirements. This example shows both HTTP proxy for OpenAI and authenticated SOCKS5 proxy for Anthropic, useful for corporate environments or regional access.
