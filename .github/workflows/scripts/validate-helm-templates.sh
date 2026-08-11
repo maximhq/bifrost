@@ -18,6 +18,9 @@ NC='\033[0m' # No Color
 TESTS_PASSED=0
 TESTS_FAILED=0
 
+HELM_OUTPUT_FILE=$(mktemp "${TMPDIR:-/tmp}/bifrost-helm-template.XXXXXX")
+trap 'rm -f "$HELM_OUTPUT_FILE"' EXIT
+
 # Function to report test result
 report_result() {
   local test_name=$1
@@ -41,13 +44,13 @@ test_template() {
   if helm template bifrost ./helm-charts/bifrost \
     --set image.tag=v1.0.0 \
     "${helm_args[@]}" \
-    > /tmp/helm-template-output.yaml 2>&1; then
+    > "$HELM_OUTPUT_FILE" 2>&1; then
     report_result "$test_name" 0
     return 0
   else
     report_result "$test_name" 1
     echo -e "${YELLOW}  Error output:${NC}"
-    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+    head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
     return 1
   fi
 }
@@ -62,16 +65,52 @@ test_template_failure() {
   if helm template bifrost ./helm-charts/bifrost \
     --set image.tag=v1.0.0 \
     "${helm_args[@]}" \
-    > /tmp/helm-template-output.yaml 2>&1; then
+    > "$HELM_OUTPUT_FILE" 2>&1; then
     report_result "$test_name" 1
     echo -e "${YELLOW}  Expected rendering to fail${NC}"
     return 1
-  elif grep -Fq "$expected_error" /tmp/helm-template-output.yaml; then
+  elif grep -Fq "$expected_error" "$HELM_OUTPUT_FILE"; then
     report_result "$test_name" 0
   else
     report_result "$test_name" 1
     echo -e "${YELLOW}  Expected error containing: $expected_error${NC}"
-    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+    head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
+    return 1
+  fi
+}
+
+# Function to verify rendered ServiceMonitor authentication references
+test_service_monitor_auth_output() {
+  local test_name=$1
+  local expected_namespace=$2
+  local expected_secret=$3
+  local expected_username_key=$4
+  local expected_password_key=$5
+  shift 5
+  local helm_args=("$@")
+
+  if ! helm template bifrost ./helm-charts/bifrost \
+    --set image.tag=v1.0.0 \
+    "${helm_args[@]}" \
+    --show-only templates/servicemonitor.yaml \
+    > "$HELM_OUTPUT_FILE" 2>&1; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Error output:${NC}"
+    head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
+    return 1
+  fi
+
+  local secret_ref_count
+  secret_ref_count=$(grep -Fc "          name: $expected_secret" "$HELM_OUTPUT_FILE" || true)
+  if grep -Fq "  namespace: $expected_namespace" "$HELM_OUTPUT_FILE" \
+    && [ "$secret_ref_count" -eq 2 ] \
+    && grep -Fq "          key: $expected_username_key" "$HELM_OUTPUT_FILE" \
+    && grep -Fq "          key: $expected_password_key" "$HELM_OUTPUT_FILE"; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Rendered ServiceMonitor did not contain the expected namespace and basicAuth Secret references:${NC}"
+    head -80 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
     return 1
   fi
 }
@@ -376,8 +415,8 @@ if helm template bifrost ./helm-charts/bifrost \
   --set vectorStore.enabled=true \
   --set vectorStore.type=redis \
   --set vectorStore.redis.enabled=true \
-  > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '"name"[[:space:]]*:[[:space:]]*"semantic_cache"' /tmp/helm-template-output.yaml; then
+  > "$HELM_OUTPUT_FILE" 2>&1; then
+  if grep -Eq '"name"[[:space:]]*:[[:space:]]*"semantic_cache"' "$HELM_OUTPUT_FILE"; then
     report_result "$test_name" 0
   else
     report_result "$test_name" 1
@@ -385,7 +424,7 @@ if helm template bifrost ./helm-charts/bifrost \
 else
   report_result "$test_name" 1
   echo -e "${YELLOW}  Error output:${NC}"
-  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+  head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
 fi
 
 # 6. Custom Plugin Placement and Order Rendering
@@ -410,8 +449,8 @@ if helm template bifrost ./helm-charts/bifrost \
   --set 'bifrost.plugins.custom[0].path=/plugins/my-plugin.so' \
   --set 'bifrost.plugins.custom[0].placement=pre_builtin' \
   --set 'bifrost.plugins.custom[0].order=2' \
-  > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '"placement"[[:space:]]*:[[:space:]]*"pre_builtin"' /tmp/helm-template-output.yaml; then
+  > "$HELM_OUTPUT_FILE" 2>&1; then
+  if grep -Eq '"placement"[[:space:]]*:[[:space:]]*"pre_builtin"' "$HELM_OUTPUT_FILE"; then
     report_result "$test_name" 0
   else
     report_result "$test_name" 1
@@ -420,7 +459,7 @@ if helm template bifrost ./helm-charts/bifrost \
 else
   report_result "$test_name" 1
   echo -e "${YELLOW}  Error output:${NC}"
-  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+  head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
 fi
 
 # Verify order appears in rendered output
@@ -432,8 +471,8 @@ if helm template bifrost ./helm-charts/bifrost \
   --set 'bifrost.plugins.custom[0].path=/plugins/my-plugin.so' \
   --set 'bifrost.plugins.custom[0].placement=pre_builtin' \
   --set 'bifrost.plugins.custom[0].order=2' \
-  > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '"order"[[:space:]]*:[[:space:]]*2' /tmp/helm-template-output.yaml; then
+  > "$HELM_OUTPUT_FILE" 2>&1; then
+  if grep -Eq '"order"[[:space:]]*:[[:space:]]*2' "$HELM_OUTPUT_FILE"; then
     report_result "$test_name" 0
   else
     report_result "$test_name" 1
@@ -442,7 +481,7 @@ if helm template bifrost ./helm-charts/bifrost \
 else
   report_result "$test_name" 1
   echo -e "${YELLOW}  Error output:${NC}"
-  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+  head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
 fi
 
 # 7. Security Context Rendering
@@ -458,8 +497,8 @@ test_name="default Bifrost pod sets runAsUser: 1000 (kubelet runAsNonRoot verifi
 if helm template bifrost ./helm-charts/bifrost \
   --set image.tag=v1.0.0 \
   -s templates/stateful.yaml \
-  > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '^[[:space:]]*runAsUser:[[:space:]]*1000$' /tmp/helm-template-output.yaml; then
+  > "$HELM_OUTPUT_FILE" 2>&1; then
+  if grep -Eq '^[[:space:]]*runAsUser:[[:space:]]*1000$' "$HELM_OUTPUT_FILE"; then
     report_result "$test_name" 0
   else
     report_result "$test_name" 1
@@ -468,7 +507,7 @@ if helm template bifrost ./helm-charts/bifrost \
 else
   report_result "$test_name" 1
   echo -e "${YELLOW}  Error output:${NC}"
-  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+  head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
 fi
 
 # Postgres mode renders a Deployment (not the sqlite StatefulSet); assert the
@@ -480,8 +519,8 @@ if helm template bifrost ./helm-charts/bifrost \
   --set postgresql.enabled=true \
   --set postgresql.auth.password=testpass \
   -s templates/deployment.yaml \
-  > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '^[[:space:]]*runAsUser:[[:space:]]*1000$' /tmp/helm-template-output.yaml; then
+  > "$HELM_OUTPUT_FILE" 2>&1; then
+  if grep -Eq '^[[:space:]]*runAsUser:[[:space:]]*1000$' "$HELM_OUTPUT_FILE"; then
     report_result "$test_name" 0
   else
     report_result "$test_name" 1
@@ -490,7 +529,7 @@ if helm template bifrost ./helm-charts/bifrost \
 else
   report_result "$test_name" 1
   echo -e "${YELLOW}  Error output:${NC}"
-  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+  head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
 fi
 
 # OpenShift path: explicit nulls must unset the UID pins so the SCC can
@@ -501,8 +540,8 @@ if helm template bifrost ./helm-charts/bifrost \
   --set podSecurityContext.runAsUser=null \
   --set podSecurityContext.fsGroup=null \
   --set securityContext.runAsUser=null \
-  > /tmp/helm-template-output.yaml 2>&1; then
-  if grep -Eq '^[[:space:]]*(runAsUser|fsGroup):' /tmp/helm-template-output.yaml; then
+  > "$HELM_OUTPUT_FILE" 2>&1; then
+  if grep -Eq '^[[:space:]]*(runAsUser|fsGroup):' "$HELM_OUTPUT_FILE"; then
     report_result "$test_name" 1
     echo -e "${YELLOW}  runAsUser/fsGroup still rendered with null overrides (OpenShift SCC cannot assign a UID)${NC}"
   else
@@ -511,7 +550,7 @@ if helm template bifrost ./helm-charts/bifrost \
 else
   report_result "$test_name" 1
   echo -e "${YELLOW}  Error output:${NC}"
-  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+  head -10 "$HELM_OUTPUT_FILE" | sed 's/^/    /'
 fi
 
 
@@ -520,10 +559,17 @@ echo ""
 echo -e "${CYAN}📊 8/8 - Validating ServiceMonitor Authentication...${NC}"
 echo "--------------------------------------------------------"
 
-test_template "same-namespace ServiceMonitor inherits active auth Secret" \
+test_service_monitor_auth_output \
+  "same-namespace ServiceMonitor inherits active auth Secret" \
+  "default" \
+  "admin-secret" \
+  "admin-username" \
+  "admin-password" \
   --set serviceMonitor.enabled=true \
   --set serviceMonitor.basicAuth.enabled=true \
-  --set bifrost.authConfig.existingSecret=admin-secret
+  --set bifrost.authConfig.existingSecret=admin-secret \
+  --set bifrost.authConfig.usernameKey=admin-username \
+  --set bifrost.authConfig.passwordKey=admin-password
 
 test_template_failure "cross-namespace ServiceMonitor requires explicit Secret" \
   "serviceMonitor.basicAuth.existingSecret must be set explicitly" \
@@ -541,13 +587,18 @@ test_template_failure "active governance inline auth rejects top-level Secret fa
   --set bifrost.governance.authConfig.adminPassword=governance-pass \
   --set bifrost.authConfig.existingSecret=top-level-secret
 
-test_template "cross-namespace ServiceMonitor accepts explicit Secret" \
+test_service_monitor_auth_output \
+  "cross-namespace ServiceMonitor accepts explicit Secret" \
+  "monitoring" \
+  "monitoring-secret" \
+  "scrape-username" \
+  "scrape-password" \
   --set serviceMonitor.enabled=true \
   --set serviceMonitor.namespace=monitoring \
   --set serviceMonitor.basicAuth.enabled=true \
-  --set serviceMonitor.basicAuth.existingSecret=monitoring-secret
-# Cleanup
-rm -f /tmp/helm-template-output.yaml
+  --set serviceMonitor.basicAuth.existingSecret=monitoring-secret \
+  --set serviceMonitor.basicAuth.usernameKey=scrape-username \
+  --set serviceMonitor.basicAuth.passwordKey=scrape-password
 
 # Final Summary
 echo ""
