@@ -133,7 +133,7 @@ export default function ObservabilityView() {
 	}
 
 	return (
-		<div className="flex h-full flex-row gap-4">
+		<div className="flex h-full flex-row gap-4 p-4">
 			<div className="flex flex-col">
 				<div className="flex w-[270px] flex-col gap-2 pb-10">
 					<div className="rounded-md bg-zinc-100/10 p-4 dark:bg-zinc-800/20">

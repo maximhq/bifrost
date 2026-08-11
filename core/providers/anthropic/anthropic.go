@@ -222,6 +222,9 @@ func completeRequest(
 
 	// Set network-config extra headers, excluding anthropic-beta (set explicitly below).
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	// Force JSON content type after extra headers so network config can't override it
 	// (matches the original per-provider completeRequest ordering).
@@ -288,7 +291,7 @@ func completeRequest(
 	// Handle error response — materialize stream body for error parsing
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
@@ -773,6 +776,9 @@ func HandleAnthropicChatCompletionStreaming(
 	req.Header.SetContentType("application/json")
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
@@ -1412,6 +1418,9 @@ func HandleAnthropicResponsesStream(
 	req.Header.SetContentType("application/json")
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, []string{AnthropicBetaHeader})
+	// OAuth passthrough: forward the caller's raw headers, whose token is the upstream
+	// credential. Skips anthropic-beta — MergeBetaHeaders below owns the final value.
+	providerUtils.SetPassthroughHeaders(ctx, req, providerName, []string{AnthropicBetaHeader})
 
 	if betaHeaders := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, extraHeaders), providerName, betaHeaderOverrides); len(betaHeaders) > 0 {
 		req.Header.Set(AnthropicBetaHeader, strings.Join(betaHeaders, ","))
@@ -1825,7 +1834,7 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
@@ -1914,7 +1923,7 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
@@ -2005,7 +2014,7 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2087,7 +2096,7 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2199,7 +2208,7 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2409,7 +2418,7 @@ func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
@@ -2499,7 +2508,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(ParseAnthropicError(resp), latency)
 	}
 
@@ -2599,7 +2608,7 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2681,7 +2690,7 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2791,7 +2800,7 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+			provider.logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 			lastErr = ParseAnthropicError(resp)
 			wait()
 			fasthttp.ReleaseRequest(req)

@@ -1,6 +1,7 @@
 import type { UserAccessProfile } from "@enterprise/lib/types/accessProfile";
 
 interface ManagedVirtualKeyNoticeProps {
+	isManagedByProfile: boolean;
 	managingProfile?: UserAccessProfile;
 }
 

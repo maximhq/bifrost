@@ -107,7 +107,7 @@ In the **Allowed Providers** accordion, add providers from the multi-select. For
 </Frame>
 
 - **Allowed Models** - Toggle **All Models** to allow every model, or pick specific models from the search-filtered list. An empty selection denies every model from that provider.
-- **Provider Budget** - Add one or more budget lines. Each line has a **max limit** and a **reset duration** (`1h`, `1d`, `1w`, `1M`, `1Y`). You can stack multiple lines with different durations (for example, a hard hourly cap plus a softer monthly cap).
+- **Provider Budget** - Add one or more budget lines. Each line has a **max limit** and a **reset duration** (`1h`, `1d`, `1w`, `1M`, `1Q`, `1Y`). You can stack multiple lines with different durations (for example, a hard hourly cap plus a softer monthly cap). A quarterly line can also carry a fiscal quarter start - see [Quarterly budgets](/features/governance/budget-and-limits#quarterly-budgets-and-fiscal-quarters).
 - **Maximum Tokens** - Per-provider token rate limit.
 - **Maximum Requests** - Per-provider request rate limit.
 
@@ -176,6 +176,28 @@ By default, propagation **preserves usage**: existing users keep their accumulat
 Access profile budgets apply uniformly to everyone assigned the template. When you need a one-off override for a specific user — without touching the template for the rest of the role — you can attach an additional per-model budget or rate limit directly to that user via [Model Limits](/features/governance/model-limits).
 
 For example, if Alice is on the Engineering profile but you want to add a separate $20/month cap on Claude Opus just for her, you can create a user-scoped model limit for Alice without changing what the Engineering profile gives everyone else. These limits stack independently alongside the profile budget; both must pass for a request to be allowed, and they are not affected by profile propagation. See [Give one user an individual per-model budget](#give-one-user-an-individual-per-model-budget) for steps for the above.
+
+To temporarily raise the profile budget itself for one user, add a **budget override** from the User Detail Sheet instead. An override is additive and leaves the base limit, current usage, and reset schedule untouched:
+
+```text
+Effective limit = Base budget + Override amount
+```
+
+Choose **for a number of reset cycles** (the current cycle counts as the first) or **until removed**. Overrides propagate cluster-wide and survive profile cloning and propagation, and setting one requires the `AccessProfiles.Update` permission. Programmatically:
+
+```bash
+# Add or replace an override
+curl -X PUT "$BIFROST_URL/api/users/$USER_ID/access-profiles/$PROFILE_ID/budgets/$BUDGET_ID/override" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 100, "mode": "cycles", "cycles": 2}'
+
+# Remove it
+curl -X DELETE "$BIFROST_URL/api/users/$USER_ID/access-profiles/$PROFILE_ID/budgets/$BUDGET_ID/override" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Use `"mode": "forever"` (omitting `cycles`) to keep the override active until it is deleted. The response returns the persisted budget plus its `effective_max_limit`. For the equivalent on a standalone virtual key, see [Budget Overrides](/features/governance/virtual-keys#budget-overrides).
 
 ### Edit, duplicate, delete
 

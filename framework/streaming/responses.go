@@ -984,10 +984,22 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 		if lastChunk.SemanticCacheDebug != nil {
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
+		if lastChunk.GuardrailDebug != nil {
+			data.GuardrailDebug = lastChunk.GuardrailDebug
+		}
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
 		}
 		data.FinishReason = lastChunk.FinishReason
+	}
+	// The response envelope carrying service_tier can precede a later usage-only
+	// event, so retain the newest non-nil tier across the stream.
+	tierChunkIndex := -1
+	for _, streamChunk := range accumulator.ResponsesStreamChunks {
+		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
+			data.ServiceTier = streamChunk.ServiceTier
+			tierChunkIndex = streamChunk.ChunkIndex
+		}
 	}
 
 	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
@@ -1054,6 +1066,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 			result.ResponsesStreamResponse.Response.Usage != nil {
 			chunk.TokenUsage = result.ResponsesStreamResponse.Response.Usage.ToBifrostLLMUsage()
 		}
+		if result.ResponsesStreamResponse.Response != nil &&
+			result.ResponsesStreamResponse.Response.ServiceTier != nil {
+			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ResponsesStreamResponse.Response.ServiceTier))
+		}
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
@@ -1061,6 +1077,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+			chunk.GuardrailDebug = result.GetExtraFields().GuardrailDebug
 		}
 	}
 

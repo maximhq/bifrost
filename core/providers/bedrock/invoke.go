@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // GetExtraParams implements the RequestBodyWithExtraParams interface
@@ -86,7 +87,7 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 		// Try standard []BedrockMessage first
 		var standardMsgs []BedrockMessage
 		if err := sonic.Unmarshal(aux.Messages, &standardMsgs); err == nil {
-			r.Messages = standardMsgs
+			r.Messages = applyMessageContentCacheControl(standardMsgs, aux.Messages)
 		} else {
 			// Try AI21 format where content is a string
 			var rawMsgs []struct {
@@ -136,6 +137,125 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for BedrockContentBlock.
+// Bedrock's InvokeModel route passes Claude's native Anthropic Messages format
+// straight through, so content blocks may arrive in Anthropic's type-discriminated
+// shape (e.g. {"type":"tool_use","id",...}) instead of Converse's field-name-
+// discriminated shape ({"toolUse":{"toolUseId",...}}). A plain struct-tag unmarshal
+// leaves every field nil in that case without erroring. This detects the Anthropic
+// shape via its "type" field (absent from every valid Converse-shaped block) and
+// normalizes it into the Converse-shaped fields below; Converse-shaped and
+// plain-text input is left byte-for-byte equivalent to the previous behavior.
+func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
+	type Alias BedrockContentBlock
+	aux := &struct {
+		Type   *string `json:"type,omitempty"`
+		Source *struct {
+			MediaType string `json:"media_type,omitempty"`
+			Data      string `json:"data,omitempty"`
+		} `json:"source,omitempty"`
+		ID        *string         `json:"id,omitempty"`
+		Name      *string         `json:"name,omitempty"`
+		Input     json.RawMessage `json:"input,omitempty"`
+		ToolUseID *string         `json:"tool_use_id,omitempty"`
+		Content   json.RawMessage `json:"content,omitempty"`
+		IsError   *bool           `json:"is_error,omitempty"`
+		Thinking  *string         `json:"thinking,omitempty"`
+		Signature *string         `json:"signature,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(b),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	if aux.Type == nil {
+		// Already Converse-shaped (or a coincidentally-matching plain-text block).
+		return nil
+	}
+
+	switch *aux.Type {
+	case "image":
+		if aux.Source == nil || aux.Source.Data == "" {
+			return nil
+		}
+		format := "jpeg"
+		switch aux.Source.MediaType {
+		case "image/png":
+			format = "png"
+		case "image/gif":
+			format = "gif"
+		case "image/webp":
+			format = "webp"
+		}
+		imgData := aux.Source.Data
+		b.Image = &BedrockImageSource{
+			Format: format,
+			Source: BedrockImageSourceData{Bytes: &imgData},
+		}
+	case "tool_use":
+		if aux.ID == nil || aux.Name == nil {
+			return nil
+		}
+		b.ToolUse = &BedrockToolUse{
+			ToolUseID: *aux.ID,
+			Name:      *aux.Name,
+			Input:     aux.Input,
+		}
+	case "tool_result":
+		if aux.ToolUseID == nil {
+			return nil
+		}
+		content, err := normalizeAnthropicToolResultContent(aux.Content)
+		if err != nil {
+			return err
+		}
+		b.ToolResult = &BedrockToolResult{
+			ToolUseID: *aux.ToolUseID,
+			Content:   content,
+		}
+		if aux.IsError != nil && *aux.IsError {
+			b.ToolResult.Status = schemas.Ptr("error")
+		}
+	case "thinking":
+		if aux.Thinking == nil {
+			return nil
+		}
+		b.ReasoningContent = &BedrockReasoningContent{
+			ReasoningText: &BedrockReasoningContentText{
+				Text:      aux.Thinking,
+				Signature: aux.Signature,
+			},
+		}
+	}
+
+	return nil
+}
+
+// normalizeAnthropicToolResultContent decodes an Anthropic-native tool_result's
+// "content" field, which per Anthropic's API is either a plain string or an
+// array of content blocks. Array elements are decoded as []BedrockContentBlock,
+// so a nested image or tool_use inside a tool_result is normalized recursively
+// via BedrockContentBlock.UnmarshalJSON above.
+func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentBlock, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	var asString string
+	if err := sonic.Unmarshal(raw, &asString); err == nil {
+		return []BedrockContentBlock{{Text: &asString}}, nil
+	}
+
+	var blocks []BedrockContentBlock
+	if err := sonic.Unmarshal(raw, &blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
 }
 
 // DetectInvokeRequestType determines the request type from raw JSON body and model ID
@@ -801,6 +921,13 @@ func (r *BedrockInvokeRequest) parseSystemMessages() []BedrockSystemMessage {
 					continue
 				}
 				result = append(result, msg)
+
+				// Anthropic-dialect blocks mark a breakpoint with a per-block "cache_control"
+				// instead of Converse's positional cachePoint entry; translate it the same
+				// way convertSystemMessages does for the Bifrost->Bedrock egress direction.
+				if cacheControl, ok := m["cache_control"].(map[string]interface{}); ok {
+					result = append(result, BedrockSystemMessage{CachePoint: newBedrockCachePoint(cacheControlTTL(cacheControl))})
+				}
 			}
 		}
 		return result
@@ -812,6 +939,60 @@ func (r *BedrockInvokeRequest) parseSystemMessages() []BedrockSystemMessage {
 	}
 
 	return nil
+}
+
+// cacheControlTTL extracts the optional "ttl" string from an Anthropic-dialect
+// cache_control map, e.g. {"type": "ephemeral", "ttl": "1h"}.
+func cacheControlTTL(cacheControl map[string]interface{}) *string {
+	if ttl, ok := cacheControl["ttl"].(string); ok {
+		return &ttl
+	}
+	return nil
+}
+
+// applyMessageContentCacheControl catches per-block "cache_control" markers that
+// BedrockContentBlock's UnmarshalJSON normalizes structurally but doesn't translate, since
+// Converse instead expects a positional cachePoint sibling entry — mirroring the same
+// translation parseSystemMessages and convertAnthropicTools already apply for system
+// messages and tools. Queries only the "cache_control" path per already-parsed block
+// directly via gjson — no intermediate parse of the raw messages JSON into a map or tree.
+func applyMessageContentCacheControl(msgs []BedrockMessage, raw json.RawMessage) []BedrockMessage {
+	for i := range msgs {
+		msgs[i].Content = injectContentBlockCachePoints(msgs[i].Content, raw, fmt.Sprintf("%d.content", i))
+	}
+	return msgs
+}
+
+// injectContentBlockCachePoints walks the already-parsed blocks by index and, for each one,
+// queries "<basePath>.<index>.cache_control" directly against the raw JSON via gjson. A block
+// carrying cache_control gets a trailing standalone CachePoint sibling appended after it.
+// Recurses into tool_result blocks first, whose own nested content array can carry an
+// independent cache_control breakpoint of its own.
+func injectContentBlockCachePoints(blocks []BedrockContentBlock, raw json.RawMessage, basePath string) []BedrockContentBlock {
+	result := make([]BedrockContentBlock, 0, len(blocks))
+	for j, block := range blocks {
+		blockPath := fmt.Sprintf("%s.%d", basePath, j)
+		if block.ToolResult != nil {
+			block.ToolResult.Content = injectContentBlockCachePoints(block.ToolResult.Content, raw, blockPath+".content")
+		}
+		result = append(result, block)
+		if cc := gjson.GetBytes(raw, blockPath+".cache_control"); cc.Exists() {
+			result = append(result, BedrockContentBlock{CachePoint: newBedrockCachePoint(cacheControlTTLFromJSON(cc))})
+		}
+	}
+	return result
+}
+
+// cacheControlTTLFromJSON extracts the optional "ttl" string from a gjson-parsed cache_control
+// object — the gjson equivalent of cacheControlTTL, which operates on the map[string]interface{}
+// shape parseSystemMessages/convertAnthropicTools already have on hand.
+func cacheControlTTLFromJSON(cacheControl gjson.Result) *string {
+	ttl := cacheControl.Get("ttl")
+	if !ttl.Exists() {
+		return nil
+	}
+	s := ttl.String()
+	return &s
 }
 
 // convertAnthropicTools converts Anthropic-format tools to Bedrock ToolConfig.
@@ -829,6 +1010,16 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			continue
 		}
 
+		// tool_search_tool_* is a server tool for Anthropic's tool-search-tool beta,
+		// not an invocable function — and classic Bedrock can't support tool search
+		// at all (AWS restricts it to InvokeModel/InvokeModelWithResponseStream,
+		// never Converse; see ProviderFeatures[schemas.Bedrock].ToolSearch in the
+		// anthropic package). Skip it here rather than building a broken,
+		// schema-less "function" tool out of it.
+		if typeStr, ok := toolMap["type"].(string); ok && strings.HasPrefix(typeStr, "tool_search_tool_") {
+			continue
+		}
+
 		spec := &BedrockToolSpec{}
 		if name, ok := toolMap["name"].(string); ok {
 			spec.Name = name
@@ -842,6 +1033,15 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
+
+		// Anthropic attaches cache_control to the tool itself; Converse instead expects a
+		// positional cachePoint element in toolConfig.tools. The downstream shared builder
+		// (BedrockConverseRequest.ToBifrostResponsesRequest) already knows how to read this —
+		// see responses.go's tool.CachePoint handling — including the Nova-family exclusion,
+		// so no extra gating is needed here.
+		if cacheControl, ok := toolMap["cache_control"].(map[string]interface{}); ok {
+			bedrockTools = append(bedrockTools, BedrockTool{CachePoint: newBedrockCachePoint(cacheControlTTL(cacheControl))})
+		}
 	}
 
 	if len(bedrockTools) == 0 {
@@ -1073,12 +1273,41 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		}
 		// Reasoning content
 		if item.ResponsesReasoning != nil {
-			for _, summary := range item.ResponsesReasoning.Summary {
-				if summary.Text != "" {
-					result.Content = append(result.Content, BedrockInvokeMessagesContentBlock{
-						Type:     "thinking",
-						Thinking: summary.Text,
-					})
+			// Bedrock-origin reasoning lives in Content.ContentBlocks (see
+			// convertSingleBedrockMessageToBifrostMessages) — ResponsesReasoning.Summary
+			// is OpenAI Responses-API shape and is always empty for Bedrock. Fall back
+			// to Summary whenever ContentBlocks yields no usable reasoning block, not
+			// merely when ContentBlocks is empty — a non-empty ContentBlocks containing
+			// no reasoning-type block would otherwise silently lose the Summary data.
+			emittedFromContentBlocks := false
+			if item.Content != nil {
+				for _, block := range item.Content.ContentBlocks {
+					// Only require Text != nil (matching convertBifrostReasoningToBedrockReasoning,
+					// the sibling egress function) — not non-empty. Bedrock can return a
+					// reasoning block with empty text but a real signature; requiring
+					// non-empty text here would drop the whole block, losing the
+					// signature a client needs to replay history on the next turn.
+					if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+						blk := BedrockInvokeMessagesContentBlock{
+							Type:     "thinking",
+							Thinking: *block.Text,
+						}
+						if sig := reasoningSignatureForBedrock(block.Signature); sig != nil {
+							blk.Signature = *sig
+						}
+						result.Content = append(result.Content, blk)
+						emittedFromContentBlocks = true
+					}
+				}
+			}
+			if !emittedFromContentBlocks {
+				for _, summary := range item.ResponsesReasoning.Summary {
+					if summary.Text != "" {
+						result.Content = append(result.Content, BedrockInvokeMessagesContentBlock{
+							Type:     "thinking",
+							Thinking: summary.Text,
+						})
+					}
 				}
 			}
 		}
@@ -1101,9 +1330,12 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 
 	// Usage
 	if resp.Usage != nil {
+		usage := buildBedrockTokenUsage(resp.Usage)
 		result.Usage = &BedrockInvokeMessagesUsage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
+			InputTokens:              usage.InputTokens,
+			OutputTokens:             usage.OutputTokens,
+			CacheReadInputTokens:     usage.CacheReadInputTokens,
+			CacheCreationInputTokens: usage.CacheWriteInputTokens,
 		}
 	}
 
@@ -1228,6 +1460,11 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 		if model == "" {
 			model = resp.ExtraFields.OriginalModelRequested
 		}
+		// message_start.usage is always emitted, even though Converse has no counts this
+		// early: Anthropic populates it on every real stream and strict clients treat it as
+		// required (@ai-sdk/anthropic's schema marks usage.input_tokens non-optional), so a
+		// missing key aborts the stream before the first token — see #5885. Zeros are the
+		// placeholder; the authoritative figures land on message_delta below.
 		msgStart := map[string]interface{}{
 			"type": "message_start",
 			"message": map[string]interface{}{
@@ -1236,6 +1473,10 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 				"role":    "assistant",
 				"content": []interface{}{},
 				"model":   model,
+				"usage": map[string]interface{}{
+					"input_tokens":  0,
+					"output_tokens": 0,
+				},
 			},
 		}
 		if resp.Response != nil {
@@ -1244,6 +1485,20 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			}
 			if resp.Response.ID != nil {
 				msgStart["message"].(map[string]interface{})["id"] = *resp.Response.ID
+			}
+			if resp.Response.Usage != nil {
+				usage := buildBedrockTokenUsage(resp.Response.Usage)
+				usageMap := map[string]interface{}{
+					"input_tokens":  usage.InputTokens,
+					"output_tokens": usage.OutputTokens,
+				}
+				if usage.CacheReadInputTokens > 0 {
+					usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+				}
+				if usage.CacheWriteInputTokens > 0 {
+					usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+				}
+				msgStart["message"].(map[string]interface{})["usage"] = usageMap
 			}
 		}
 		event = msgStart
@@ -1351,12 +1606,13 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			idx = *resp.ContentIndex
 		}
 		if resp.Signature != nil {
+			// Anthropic emits the signature as its own event type, not nested inside
+			// thinking_delta — https://platform.claude.com/docs/en/build-with-claude/thinking#streaming-thinking
 			event = map[string]interface{}{
 				"type":  "content_block_delta",
 				"index": idx,
 				"delta": map[string]interface{}{
-					"type":      "thinking_delta",
-					"thinking":  "",
+					"type":      "signature_delta",
 					"signature": *resp.Signature,
 				},
 			}
@@ -1405,9 +1661,23 @@ func toAnthropicInvokeStreamBytes(resp *schemas.BifrostResponsesStreamResponse) 
 			},
 		}
 		if resp.Response != nil && resp.Response.Usage != nil {
-			messageDelta["usage"] = map[string]interface{}{
-				"output_tokens": resp.Response.Usage.OutputTokens,
+			// Bedrock Converse only reports usage on the terminal event (unlike native
+			// Anthropic, which also puts input_tokens on message_start) — see
+			// buildBedrockTokenUsage's doc comment. This is the only stream event where
+			// Bifrost has input/cache token counts for a Bedrock-backed call, so all of
+			// them are reported here rather than split across message_start/message_delta.
+			usage := buildBedrockTokenUsage(resp.Response.Usage)
+			usageMap := map[string]interface{}{
+				"input_tokens":  usage.InputTokens,
+				"output_tokens": usage.OutputTokens,
 			}
+			if usage.CacheReadInputTokens > 0 {
+				usageMap["cache_read_input_tokens"] = usage.CacheReadInputTokens
+			}
+			if usage.CacheWriteInputTokens > 0 {
+				usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+			}
+			messageDelta["usage"] = usageMap
 		}
 
 		// Build message_stop event

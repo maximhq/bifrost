@@ -1,32 +1,34 @@
+import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { getErrorMessage, useGetCoreConfigQuery, useLazyGetCoreConfigQuery } from "@/lib/store";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+	HIDDEN_UNTIL_NAV_COOKIE,
+	METADATA_DISMISSED_KEY,
+	METADATA_SKIPPED_KEY,
+	type OnboardingStep as Step,
+	parseSkippedIds,
+	REMIND_LATER_COOKIE,
+	useOnboardingChecklist,
+} from "@/hooks/useOnboardingChecklist";
+import { getErrorMessage, useLazyGetCoreConfigQuery } from "@/lib/store";
 import { useUpdateClientMetadataMutation } from "@/lib/store/apis/configApi";
-import { useGetModelConfigsQuery, useGetVirtualKeysQuery } from "@/lib/store/apis/governanceApi";
-import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
-import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { cn } from "@/lib/utils";
-import { useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import type confetti from "canvas-confetti";
-import { ChevronRight, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ChevronRight, Minus, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { toast } from "sonner";
 
-const ONBOARDING_DISMISSED_COOKIE = "bifrost_onboarding_dismissed";
-const METADATA_DISMISSED_KEY = "onboarding_dismissed";
-const METADATA_SKIPPED_KEY = "onboarding_skipped";
+const MAX_SNOOZE_DAYS = 14;
 
-type Section = "Security" | "Provider Setup" | "Everything Else";
-
-interface Step {
-	id: string;
-	title: string;
-	route: string;
-	complete: boolean;
-	section: Section;
-}
+const addDaysFromToday = (days: number) => {
+	const date = new Date();
+	date.setHours(0, 0, 0, 0);
+	date.setDate(date.getDate() + days);
+	return date;
+};
 
 let confettiFn: typeof confetti | null = null;
 
@@ -48,116 +50,30 @@ async function fireConfettiFrom(el: HTMLElement) {
 	});
 }
 
-const parseSkippedIds = (raw: unknown) => (Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : []);
-
 export default function OnboardingWidget() {
 	const navigate = useNavigate();
-	const [closedForSession, setClosedForSession] = useState(false);
+	const pathname = useLocation({ select: (l) => l.pathname });
+	// "Remind me later" is a real snooze: it survives navigation and reloads
+	// until the chosen date, via a cookie whose own expiry is that date.
+	const [cookies, setCookie, removeCookie] = useCookies([REMIND_LATER_COOKIE, HIDDEN_UNTIL_NAV_COOKIE]);
+	const isSnoozed = !!cookies[REMIND_LATER_COOKIE];
+	const hiddenUntilNav = !!cookies[HIDDEN_UNTIL_NAV_COOKIE];
+	const [minimized, setMinimized] = useState(false);
+	const [remindPickerOpen, setRemindPickerOpen] = useState(false);
+	const [remindPickerView, setRemindPickerView] = useState<"options" | "calendar">("options");
 	// When non-null, the user picked this step and is now configuring it on
 	// another page. Backdrop undims, widget dims, and pointer-events still go
 	// to the widget so X / Hide buttons remain reachable.
 	const [activeStepId, setActiveStepId] = useState<string | null>(null);
-	const [cookies, setCookie] = useCookies([ONBOARDING_DISMISSED_COOKIE]);
-	const isDismissedForMe = !!cookies[ONBOARDING_DISMISSED_COOKIE];
-	const shouldSkipCoreConfigQuery = closedForSession || isDismissedForMe;
 	const [updateMetadata, { isLoading: writingMetadata }] = useUpdateClientMetadataMutation();
 	const [fetchCoreConfig] = useLazyGetCoreConfigQuery();
 	const pendingSkippedIdsRef = useRef<Set<string>>(new Set());
 	const skipWriteChainRef = useRef<Promise<void>>(Promise.resolve());
 	const [pendingSkippedIds, setPendingSkippedIds] = useState<string[]>([]);
 
-	const { data: bifrostConfig } = useGetCoreConfigQuery({}, { skip: shouldSkipCoreConfigQuery });
-	// A widget dismissed for everyone only needs the core-config query (to learn
-	// the dismiss flag). Once isDismissedForAll is known, skip the provider and
-	// governance queries so they don't hit the network on every page load.
-	const isDismissedForAll = bifrostConfig?.metadata?.[METADATA_DISMISSED_KEY] === true;
-	const shouldSkipChecklistQueries = shouldSkipCoreConfigQuery || isDismissedForAll;
-	const { data: allKeys } = useGetAllKeysQuery(undefined, { skip: shouldSkipChecklistQueries });
-	const { data: vksResponse } = useGetVirtualKeysQuery(undefined, {
-		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE,
+	const { steps, skippedIds, checklistReady, isDismissedForAll } = useOnboardingChecklist({
+		skip: hiddenUntilNav || isSnoozed,
 	});
-	const { data: modelConfigsResponse } = useGetModelConfigsQuery(undefined, {
-		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE,
-	});
-	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, {
-		skip: shouldSkipChecklistQueries || !IS_ENTERPRISE,
-	});
-	const checklistReady =
-		bifrostConfig !== undefined &&
-		allKeys !== undefined &&
-		(!IS_ENTERPRISE || (vksResponse !== undefined && modelConfigsResponse !== undefined && scimProviders !== undefined));
-
-	const skippedIds = useMemo<string[]>(() => {
-		return parseSkippedIds(bifrostConfig?.metadata?.[METADATA_SKIPPED_KEY]);
-	}, [bifrostConfig?.metadata]);
-
-	const authConfig = bifrostConfig?.auth_config;
-	const clientConfig = bifrostConfig?.client_config;
-	const authValueSet = (secretVar: { value?: string; ref?: string; type?: string } | undefined) => {
-		if (!secretVar) return false;
-		return !!secretVar.value || !!secretVar.ref;
-	};
-
-	const steps: Step[] = useMemo(() => {
-		// Order: 1) Security, 2) Provider Setup, 3) Everything Else.
-		// Security comes first so admins lock down access before exposing keys.
-		const common: Step[] = [
-			{
-				id: "cors",
-				title: "Restrict CORS origins",
-				route: "/workspace/config/security",
-				section: "Security",
-				complete: (clientConfig?.allowed_origins?.length ?? 0) > 0,
-			},
-			{
-				id: "dashboard-auth",
-				title: "Set up dashboard auth",
-				route: "/workspace/config/security",
-				section: "Security",
-				complete: !!authConfig?.is_enabled && authValueSet(authConfig?.admin_username) && authValueSet(authConfig?.admin_password),
-			},
-			{
-				id: "enforce-inference-auth",
-				title: "Enforce auth on inference",
-				route: "/workspace/config/security",
-				section: "Security",
-				complete: !!clientConfig?.enforce_auth_on_inference,
-			},
-			{
-				id: "provider-key",
-				title: "Add a provider key",
-				route: "/workspace/providers",
-				section: "Provider Setup",
-				complete: (allKeys?.length ?? 0) > 0,
-			},
-		];
-		const enterprise: Step[] = IS_ENTERPRISE
-			? [
-					{
-						id: "scim",
-						title: "Configure SCIM provisioning",
-						route: "/workspace/scim",
-						section: "Everything Else",
-						complete: (scimProviders?.length ?? 0) > 0,
-					},
-					{
-						id: "models",
-						title: "Configure governance model catalog",
-						route: "/workspace/model-catalog",
-						section: "Everything Else",
-						complete: (modelConfigsResponse?.total_count ?? 0) > 0,
-					},
-					{
-						id: "virtual-keys",
-						title: "Set up virtual keys / access profiles",
-						route: "/workspace/virtual-keys",
-						section: "Everything Else",
-						complete: (vksResponse?.total_count ?? 0) > 0,
-					},
-				]
-			: [];
-		return [...common, ...enterprise];
-	}, [allKeys, clientConfig, authConfig, scimProviders, modelConfigsResponse, vksResponse]);
 
 	// Map step id → checkbox element so we can launch confetti from the
 	// exact tick position when a step transitions to complete.
@@ -207,7 +123,17 @@ export default function OnboardingWidget() {
 		}
 	}, [activeStepId, steps, skippedIds, checklistReady]);
 
-	if (closedForSession || isDismissedForMe) {
+	// A route change means the user moved on to something else — resurface
+	// the widget there (unless every step is done, handled by the doneCount
+	// check below) rather than leaving it hidden for the rest of the visit.
+	useEffect(() => {
+		removeCookie(HIDDEN_UNTIL_NAV_COOKIE, { path: "/" });
+		setMinimized(false);
+		// Only the route itself should trigger a reset, not re-renders.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [pathname]);
+
+	if (hiddenUntilNav || isSnoozed) {
 		return null;
 	}
 
@@ -224,6 +150,21 @@ export default function OnboardingWidget() {
 
 	if (doneCount === steps.length) {
 		return null;
+	}
+
+	if (minimized) {
+		return (
+			<button
+				type="button"
+				aria-label="Expand setup checklist"
+				data-testid="onboarding-widget-restore"
+				onClick={() => setMinimized(false)}
+				className="bg-card text-card-foreground fixed right-6 bottom-4 z-40 flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium shadow-lg transition-transform hover:scale-105"
+			>
+				<span aria-hidden>👋</span>
+				Setup checklist ({doneCount}/{steps.length})
+			</button>
+		);
 	}
 
 	const handleStepClick = (step: Step) => {
@@ -263,10 +204,13 @@ export default function OnboardingWidget() {
 		}
 	};
 
-	const handleHideForMe = () => {
-		const expires = new Date();
-		expires.setFullYear(expires.getFullYear() + 1);
-		setCookie(ONBOARDING_DISMISSED_COOKIE, "true", { path: "/", expires });
+	const handleRemindAt = (date: Date) => {
+		// Value is the snooze date itself (not just "true") so other consumers —
+		// the sidebar's "resume setup" card — can read when it's due and align
+		// their own dismiss period to it instead of guessing a fixed duration.
+		setCookie(REMIND_LATER_COOKIE, date.toISOString(), { path: "/", expires: date });
+		setRemindPickerOpen(false);
+		setRemindPickerView("options");
 	};
 
 	const handleHideForAll = async () => {
@@ -293,7 +237,7 @@ export default function OnboardingWidget() {
 				className={cn(
 					"fixed right-6 bottom-4 z-40 w-[360px] gap-0 py-0 shadow-lg origin-bottom-right",
 					"transition-all duration-300 ease-out",
-					isWorking ? "scale-95 opacity-70" : "scale-100 opacity-100",
+					isWorking ? "scale-95 opacity-70 hover:opacity-100" : "scale-100 opacity-100",
 				)}
 			>
 				<CardHeader className="flex flex-row items-start justify-between gap-2 px-4 py-3">
@@ -318,15 +262,26 @@ export default function OnboardingWidget() {
 							</div>
 						</div>
 					</div>
-					<button
-						aria-label="Close for now"
-						type="button"
-						data-testid="onboarding-close"
-						onClick={() => setClosedForSession(true)}
-						className="text-muted-foreground hover:text-foreground -m-1 flex-shrink-0 rounded p-1"
-					>
-						<X className="size-4" />
-					</button>
+					<div className="flex flex-shrink-0 items-center gap-1">
+						<button
+							aria-label="Minimize"
+							type="button"
+							data-testid="onboarding-widget-minimize"
+							onClick={() => setMinimized(true)}
+							className="text-muted-foreground hover:text-foreground -m-1 rounded p-1"
+						>
+							<Minus className="size-4" />
+						</button>
+						<button
+							aria-label="Close for now"
+							type="button"
+							data-testid="onboarding-widget-close"
+							onClick={() => setCookie(HIDDEN_UNTIL_NAV_COOKIE, "true", { path: "/" })}
+							className="text-muted-foreground hover:text-foreground -m-1 rounded p-1"
+						>
+							<X className="size-4" />
+						</button>
+					</div>
 				</CardHeader>
 				<CardContent className="flex flex-col gap-1 border-t px-2 py-2">
 					{steps.map((step, idx) => {
@@ -401,14 +356,66 @@ export default function OnboardingWidget() {
 					})}
 				</CardContent>
 				<CardFooter className="grid grid-cols-2 divide-x border-t p-0 !pt-0 text-xs">
-					<button
-						type="button"
-						data-testid="onboarding-later"
-						onClick={handleHideForMe}
-						className="text-muted-foreground hover:text-foreground py-2 text-center"
+					<Popover
+						open={remindPickerOpen}
+						onOpenChange={(open) => {
+							setRemindPickerOpen(open);
+							if (!open) setRemindPickerView("options");
+						}}
 					>
-						I'll do it later
-					</button>
+						<PopoverTrigger asChild>
+							<button
+								type="button"
+								data-testid="onboarding-later"
+								className="text-muted-foreground hover:text-foreground py-2 text-center"
+							>
+								Remind me later
+							</button>
+						</PopoverTrigger>
+						<PopoverContent align="start" className="w-64 p-3">
+							<div className="mb-2 flex items-start gap-1.5 text-amber-600 dark:text-amber-500">
+								<AlertTriangle className="mt-0.5 size-3.5 flex-shrink-0" />
+								<p className="text-xs leading-snug">Not completing these steps keeps your Bifrost setup vulnerable.</p>
+							</div>
+							{remindPickerView === "options" ? (
+								<div className="flex flex-col gap-0.5">
+									<button
+										type="button"
+										data-testid="onboarding-remind-tomorrow"
+										onClick={() => handleRemindAt(addDaysFromToday(1))}
+										className="hover:bg-accent rounded-sm px-2 py-1.5 text-left text-sm"
+									>
+										Tomorrow
+									</button>
+									<button
+										type="button"
+										data-testid="onboarding-remind-week"
+										onClick={() => handleRemindAt(addDaysFromToday(7))}
+										className="hover:bg-accent rounded-sm px-2 py-1.5 text-left text-sm"
+									>
+										In a week
+									</button>
+									<button
+										type="button"
+										data-testid="onboarding-remind-pick-date"
+										onClick={() => setRemindPickerView("calendar")}
+										className="hover:bg-accent rounded-sm px-2 py-1.5 text-left text-sm"
+									>
+										Pick a date…
+									</button>
+								</div>
+							) : (
+								<Calendar
+									mode="single"
+									autoFocus
+									defaultMonth={addDaysFromToday(1)}
+									disabled={{ before: addDaysFromToday(1), after: addDaysFromToday(MAX_SNOOZE_DAYS) }}
+									onSelect={(date) => date && handleRemindAt(date)}
+									className="p-0"
+								/>
+							)}
+						</PopoverContent>
+					</Popover>
 					<button
 						type="button"
 						data-testid="onboarding-skip-all"
@@ -416,7 +423,7 @@ export default function OnboardingWidget() {
 						disabled={writingMetadata}
 						className="text-muted-foreground hover:text-foreground py-2 text-center disabled:opacity-50"
 					>
-						Hide for everyone
+						I accept the risk - hide for everyone
 					</button>
 				</CardFooter>
 			</Card>

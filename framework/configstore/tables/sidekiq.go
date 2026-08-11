@@ -12,7 +12,27 @@ const (
 	SidekiqStatusCompleted = "completed"
 	// SidekiqStatusFailed marks a job that errored or was reaped as stale.
 	SidekiqStatusFailed = "failed"
+	// SidekiqStatusCancelled marks a job stopped on request before it finished. It is
+	// terminal and distinct from failed: nothing went wrong, the work was simply cut
+	// short, so whatever the job had already committed stands and the row is never
+	// re-claimed. The metadata still holds the partial progress counters.
+	SidekiqStatusCancelled = "cancelled"
 )
+
+// SidekiqTerminalStatuses lists the statuses a job never leaves. A job in any of
+// these is done being worked on: it is not claimable, not reapable, and not
+// counted as in-flight.
+var SidekiqTerminalStatuses = []string{SidekiqStatusCompleted, SidekiqStatusFailed, SidekiqStatusCancelled}
+
+// IsSidekiqTerminalStatus reports whether a job status is terminal.
+func IsSidekiqTerminalStatus(status string) bool {
+	switch status {
+	case SidekiqStatusCompleted, SidekiqStatusFailed, SidekiqStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
 
 // TableSidekiqJob is a generic, durable background-job record. It is intentionally
 // not tied to any feature: callers store all job-specific data (provider, filters,

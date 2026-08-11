@@ -43,17 +43,21 @@ type ResponsesFeatureSupport struct {
 	// `additional_tools` input items; when false their tools are hoisted into
 	// the top-level tools param instead.
 	AdditionalToolsItem bool
+	// ContextManagement reports whether the backend accepts the context_management
+	// Responses body field.
+	ContextManagement bool
 }
 
 // ProviderFeatures maps each OpenAI-compatible provider to its supported
 // Responses wire extensions. Only providers with a known deviation are listed.
 var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
-	schemas.OpenAI: {AdditionalToolsItem: true},
+	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true},
 	// Bedrock Mantle validates `input` against the standard union and rejects
 	// additional_tools with "Invalid 'input': value did not match any expected
-	// variant", but accepts the same tools at the top level.
-	schemas.Bedrock:       {AdditionalToolsItem: false},
-	schemas.BedrockMantle: {AdditionalToolsItem: false},
+	// variant", but accepts the same tools at the top level. It also rejects
+	// context_management outright as an unknown parameter.
+	schemas.Bedrock:       {AdditionalToolsItem: false, ContextManagement: false},
+	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false},
 }
 
 // supportsAdditionalToolsItem reports whether provider accepts codex
@@ -405,6 +409,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
 	}
+
+	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {
+		req.ContextManagement = nil
+		delete(req.ExtraParams, "context_management")
+	}
+
 	return req
 }
 

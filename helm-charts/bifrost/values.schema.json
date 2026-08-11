@@ -1059,11 +1059,12 @@
                   "type": "object",
                   "properties": {
                     "service_name": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Name of the service to report to Datadog. Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_SERVICE)"
                     },
                     "ml_app": {
                       "type": "string",
-                      "description": "ML application name for Datadog LLM Observability grouping (defaults to service_name)"
+                      "description": "ML application name for Datadog LLM Observability grouping (defaults to service_name). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_ML_APP)"
                     },
                     "agent_addr": {
                       "type": "string",
@@ -1090,10 +1091,12 @@
                       "description": "DogStatsD server port for metrics, used with dogstatsd_host (agent mode only). Supports env.VAR_NAME prefix. Defaults to 8125; has no effect when dogstatsd_host is unset"
                     },
                     "env": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Environment tag (e.g. production, staging). Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_ENV)"
                     },
                     "version": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Service version tag. Supports env.VAR_NAME prefix for environment variable substitution (e.g. env.BIFROST_DD_VERSION)"
                     },
                     "custom_tags": {
                       "type": "object",
@@ -2346,6 +2349,11 @@
                         "type": "string",
                         "description": "JWT audience for validation (optional)"
                       },
+                      "additionalScopes": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Extra OAuth scopes requested on top of the base openid/profile/email/offline_access set. Primarily for Custom Authorization Servers where claims like 'groups' are gated behind a scope Bifrost does not request by default."
+                      },
                       "userIdField": {
                         "type": "string",
                         "description": "JWT claim field for user ID (default: 'sub')",
@@ -2362,6 +2370,7 @@
                         "default": "roles"
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2435,6 +2444,7 @@
                         "default": "roles"
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2502,6 +2512,7 @@
                         "default": "roles"
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2567,6 +2578,7 @@
                         "default": "groups"
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2642,6 +2654,7 @@
                         "default": "groups"
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2739,6 +2752,7 @@
                         "description": "JWT claim field for team IDs"
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2811,6 +2825,7 @@
                         "items": { "type": "string" }
                       },
                       "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+                      "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
                       "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
                       "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
                       "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -2887,6 +2902,12 @@
                   "enabled": {
                     "type": "boolean",
                     "description": "Whether this rule is enabled"
+                  },
+                  "target": {
+                    "type": "string",
+                    "enum": ["llm", "mcp"],
+                    "default": "llm",
+                    "description": "Execution target for the rule. Omitted values default to LLM guardrails."
                   },
                   "cel_expression": {
                     "type": "string",
@@ -3235,7 +3256,79 @@
                           "type": "string"
                         }
                       },
+                      "required": ["id"],
                       "additionalProperties": false
+                    },
+                    "blacklisted_models": {
+                      "type": "array",
+                      "description": "Models blocked for this provider even if matched by allowed_models (denylist wins). Use [\"*\"] to block all.",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "weight": {
+                      "type": ["number", "null"],
+                      "description": "Load-balancer seed weight for this provider (null opts out of weighted routing).",
+                      "default": null
+                    },
+                    "model_budgets": {
+                      "type": "array",
+                      "description": "Per-model budgets and rate limits scoped to this provider.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "model_name": {
+                            "type": "string"
+                          },
+                          "budgets": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "max_limit": {
+                                  "type": "number"
+                                },
+                                "reset_duration": {
+                                  "type": "string"
+                                },
+                                "calendar_aligned": {
+                                  "type": "boolean",
+                                  "default": false
+                                }
+                              },
+                              "required": ["id", "max_limit", "reset_duration"],
+                              "additionalProperties": false
+                            }
+                          },
+                          "rate_limit": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "token_max_limit": {
+                                "type": "integer"
+                              },
+                              "token_reset_duration": {
+                                "type": "string"
+                              },
+                              "request_max_limit": {
+                                "type": "integer"
+                              },
+                              "request_reset_duration": {
+                                "type": "string"
+                              }
+                            },
+                            "required": ["id"],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": ["model_name"],
+                        "additionalProperties": false
+                      }
                     },
                     "key_ids": {
                       "type": "array",
@@ -3992,6 +4085,11 @@
               "type": "integer",
               "minimum": 2
             },
+            "connMaxIdleTime": {
+              "type": "string",
+              "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
             "vaultStore": {
               "type": "object",
               "description": "Vault store for external secret management",
@@ -4068,10 +4166,20 @@
               "type": "integer",
               "minimum": 2
             },
+            "connMaxIdleTime": {
+              "type": "string",
+              "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
             "matviewRefreshInterval": {
               "type": "string",
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
               "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+            },
+            "matviewRefreshTimeout": {
+              "type": "string",
+              "description": "Maximum time for a single materialized view refresh pass (min 30s, max 30m). Unset derives 5x the refresh interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
             "clickhouse": {
               "type": "object",
@@ -4269,7 +4377,7 @@
             },
             "passwordCommand": {
               "type": "object",
-              "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout for each new physical connection",
+              "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout. The result is cached for cache_ttl and shared across new physical connections",
               "properties": {
                 "command": {
                   "type": "string",
@@ -4284,6 +4392,11 @@
                 },
                 "timeout": {
                   "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "cache_ttl": {
+                  "type": "string",
+                  "description": "How long a resolved password is reused across new physical connections (default 60s). Keep below the credential's validity window.",
                   "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
                 }
               },
@@ -4794,6 +4907,11 @@
           "description": "Whether this profile exports traces and metrics",
           "default": true
         },
+        "traces_enabled": {
+          "type": "boolean",
+          "description": "Enable trace export for this profile. When false, no traces are sent and collector_url is not required, giving a metrics-only profile (pair with metrics_enabled).",
+          "default": true
+        },
         "service_name": {
           "type": "string",
           "description": "Service name to be used for tracing",
@@ -4829,12 +4947,33 @@
           "minimum": 1,
           "maximum": 300
         },
+        "export_timeout": {
+          "type": "integer",
+          "description": "Maximum time in seconds for a single trace export. Bounds how long a slow or unreachable collector can hold an export goroutine; gRPC exports have no other timeout.",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Custom headers for the collector (supports env.VAR_NAME prefix)"
+          "description": "Custom headers sent to both the trace and metrics endpoints (supports env.VAR_NAME prefix)"
+        },
+        "trace_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the trace endpoint, overlaid on headers (same key wins). Supports env.VAR_NAME prefix."
+        },
+        "metrics_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the metrics endpoint, overlaid on headers (same key wins). Useful when a collector requires a per-signal header, e.g. a Databricks table name. Supports env.VAR_NAME prefix."
         },
         "tls_ca_cert": {
           "type": "string",
@@ -4874,14 +5013,28 @@
       "allOf": [
         {
           "if": {
-            "not": {
-              "properties": {
-                "enabled": {
-                  "const": false
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
                 }
               },
-              "required": ["enabled"]
-            }
+              {
+                "not": {
+                  "properties": {
+                    "traces_enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["traces_enabled"]
+                }
+              }
+            ]
           },
           "then": {
             "required": ["collector_url", "trace_type", "protocol"]
@@ -4889,15 +5042,29 @@
         },
         {
           "if": {
-            "properties": {
-              "metrics_enabled": {
-                "const": true
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
+                }
+              },
+              {
+                "properties": {
+                  "metrics_enabled": {
+                    "const": true
+                  }
+                },
+                "required": ["metrics_enabled"]
               }
-            },
-            "required": ["metrics_enabled"]
+            ]
           },
           "then": {
-            "required": ["metrics_endpoint"]
+            "required": ["metrics_endpoint", "protocol"]
           }
         }
       ],
@@ -4953,6 +5120,12 @@
           "minimum": 1,
           "maximum": 300,
           "description": "Deprecated in the profiles wrapper; configure metrics_push_interval per profile instead."
+        },
+        "export_timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "description": "Deprecated in the profiles wrapper; configure export_timeout per profile instead."
         },
         "headers": {
           "type": "object",
@@ -5620,6 +5793,12 @@
         "enforce_http2": {
           "type": "boolean",
           "description": "Force HTTP/2 on provider connections (relevant for Bedrock and other net/http-based providers)"
+        },
+        "http2_ping_interval_in_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600,
+          "description": "Seconds of stream idle before a client-initiated HTTP/2 keepalive PING (0 = disabled; only when enforce_http2)."
         },
         "beta_header_overrides": {
           "type": "object",
@@ -6344,7 +6523,7 @@
     },
     "scim_attribute_role_mappings": {
       "type": "array",
-      "description": "Ordered list of attribute -> role mappings (first match wins).",
+      "description": "List of attribute -> role mappings. When a user resolves to more than one role (from these mappings, the native roles claim, or group/attribute channels), roleResolutionStrategy decides which single role is assigned: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates this mappings list top to bottom and the first matching rule wins.",
       "items": {
         "type": "object",
         "properties": {
@@ -6364,6 +6543,12 @@
         "required": ["attribute", "value", "role"],
         "additionalProperties": false
       }
+    },
+    "scim_role_resolution_strategy": {
+      "type": "string",
+      "enum": ["highestPermissionCount", "order"],
+      "default": "highestPermissionCount",
+      "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
     },
     "scim_attribute_team_mappings": {
       "type": "array",

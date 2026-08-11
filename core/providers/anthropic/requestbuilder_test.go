@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -539,6 +540,77 @@ func TestBuildAnthropicResponsesRequestBody_TypedPath(t *testing.T) {
 		// The inbound request must not be mutated by the shallow-copy strip.
 		if len(request.Params.Tools) != 2 {
 			t.Errorf("inbound Params.Tools must be untouched, got %d tools", len(request.Params.Tools))
+		}
+	})
+}
+
+// TestBuildAnthropicResponsesRequestBody_ReasoningMaxTokensTooLow is a regression test:
+// a max_tokens too low for the resolved reasoning budget must surface as a clean 400,
+// not an opaque 500. Before the fix, GetBudgetTokensFromReasoningEffort's plain error
+// (and the equivalent explicit MinimumReasoningMaxTokens check) got wrapped by
+// NewBifrostOperationError, which never sets StatusCode, so the HTTP layer defaulted
+// to 500.
+func TestBuildAnthropicResponsesRequestBody_ReasoningMaxTokensTooLow(t *testing.T) {
+	t.Run("adaptive_effort_on_non_adaptive_model", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+
+		// claude-haiku-4-5 supports neither adaptive thinking nor native effort, so
+		// this falls to the budget_tokens-only branch, which 500'd on a too-low
+		// max_tokens before this fix.
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5",
+			Input:    makeSimpleInput("Hello, world!"),
+			Params: &schemas.ResponsesParameters{
+				MaxOutputTokens: schemas.Ptr(500),
+				Reasoning: &schemas.ResponsesParametersReasoning{
+					Effort: schemas.Ptr("high"),
+				},
+			},
+		}
+
+		_, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err == nil {
+			t.Fatal("expected an error for max_tokens below the reasoning minimum")
+		}
+		if err.StatusCode == nil || *err.StatusCode != 400 {
+			got := "nil"
+			if err.StatusCode != nil {
+				got = fmt.Sprintf("%d", *err.StatusCode)
+			}
+			t.Errorf("expected StatusCode 400, got %s", got)
+		}
+	})
+
+	t.Run("explicit_reasoning_max_tokens_below_minimum", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-haiku-4-5",
+			Input:    makeSimpleInput("Hello, world!"),
+			Params: &schemas.ResponsesParameters{
+				MaxOutputTokens: schemas.Ptr(2000),
+				Reasoning: &schemas.ResponsesParametersReasoning{
+					MaxTokens: schemas.Ptr(100), // below MinimumReasoningMaxTokens (1024)
+				},
+			},
+		}
+
+		_, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+			Provider: schemas.Anthropic,
+		})
+		if err == nil {
+			t.Fatal("expected an error for reasoning.max_tokens below the minimum")
+		}
+		if err.StatusCode == nil || *err.StatusCode != 400 {
+			got := "nil"
+			if err.StatusCode != nil {
+				got = fmt.Sprintf("%d", *err.StatusCode)
+			}
+			t.Errorf("expected StatusCode 400, got %s", got)
 		}
 	})
 }

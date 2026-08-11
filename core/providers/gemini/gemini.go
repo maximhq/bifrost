@@ -1252,7 +1252,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		parsedErr := providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 		wait()
 		fasthttp.ReleaseResponse(resp)
@@ -2415,8 +2415,7 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			return nil, bifrostErr
 		}
 		if resp.StatusCode() != fasthttp.StatusOK {
-			// log full error
-			provider.logger.Error("failed to download video: " + string(resp.Body()))
+			provider.logger.Error("failed to download video: status %d", resp.StatusCode())
 			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 				nil,
@@ -3899,6 +3898,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		isLargePayload = true
 	}
 
+	if strings.TrimSpace(request.Model) == "" {
+		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
+	}
+
+	// Determine native model name (e.g., parse any provider prefix)
+	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+
 	var (
 		jsonData   []byte
 		bifrostErr *schemas.BifrostError
@@ -3917,24 +3923,13 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		jsonData = normalizeRawGenerateContentBody(ctx, jsonData)
-
-		// Use sjson to delete fields directly from JSON bytes, preserving key ordering
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "toolConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "generationConfig")
-		jsonData, _ = providerUtils.DeleteJSONField(jsonData, "systemInstruction")
+		jsonData = wrapGeminiCountTokensBody(jsonData, model)
 	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
-
-	if strings.TrimSpace(request.Model) == "" {
-		return nil, providerUtils.NewBifrostOperationError("model is required for Gemini count tokens request", fmt.Errorf("missing model"))
-	}
-
-	// Determine native model name (e.g., parse any provider prefix)
-	_, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	path := fmt.Sprintf("/models/%s:countTokens", model)

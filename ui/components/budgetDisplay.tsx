@@ -7,7 +7,7 @@ import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride } from
 
 interface BudgetDisplayProps {
 	budgets: Budget[] | null | undefined;
-	/** When true, alignable durations (day/week/month/year) get a "(calendar)" suffix. */
+	/** When true, alignable durations (day/week/month/quarter/year) get a "(calendar)" suffix. */
 	calendarAligned?: boolean;
 }
 

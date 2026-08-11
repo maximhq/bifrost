@@ -10,10 +10,11 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// sanitizeMessagesForHuggingFace removes unsupported ChatAssistantMessage fields
-// from chat messages. HuggingFace's OpenAI-compatible API doesn't support fields
+// sanitizeMessagesForHuggingFace removes unsupported fields from chat messages.
+// HuggingFace's OpenAI-compatible API doesn't support ChatAssistantMessage fields
 // like reasoning_details, reasoning, annotations, audio, and refusal.
 // Only ToolCalls is preserved from ChatAssistantMessage.
+// Tool messages also lose is_error, which has no OpenAI-wire equivalent.
 func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.ChatMessage {
 	sanitized := make([]schemas.ChatMessage, len(messages))
 	for i, msg := range messages {
@@ -22,6 +23,13 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 			Role:            msg.Role,
 			Content:         msg.Content,
 			ChatToolMessage: msg.ChatToolMessage,
+		}
+		// The OpenAI-compatible wire has no tool-error field; strip is_error.
+		// Clone first — ChatToolMessage is shared with the caller's input.
+		if msg.ChatToolMessage != nil && msg.ChatToolMessage.IsError != nil {
+			toolMsgCopy := *msg.ChatToolMessage
+			toolMsgCopy.IsError = nil
+			sanitized[i].ChatToolMessage = &toolMsgCopy
 		}
 		// Only preserve ToolCalls from ChatAssistantMessage
 		if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {

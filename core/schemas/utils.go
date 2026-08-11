@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,7 +142,9 @@ func ParseFallbacks(fallbacks []string) []Fallback {
 
 // dataURIRegex is a precompiled regex for matching data URI format patterns.
 // It matches patterns like: data:image/png;base64,iVBORw0KGgo...
-var dataURIRegex = regexp.MustCompile(`^data:([^;]+)(;base64)?,(.+)$`)
+// Group 1 is the header (media type plus any parameters, e.g. ";charset=utf-8;base64"),
+// group 2 the payload.
+var dataURIRegex = regexp.MustCompile(`^data:([^,]*),([\s\S]+)$`)
 
 // base64Regex is a precompiled regex for matching base64 strings.
 // It matches strings containing only valid base64 characters with optional padding.
@@ -206,7 +209,7 @@ func sanitizeImageURL(rawURL string, allowedSchemes []string) (string, error) {
 	// Check if it's already a proper data URL
 	if strings.HasPrefix(rawURL, "data:") {
 		// Validate data URL format
-		if !dataURIRegex.MatchString(rawURL) {
+		if _, _, _, ok := ParseDataURL(rawURL); !ok {
 			return rawURL, fmt.Errorf("invalid data URL format")
 		}
 		return rawURL, nil
@@ -266,21 +269,41 @@ func ExtractURLTypeInfo(sanitizedURL string) URLTypeInfo {
 	return extractRegularURLInfo(sanitizedURL)
 }
 
+// ParseDataURL splits a data URL (data:[<mediatype>][;<param>=<value>][;base64],<data>)
+// into its media type, base64 flag and payload. Media type parameters such as
+// ";charset=utf-8" are dropped from mediaType and the payload is returned as-is
+// (still base64-encoded when isBase64 is true, percent-encoded otherwise).
+// ok is false when the input is not a data URL carrying both a media type and a payload.
+func ParseDataURL(dataURL string) (mediaType string, isBase64 bool, payload string, ok bool) {
+	matches := dataURIRegex.FindStringSubmatch(dataURL)
+	if len(matches) != 3 {
+		return "", false, "", false
+	}
+
+	segments := strings.Split(matches[1], ";")
+	mediaType = strings.ToLower(strings.TrimSpace(segments[0]))
+	if mediaType == "" {
+		return "", false, "", false
+	}
+	for _, segment := range segments[1:] {
+		if strings.EqualFold(strings.TrimSpace(segment), "base64") {
+			isBase64 = true
+		}
+	}
+
+	return mediaType, isBase64, matches[2], true
+}
+
 // extractDataURLInfo extracts information from a data URL
 func extractDataURLInfo(dataURL string) URLTypeInfo {
-	// Parse data URL: data:[<mediatype>][;base64],<data>
-	matches := dataURIRegex.FindStringSubmatch(dataURL)
-
-	if len(matches) != 4 {
+	mediaType, isBase64, payload, ok := ParseDataURL(dataURL)
+	if !ok {
 		return URLTypeInfo{Type: ImageContentTypeBase64}
 	}
 
-	mediaType := matches[1]
-	isBase64 := matches[2] == ";base64"
-
 	dataURLWithoutPrefix := dataURL
 	if isBase64 {
-		dataURLWithoutPrefix = dataURL[len("data:")+len(mediaType)+len(";base64,"):]
+		dataURLWithoutPrefix = payload
 	}
 
 	info := URLTypeInfo{
@@ -1853,6 +1876,76 @@ func SplitModelAndVersion(id string) (base, version string) {
 func BaseModelName(id string) string {
 	base, _ := SplitModelAndVersion(id)
 	return base
+}
+
+// CanonicalEntitySet returns id/name arrays as deduped, id-sorted, comma-joined
+// strings so the same set always yields the same pair. Empty set → "","". For
+// low-count dimensions (a user's teams), not unbounded sets.
+func CanonicalEntitySet(ids, names []string) (idsCSV, namesCSV string) {
+	if len(ids) == 0 {
+		return "", ""
+	}
+	type pair struct{ id, name string }
+	seen := make(map[string]struct{}, len(ids))
+	pairs := make([]pair, 0, len(ids))
+	for i, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		name := ""
+		if i < len(names) {
+			name = names[i]
+		}
+		pairs = append(pairs, pair{id, name})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].id < pairs[j].id })
+	idList := make([]string, len(pairs))
+	nameList := make([]string, len(pairs))
+	for i, p := range pairs {
+		idList[i] = p.id
+		nameList[i] = p.name
+	}
+	return strings.Join(idList, ","), strings.Join(nameList, ",")
+}
+
+// modelVendorPrefixRe matches a leading "<letters>." segment (us., anthropic.),
+// never a digit-dotted one, so "gpt-3.5-turbo" is left intact.
+var modelVendorPrefixRe = regexp.MustCompile(`^[a-z][a-z-]*\.`)
+
+// bedrockVersionSuffixRe matches a trailing Bedrock version suffix (":0", "-v1:0").
+var bedrockVersionSuffixRe = regexp.MustCompile(`(-v\d+)?:\d+$`)
+
+// NormalizeModelName strips Bedrock vendor/region prefixes, version suffixes, and
+// trailing date suffixes so the same model doesn't split across series. Preserves
+// digit-dotted names ("gpt-3.5-turbo") and fine-tune ids ("ft:...").
+//
+//	"us.anthropic.claude-opus-4-20250101-v1:0" → "claude-opus-4"
+//	"gpt-4o-mini-2024-07-18"                    → "gpt-4o-mini"
+func NormalizeModelName(model string) string {
+	// Trim so blank/whitespace-only collapses to "" and stray spaces are dropped.
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return model
+	}
+	// Strip vendor/region prefixes; loop to remove both (e.g. "us.anthropic.").
+	for {
+		stripped := modelVendorPrefixRe.ReplaceAllString(model, "")
+		if stripped == model || stripped == "" {
+			break
+		}
+		model = stripped
+	}
+	// Fine-tune ids: trailing segment is an id, not a version. Return as-is so
+	// BaseModelName doesn't strip a date-like custom suffix.
+	if strings.HasPrefix(model, "ft:") {
+		return model
+	}
+	model = bedrockVersionSuffixRe.ReplaceAllString(model, "")
+	return BaseModelName(model)
 }
 
 // SameBaseModel reports whether two model ids refer to the same base model,

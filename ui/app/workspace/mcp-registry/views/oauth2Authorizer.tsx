@@ -2,9 +2,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { useCompleteOAuthFlowMutation, useLazyGetOAuthConfigStatusQuery } from "@/lib/store/apis/mcpApi";
-import { cn } from "@/lib/utils";
 import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Loader2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { IconWrap, InfoBox, StepDots, UiVariant } from "./authorizerUi";
 
 interface OAuth2AuthorizerProps {
 	open: boolean;
@@ -16,90 +16,27 @@ interface OAuth2AuthorizerProps {
 	oauthConfigId: string;
 	mcpClientId: string;
 	isPerUserOauth?: boolean;
+	// A popup the caller already opened synchronously (before any await), to
+	// preserve the triggering click's transient user-activation. When
+	// present, openPopup navigates this handle instead of calling
+	// window.open itself — a fresh window.open after an awaited network
+	// round-trip risks the browser blocking it outright.
+	initialPopup?: Window | null;
+	// True when this dialog is redoing consent for an already-verified client
+	// (the "Refresh admin credential" action), as opposed to the first-time
+	// bootstrap verification. Only affects the confirm-step copy.
+	isReauthorize?: boolean;
 }
 
 type Status = "confirm" | "polling" | "blocked" | "success" | "failed";
 
-// ── Icon slot ────────────────────────────────────────────────────────────────
-
-function IconWrap({ status }: { status: Status }) {
-	const base = "flex size-9 shrink-0 items-center justify-center rounded-md";
-
-	if (status === "polling") {
-		return (
-			<div className={cn(base, "bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-300")}>
-				<Loader2 className="size-4 animate-spin" />
-			</div>
-		);
-	}
-	if (status === "success") {
-		return (
-			<div className={cn(base, "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300")}>
-				<CheckCircle2 className="size-4" />
-			</div>
-		);
-	}
-	if (status === "failed") {
-		return (
-			<div className={cn(base, "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300")}>
-				<XCircle className="size-4" />
-			</div>
-		);
-	}
-	if (status === "blocked") {
-		return (
-			<div className={cn(base, "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300")}>
-				<AlertTriangle className="size-4" />
-			</div>
-		);
-	}
-	// confirm (default)
-	return (
-		<div className={cn(base, "bg-muted text-muted-foreground")}>
-			<ShieldCheck className="size-4" />
-		</div>
-	);
-}
-
-// ── Info box ──────────────────────────────────────────────────────────────────
-
-function InfoBox({
-	variant = "default",
-	icon,
-	children,
-}: {
-	variant?: "default" | "success" | "danger" | "warning";
-	icon: React.ReactNode;
-	children: React.ReactNode;
-}) {
-	return (
-		<div
-			className={cn("flex gap-3 rounded-md border p-3.5 text-sm", {
-				"border-border bg-muted/40 text-muted-foreground": variant === "default",
-				"border-green-200/60 bg-green-50/70 text-green-800 dark:border-green-800/40 dark:bg-green-950/40 dark:text-green-200":
-					variant === "success",
-				"border-red-200/60 bg-red-50/70 text-red-800 dark:border-red-800/40 dark:bg-red-950/40 dark:text-red-200": variant === "danger",
-				"border-amber-200/60 bg-amber-50/70 text-amber-800 dark:border-amber-800/40 dark:bg-amber-950/40 dark:text-amber-200":
-					variant === "warning",
-			})}
-		>
-			<span className="mt-0.5 shrink-0">{icon}</span>
-			<div className="space-y-1 leading-relaxed">{children}</div>
-		</div>
-	);
-}
-
-// ── Step dots ─────────────────────────────────────────────────────────────────
-
-function StepDots({ active, total }: { active: number; total: number }) {
-	return (
-		<div className="flex items-center gap-1">
-			{Array.from({ length: total }).map((_, i) => (
-				<div key={i} className={cn("size-1.5 rounded-full transition-colors", i < active ? "bg-blue-500" : "bg-border")} />
-			))}
-		</div>
-	);
-}
+const STATUS_ICON: Record<Status, { variant: UiVariant; icon: React.ReactNode }> = {
+	confirm: { variant: "muted", icon: <ShieldCheck className="size-4" /> },
+	polling: { variant: "info", icon: <Loader2 className="size-4 animate-spin" /> },
+	blocked: { variant: "warning", icon: <AlertTriangle className="size-4" /> },
+	success: { variant: "success", icon: <CheckCircle2 className="size-4" /> },
+	failed: { variant: "danger", icon: <XCircle className="size-4" /> },
+};
 
 // ── Main component ────────────────────────────────────────────────────────────
 
@@ -112,13 +49,23 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	authorizeUrl,
 	oauthConfigId,
 	isPerUserOauth,
+	initialPopup,
+	isReauthorize,
 }) => {
-	const [status, setStatus] = useState<Status>(isPerUserOauth ? "confirm" : "polling");
+	// Both auth types start on the confirm step and only open the popup from a
+	// direct onClick: window.open() called from anywhere else (e.g. an effect
+	// reacting to an async fetch resolving) loses the browser's "user
+	// activation" and gets silently popup-blocked.
+	const [status, setStatus] = useState<Status>("confirm");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	const popupRef = useRef<Window | null>(null);
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 	const isCompletingRef = useRef(false);
 	const cancelledRef = useRef(false);
+	// initialPopup is only good for one use — a retry must open a fresh
+	// window rather than re-navigating a handle already spent on a prior
+	// (blocked or failed) attempt.
+	const initialPopupConsumedRef = useRef(false);
 
 	const [getOAuthStatus] = useLazyGetOAuthConfigStatusQuery();
 	const [completeOAuth] = useCompleteOAuthFlowMutation();
@@ -151,7 +98,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			if (cancelledRef.current) return;
 			const errMsg = getErrorMessage(error);
 			if ((error as any)?.status === 409 && onConflict) {
-				setStatus(isPerUserOauth ? "confirm" : "polling");
+				setStatus("confirm");
 				setErrorMessage(null);
 				isCompletingRef.current = false;
 				onConflict(errMsg);
@@ -161,7 +108,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			setErrorMessage(errMsg);
 			onError(errMsg);
 		}
-	}, [oauthConfigId, completeOAuth, onSuccess, onError, onConflict, isPerUserOauth]);
+	}, [oauthConfigId, completeOAuth, onSuccess, onError, onConflict]);
 
 	const handleOAuthFailed = useCallback(
 		(reason: string) => {
@@ -222,11 +169,23 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		const height = 700;
 		const left = window.screen.width / 2 - width / 2;
 		const top = window.screen.height / 2 - height / 2;
-		const popup = window.open(
-			authorizeUrl,
-			"oauth_popup",
-			`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
-		);
+
+		let popup: Window | null = null;
+		if (!initialPopupConsumedRef.current && initialPopup && !initialPopup.closed) {
+			initialPopupConsumedRef.current = true;
+			popup = initialPopup;
+			try {
+				popup.location.href = authorizeUrl;
+			} catch {
+				popup = null;
+			}
+		} else {
+			popup = window.open(
+				authorizeUrl,
+				"oauth_popup",
+				`width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
+			);
+		}
 
 		if (!popup || popup.closed) {
 			popupRef.current = null;
@@ -237,7 +196,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		popupRef.current = popup;
 		setStatus("polling");
 		startPolling();
-	}, [authorizeUrl, startPolling]);
+	}, [authorizeUrl, startPolling, initialPopup]);
 
 	useEffect(() => {
 		const handleMessage = (event: MessageEvent) => {
@@ -254,15 +213,6 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		return () => window.removeEventListener("message", handleMessage);
 	}, [checkOAuthStatus, handleOAuthFailed]);
 
-	// Auto-open popup for non-per-user OAuth flows.
-	const openPopupRef = useRef(openPopup);
-	useEffect(() => {
-		openPopupRef.current = openPopup;
-	});
-	useEffect(() => {
-		if (open && !isPerUserOauth) openPopupRef.current();
-	}, [open, isPerUserOauth]);
-
 	useEffect(() => {
 		return () => {
 			stopPolling();
@@ -273,8 +223,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	const handleRetry = () => {
 		setErrorMessage(null);
 		isCompletingRef.current = false;
-		setStatus(isPerUserOauth ? "confirm" : "polling");
-		if (!isPerUserOauth) openPopup();
+		setStatus("confirm");
 	};
 
 	const handleCancel = () => {
@@ -285,8 +234,10 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		onClose();
 	};
 
+	const isPerUserReauth = isPerUserOauth && isReauthorize;
+
 	const titles: Record<Status, string> = {
-		confirm: "Authorize connection",
+		confirm: isPerUserReauth ? "Refresh admin credential" : "Authorize connection",
 		polling: "Waiting for authorization",
 		blocked: "Popup blocked",
 		success: "Connection authorized",
@@ -294,7 +245,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	};
 
 	const subtitles: Record<Status, string> = {
-		confirm: "Run a one-time OAuth test before enabling this server.",
+		confirm: isPerUserReauth
+			? "Sign in again to renew Bifrost's own discovery credential."
+			: "Sign in to verify the OAuth setup and discover available tools.",
 		polling: "Complete sign-in in the popup window to continue.",
 		blocked: "Allow popups for this site, then try again.",
 		success: "OAuth authorization completed successfully.",
@@ -322,7 +275,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 				{/* Header */}
 				<DialogHeader className="border-b px-5 py-4 text-left">
 					<div className="flex items-start gap-3">
-						<IconWrap status={status} />
+						<IconWrap variant={STATUS_ICON[status].variant} icon={STATUS_ICON[status].icon} />
 						<div className="min-w-0 space-y-0.5">
 							<DialogTitle className="text-sm leading-snug font-medium">{titles[status]}</DialogTitle>
 							<DialogDescription className="text-xs leading-relaxed">{subtitles[status]}</DialogDescription>
@@ -337,10 +290,13 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 						<>
 							<InfoBox icon={<KeyRound className="size-4" />}>
 								<p>
-									We'll open <strong>{authorizationHost}</strong> to verify the OAuth setup and discover available tools.
+									We'll open <strong>{authorizationHost}</strong> to {isPerUserReauth ? "renew" : "verify"} the OAuth setup
+									{isPerUserReauth ? "" : " and discover available tools"}.
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
-									This login is for setup only. Each user authenticates individually when they connect.
+									{isPerUserReauth
+										? "This only affects Bifrost's own sign-in used for periodic tool discovery. Each end user's OAuth session is separate and unaffected; you only need to do this if the admin credential badge shows it's expired, but re-running it any time is safe."
+										: "Bifrost keeps this sign-in on file to periodically refresh the available tool list. Each user still authenticates individually when they use this server; this credential is never used for their requests."}
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">

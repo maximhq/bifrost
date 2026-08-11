@@ -235,6 +235,21 @@ MCPToolLogEntry:
       type: object
       additionalProperties: true
       description: Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)
+    plugin_logs:
+      type: string
+      description: JSON-serialized plugin log entries grouped by plugin name
+    redaction_mapping:
+      type: object
+      properties:
+        input:
+          type: object
+          additionalProperties:
+            type: string
+        output:
+          type: object
+          additionalProperties:
+            type: string
+      description: Phase-scoped placeholder-to-original-value mappings for reversible MCP redactions. Present only on log detail responses when the caller has `Logs:Reveal`.
     created_at:
       type: string
       format: date-time

@@ -5,9 +5,13 @@ import { fillSelect, waitForNetworkIdle } from '../../../core/utils/test-helpers
 
 export interface TeamConfig {
   name: string
-  /** Assign by customer id (from API). Prefer customerName for UI-only flow. */
+  /**
+   * Only `''` is honoured, meaning "clear the assignment". The picker is an
+   * async CustomerSelector that searches server-side and renders names, not
+   * ids, so assigning must go through `customerName`.
+   */
   customerId?: string
-  /** Assign by customer name in the create-team dropdown (UI-only, no API). */
+  /** Assign by customer name in the create-team customer picker (UI-only, no API). */
   customerName?: string
   budget?: { maxLimit: number; resetDuration?: string }
   rateLimit?: {
@@ -80,6 +84,30 @@ export class GovernancePage extends BasePage {
     return (await row.count()) > 0
   }
 
+  /**
+   * Drives the team sheet's CustomerSelector. Search is server-side, so the
+   * name is typed rather than picked from a preloaded option list.
+   */
+  private async selectTeamCustomer(customerName: string): Promise<void> {
+    const selector = this.page.getByTestId('team-customer-selector')
+    await selector.getByRole('combobox').click()
+
+    const search = this.page.getByPlaceholder('Search customers...')
+    await search.waitFor({ state: 'visible', timeout: 5000 })
+    await search.fill(customerName)
+
+    const option = this.page.getByRole('option').filter({ hasText: customerName }).first()
+    await option.waitFor({ state: 'visible', timeout: 5000 })
+    await option.click()
+  }
+
+  private async clearTeamCustomer(): Promise<void> {
+    const clearBtn = this.page.getByTestId('team-customer-clear-btn')
+    if (await clearBtn.isVisible().catch(() => false)) {
+      await clearBtn.click()
+    }
+  }
+
   async createTeam(config: TeamConfig): Promise<void> {
     await this.teamsCreateBtn.click()
     await expect(this.teamDialog).toBeVisible({ timeout: 5000 })
@@ -87,22 +115,10 @@ export class GovernancePage extends BasePage {
 
     await this.teamNameInput.fill(config.name)
 
-    if (config.customerId !== undefined || config.customerName !== undefined) {
-      const trigger = this.page.getByTestId('team-customer-select-trigger')
-      await trigger.click()
-      if (config.customerId === '') {
-        await this.page.getByTestId('team-customer-option-none').click()
-      } else if (config.customerName !== undefined) {
-        const customerOption = this.page
-          .locator('[data-testid^="team-customer-option-"]')
-          .filter({ hasText: config.customerName })
-        await customerOption.waitFor({ state: 'visible', timeout: 5000 })
-        await customerOption.click()
-      } else if (config.customerId !== undefined && config.customerId !== '') {
-        const customerOption = this.page.getByTestId(`team-customer-option-${config.customerId}`)
-        await customerOption.waitFor({ state: 'visible', timeout: 5000 })
-        await customerOption.click()
-      }
+    if (config.customerId === '') {
+      await this.clearTeamCustomer()
+    } else if (config.customerName !== undefined) {
+      await this.selectTeamCustomer(config.customerName)
     }
 
     if (config.budget?.maxLimit !== undefined) {
@@ -185,14 +201,10 @@ export class GovernancePage extends BasePage {
       await this.teamNameInput.fill(updates.name)
     }
 
-    if (updates.customerId !== undefined) {
-      const trigger = this.page.getByTestId('team-customer-select-trigger')
-      await trigger.click()
-      if (updates.customerId === '') {
-        await this.page.getByTestId('team-customer-option-none').click()
-      } else {
-        await this.page.getByTestId(`team-customer-option-${updates.customerId}`).click()
-      }
+    if (updates.customerId === '') {
+      await this.clearTeamCustomer()
+    } else if (updates.customerName !== undefined) {
+      await this.selectTeamCustomer(updates.customerName)
     }
 
     if (updates.budget?.maxLimit !== undefined) {

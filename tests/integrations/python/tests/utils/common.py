@@ -1861,6 +1861,7 @@ def get_api_key(integration: str) -> str:
         "cohere": "COHERE_API_KEY",
         "vertex": "VERTEX_API_KEY",
         "xai": "XAI_API_KEY",
+        "deepseek": "DEEPSEEK_API_KEY",
         "nebius": "NEBIUS_API_KEY",
         "huggingface": "HUGGING_FACE_API_KEY",
         "azure": "AZURE_API_KEY",

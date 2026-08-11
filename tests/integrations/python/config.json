@@ -113,6 +113,7 @@
           },
           "weight": 1,
           "models": ["*"],
+          "use_for_batch_api": true,
           "blacklisted_models": ["claude-sonnet-4-6", "claude-opus-4-8", "moonshotai/kimi-k2-thinking-maas", "minimaxai/minimax-m2-maas"]
         },
         {
@@ -236,11 +237,21 @@
               "gpt-4o-batch": "gpt-4o-batch",
               "whisper": "whisper",
               "text-embedding-3-small": "text-embedding-3-small",
-              "gpt-image-1": "gpt-image-1"
+              "gpt-image-1": "gpt-image-1",
+              "gpt-5.6-sol": "gpt-5.6-sol",
+              "gpt-5.6-terra": "gpt-5.6-terra",
+              "gpt-5.6-luna": "gpt-5.6-luna",
+              "gpt-5.5": "gpt-5.5",
+              "gpt-5.4": "gpt-5.4",
+              "claude-opus-5": "claude-opus-5",
+              "claude-sonnet-5": "claude-sonnet-5",
+              "claude-opus-4-8": "claude-opus-4-8",
+              "claude-haiku-4-5": "claude-haiku-4-5"
             }
           },
           "weight": 1,
-          "models": ["*"]
+          "models": ["*"],
+          "use_for_batch_api": true
         }
       ],
       "network_config": {
@@ -252,6 +263,24 @@
         {
           "name": "Bedrock API Key",
           "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "env.AWS_REGION"
+          },
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "bedrock_mantle": {
+      "keys": [
+        {
+          "name": "Bedrock Mantle API Key",
+          "bedrock_mantle_key_config": {
             "access_key": "env.AWS_ACCESS_KEY_ID",
             "secret_key": "env.AWS_SECRET_ACCESS_KEY",
             "region": "env.AWS_REGION"
@@ -295,6 +324,20 @@
           "name": "Nebius API Key",
           "value": "env.NEBIUS_API_KEY",
           "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "deepseek": {
+      "keys": [
+        {
+          "name": "DeepSeek API Key",
+          "value": "env.DEEPSEEK_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
         }
       ],
       "network_config": {
@@ -346,7 +389,9 @@
           { "provider": "cerebras", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
           { "provider": "openrouter", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
           { "provider": "azure", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
-          { "provider": "bedrock", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
+          { "provider": "bedrock", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "bedrock_mantle", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 },
+          { "provider": "deepseek", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1.0 }
         ]
       }
     ]

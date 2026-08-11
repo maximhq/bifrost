@@ -25,6 +25,8 @@ export default function OtelView({ onDelete, isDeleting }: OtelViewProps) {
 		const profiles = config.profiles.map((profile) => ({
 			...profile,
 			headers: toHeaderStringMap(profile.headers),
+			trace_headers: toHeaderStringMap(profile.trace_headers),
+			metrics_headers: toHeaderStringMap(profile.metrics_headers),
 		}));
 
 		return new Promise((resolve, reject) => {

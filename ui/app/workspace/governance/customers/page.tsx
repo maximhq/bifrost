@@ -2,7 +2,7 @@ import CustomersTable from "@/app/workspace/governance/views/customerTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
-import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery, useGetVirtualKeysQuery } from "@/lib/store";
+import { getErrorMessage, useGetCustomersQuery, useGetTeamsQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
@@ -12,7 +12,6 @@ const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export default function GovernanceCustomersPage() {
-	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
@@ -27,14 +26,6 @@ export default function GovernanceCustomersPage() {
 
 	const debouncedSearch = useDebouncedValue(urlState.search, 300);
 
-	const {
-		data: virtualKeysData,
-		error: vkError,
-		isLoading: vkLoading,
-	} = useGetVirtualKeysQuery(undefined, {
-		skip: !hasVirtualKeysAccess,
-		pollingInterval: POLLING_INTERVAL,
-	});
 	const {
 		data: teamsData,
 		error: teamsError,
@@ -65,24 +56,23 @@ export default function GovernanceCustomersPage() {
 		setUrlState({ offset: customersTotal === 0 ? 0 : Math.floor((customersTotal - 1) / PAGE_SIZE) * PAGE_SIZE });
 	}, [customersTotal, urlState.offset]);
 
-	const isLoading = vkLoading || teamsLoading || customersLoading;
+	const isLoading = teamsLoading || customersLoading;
 
 	useEffect(() => {
-		if (!vkError && !teamsError && !customersError) {
+		if (!teamsError && !customersError) {
 			shownErrorsRef.current.clear();
 			return;
 		}
-		const errorKey = `${!!vkError}-${!!teamsError}-${!!customersError}`;
+		const errorKey = `${!!teamsError}-${!!customersError}`;
 		if (shownErrorsRef.current.has(errorKey)) return;
 		shownErrorsRef.current.add(errorKey);
-		if (vkError && teamsError && customersError) {
+		if (teamsError && customersError) {
 			toast.error("Failed to load governance data.");
 		} else {
-			if (vkError) toast.error(`Failed to load virtual keys: ${getErrorMessage(vkError)}`);
 			if (teamsError) toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
 			if (customersError) toast.error(`Failed to load customers: ${getErrorMessage(customersError)}`);
 		}
-	}, [vkError, teamsError, customersError]);
+	}, [teamsError, customersError]);
 
 	if (isLoading) {
 		return <FullPageLoader />;
@@ -94,7 +84,6 @@ export default function GovernanceCustomersPage() {
 				customers={customersData?.customers || []}
 				totalCount={customersData?.total_count || 0}
 				teams={teamsData?.teams || []}
-				virtualKeys={virtualKeysData?.virtual_keys || []}
 				search={urlState.search}
 				debouncedSearch={debouncedSearch}
 				onSearchChange={(val) => setUrlState({ search: val || null, offset: 0 })}

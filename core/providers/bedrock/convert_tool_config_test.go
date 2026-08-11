@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -96,6 +97,133 @@ func TestConvertToolConfig_KeepsBedrockSupportedServerTools(t *testing.T) {
 	cfg := convertToolConfig("global.anthropic.claude-sonnet-4-6", params)
 	if cfg != nil {
 		t.Fatalf("expected nil toolConfig (server tools flow via additionalModelRequestFields, not toolSpec), got %+v", cfg)
+	}
+}
+
+// TestConvertToolConfig_NovaGetsWebSearchAndCodeExecution is a regression test:
+// the chat-completions Bedrock builder had no branch converting web_search/
+// code_execution into Bedrock's Nova system-tool shape at all — only the
+// Responses-path builder (ToBedrockResponsesRequest) did — so a Nova2 model could
+// never receive nova_grounding/nova_code_interpreter via chat completions, even
+// though ValidateChatToolsForProvider (once aligned with the Responses-path
+// validator) keeps these tool types for Bedrock via the WebSearchNova/CodeExecNova
+// carve-out.
+func TestConvertToolConfig_NovaGetsWebSearchAndCodeExecution(t *testing.T) {
+	params := &schemas.ChatParameters{
+		Tools: []schemas.ChatTool{
+			{Type: schemas.ChatToolType("web_search_20260209"), Name: "web_search"},
+			{Type: schemas.ChatToolType("code_execution_20250825"), Name: "code_execution"},
+		},
+	}
+
+	cfg := convertToolConfig("amazon.nova-2-lite-v1:0", params)
+	if cfg == nil {
+		t.Fatalf("expected a ToolConfig with Nova system tools, got nil")
+	}
+	if len(cfg.Tools) != 2 {
+		t.Fatalf("expected 2 Nova system tools, got %d: %+v", len(cfg.Tools), cfg.Tools)
+	}
+	var gotGrounding, gotCodeInterpreter bool
+	for _, tool := range cfg.Tools {
+		if tool.SystemTool == nil {
+			t.Errorf("expected a SystemTool entry, got %+v", tool)
+			continue
+		}
+		switch tool.SystemTool.Name {
+		case BedrockSystemToolNovaGrounding:
+			gotGrounding = true
+		case BedrockSystemToolNovaCodeInterpreter:
+			gotCodeInterpreter = true
+		}
+	}
+	if !gotGrounding {
+		t.Error("expected nova_grounding system tool for web_search")
+	}
+	if !gotCodeInterpreter {
+		t.Error("expected nova_code_interpreter system tool for code_execution")
+	}
+}
+
+// TestToBedrockChatCompletionRequest_NovaAliasGetsWebSearch is a regression test for a
+// CodeRabbit finding on PR #5821: convertChatParameters already computes capModel :=
+// ResolveCanonicalModel(ctx, bifrostReq.Model) for capability gating, but the call to
+// convertToolConfigFromFiltered passed the raw bifrostReq.Model instead — so a model
+// alias that resolves to Nova2 but whose raw string doesn't literally contain "nova-2"
+// would fail IsNova2Model's substring check and silently drop web_search/code_execution
+// instead of converting them to nova_grounding/nova_code_interpreter. The Responses-path
+// sibling (ToBedrockResponsesRequest) already passes capModel correctly.
+func TestToBedrockChatCompletionRequest_NovaAliasGetsWebSearch(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key: "my-nova-alias",
+		Config: &schemas.AliasConfig{
+			ModelID: "amazon.nova-2-lite-v1:0",
+		},
+	})
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "my-nova-alias", // raw string does not contain "nova-2"
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("search the web")}},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{Type: schemas.ChatToolType("web_search_20260209"), Name: "web_search"},
+			},
+		},
+	}
+
+	bedrockReq, err := ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if bedrockReq.ToolConfig == nil || len(bedrockReq.ToolConfig.Tools) != 1 {
+		t.Fatalf("expected exactly 1 tool (nova_grounding), got %+v", bedrockReq.ToolConfig)
+	}
+	tool := bedrockReq.ToolConfig.Tools[0]
+	if tool.SystemTool == nil || tool.SystemTool.Name != BedrockSystemToolNovaGrounding {
+		t.Errorf("expected nova_grounding system tool via the aliased canonical model, got %+v", tool)
+	}
+}
+
+// TestToBedrockChatCompletionRequest_DropsUnsupportedToolsSignaled is a regression
+// test: tools silently dropped from a Bedrock-bound request (because the target
+// provider/model doesn't support them) must be surfaced via
+// BifrostContextKeyDroppedUnsupportedTools so ChatCompletion/Responses can populate
+// ExtraFields.DroppedUnsupportedTools instead of leaving the caller uninformed.
+func TestToBedrockChatCompletionRequest_DropsUnsupportedToolsSignaled(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-4-6", // not Nova2
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{Type: schemas.ChatToolType("web_fetch_20260309"), Name: "web_fetch"},   // provider-level drop (WebFetch=false)
+				{Type: schemas.ChatToolType("web_search_20260209"), Name: "web_search"}, // model-level drop (non-Nova2)
+			},
+		},
+	}
+
+	_, err := ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dropped, ok := ctx.Value(schemas.BifrostContextKeyDroppedUnsupportedTools).([]string)
+	if !ok {
+		t.Fatalf("expected BifrostContextKeyDroppedUnsupportedTools to be set")
+	}
+	wantDropped := map[string]bool{"web_fetch_20260309": true, "web_search_20260209": true}
+	if len(dropped) != len(wantDropped) {
+		t.Fatalf("expected %d dropped tools, got %d: %v", len(wantDropped), len(dropped), dropped)
+	}
+	for _, d := range dropped {
+		if !wantDropped[d] {
+			t.Errorf("unexpected dropped tool %q", d)
+		}
 	}
 }
 
@@ -632,6 +760,37 @@ func TestToBedrockResponsesRequest_OmitsToolChoiceWhenNoTools(t *testing.T) {
 	}
 }
 
+// TestToBedrockResponsesRequest_WebSearchPreviewGetsNovaGrounding is a regression test
+// for a CodeRabbit finding on PR #5821: ValidateResponsesToolsForProvider keeps both
+// web_search and web_search_preview for Bedrock (case schemas.ResponsesToolTypeWebSearch,
+// schemas.ResponsesToolTypeWebSearchPreview), but the Nova-conversion loop only checked
+// tool.Type == ResponsesToolTypeWebSearch — a kept-but-unconverted web_search_preview
+// tool would silently disappear: no nova_grounding system tool on Nova2, no
+// drop-signal on non-Nova2.
+func TestToBedrockResponsesRequest_WebSearchPreviewGetsNovaGrounding(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Model: "amazon.nova-2-lite-v1:0",
+		Input: []schemas.ResponsesMessage{glmUserMessage("search the web")},
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(2000),
+			Tools:           []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearchPreview}},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	if bedrockReq.ToolConfig == nil || len(bedrockReq.ToolConfig.Tools) != 1 {
+		t.Fatalf("expected exactly 1 tool (nova_grounding), got %+v", bedrockReq.ToolConfig)
+	}
+	tool := bedrockReq.ToolConfig.Tools[0]
+	if tool.SystemTool == nil || tool.SystemTool.Name != BedrockSystemToolNovaGrounding {
+		t.Errorf("expected nova_grounding system tool for web_search_preview, got %+v", tool)
+	}
+}
+
 func glmUserMessage(text string) schemas.ResponsesMessage {
 	return schemas.ResponsesMessage{
 		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
@@ -639,5 +798,65 @@ func glmUserMessage(text string) schemas.ResponsesMessage {
 		Content: &schemas.ResponsesMessageContent{
 			ContentStr: schemas.Ptr(text),
 		},
+	}
+}
+
+// TestExtractToolsFromConversationHistory_StableOrder locks in the fix for the
+// non-deterministic tool ordering that both reconstruction paths had: toolConfig
+// was built by ranging a Go map, so identical requests produced different tool
+// orders. Tools are the first thing in Bedrock's prompt-cache prefix, so every
+// reshuffle was a guaranteed cache miss.
+func TestExtractToolsFromConversationHistory_StableOrder(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	names := []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"}
+
+	t.Run("responses", func(t *testing.T) {
+		input := []schemas.ResponsesMessage{}
+		for i, name := range names {
+			input = append(input, schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr(fmt.Sprintf("call_%d", i)),
+					Name:   schemas.Ptr(name),
+				},
+			})
+		}
+		for i := 0; i < 50; i++ {
+			_, tools := extractToolsFromResponsesConversationHistory(ctx, input, "us.anthropic.claude-opus-5")
+			assertToolOrder(t, tools, names)
+		}
+	})
+
+	t.Run("chat", func(t *testing.T) {
+		toolCalls := []schemas.ChatAssistantMessageToolCall{}
+		for i, name := range names {
+			toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr(fmt.Sprintf("call_%d", i)),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(name)},
+			})
+		}
+		input := []schemas.ChatMessage{{
+			Role:                 schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: toolCalls},
+		}}
+		for i := 0; i < 50; i++ {
+			_, tools := extractToolsFromConversationHistory(ctx, input)
+			assertToolOrder(t, tools, names)
+		}
+	})
+}
+
+func assertToolOrder(t *testing.T, tools []BedrockTool, want []string) {
+	t.Helper()
+	if len(tools) != len(want) {
+		t.Fatalf("got %d tools, want %d", len(tools), len(want))
+	}
+	for i, tool := range tools {
+		if tool.ToolSpec == nil {
+			t.Fatalf("tools[%d] has no ToolSpec", i)
+		}
+		if tool.ToolSpec.Name != want[i] {
+			t.Fatalf("tool order drifted: got %s at index %d, want %s", tool.ToolSpec.Name, i, want[i])
+		}
 	}
 }
