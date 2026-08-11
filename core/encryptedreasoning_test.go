@@ -41,6 +41,21 @@ func newEncryptedReasoningRequest(encrypted string) *schemas.BifrostRequest {
 	}
 }
 
+// newEncryptedReasoningCompactionRequest builds the /v1/responses/compact counterpart
+// of newEncryptedReasoningRequest. Codex sends its remote compaction over this shape,
+// replaying the same reasoning items the Responses turns carried.
+func newEncryptedReasoningCompactionRequest(encrypted string) *schemas.BifrostRequest {
+	responses := newEncryptedReasoningRequest(encrypted).ResponsesRequest
+	return &schemas.BifrostRequest{
+		RequestType: schemas.CompactionRequest,
+		CompactionRequest: &schemas.BifrostCompactionRequest{
+			Provider: schemas.OpenAI,
+			Model:    responses.Model,
+			Input:    responses.Input,
+		},
+	}
+}
+
 func encryptedContentError() *schemas.BifrostError {
 	return &schemas.BifrostError{
 		StatusCode: schemas.Ptr(400),
@@ -361,6 +376,42 @@ func TestStripResponsesEncryptedContent(t *testing.T) {
 
 		if stripResponsesEncryptedContent(nil, req) {
 			t.Error("expected no change to be reported")
+		}
+	})
+
+	// Codex's remote compaction replays the same reasoning items over
+	// /v1/responses/compact, which Bifrost models as its own request shape. The
+	// upstream rejects an unverifiable payload there exactly as it does on a normal
+	// turn, so the strip has to reach it or the 400 is handed straight to the client.
+	t.Run("strips a compaction request", func(t *testing.T) {
+		req := newEncryptedReasoningCompactionRequest("ciphertext")
+
+		if !stripResponsesEncryptedContent(nil, req) {
+			t.Fatal("expected the strip to report a change on a compaction request")
+		}
+		if len(req.CompactionRequest.Input) != 2 {
+			t.Fatalf("expected the summarised reasoning item to survive, got %d items", len(req.CompactionRequest.Input))
+		}
+		if req.CompactionRequest.Input[1].ResponsesReasoning.EncryptedContent != nil {
+			t.Error("expected encrypted_content to be cleared on the compaction input")
+		}
+	})
+
+	t.Run("rewrites a compaction raw body under passthrough", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		req := newEncryptedReasoningCompactionRequest("ciphertext")
+		req.CompactionRequest.RawRequestBody = []byte(`{"model":"gpt-5.6-sol","input":[` +
+			`{"type":"message","role":"user","content":"run the tests"},` +
+			`{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"planning"}],"encrypted_content":"cipher"}` +
+			`]}`)
+
+		if !stripResponsesEncryptedContent(ctx, req) {
+			t.Fatal("expected the compaction raw body to be rewritten")
+		}
+		if body := string(req.CompactionRequest.RawRequestBody); strings.Contains(body, "encrypted_content") {
+			t.Errorf("expected encrypted_content to be gone, got %s", body)
 		}
 	})
 
