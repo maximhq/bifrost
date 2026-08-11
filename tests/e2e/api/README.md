@@ -147,6 +147,42 @@ actual, with ✅ / ⚠️ recalibrated / 🐞 bug-found markers), the day's run
 results, and day notes. Append to the current day's file during a session;
 never rewrite past days.
 
+### Management API coverage
+
+`bifrost-api-management.postman_collection.json` is the OSS management surface:
+every `/api/*` route the OSS binary serves, plus `/health` and `/metrics`.
+Enterprise-only routes (RBAC, access profiles, audit logs, business units,
+circuit breaker, MCP tool groups, vault) are **not** here — they 404 on an OSS
+server and live in `bifrost-enterprise/tests/e2e/api/enterprise-management.postman_collection.json`,
+which the enterprise runner merges on top of this base.
+
+Two request styles coexist, and the difference is load-bearing:
+
+- **Lifecycle requests** create a resource, assert on it, and tear it down. The
+  collection-level script requires a 2xx, so these only belong to routes that
+  succeed deterministically against a local gateway.
+- **Requests suffixed `(Coverage Probe)`** pass on a 2xx or on any 4xx/5xx — but
+  not on a 3xx, and not on a response the gate rejects for other reasons. Use
+  that suffix only when the outcome depends on deployment shape rather than on
+  correctness — an unconfigured vault, a missing background job runner, a webhook
+  receiver that is deliberately not listening.
+
+The collection-level gate also whitelists a handful of named requests that carry
+no `(Coverage Probe)` suffix, because their non-2xx outcome is itself the
+expected result. Keep this list in sync when adding to it:
+
+- `Get … (Before Create)` requests may answer 404 — the resource does not exist yet.
+- `Add / Reconnect / Update / Delete MCP Client` may answer 404 when the client
+  was never added.
+- Plugin requests may answer 404 with a "plugin not found"/"failed to load"
+  message (the `.so` is not built), or 403 with "requires genuine admin
+  authentication" in the unauthenticated pass.
+- `Clear Cache by Cache ID / by Key (Coverage Probe)` may answer 405 — the routes
+  are not implemented yet.
+
+Resource names are stamped with `Date.now()` so the collection can run twice in
+one invocation (the runner replays it with dashboard auth enabled).
+
 ### API Management Extensions
 
 The API management runner can merge additional Postman folders maintained
