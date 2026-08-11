@@ -18,7 +18,9 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { AUTH_SCHEMES, detectAuthScheme, stripAuthScheme } from "@/lib/utils/authScheme";
 import { Eye, EyeOff, Info, Loader2 } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 
@@ -151,6 +153,18 @@ export default function HeadersForm({
 					requiredKeys.map((key) => {
 						const isRevealed = reveal[key] === true;
 						const wasSubmitted = previouslySubmittedSet.has(key);
+						// "Authorization" gets a Bearer/Basic prefix helper so callers
+						// can paste a bare token instead of typing the scheme by hand.
+						const showAuthScheme = key.trim().toLowerCase() === "authorization";
+						const authScheme = showAuthScheme ? detectAuthScheme(values[key] ?? "") : "none";
+						const displayValue = showAuthScheme && authScheme !== "none" ? stripAuthScheme(values[key] ?? "") : (values[key] ?? "");
+						const handleTokenChange = (newToken: string) => {
+							handleChange(key, showAuthScheme && authScheme !== "none" ? `${authScheme} ${newToken}` : newToken);
+						};
+						const handleSchemeChange = (newScheme: string) => {
+							const stripped = stripAuthScheme(values[key] ?? "");
+							handleChange(key, newScheme === "none" ? stripped : `${newScheme} ${stripped}`);
+						};
 						return (
 							<div key={key} className="space-y-1.5">
 								<div className="flex items-center justify-between gap-2">
@@ -159,26 +173,43 @@ export default function HeadersForm({
 									</Label>
 									{wasSubmitted && <span className="text-muted-foreground text-xs">Previously submitted</span>}
 								</div>
-								<div className="relative">
-									<Input
-										id={`${testIdPrefix}-${key}`}
-										type={isRevealed ? "text" : "password"}
-										autoComplete="off"
-										value={values[key] ?? ""}
-										onChange={(e) => handleChange(key, e.target.value)}
-										placeholder={wasSubmitted ? "•••••• (enter new value to overwrite)" : `Value for ${key}`}
-										disabled={busy}
-										data-testid={`${testIdPrefix}-input-${key}`}
-									/>
-									<button
-										type="button"
-										onClick={() => setReveal((r) => ({ ...r, [key]: !r[key] }))}
-										className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
-										aria-label={isRevealed ? "Hide value" : "Show value"}
-										data-testid={`${testIdPrefix}-reveal-${key}`}
-									>
-										{isRevealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-									</button>
+								<div className="flex items-center gap-1.5">
+									{showAuthScheme && (
+										<Select value={authScheme} onValueChange={handleSchemeChange} disabled={busy}>
+											<SelectTrigger size="sm" className="w-[92px] shrink-0 text-xs" data-testid={`${testIdPrefix}-scheme-${key}`}>
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent>
+												<SelectItem value="none">Raw</SelectItem>
+												{AUTH_SCHEMES.map((scheme) => (
+													<SelectItem key={scheme} value={scheme}>
+														{scheme}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+									)}
+									<div className="relative flex-1">
+										<Input
+											id={`${testIdPrefix}-${key}`}
+											type={isRevealed ? "text" : "password"}
+											autoComplete="off"
+											value={displayValue}
+											onChange={(e) => handleTokenChange(e.target.value)}
+											placeholder={wasSubmitted ? "•••••• (enter new value to overwrite)" : `Value for ${key}`}
+											disabled={busy}
+											data-testid={`${testIdPrefix}-input-${key}`}
+										/>
+										<button
+											type="button"
+											onClick={() => setReveal((r) => ({ ...r, [key]: !r[key] }))}
+											className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
+											aria-label={isRevealed ? "Hide value" : "Show value"}
+											data-testid={`${testIdPrefix}-reveal-${key}`}
+										>
+											{isRevealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+										</button>
+									</div>
 								</div>
 							</div>
 						);
