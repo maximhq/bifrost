@@ -242,18 +242,35 @@ describe("budgetSignature without ids", () => {
 		}));
 		expect(budgetSignature(stripped)).toBe(budgetSignature(row(4)));
 
-	it("anchors calendar-aligned validity to the current period boundary", () => {
-		expect(
-			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1M" }, 1, true)?.toISOString(),
-		).toBe("2026-09-01T00:00:00.000Z");
-		expect(
-			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-05T08:59:52.077Z", reset_duration: "1w" }, 1, true)?.toISOString(),
-		).toBe("2026-08-10T00:00:00.000Z");
-		expect(
-			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1d" }, 1, true)?.toISOString(),
-		).toBe("2026-08-04T00:00:00.000Z");
-		expect(
-			getBudgetOverrideValidUntil({ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1Y" }, 1, true)?.toISOString(),
-		).toBe("2027-01-01T00:00:00.000Z");
+		it("anchors calendar-aligned validity to the current period boundary", () => {
+			expect(
+				getBudgetOverrideValidUntil(
+					{ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1M" },
+					1,
+					true,
+				)?.toISOString(),
+			).toBe("2026-09-01T00:00:00.000Z");
+			expect(
+				getBudgetOverrideValidUntil(
+					{ max_limit: 100, last_reset: "2026-08-05T08:59:52.077Z", reset_duration: "1w" },
+					1,
+					true,
+				)?.toISOString(),
+			).toBe("2026-08-10T00:00:00.000Z");
+			expect(
+				getBudgetOverrideValidUntil(
+					{ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1d" },
+					1,
+					true,
+				)?.toISOString(),
+			).toBe("2026-08-04T00:00:00.000Z");
+			expect(
+				getBudgetOverrideValidUntil(
+					{ max_limit: 100, last_reset: "2026-08-03T08:59:52.077Z", reset_duration: "1Y" },
+					1,
+					true,
+				)?.toISOString(),
+			).toBe("2027-01-01T00:00:00.000Z");
+		});
 	});
 });
