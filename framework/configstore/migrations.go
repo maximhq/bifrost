@@ -467,6 +467,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_token_exchange_json_column"}, run: migrationAddMCPClientTokenExchangeJSONColumn},
 	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
 	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
+	{IDs: []string{"add_cost_per_request_pricing_column"}, run: migrationAddCostPerRequestPricingColumn},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -8615,6 +8616,33 @@ func migrationAddOCRPricingColumns(ctx context.Context, db *gorm.DB, logger sche
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_ocr_pricing_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddCostPerRequestPricingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_cost_per_request_pricing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableModelPricing{}, "cost_per_request"); err != nil {
+				return fmt.Errorf("failed to add column cost_per_request: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableModelPricing{}, "cost_per_request"); err != nil {
+				return fmt.Errorf("failed to drop column cost_per_request: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running add_cost_per_request_pricing_column migration: %s", err.Error())
 	}
 	return nil
 }

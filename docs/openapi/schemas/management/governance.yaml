@@ -1672,8 +1672,9 @@ PricingOverrideRequestType:
 PricingPatch:
   type: object
   description: >
-    Pricing fields to override. Only non-zero/non-null fields are applied.
-    All values are cost per unit in USD.
+    Pricing fields to override. All non-null fields are applied.
+    Usage-based values are costs per unit in USD. cost_per_request is a flat
+    fee in USD applied once per billed request.
   properties:
     # Costs - Text
     input_cost_per_token:
@@ -1911,6 +1912,10 @@ PricingPatch:
       type: number
       minimum: 0
       description: Anthropic data-residency multiplier applied when usage.inference_geo == "us".
+    cost_per_request:
+      type: number
+      minimum: 0
+      description: Flat fee added once per billed request, on top of any usage-based cost.
     # Costs - OCR
     ocr_cost_per_page:
       type: number

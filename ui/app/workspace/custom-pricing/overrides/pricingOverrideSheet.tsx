@@ -234,6 +234,12 @@ export const PRICING_FIELDS = [
 	{ key: "search_context_cost_per_query", label: "Search context / query", group: "chat", requestTypeGroups: ["chat", "rerank"] },
 	{ key: "code_interpreter_cost_per_session", label: "Code interpreter / session", group: "chat", requestTypeGroups: ["chat"] },
 	{ key: "inference_geo_us_multiplier", label: "Inference geo US multiplier", group: "chat", requestTypeGroups: ["chat"] },
+	{
+		key: "cost_per_request",
+		label: "Flat fee / request",
+		group: "chat",
+		requestTypeGroups: ["chat", "embedding", "rerank", "audio", "image", "video", "ocr"],
+	},
 	// Audio fields
 	{ key: "input_cost_per_character", label: "Input / character", group: "audio", requestTypeGroups: ["audio"] },
 	{ key: "input_cost_per_audio_token", label: "Input / audio token", group: "audio", requestTypeGroups: ["audio"] },

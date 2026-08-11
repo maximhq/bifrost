@@ -296,7 +296,7 @@ Pricing overrides are defined under `governance.pricing_overrides`. Each entry r
 
 ## Pricing fields reference
 
-Only fields with non-zero values are applied. Cost fields are per unit in USD; multiplier fields are dimensionless.
+Any field you set (including `0`) is applied as an override; omitted fields are left unchanged. Cost fields are per unit in USD, except `cost_per_request`, which is a flat fee applied once per billed request; multiplier fields are dimensionless.
 
 ### Token costs
 
@@ -401,6 +401,7 @@ Only fields with non-zero values are applied. Cost fields are per unit in USD; m
 | `search_context_cost_per_query` | Cost per web search context query |
 | `code_interpreter_cost_per_session` | Cost per code interpreter session |
 | `inference_geo_us_multiplier` | Data-residency cost multiplier applied when a request is served from a US inference region |
+| `cost_per_request` | Flat fee added once per billed request, on top of any usage-based cost |
 
 ### OCR costs
 

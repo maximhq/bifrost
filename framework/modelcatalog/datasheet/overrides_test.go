@@ -444,6 +444,33 @@ func TestPatchPricing_PartialPatchOnlyChangesSpecifiedFields(t *testing.T) {
 	assert.Equal(t, 0.7, *patched.InputCostPerImage)
 }
 
+func TestPatchPricing_CostPerRequest(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "gpt-4o",
+		Provider: "openai",
+		Mode:     "chat",
+	}
+
+	patched := patchPricing(base, Options{
+		CostPerRequest: bifrost.Ptr(0.02),
+	})
+
+	require.NotNil(t, patched.CostPerRequest)
+	assert.Equal(t, 0.02, *patched.CostPerRequest)
+}
+
+func TestPatchPricing_CostPerRequestZero(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		CostPerRequest: bifrost.Ptr(0.02),
+	}
+	patched := patchPricing(base, Options{
+		CostPerRequest: bifrost.Ptr(0.0),
+	})
+
+	require.NotNil(t, patched.CostPerRequest)
+	assert.Equal(t, 0.0, *patched.CostPerRequest)
+}
+
 func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 	s := newTestStore()
 
