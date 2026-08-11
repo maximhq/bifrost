@@ -620,7 +620,16 @@ export interface LogEntry {
 	redaction_mapping?: RedactionMapping; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
 	app?: string; // Backend-detected client app
+	// Aggregates over this log's fallback children (rows whose parent_request_id
+	// equals this log's id). Present only on roots_only list responses.
+	child_count?: number;
+	children_cost?: number;
+	children_tokens?: number;
 }
+
+// A log row as rendered by the logs table. __chainChild marks rows injected
+// below an expanded parent in the grouped view; it never comes from the API.
+export type DisplayLogEntry = LogEntry & { __chainChild?: boolean };
 
 export interface LogFilters {
 	providers?: string[];
@@ -873,10 +882,13 @@ export interface RecalculateCostProgress {
 }
 
 // RecalcJobStatus is the status of a background cost-recalculation job, returned by
-// POST /api/logs/recalculate-cost (202/409) and GET /api/logs/recalculate-cost/status.
+// POST /api/logs/recalculate-cost (202/409), POST /api/logs/recalculate-cost/cancel
+// and GET /api/logs/recalculate-cost/status.
 export interface RecalcJobStatus {
 	id?: string;
-	status: "idle" | "pending" | "running" | "completed" | "failed";
+	// "cancelled" is terminal like completed/failed: the job was stopped on request,
+	// and the counters describe the work it committed before stopping.
+	status: "idle" | "pending" | "running" | "completed" | "failed" | "cancelled";
 	total: number;
 	processed: number;
 	updated: number;

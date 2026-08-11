@@ -175,6 +175,11 @@ type ServerCallbacks interface {
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
 }
 
+// GovernanceRouteOverridesProvider lets downstream editions replace selected OSS governance route families.
+type GovernanceRouteOverridesProvider interface {
+	GetGovernanceRouteOverrides(ctx context.Context) handlers.GovernanceRouteOverrides
+}
+
 // LogRedactionMappingResolverProvider is implemented by servers that can attach reveal data to log-detail responses.
 type LogRedactionMappingResolverProvider interface {
 	// GetLogRedactionMappingResolver returns the resolver used by the logging handler.
@@ -209,6 +214,13 @@ type BifrostHTTPServer struct {
 
 	Server *fasthttp.Server
 	Router *router.Router
+
+	// ShellRewriter lets a build rewrite the pre-hydration HTML shell before it
+	// is served — the enterprise build uses it to swap in a custom logo.
+	// nil on OSS, where the embedded document is served exactly as bundled. It
+	// must be assigned before RegisterUIRoutes, which builds the UI handler
+	// from it.
+	ShellRewriter handlers.ShellRewriter
 
 	WebSocketHandler   *handlers.WebSocketHandler
 	MCPServerHandler   *handlers.MCPServerHandler
@@ -2151,7 +2163,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		featureFlagsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if governanceHandler != nil {
-		governanceHandler.RegisterRoutes(s.Router, middlewares...)
+		var overrides handlers.GovernanceRouteOverrides
+		if provider, ok := callbacks.(GovernanceRouteOverridesProvider); ok {
+			overrides = provider.GetGovernanceRouteOverrides(ctx)
+		}
+		governanceHandler.RegisterRoutesWithOverrides(s.Router, overrides, middlewares...)
 	}
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)
@@ -2192,7 +2208,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 // RegisterUIRoutes registers the UI handler with the specified router
 func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
 	// WARNING: This UI handler needs to be registered after all the other handlers
-	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
+	handlers.NewUIHandler(s.UIContent, s.ShellRewriter).RegisterRoutes(s.Router, middlewares...)
 }
 
 // GetAllRedactedKeys gets all redacted keys from the config store

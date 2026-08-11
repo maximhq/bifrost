@@ -2673,12 +2673,12 @@
                   "properties": {
                     "service_name": {
                       "type": "string",
-                      "description": "Name of the service to report to Datadog (supports env.VAR_NAME references)",
+                      "description": "Name of the service to report to Datadog (can use env. prefix)",
                       "default": "bifrost"
                     },
                     "ml_app": {
                       "type": "string",
-                      "description": "ML application name for LLM Observability grouping (defaults to service_name, supports env.VAR_NAME references)"
+                      "description": "ML application name for LLM Observability grouping (defaults to service_name, can use env. prefix)"
                     },
                     "agent_addr": {
                       "type": "string",
@@ -2710,11 +2710,11 @@
                     },
                     "env": {
                       "type": "string",
-                      "description": "Environment tag (e.g., production or staging; supports env.VAR_NAME references)"
+                      "description": "Environment tag (e.g., production, staging, can use env. prefix)"
                     },
                     "version": {
                       "type": "string",
-                      "description": "Service version tag (supports env.VAR_NAME references)"
+                      "description": "Service version tag (can use env. prefix)"
                     },
                     "custom_tags": {
                       "type": "object",

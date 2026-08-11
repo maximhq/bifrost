@@ -11,9 +11,9 @@ import { Button } from "@/components/ui/button";
 import { ComboboxSelect, type ComboboxSelectOption } from "@/components/ui/combobox";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { DEFAULT_PAGE_SIZE_OPTIONS, useTablePageSizePreference } from "@/lib/hooks/useTablePageSizePreference";
-import type { LogEntry, Pagination } from "@/lib/types/logs";
+import type { DisplayLogEntry, LogEntry, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tanstack/react-table";
+import type { ColumnOrderState, ColumnPinningState, TableMeta, VisibilityState } from "@tanstack/react-table";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -36,6 +36,8 @@ interface DataTableProps {
 	onToggleColumnVisibility: (id: string) => void;
 	onTogglePin: (id: string, side: "left" | "right") => void;
 	onReorderColumns: (entries: ColumnConfigEntry[]) => void;
+	/** Table meta consumed by the expand column in grouped view */
+	tableMeta?: TableMeta<LogEntry>;
 }
 
 export function LogsDataTable({
@@ -55,11 +57,12 @@ export function LogsDataTable({
 	onToggleColumnVisibility,
 	onTogglePin,
 	onReorderColumns,
+	tableMeta,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 	const [pageSizePref, setPageSizePref, pageSizeHydrated] = useTablePageSizePreference("bifrost.logs.pageSize");
 
-	const fixedColumnIds = useMemo(() => new Set<string>(["actions"]), []);
+	const fixedColumnIds = useMemo(() => new Set<string>(["expand", "actions"]), []);
 
 	// Measure actual header cell widths for pixel-perfect pin offsets
 	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
@@ -147,6 +150,7 @@ export function LogsDataTable({
 			columnPinning,
 		},
 		onSortingChange: handleSortingChange,
+		meta: tableMeta,
 	});
 
 	const hasItems = totalItems > 0;
@@ -224,7 +228,14 @@ export function LogsDataTable({
 						</TableRow>
 						{table.getRowModel().rows.length ? (
 							table.getRowModel().rows.map((row) => (
-								<TableRow key={row.id} className="hover:bg-muted/50 group/table-row min-h-[40px] cursor-pointer">
+								<TableRow
+									key={row.id}
+									className={cn(
+										"hover:bg-muted/50 group/table-row min-h-[40px] cursor-pointer",
+										(row.original as DisplayLogEntry).__chainChild &&
+										"bg-muted/30 border-l-2 border-l-zinc-300 dark:border-l-zinc-600",
+									)}
+								>
 									{row.getVisibleCells().map((cell) => {
 										const pinned = cell.column.getIsPinned();
 										const size = cell.column.getSize();

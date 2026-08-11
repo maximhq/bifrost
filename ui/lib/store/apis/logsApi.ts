@@ -127,15 +127,18 @@ export const logsApi = baseApi.injectEndpoints({
 			{
 				filters: LogFilters;
 				pagination: Pagination;
+				/** Grouped view: hide fallback-child rows so each chain lists as its root */
+				rootsOnly?: boolean;
 			}
 		>({
-			query: ({ filters, pagination }) => ({
+			query: ({ filters, pagination, rootsOnly }) => ({
 				url: "/logs",
 				params: {
 					limit: pagination.limit,
 					offset: pagination.offset,
 					sort_by: pagination.sort_by,
 					order: pagination.order,
+					...(rootsOnly ? { roots_only: "true" } : {}),
 					...buildFilterParams(filters),
 				},
 			}),
@@ -428,6 +431,21 @@ export const logsApi = baseApi.injectEndpoints({
 			}),
 		}),
 
+		// Stop a running cost recalculation. Costs already recomputed are kept; the job
+		// simply stops walking the window. Omit id to cancel whichever job is in flight.
+		// Resolves with the job's post-cancel status so the caller can settle its UI.
+		cancelRecalculateCostJob: builder.mutation<RecalcJobStatus, { id?: string } | void>({
+			query: (arg) => ({
+				url: "/logs/recalculate-cost/cancel",
+				method: "POST",
+				params: arg?.id ? { id: arg.id } : {},
+			}),
+			// A cancelled job still committed costs for every row it got through, so
+			// every Logs-tagged query (stats, histograms, filter data) is stale — same
+			// as for the start mutation above.
+			invalidatesTags: ["Logs"],
+		}),
+
 		// Get a single log entry by ID (includes raw_request and raw_response)
 		getLogById: builder.query<LogEntry, string>({
 			query: (id) => `/logs/${encodeURIComponent(id)}`,
@@ -474,6 +492,7 @@ export const {
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
 	useGetRecalculateCostStatusQuery,
+	useCancelRecalculateCostJobMutation,
 	useLazyGetLogByIdQuery,
 	useGetLogByIdQuery,
 } = logsApi;

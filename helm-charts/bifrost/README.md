@@ -12,6 +12,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 - Added `traces_enabled` to OTEL config (single-profile and `profiles[*]`). When `false`, no traces are exported and `collector_url` is not required, giving a metrics-only profile. Renders into `traces_enabled`; defaults to `true`.
 - Added `trace_headers` and `metrics_headers` to OTEL config (single-profile and `profiles[*]`). Common `headers` still go to both endpoints; these are overlaid on top for the trace / metrics endpoint respectively (same key wins), e.g. a Databricks table name required only on metrics. Render into `trace_headers` / `metrics_headers`.
+- - Documented `env.VAR_NAME` support for the Datadog plugin service-identity fields `bifrost.plugins.datadog.config.service_name`, `ml_app`, `env`, and `version` (render into `service_name`, `ml_app`, `env`, `version`). Values already passed through; this only adds the env-reference guidance to `values.yaml` comments and `values.schema.json` descriptions.
 
 
 ### 2.1.34
