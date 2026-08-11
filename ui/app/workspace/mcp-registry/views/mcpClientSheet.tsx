@@ -1219,6 +1219,11 @@ export default function MCPClientSheet({
 																			)
 																		}
 																		audienceLabel="Audience"
+																		audienceTooltip={
+																			isEntraIdp
+																				? "The resource app's Application (client) ID at your identity provider - a bare GUID, not the api://... Application ID URI shown under Expose an API. Exchanged tokens are scoped to it."
+																				: "The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
+																		}
 																		audienceTestId="mcpclient-input-token-exchange-audience"
 																		useIdPCredentialsLabel={idpConfigured ? "Exchange application" : undefined}
 																		useIdPCredentialsDedicatedDescription="A separate identity-provider app, scoped only to this server. Recommended for most providers."
@@ -1245,7 +1250,9 @@ export default function MCPClientSheet({
 																			value: tokenExchangeScopesRaw,
 																			onChange: setTokenExchangeScopesRaw,
 																			label: "Scopes",
-																			helperText: "Comma-separated.",
+																			helperText: isEntraIdp
+																				? "Comma-separated. offline_access alone combines with the audience's default access - any other scope replaces it entirely instead of adding to it."
+																				: "Comma-separated.",
 																			testId: "mcpclient-input-token-exchange-scopes",
 																			disabled: !hasUpdateMCPClientAccess,
 																		}}
