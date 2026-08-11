@@ -140,25 +140,44 @@ func (provider *RequestyProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 
 // Responses performs a responses request to the Requesty API.
 func (provider *RequestyProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
-		return nil, err
-	}
-
-	response := chatResponse.ToBifrostResponsesResponse()
-
-	return response, nil
+	return openai.HandleOpenAIResponsesRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
 }
 
 // ResponsesStream performs a streaming responses request to the Requesty API.
 func (provider *RequestyProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return provider.ChatCompletionStream(
+	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		provider.logger,
 		postHookSpanFinalizer,
-		key,
-		request.ToChatRequest(),
 	)
 }
 
