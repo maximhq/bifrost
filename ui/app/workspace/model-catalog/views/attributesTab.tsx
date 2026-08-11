@@ -8,10 +8,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
+import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
+import { useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
 import OverriddenPrice from "./overriddenPrice";
@@ -48,11 +50,23 @@ interface AttributesTabProps {
 export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 	const hasUpdateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 
-	const [search, setSearch] = useState("");
-	const [providerFilter, setProviderFilter] = useState<string>("");
+	// Search and provider filter live in the URL so they survive a refresh and
+	// can be shared as a link. Replace rather than push so typing doesn't fill
+	// browser history with one entry per keystroke.
+	const [urlState, setUrlState] = useQueryStates(
+		{
+			search: parseAsSafeString.withDefault(""),
+			provider: parseAsSafeString.withDefault(""),
+		},
+		{ history: "replace" },
+	);
+	const { search, provider: providerFilter } = urlState;
+
 	const [offset, setOffset] = useState(0);
 	const [editing, setEditing] = useState<ModelDetails | null>(null);
 
+	// Only the query is debounced — the input itself stays URL-driven so it
+	// echoes keystrokes immediately.
 	const debouncedSearch = useDebouncedValue(search, 300);
 
 	// Reset to first page when filters change
@@ -88,9 +102,9 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 	useEffect(() => {
 		if (!providerFilter || !providersData) return;
 		if (!providersData.some((p) => p.name === providerFilter)) {
-			setProviderFilter("");
+			setUrlState({ provider: null });
 		}
-	}, [providersData, providerFilter]);
+	}, [providersData, providerFilter, setUrlState]);
 
 	if (isLoading && !data) return <FullPageLoader />;
 
@@ -124,12 +138,12 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 							aria-label="Search models"
 							placeholder="Search by model name..."
 							value={search}
-							onChange={(e) => setSearch(e.target.value)}
+							onChange={(e) => setUrlState({ search: e.target.value || null })}
 							className="pl-9"
 							data-testid="model-catalog-search-input"
 						/>
 					</div>
-					<Select value={providerFilter || "__all__"} onValueChange={(v) => setProviderFilter(v === "__all__" ? "" : v)}>
+					<Select value={providerFilter || "__all__"} onValueChange={(v) => setUrlState({ provider: v === "__all__" ? null : v })}>
 						<SelectTrigger className="w-[200px]" data-testid="model-catalog-provider-filter">
 							<SelectValue placeholder="All providers" />
 						</SelectTrigger>
