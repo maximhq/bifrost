@@ -43410,7 +43410,7 @@
                               "required": [
                                 "token_exchange"
                               ],
-                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience`, plus either `client_id` or\n`use_idp_credentials: true` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
                             }
                           },
                           {
@@ -43554,8 +43554,7 @@
                           "token_exchange": {
                             "type": "object",
                             "required": [
-                              "audience",
-                              "client_id"
+                              "audience"
                             ],
                             "properties": {
                               "audience": {
@@ -43563,14 +43562,18 @@
                                 "minLength": 1,
                                 "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
                               },
+                              "use_idp_credentials": {
+                                "type": "boolean",
+                                "description": "When true, performs the exchange as the SSO login application itself\ninstead of client_id/client_secret below, which are then ignored.\nSome providers require this: Microsoft Entra ID's on-behalf-of grant\nonly accepts an assertion audienced to the exchanging application,\nand the SSO login flow always requests a token self-audienced to the\nSSO application, so a separate exchange application can never\nreceive a usable one.\n"
+                              },
                               "client_id": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — typically a dedicated registration carrying the\ntoken-exchange (or on-behalf-of) grant, separate from the SSO login\napplication. Required unless use_idp_credentials is true. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
                               },
                               "client_secret": {
                                 "type": "string",
-                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                                "description": "Secret for the exchange application; omit for public clients. Ignored\nwhen use_idp_credentials is true. Supports env.VAR_NAME and\nvault.path references. Redacted in API responses.\n"
                               },
                               "scopes": {
                                 "type": "array",
@@ -43584,6 +43587,29 @@
                                 "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
                               }
                             },
+                            "allOf": [
+                              {
+                                "if": {
+                                  "not": {
+                                    "properties": {
+                                      "use_idp_credentials": {
+                                        "const": true
+                                      }
+                                    },
+                                    "required": [
+                                      "use_idp_credentials"
+                                    ]
+                                  }
+                                },
+                                "then": {
+                                  "required": [
+                                    "client_id"
+                                  ],
+                                  "description": "client_id is required unless use_idp_credentials is true, in which\ncase the exchange uses the SSO login application's own credentials\ninstead.\n"
+                                }
+                              }
+                            ],
+                            "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
                           },
                           "user_headers": {
@@ -43667,7 +43693,7 @@
                               "required": [
                                 "token_exchange"
                               ],
-                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience`, plus either `client_id` or\n`use_idp_credentials: true` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
                             }
                           },
                           {
@@ -43811,8 +43837,7 @@
                           "token_exchange": {
                             "type": "object",
                             "required": [
-                              "audience",
-                              "client_id"
+                              "audience"
                             ],
                             "properties": {
                               "audience": {
@@ -43820,14 +43845,18 @@
                                 "minLength": 1,
                                 "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
                               },
+                              "use_idp_credentials": {
+                                "type": "boolean",
+                                "description": "When true, performs the exchange as the SSO login application itself\ninstead of client_id/client_secret below, which are then ignored.\nSome providers require this: Microsoft Entra ID's on-behalf-of grant\nonly accepts an assertion audienced to the exchanging application,\nand the SSO login flow always requests a token self-audienced to the\nSSO application, so a separate exchange application can never\nreceive a usable one.\n"
+                              },
                               "client_id": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — typically a dedicated registration carrying the\ntoken-exchange (or on-behalf-of) grant, separate from the SSO login\napplication. Required unless use_idp_credentials is true. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
                               },
                               "client_secret": {
                                 "type": "string",
-                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                                "description": "Secret for the exchange application; omit for public clients. Ignored\nwhen use_idp_credentials is true. Supports env.VAR_NAME and\nvault.path references. Redacted in API responses.\n"
                               },
                               "scopes": {
                                 "type": "array",
@@ -43841,6 +43870,29 @@
                                 "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
                               }
                             },
+                            "allOf": [
+                              {
+                                "if": {
+                                  "not": {
+                                    "properties": {
+                                      "use_idp_credentials": {
+                                        "const": true
+                                      }
+                                    },
+                                    "required": [
+                                      "use_idp_credentials"
+                                    ]
+                                  }
+                                },
+                                "then": {
+                                  "required": [
+                                    "client_id"
+                                  ],
+                                  "description": "client_id is required unless use_idp_credentials is true, in which\ncase the exchange uses the SSO login application's own credentials\ninstead.\n"
+                                }
+                              }
+                            ],
+                            "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
                           },
                           "user_headers": {
@@ -43924,7 +43976,7 @@
                               "required": [
                                 "token_exchange"
                               ],
-                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience` and `client_id` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
+                              "description": "When `auth_type` is `token_exchange`, `token_exchange` must declare\nat least `audience`, plus either `client_id` or\n`use_idp_credentials: true` — there is nothing to scope the\nexchange to, or exchange with, otherwise.\n"
                             }
                           },
                           {
@@ -44068,8 +44120,7 @@
                           "token_exchange": {
                             "type": "object",
                             "required": [
-                              "audience",
-                              "client_id"
+                              "audience"
                             ],
                             "properties": {
                               "audience": {
@@ -44077,14 +44128,18 @@
                                 "minLength": 1,
                                 "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
                               },
+                              "use_idp_credentials": {
+                                "type": "boolean",
+                                "description": "When true, performs the exchange as the SSO login application itself\ninstead of client_id/client_secret below, which are then ignored.\nSome providers require this: Microsoft Entra ID's on-behalf-of grant\nonly accepts an assertion audienced to the exchanging application,\nand the SSO login flow always requests a token self-audienced to the\nSSO application, so a separate exchange application can never\nreceive a usable one.\n"
+                              },
                               "client_id": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — typically a dedicated registration carrying the\ntoken-exchange (or on-behalf-of) grant, separate from the SSO login\napplication. Required unless use_idp_credentials is true. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
                               },
                               "client_secret": {
                                 "type": "string",
-                                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                                "description": "Secret for the exchange application; omit for public clients. Ignored\nwhen use_idp_credentials is true. Supports env.VAR_NAME and\nvault.path references. Redacted in API responses.\n"
                               },
                               "scopes": {
                                 "type": "array",
@@ -44098,6 +44153,29 @@
                                 "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
                               }
                             },
+                            "allOf": [
+                              {
+                                "if": {
+                                  "not": {
+                                    "properties": {
+                                      "use_idp_credentials": {
+                                        "const": true
+                                      }
+                                    },
+                                    "required": [
+                                      "use_idp_credentials"
+                                    ]
+                                  }
+                                },
+                                "then": {
+                                  "required": [
+                                    "client_id"
+                                  ],
+                                  "description": "client_id is required unless use_idp_credentials is true, in which\ncase the exchange uses the SSO login application's own credentials\ninstead.\n"
+                                }
+                              }
+                            ],
+                            "additionalProperties": false,
                             "description": "Required when creating a client with auth_type \"token_exchange\".\nVerification runs automatically as the signed-in admin (see\nPOST /api/mcp/client/{id}/verify-exchange) — there is no sample-token\nfield on this request.\n"
                           },
                           "user_headers": {
@@ -44316,8 +44394,7 @@
                   "token_exchange": {
                     "type": "object",
                     "required": [
-                      "audience",
-                      "client_id"
+                      "audience"
                     ],
                     "properties": {
                       "audience": {
@@ -44325,14 +44402,18 @@
                         "minLength": 1,
                         "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
                       },
+                      "use_idp_credentials": {
+                        "type": "boolean",
+                        "description": "When true, performs the exchange as the SSO login application itself\ninstead of client_id/client_secret below, which are then ignored.\nSome providers require this: Microsoft Entra ID's on-behalf-of grant\nonly accepts an assertion audienced to the exchanging application,\nand the SSO login flow always requests a token self-audienced to the\nSSO application, so a separate exchange application can never\nreceive a usable one.\n"
+                      },
                       "client_id": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                        "description": "The identity-provider application authorized to perform exchanges for\nthis audience — typically a dedicated registration carrying the\ntoken-exchange (or on-behalf-of) grant, separate from the SSO login\napplication. Required unless use_idp_credentials is true. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
                       },
                       "client_secret": {
                         "type": "string",
-                        "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                        "description": "Secret for the exchange application; omit for public clients. Ignored\nwhen use_idp_credentials is true. Supports env.VAR_NAME and\nvault.path references. Redacted in API responses.\n"
                       },
                       "scopes": {
                         "type": "array",
@@ -44346,6 +44427,29 @@
                         "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
                       }
                     },
+                    "allOf": [
+                      {
+                        "if": {
+                          "not": {
+                            "properties": {
+                              "use_idp_credentials": {
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "use_idp_credentials"
+                            ]
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "client_id"
+                          ],
+                          "description": "client_id is required unless use_idp_credentials is true, in which\ncase the exchange uses the SSO login application's own credentials\ninstead.\n"
+                        }
+                      }
+                    ],
+                    "additionalProperties": false,
                     "description": "For `token_exchange` clients only. Omitted preserves the stored\nconfiguration. A redacted `client_id` / `client_secret` round-tripped\nfrom a prior GET is resolved back to the stored value rather than\noverwriting it; any other change re-scopes future exchanges and\ninvalidates cached exchanged tokens for this client.\n"
                   },
                   "disabled": {
@@ -93026,8 +93130,7 @@
           "token_exchange": {
             "type": "object",
             "required": [
-              "audience",
-              "client_id"
+              "audience"
             ],
             "properties": {
               "audience": {
@@ -93035,14 +93138,18 @@
                 "minLength": 1,
                 "description": "Resource identifier this server is scoped to at the identity provider (e.g. \"api://jira-mcp\")"
               },
+              "use_idp_credentials": {
+                "type": "boolean",
+                "description": "When true, performs the exchange as the SSO login application itself\ninstead of client_id/client_secret below, which are then ignored.\nSome providers require this: Microsoft Entra ID's on-behalf-of grant\nonly accepts an assertion audienced to the exchanging application,\nand the SSO login flow always requests a token self-audienced to the\nSSO application, so a separate exchange application can never\nreceive a usable one.\n"
+              },
               "client_id": {
                 "type": "string",
                 "minLength": 1,
-                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — a dedicated registration carrying the token-exchange\n(or on-behalf-of) grant, not the SSO login application. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                "description": "The identity-provider application authorized to perform exchanges for\nthis audience — typically a dedicated registration carrying the\ntoken-exchange (or on-behalf-of) grant, separate from the SSO login\napplication. Required unless use_idp_credentials is true. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
               },
               "client_secret": {
                 "type": "string",
-                "description": "Secret for the exchange application; omit for public clients. Supports\nenv.VAR_NAME and vault.path references. Redacted in API responses.\n"
+                "description": "Secret for the exchange application; omit for public clients. Ignored\nwhen use_idp_credentials is true. Supports env.VAR_NAME and\nvault.path references. Redacted in API responses.\n"
               },
               "scopes": {
                 "type": "array",
@@ -93056,6 +93163,29 @@
                 "description": "Overrides the Authorization Server the exchange request is sent to.\nOnly needed when the audience is registered on a different\nAuthorization Server than the one used for SSO login (e.g. Okta's\nper-resource Custom Authorization Servers). Leave unset to use the\ndeployment's SSO login issuer, which is correct for providers with a\nsingle tenant-wide token endpoint (Entra, Auth0).\n"
               }
             },
+            "allOf": [
+              {
+                "if": {
+                  "not": {
+                    "properties": {
+                      "use_idp_credentials": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "use_idp_credentials"
+                    ]
+                  }
+                },
+                "then": {
+                  "required": [
+                    "client_id"
+                  ],
+                  "description": "client_id is required unless use_idp_credentials is true, in which\ncase the exchange uses the SSO login application's own credentials\ninstead.\n"
+                }
+              }
+            ],
+            "additionalProperties": false,
             "description": "For `token_exchange` clients only. `client_id` and `client_secret` are\nredacted in this response.\n"
           },
           "disabled": {
