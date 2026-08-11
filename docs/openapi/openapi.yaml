@@ -1043,16 +1043,6 @@ paths:
     $ref: "./paths/management/governancelegacy.yaml#/legacy-users-access-profile-virtual-keys"
   /api/users/{user_id}/access-profiles/virtual-keys/{vk_id}:
     $ref: "./paths/management/governancelegacy.yaml#/legacy-users-access-profile-virtual-key-by-id"
-  /api/audit-logs:
-    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs"
-  /api/audit-logs/filterdata:
-    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-filterdata"
-  /api/audit-logs/export:
-    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-export"
-  /api/audit-logs/{id}:
-    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-by-id"
-  /api/audit-logs/{id}/verify:
-    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-verify"
   # Audit Logs
   /api/governance/audit-logs:
     $ref: "./paths/management/auditlogs.yaml#/audit-logs"
@@ -1064,6 +1054,18 @@ paths:
     $ref: "./paths/management/auditlogs.yaml#/audit-logs-by-id"
   /api/governance/audit-logs/{id}/verify:
     $ref: "./paths/management/auditlogs.yaml#/audit-logs-verify"
+
+  # Audit Logs (legacy aliases)
+  /api/audit-logs:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs"
+  /api/audit-logs/filterdata:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-filterdata"
+  /api/audit-logs/export:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-export"
+  /api/audit-logs/{id}:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-by-id"
+  /api/audit-logs/{id}/verify:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-verify"
 
   # MCP Tool Groups
   /api/mcp/tool-groups:
