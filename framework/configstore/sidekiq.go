@@ -220,6 +220,58 @@ func (s *RDBConfigStore) FailSidekiqJob(ctx context.Context, id, runnerID, metad
 	return nil
 }
 
+// CancelSidekiqJob flips a pending or running job to cancelled and stamps
+// completed_at. It is the durable half of a cancel request: the row immediately
+// stops looking in-flight, so it is never re-claimed by the dispatcher and never
+// reaped as stale, even if the node currently running it dies before noticing.
+//
+// It is deliberately NOT fenced on runner_id — a cancel arrives on whichever node
+// serves the HTTP request, which is often not the one that owns the job. The
+// owning node learns about it either from its in-process cancel func (same node)
+// or from its next heartbeat, which is fenced on status = running and so returns
+// "ownership lost" once the status has moved to cancelled.
+//
+// Returns true when this call was the one that cancelled the job; false means the
+// job did not exist or had already reached a terminal status, which callers treat
+// as a no-op rather than an error.
+func (s *RDBConfigStore) CancelSidekiqJob(ctx context.Context, id string) (bool, error) {
+	now := time.Now()
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableSidekiqJob{}).
+		Where("id = ? AND status IN ?", id, []string{tables.SidekiqStatusPending, tables.SidekiqStatusRunning}).
+		Updates(map[string]any{
+			"status":       tables.SidekiqStatusCancelled,
+			"updated_at":   now,
+			"completed_at": now,
+		})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}
+
+// FinalizeCancelledSidekiqJob stores the last metadata snapshot of a job that was
+// cancelled mid-run, so the partial progress counters (and the handler's summary
+// message) survive for the UI. It only touches the metadata: the status,
+// completed_at and last_error written by CancelSidekiqJob stand.
+//
+// Fenced on runner_id and status = cancelled so a stale runner cannot resurrect
+// counters onto a job that has since been re-claimed, and so a handler unwinding
+// for some other reason cannot mistakenly write here. A zero-row result is not an
+// error — the job may have been finalized already.
+func (s *RDBConfigStore) FinalizeCancelledSidekiqJob(ctx context.Context, id, runnerID, metadata string) error {
+	if metadata == "" {
+		return nil
+	}
+	return s.DB().WithContext(ctx).
+		Model(&tables.TableSidekiqJob{}).
+		Where("id = ? AND runner_id = ? AND status = ?", id, runnerID, tables.SidekiqStatusCancelled).
+		Updates(map[string]any{
+			"metadata":   metadata,
+			"updated_at": time.Now(),
+		}).Error
+}
+
 // ListClaimableSidekiqJobs returns jobs eligible to be picked up: those that are
 // pending (never started), or running but stale (heartbeat older than staleBefore,
 // i.e. their owner is presumed dead). Ordered oldest-first. The dispatcher scans
