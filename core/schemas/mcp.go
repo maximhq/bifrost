@@ -350,13 +350,31 @@ type MCPTokenExchangeConfig struct {
 	// exchanged token to (e.g. "api://jira-mcp"). Required.
 	Audience string `json:"audience"`
 	// ClientID identifies the identity-provider application authorized to
-	// perform exchanges for this audience — a dedicated registration
-	// carrying the token-exchange (or on-behalf-of) grant, not the SSO
-	// login application. Required. Supports env./vault. references.
-	ClientID *SecretVar `json:"client_id"`
+	// perform exchanges for this audience — typically a dedicated
+	// registration carrying the token-exchange (or on-behalf-of) grant,
+	// separate from the SSO login application. Required unless
+	// UseIdPCredentials is true, in which case this is ignored and the
+	// SSO login application's own client ID is used instead. Supports
+	// env./vault. references.
+	ClientID *SecretVar `json:"client_id,omitempty"`
 	// ClientSecret authenticates the exchange application. Omit for public
-	// clients. Supports env./vault. references.
+	// clients. Ignored when UseIdPCredentials is true. Supports env./vault.
+	// references.
 	ClientSecret *SecretVar `json:"client_secret,omitempty"`
+	// UseIdPCredentials, when true, performs the exchange using the SSO
+	// login application's own client ID/secret (from the deployment's
+	// configured identity-provider integration) instead of ClientID /
+	// ClientSecret above, which are then ignored. Some providers require
+	// this: Microsoft Entra ID's on-behalf-of grant only accepts an
+	// assertion whose audience matches the exchanging application, and
+	// Bifrost's own SSO login flow always requests a token self-audienced
+	// to the SSO application — so for Entra, a dedicated exchange
+	// application distinct from the SSO login app can never receive a
+	// usable assertion, and this must be true. Providers with a
+	// standalone RFC 8693 token-exchange grant (Okta, Auth0, Keycloak)
+	// aren't bound by that constraint; a dedicated exchange application is
+	// recommended for those, so this defaults to false.
+	UseIdPCredentials bool `json:"use_idp_credentials,omitempty"`
 	// Scopes optionally narrows the exchanged token; joined into the OAuth
 	// scope parameter. Include "offline_access" (where the identity provider
 	// supports it) to have exchanges issue refresh tokens, which keeps the
@@ -389,6 +407,9 @@ func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) b
 		return true
 	}
 	if c.Audience != resolved.Audience {
+		return true
+	}
+	if c.UseIdPCredentials != resolved.UseIdPCredentials {
 		return true
 	}
 	if !c.ClientID.Equals(resolved.ClientID) {

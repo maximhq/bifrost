@@ -79,7 +79,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	// exchange-client requirement is enforced server-side at create; a missing
 	// tokenExchangeClient section surfaces as the create error.
 	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE });
-	const idpConfigured = !!scimProviders?.some((p) => (p as { enabled?: boolean }).enabled);
+	const enabledScimProvider = scimProviders?.find((p) => (p as { enabled?: boolean }).enabled) as { name?: string } | undefined;
+	const idpConfigured = !!enabledScimProvider;
+	// Entra's on-behalf-of grant requires use_idp_credentials — see the
+	// Prerequisites warning in docs/mcp/auth/token-exchange.mdx for why a
+	// dedicated exchange app structurally can't work there.
+	const isEntraIdp = ["entra", "azure", "azuread"].includes((enabledScimProvider?.name ?? "").toLowerCase());
 
 	const [isLoading, setIsLoading] = useState(false);
 	const [argsText, setArgsText] = useState("");
@@ -246,10 +251,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 				setError("token_exchange.audience", { message: "Audience is required for token exchange" });
 				hasErrors = true;
 			}
-			const exchangeClientId = data.token_exchange?.client_id;
-			if (!exchangeClientId?.value && !exchangeClientId?.ref) {
-				setError("token_exchange.client_id", { message: "Exchange client ID is required for token exchange" });
-				hasErrors = true;
+			if (!data.token_exchange?.use_idp_credentials) {
+				const exchangeClientId = data.token_exchange?.client_id;
+				if (!exchangeClientId?.value && !exchangeClientId?.ref) {
+					setError("token_exchange.client_id", { message: "Exchange client ID is required for token exchange" });
+					hasErrors = true;
+				}
 			}
 		}
 
@@ -316,9 +323,11 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 				authType === "token_exchange"
 					? {
 						audience: data.token_exchange?.audience?.trim() || "",
-						client_id: data.token_exchange?.client_id ?? emptySecretVar,
-						client_secret:
-							data.token_exchange?.client_secret?.value ||
+						use_idp_credentials: data.token_exchange?.use_idp_credentials || undefined,
+						client_id: data.token_exchange?.use_idp_credentials ? undefined : (data.token_exchange?.client_id ?? emptySecretVar),
+						client_secret: data.token_exchange?.use_idp_credentials
+							? undefined
+							: data.token_exchange?.client_secret?.value ||
 								data.token_exchange?.client_secret?.type === "env" ||
 								data.token_exchange?.client_secret?.type === "vault"
 								? data.token_exchange.client_secret
@@ -370,15 +379,15 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 	return (
 		<Sheet open={open} onOpenChange={(open) => !open && !oauthFlow && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden px-0">
-				<SheetHeader className="flex flex-col items-start px-7 pt-8">
+			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4">
+				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-8">
 					<SheetTitle>New MCP Server</SheetTitle>
 					<SheetDescription>Configure and connect to a new Model Context Protocol server.</SheetDescription>
 				</SheetHeader>
 
 				<Form {...methods}>
-					<form onSubmit={handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
-						<div className="flex-1 space-y-4 overflow-y-auto px-8 pb-8">
+					<form onSubmit={handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
+						<div className="grow space-y-4 px-8">
 							{/* Name */}
 							<FormField
 								control={control}
@@ -756,14 +765,6 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 												<div className="space-y-4 rounded-md border p-4">
 													<TokenExchangeFields
 														control={control}
-														beforeFields={
-															<p className="text-muted-foreground text-sm">
-																Each caller's identity token is exchanged automatically for a short-lived token scoped to this server -
-																users never authenticate to it individually, and this server connects per tool call instead of holding a
-																shared connection. Callers must authenticate with their identity provider token; virtual keys alone cannot
-																use this server. Creating the server verifies it as you, using your own signed-in identity.
-															</p>
-														}
 														gridClassName="space-y-4"
 														audienceLabel={
 															<>
@@ -773,12 +774,21 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 														audienceTooltip="The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
 														audienceTestId="token-exchange-audience-input"
 														onAudienceTouched={() => clearErrors("token_exchange.audience")}
+														useIdPCredentialsLabel="Exchange application"
+														useIdPCredentialsDedicatedDescription="A separate identity-provider app, scoped only to this server. Recommended for most providers."
+														useIdPCredentialsIdPDescription="Reuses your SSO login application's own credentials. Required for Microsoft Entra ID."
+														useIdPCredentialsRequiredWarning={
+															isEntraIdp && "Your identity provider is Microsoft Entra ID - a dedicated application might not work, switch to Identity provider application."
+														}
+														onUseIdPCredentialsToggled={(checked) => {
+															if (checked) clearErrors(["token_exchange.client_id", "token_exchange.client_secret"]);
+														}}
 														clientIdLabel={
 															<>
 																Exchange Client ID <span className="text-destructive">*</span>
 															</>
 														}
-														clientIdTooltip="A dedicated application at your identity provider with the token exchange (or on-behalf-of) grant enabled and permission to request this audience. Not the SSO login application."
+														clientIdTooltip="A dedicated application at your identity provider with the token exchange (or on-behalf-of) grant enabled and permission to request this audience. Not the SSO login application. Ignored when using identity provider credentials above."
 														clientIdPlaceholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
 														clientIdTestId="token-exchange-client-id-input"
 														onClientIdTouched={() => clearErrors("token_exchange.client_id")}
