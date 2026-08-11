@@ -428,6 +428,12 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		input.imageSize = result.ImageGenerationStreamResponse.Size
 		input.imageQuality = result.ImageGenerationStreamResponse.Quality
 
+	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Usage != nil && result.VideoGenerationResponse.Usage.Cost != nil:
+		// Provider-reported cost (e.g. Runware's per-task cost). Routed through input.usage.Cost so
+		// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
+		// etc.) that have no datasheet rate.
+		input.usage = &schemas.BifrostLLMUsage{Cost: result.VideoGenerationResponse.Usage.Cost}
+
 	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Seconds != nil:
 		seconds, err := strconv.Atoi(*result.VideoGenerationResponse.Seconds)
 		if err == nil {
@@ -1642,6 +1648,14 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 	}
 	if su.ContainerIdentifier != "" {
 		input.containerIdentifierString = su.ContainerIdentifier
+	}
+	// Provider-reported exact cost wins over datasheet estimation; attach it to usage.Cost so the
+	// provider-cost short-circuit in computeCost returns it verbatim.
+	if su.Cost != nil {
+		if input.usage == nil {
+			input.usage = &schemas.BifrostLLMUsage{}
+		}
+		input.usage.Cost = su.Cost
 	}
 	return input
 }

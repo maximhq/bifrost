@@ -88,6 +88,36 @@ func TestToBifrostVideoGenerationResponse_3DOutputs(t *testing.T) {
 	}
 }
 
+// Runware reports the exact task cost; it is surfaced as the provider-reported cost so pricing
+// uses it verbatim (critical for 3D, which has no datasheet rate).
+func TestToBifrostVideoGenerationResponse_Cost(t *testing.T) {
+	result := &RunwareResult{
+		TaskType: taskType3DInference,
+		TaskUUID: "cost-1",
+		Cost:     0.5,
+		Outputs: &RunwareOutputs{
+			Files: []RunwareOutputFile{{URL: "https://im.runware.ai/x/model.glb"}},
+		},
+	}
+
+	resp := ToBifrostVideoGenerationResponse(result)
+	if resp.Usage == nil || resp.Usage.Cost == nil {
+		t.Fatalf("expected provider-reported cost to be surfaced, got Usage=%+v", resp.Usage)
+	}
+	if resp.Usage.Cost.TotalCost != 0.5 {
+		t.Fatalf("cost = %v, want 0.5", resp.Usage.Cost.TotalCost)
+	}
+}
+
+// When Runware does not report a cost (includeCost omitted), no Usage is attached so pricing can
+// fall through to the datasheet.
+func TestToBifrostVideoGenerationResponse_NoCost(t *testing.T) {
+	resp := ToBifrostVideoGenerationResponse(&RunwareResult{TaskUUID: "no-cost", Status: "success", VideoURL: "https://x/clip"})
+	if resp.Usage != nil {
+		t.Fatalf("expected no Usage when cost is absent, got %+v", resp.Usage)
+	}
+}
+
 // The existing video path must be unchanged: a videoURL maps to a video/mp4 asset.
 func TestToBifrostVideoGenerationResponse_VideoUnchanged(t *testing.T) {
 	result := &RunwareResult{

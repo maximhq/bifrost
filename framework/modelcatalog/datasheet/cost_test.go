@@ -1901,6 +1901,43 @@ func TestCalculateCost_ImageProviderComputedCostPassthrough(t *testing.T) {
 	assert.Equal(t, 0.02, s.CalculateCost(resp, nil))
 }
 
+// Video/3D provider-reported cost hangs off VideoGenerationResponse.Usage.Cost. Runware reports an
+// exact per-task price (and 3D has no datasheet rate), so the reported cost must win verbatim.
+func TestCalculateCost_VideoProviderComputedCostPassthrough(t *testing.T) {
+	s := testStoreWithPricing(nil) // no datasheet entry on purpose — 3D has no rate
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Usage: &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
+// Passthrough responses can carry a provider-reported cost (e.g. Runware's per-task cost read from
+// the raw body). It must win verbatim, with no datasheet entry required.
+func TestCalculateCost_PassthroughProviderComputedCost(t *testing.T) {
+	s := testStoreWithPricing(nil) // no datasheet entry — raw passthrough has no rate
+
+	resp := &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:     schemas.PassthroughRequest,
+				PassthroughPath: "/v1",
+				RoutingInfo:     routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
 // Without a reported cost the datasheet still prices the request.
 func TestCalculateCost_ImageFallsBackToDatasheetWithoutReportedCost(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{

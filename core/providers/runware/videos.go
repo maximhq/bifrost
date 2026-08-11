@@ -137,5 +137,12 @@ func ToBifrostVideoGenerationResponse(result *RunwareResult) *schemas.BifrostVid
 		response.Status = schemas.VideoStatusCompleted
 	}
 
+	// Runware reports the exact task cost (only when the request sets includeCost). Surface it as
+	// the provider-reported cost so pricing uses it verbatim — important for task types like 3D
+	// that have no datasheet rate.
+	if result.Cost > 0 {
+		response.Usage = &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: result.Cost}}
+	}
+
 	return response
 }

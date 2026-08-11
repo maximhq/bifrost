@@ -622,6 +622,13 @@ func (provider *RunwareProvider) Passthrough(
 		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err)
 	}
 
+	// Runware echoes its own per-task cost in the body (when includeCost is set); surface it so
+	// passthrough calls are billed at the provider-reported price instead of $0.
+	var passthroughUsage *schemas.BifrostPassthroughUsage
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
+		passthroughUsage = ExtractRunwarePassthroughUsage(body)
+	}
+
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
 		StatusCode: resp.StatusCode(),
 		Headers:    headers,
@@ -631,6 +638,7 @@ func (provider *RunwareProvider) Passthrough(
 			ProviderResponseHeaders: headers,
 			PassthroughPath:         req.Path,
 		},
+		PassthroughUsage: passthroughUsage,
 	}
 
 	return bifrostResponse, nil
