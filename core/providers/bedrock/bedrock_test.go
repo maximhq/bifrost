@@ -4654,8 +4654,17 @@ func TestDocumentFormatFromDataURL(t *testing.T) {
 
 			assert.Equal(t, tt.expectedFormat, doc.Format,
 				"data URL media type %q should map to format %q", tt.mediaType, tt.expectedFormat)
-			require.NotNil(t, doc.Source.Bytes)
-			assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+			if strings.HasPrefix(strings.ToLower(tt.mediaType), "text/") {
+				decoded, err := base64.StdEncoding.DecodeString(payload)
+				require.NoError(t, err)
+				require.NotNil(t, doc.Source.Text)
+				assert.Equal(t, string(decoded), *doc.Source.Text)
+				assert.Nil(t, doc.Source.Bytes, "document source is a union")
+			} else {
+				require.NotNil(t, doc.Source.Bytes)
+				assert.Equal(t, payload, *doc.Source.Bytes, "data URL prefix must be stripped from source.bytes")
+				assert.Nil(t, doc.Source.Text, "document source is a union")
+			}
 		})
 	}
 }
@@ -4704,8 +4713,7 @@ func TestDocumentInlineTextDataURL(t *testing.T) {
 	assert.Equal(t, "txt", doc.Format)
 	require.NotNil(t, doc.Source.Text)
 	assert.Equal(t, "Hello World", *doc.Source.Text)
-	require.NotNil(t, doc.Source.Bytes)
-	assert.Equal(t, base64.StdEncoding.EncodeToString([]byte("Hello World")), *doc.Source.Bytes)
+	assert.Nil(t, doc.Source.Bytes, "document source is a union and text documents must not also carry bytes")
 
 	// A binary format never gets source.text, matching the raw file_data path.
 	doc = chatFileBlockDocument(t, &schemas.ChatInputFile{
