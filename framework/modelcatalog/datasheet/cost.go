@@ -318,28 +318,36 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 	}
 
 	// Route to the appropriate compute function
+	var cost float64
 	switch requestType {
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.RealtimeRequest, schemas.CompactionRequest:
-		return computeTextCost(pricing, input.usage, input.tier)
+		cost = computeTextCost(pricing, input.usage, input.tier)
 	case schemas.EmbeddingRequest:
-		return computeEmbeddingCost(pricing, input.usage, input.tier)
+		cost = computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
-		return computeRerankCost(pricing, input.usage, input.tier)
+		cost = computeRerankCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
-		return computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
+		cost = computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
-		return computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
+		cost = computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
-		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
+		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
-		return computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
+		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.tier)
 	case schemas.OCRRequest:
-		return computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
+		cost = computeOCRCost(pricing, input.ocrProcessedPages, input.ocrIsAnnotated)
 	case schemas.ContainerCreateRequest:
-		return computeContainerCreationCost(pricing)
+		cost = computeContainerCreationCost(pricing)
 	default:
 		return 0
 	}
+
+	// Flat per-request surcharge, billed once on top of usage-based cost
+	// whenever the resolved pricing row carries one.
+	if pricing.CostPerRequest != nil {
+		cost += *pricing.CostPerRequest
+	}
+	return cost
 }
 
 // ---------------------------------------------------------------------------

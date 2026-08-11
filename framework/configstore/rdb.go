@@ -2800,6 +2800,7 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - Other
 	"search_context_cost_per_query",
 	"code_interpreter_cost_per_session",
+	"cost_per_request",
 	// Costs - OCR
 	"ocr_cost_per_page",
 	"annotation_cost_per_page",
