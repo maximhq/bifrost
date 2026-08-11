@@ -77,6 +77,8 @@ Each MCP client scopes its own exchange: which resource (`audience`) the token i
 <Tabs>
 <Tab title="Web UI">
 
+![MCP client form with Auth Type set to Token Exchange, showing the audience, exchange client ID/secret, and scopes fields](/media/ui-mcp-token-exchange-setup.png)
+
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
 3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
@@ -88,8 +90,6 @@ Each MCP client scopes its own exchange: which resource (`audience`) the token i
    - **Authorization Server URL** (optional) — only needed if this audience is registered on a different Authorization Server than your SSO login uses; see [Okta: per-resource Authorization Server](#okta-per-resource-authorization-server)
    - **Scopes** (optional, comma-separated) — include `offline_access` where your identity provider supports it
 6. Click **Create** — Bifrost exchanges *your own* signed-in identity token, verifies the upstream connection, and discovers tools
-
-![MCP client form with Auth Type set to Token Exchange, showing the audience, exchange client ID/secret, and scopes fields](/media/ui-mcp-token-exchange-setup.png)
 
 </Tab>
 
