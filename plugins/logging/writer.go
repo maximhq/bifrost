@@ -578,6 +578,8 @@ func applyOutputFieldsToEntry(
 	latency int64,
 	upstreamLatency, overheadLatency *int64,
 	attemptTrail []schemas.KeyAttemptRecord,
+	providerRequestID, providerRequestIDHeader string,
+	providerRequestIDTrail []schemas.ProviderRequestIDRecord,
 ) {
 	entry.SelectedKeyID = selectedKeyID
 	entry.SelectedKeyName = selectedKeyName
@@ -636,6 +638,11 @@ func applyOutputFieldsToEntry(
 	setUpstreamOverheadLatency(entry, upstreamLatency, overheadLatency)
 	if len(attemptTrail) > 0 {
 		entry.AttemptTrailParsed = attemptTrail
+	}
+	entry.ProviderRequestID = providerRequestID
+	entry.ProviderRequestIDHeader = providerRequestIDHeader
+	if len(providerRequestIDTrail) > 0 {
+		entry.ProviderRequestIDTrailParsed = providerRequestIDTrail
 	}
 }
 
