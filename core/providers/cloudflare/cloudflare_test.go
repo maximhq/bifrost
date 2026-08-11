@@ -204,14 +204,20 @@ func TestCloudflareListModels(t *testing.T) {
 		t.Fatalf("expected two models, got %d", len(response.Data))
 	}
 	var llamaModel *schemas.Model
+	var bgeModel *schemas.Model
 	for i := range response.Data {
 		if response.Data[i].ID == "cloudflare/@cf/meta/llama-3.1-8b-instruct" {
 			llamaModel = &response.Data[i]
-			break
+		}
+		if response.Data[i].ID == "cloudflare/@cf/baai/bge-large-en-v1.5" {
+			bgeModel = &response.Data[i]
 		}
 	}
 	if llamaModel == nil {
 		t.Fatal("expected converted Llama model")
+	}
+	if bgeModel == nil {
+		t.Fatal("expected converted BGE model from page two")
 	}
 	if llamaModel.ContextLength == nil || *llamaModel.ContextLength != 7968 {
 		t.Errorf("expected context length 7968, got %v", llamaModel.ContextLength)
