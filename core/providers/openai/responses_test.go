@@ -379,8 +379,14 @@ func TestToOpenAIResponsesRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "high",
 		},
 		{
-			name:     "maps minimal to low",
+			name:     "preserves minimal for gpt-5.4",
 			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "minimal",
+		},
+		{
+			name:     "maps minimal to low for o3",
+			model:    "o3",
 			effort:   "minimal",
 			expected: "low",
 		},

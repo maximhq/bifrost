@@ -134,6 +134,9 @@ func isOpenAIReasoningModel(model string) bool {
 func normalizeOpenAIReasoningEffort(model string, effort string) string {
 	switch effort {
 	case "minimal":
+		if supportsOpenAIMinimalReasoningEffort(model) {
+			return effort
+		}
 		return "low"
 	case "max":
 		if supportsMaxReasoningEffort(model) {
@@ -164,6 +167,18 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 		strings.HasPrefix(modelLower, "gpt-5.4") ||
 		strings.HasPrefix(modelLower, "gpt-5.5") ||
 		strings.HasPrefix(modelLower, "gpt-5.6")
+}
+
+// supportsOpenAIMinimalReasoningEffort reports models that natively accept "minimal" effort.
+// OpenAI's "minimal" reasoning effort was introduced with the GPT-5 family; o1/o3/o4-series
+// and gpt-oss models do not support it and fall back to "low".
+func supportsOpenAIMinimalReasoningEffort(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	modelLower := strings.ToLower(model)
+	return strings.HasPrefix(modelLower, "gpt-5")
 }
 
 // supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
