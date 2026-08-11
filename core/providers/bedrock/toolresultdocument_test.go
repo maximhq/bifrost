@@ -31,14 +31,18 @@ func requireBedrockToolResult(t *testing.T, messages []BedrockMessage) *BedrockT
 	return messages[0].Content[0].ToolResult
 }
 
-func convertToolResultDocument(t *testing.T, file *schemas.ResponsesInputMessageContentBlockFile) *BedrockDocumentSource {
-	t.Helper()
-	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), []schemas.ResponsesMessage{
+func toolResultDocumentInput(file *schemas.ResponsesInputMessageContentBlockFile) []schemas.ResponsesMessage {
+	return []schemas.ResponsesMessage{
 		toolResultDocumentMessage([]schemas.ResponsesMessageContentBlock{{
 			Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
 			ResponsesInputMessageContentBlockFile: file,
 		}}),
-	}, false)
+	}
+}
+
+func convertToolResultDocument(t *testing.T, file *schemas.ResponsesInputMessageContentBlockFile) *BedrockDocumentSource {
+	t.Helper()
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), toolResultDocumentInput(file), false)
 	if err != nil {
 		t.Fatalf("unexpected conversion error: %v", err)
 	}
@@ -92,6 +96,75 @@ func TestToolResultDocumentKeepsDeclaredFormatForOpaqueDataURL(t *testing.T) {
 	})
 	if document.Format != "csv" || document.Source == nil || document.Source.Bytes == nil || *document.Source.Bytes != "QQ==" {
 		t.Fatalf("expected declared CSV format with original bytes, got %#v", document)
+	}
+}
+
+func TestToolResultDocumentS3URIUsesS3Location(t *testing.T) {
+	s3URI := "s3://reports/quarterly/q4.pdf"
+	document := convertToolResultDocument(t, &schemas.ResponsesInputMessageContentBlockFile{
+		FileURL: &s3URI,
+	})
+
+	if document.Format != "pdf" || document.Source == nil || document.Source.S3Location == nil {
+		t.Fatalf("expected PDF backed by an S3 location, got %#v", document)
+	}
+	if document.Source.S3Location.URI != s3URI {
+		t.Fatalf("expected S3 URI %q, got %q", s3URI, document.Source.S3Location.URI)
+	}
+	if document.Source.Bytes != nil || document.Source.Text != nil {
+		t.Fatalf("expected DocumentSource union to contain only s3Location, got %#v", document.Source)
+	}
+}
+
+func TestToolResultDocumentRejectsUnsupportedExplicitTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		file *schemas.ResponsesInputMessageContentBlockFile
+	}{
+		{
+			name: "declared JSON",
+			file: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("e30="), FileType: schemas.Ptr("application/json")},
+		},
+		{
+			name: "declared ZIP",
+			file: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("UEsDBA=="), FileType: schemas.Ptr("application/zip")},
+		},
+		{
+			name: "declared PNG",
+			file: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("iVBORw=="), FileType: schemas.Ptr("image/png")},
+		},
+		{
+			name: "data URL JSON",
+			file: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("data:application/json;base64,e30=")},
+		},
+		{
+			name: "data URL ZIP",
+			file: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("data:application/zip;base64,UEsDBA==")},
+		},
+		{
+			name: "data URL PNG",
+			file: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("data:image/png;base64,iVBORw==")},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), toolResultDocumentInput(tt.file), false)
+			if err == nil {
+				t.Fatalf("expected unsupported document format error, got %#v", messages)
+			}
+		})
+	}
+}
+
+func TestToolResultDocumentRejectsMissingSource(t *testing.T) {
+	file := &schemas.ResponsesInputMessageContentBlockFile{
+		Filename: schemas.Ptr("report.pdf"),
+		FileType: schemas.Ptr("application/pdf"),
+	}
+	messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), toolResultDocumentInput(file), false)
+	if err == nil {
+		t.Fatalf("expected missing document source error, got %#v", messages)
 	}
 }
 

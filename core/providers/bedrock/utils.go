@@ -258,18 +258,22 @@ func normalizeBedrockFilename(filename string) string {
 	return normalized
 }
 
-// bedrockDocumentFormat maps a MIME type or bare file extension to a Bedrock Converse
-// document format. Media type parameters (e.g. "; charset=utf-8") are ignored. ok is
-// false when the input maps to no format Bedrock supports, so callers can fall through
-// to the next available hint.
-func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool) {
+func normalizeBedrockDocumentType(fileType string) string {
 	fileType = strings.ToLower(strings.TrimSpace(fileType))
 	if mediaType, _, err := mime.ParseMediaType(fileType); err == nil {
 		fileType = mediaType
 	} else if idx := strings.Index(fileType, ";"); idx >= 0 {
 		fileType = strings.TrimSpace(fileType[:idx])
 	}
-	fileType = strings.TrimPrefix(fileType, ".")
+	return strings.TrimPrefix(fileType, ".")
+}
+
+// bedrockDocumentFormat maps a MIME type or bare file extension to a Bedrock Converse
+// document format. Media type parameters (e.g. "; charset=utf-8") are ignored. ok is
+// false when the input maps to no format Bedrock supports, so callers can fall through
+// to the next available hint.
+func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool) {
+	fileType = normalizeBedrockDocumentType(fileType)
 
 	switch fileType {
 	case "text/plain", "txt":
@@ -300,6 +304,15 @@ func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool
 	return "", false, false
 }
 
+func isOpaqueBedrockDocumentType(fileType string) bool {
+	switch normalizeBedrockDocumentType(fileType) {
+	case "", "application/octet-stream", "binary/octet-stream", "octet-stream":
+		return true
+	default:
+		return false
+	}
+}
+
 type bedrockDocumentSourceRequirement uint8
 
 const (
@@ -311,7 +324,7 @@ const (
 )
 
 // materializeBedrockDocument converts Bifrost's canonical file fields into the
-// inline document shape required by Bedrock Converse. All callers use this
+// document shape required by Bedrock Converse. All callers use this
 // boundary so chat files, Responses files, and tool-result files share format
 // inference, data-URL parsing, and bounded URL fetching behavior.
 func materializeBedrockDocument(
@@ -344,11 +357,23 @@ func materializeBedrockDocument(
 	// Resolve the document format from the most authoritative available hint.
 	// An unidentifiable document retains Bedrock's historical PDF default.
 	format, isText := "", false
-	if fileType != nil {
-		format, isText, _ = bedrockDocumentFormat(*fileType)
+	if fileType != nil && strings.TrimSpace(*fileType) != "" {
+		var matched bool
+		format, isText, matched = bedrockDocumentFormat(*fileType)
+		if !matched && !isOpaqueBedrockDocumentType(*fileType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", *fileType)
+		}
 	}
-	if format == "" && isDataURL {
-		format, isText, _ = bedrockDocumentFormat(dataURLMediaType)
+	dataURLIsText := false
+	if isDataURL {
+		dataURLFormat, sourceIsText, matched := bedrockDocumentFormat(dataURLMediaType)
+		if !matched && !isOpaqueBedrockDocumentType(dataURLMediaType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", dataURLMediaType)
+		}
+		dataURLIsText = sourceIsText
+		if format == "" && matched {
+			format, isText = dataURLFormat, sourceIsText
+		}
 	}
 	if format == "" && filename != nil {
 		if dot := strings.LastIndex(*filename, "."); dot >= 0 {
@@ -386,6 +411,8 @@ func materializeBedrockDocument(
 		}
 		if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
 			document.Format = fetchedFormat
+		} else if !isOpaqueBedrockDocumentType(fetchedMediaType) {
+			return nil, fmt.Errorf("unsupported Bedrock document format %q", fetchedMediaType)
 		}
 		document.Source.Bytes = &fetchedBase64
 		return document, nil
@@ -395,11 +422,10 @@ func materializeBedrockDocument(
 		if sourceRequirement == bedrockDocumentSourceOptional {
 			return document, nil
 		}
-		return nil, nil
+		return nil, fmt.Errorf("bedrock document requires file_data or file_url")
 	}
 
 	if isDataURL {
-		_, dataURLIsText, _ := bedrockDocumentFormat(dataURLMediaType)
 		if dataURLIsBase64 {
 			if dataURLIsText {
 				decoded, err := base64.StdEncoding.DecodeString(dataURLPayload)
@@ -416,7 +442,7 @@ func materializeBedrockDocument(
 
 		decoded, err := url.PathUnescape(dataURLPayload)
 		if err != nil {
-			return nil, fmt.Errorf("invalid document data URL payload: %w", err)
+			return nil, fmt.Errorf("invalid percent-encoded document data URL payload: %w", err)
 		}
 		if dataURLIsText {
 			document.Source.Text = &decoded
