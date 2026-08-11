@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -186,6 +187,48 @@ func normalizeBedrockFilename(filename string) string {
 	}
 
 	return normalized
+}
+
+// bedrockDocumentFormat maps a MIME type or bare file extension to a Bedrock Converse
+// document format. Media type parameters (e.g. "; charset=utf-8") are ignored. ok is
+// false when the input maps to no format Bedrock supports, so callers can fall through
+// to the next available hint.
+func bedrockDocumentFormat(fileType string) (format string, isText bool, ok bool) {
+	fileType = strings.ToLower(strings.TrimSpace(fileType))
+	if mediaType, _, err := mime.ParseMediaType(fileType); err == nil {
+		fileType = mediaType
+	} else if idx := strings.Index(fileType, ";"); idx >= 0 {
+		fileType = strings.TrimSpace(fileType[:idx])
+	}
+	fileType = strings.TrimPrefix(fileType, ".")
+
+	switch fileType {
+	case "text/plain", "txt":
+		return "txt", true, true
+	case "text/markdown", "md":
+		return "md", true, true
+	case "text/html", "html", "htm":
+		return "html", true, true
+	case "text/csv", "csv":
+		return "csv", true, true
+	case "application/msword", "doc":
+		return "doc", false, true
+	case "application/vnd.ms-excel", "xls":
+		return "xls", false, true
+	}
+
+	switch {
+	case strings.Contains(fileType, "wordprocessingml") || fileType == "docx":
+		return "docx", false, true
+	case strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx":
+		return "xlsx", false, true
+	case strings.Contains(fileType, "pdf"):
+		return "pdf", false, true
+	case strings.HasPrefix(fileType, "text/"):
+		return "txt", true, true
+	}
+
+	return "", false, false
 }
 
 // bedrockAliasToolName returns a Bedrock-safe tool name and records a reverse mapping.
@@ -923,10 +966,26 @@ func convertMessage(ctx context.Context, msg schemas.ChatMessage) (BedrockMessag
 	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
+				// Text must never reach Bedrock as nil. It is
+				// `*string json:"text,omitempty"`, so a nil pointer drops the key
+				// from the request rather than sending an explicit null, and
+				// Converse rejects that with "reasoningContent.reasoningText.text
+				// ... Member must not be null".
+				//
+				// This is reachable from Bifrost's own output: the streaming
+				// ingress emits a reasoning detail carrying only a Signature on a
+				// signature delta, and a client replaying that assistant turn
+				// sends it straight back. Same defect as the Responses converter
+				// (convertBifrostReasoningToBedrockReasoning), different entry
+				// point.
+				text := detail.Text
+				if text == nil {
+					text = schemas.Ptr("")
+				}
 				contentBlocks = append(contentBlocks, BedrockContentBlock{
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
-							Text:      detail.Text,
+							Text:      text,
 							Signature: reasoningSignatureForBedrock(detail.Signature),
 						},
 					},
@@ -1079,11 +1138,15 @@ func convertToolMessages(ctx context.Context, msgs []schemas.ChatMessage) (Bedro
 		}
 
 		// Create tool result content block for this tool message
+		status := "success"
+		if msg.ChatToolMessage.IsError != nil && *msg.ChatToolMessage.IsError {
+			status = "error"
+		}
 		toolResultBlock := BedrockContentBlock{
 			ToolResult: &BedrockToolResult{
 				ToolUseID: *msg.ChatToolMessage.ToolCallID,
 				Content:   toolResultContent,
-				Status:    schemas.Ptr("success"), // Default to success
+				Status:    schemas.Ptr(status),
 			},
 		}
 
@@ -1188,34 +1251,30 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 			documentSource.Name = normalizeBedrockFilename(*block.File.Filename)
 		}
 
-		// Convert MIME type to Bedrock format
-		isText := false
+		// Parse the data URL once; it carries both the payload and (for standard
+		// OpenAI clients, which have no file_type field) the document's MIME type.
+		dataURLMediaType, dataURLPayload := "", ""
+		dataURLIsBase64, isDataURL := false, false
+		if block.File.FileData != nil && strings.HasPrefix(*block.File.FileData, "data:") {
+			dataURLMediaType, dataURLIsBase64, dataURLPayload, isDataURL = schemas.ParseDataURL(*block.File.FileData)
+		}
+
+		// Resolve the document format, most authoritative hint first. Falls back to
+		// the "pdf" default only when nothing identifies the document.
+		format, isText := "", false
 		if block.File.FileType != nil {
-			fileType := *block.File.FileType
-			switch {
-			case fileType == "text/plain" || fileType == "txt":
-				documentSource.Format = "txt"
-				isText = true
-			case fileType == "text/markdown" || fileType == "md":
-				documentSource.Format = "md"
-				isText = true
-			case fileType == "text/html" || fileType == "html":
-				documentSource.Format = "html"
-				isText = true
-			case fileType == "text/csv" || fileType == "csv":
-				documentSource.Format = "csv"
-				isText = true
-			case fileType == "application/msword" || fileType == "doc":
-				documentSource.Format = "doc"
-			case strings.Contains(fileType, "wordprocessingml") || fileType == "docx":
-				documentSource.Format = "docx"
-			case fileType == "application/vnd.ms-excel" || fileType == "xls":
-				documentSource.Format = "xls"
-			case strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx":
-				documentSource.Format = "xlsx"
-			case strings.Contains(fileType, "pdf") || fileType == "pdf":
-				documentSource.Format = "pdf"
+			format, isText, _ = bedrockDocumentFormat(*block.File.FileType)
+		}
+		if format == "" && isDataURL {
+			format, isText, _ = bedrockDocumentFormat(dataURLMediaType)
+		}
+		if format == "" && block.File.Filename != nil {
+			if dot := strings.LastIndex(*block.File.Filename, "."); dot >= 0 {
+				format, isText, _ = bedrockDocumentFormat((*block.File.Filename)[dot+1:])
 			}
+		}
+		if format != "" {
+			documentSource.Format = format
 		}
 
 		// URL-sourced document: fetch and inline the bytes (Bedrock Converse only
@@ -1226,34 +1285,9 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 				return nil, fetchErr
 			}
 			// Refine format from response Content-Type when present (more reliable
-			// than file extension or upstream-declared media type). Normalize to
-			// strip parameters (e.g. "; charset=utf-8") and lowercase the base type.
-			if mt, _, err := mime.ParseMediaType(fetchedMediaType); err == nil {
-				fetchedMediaType = mt
-			}
-			switch fetchedMediaType {
-			case "application/pdf":
-				documentSource.Format = "pdf"
-			case "text/plain":
-				documentSource.Format = "txt"
-				isText = true
-			case "text/markdown":
-				documentSource.Format = "md"
-				isText = true
-			case "text/html":
-				documentSource.Format = "html"
-				isText = true
-			case "text/csv":
-				documentSource.Format = "csv"
-				isText = true
-			case "application/msword":
-				documentSource.Format = "doc"
-			case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-				documentSource.Format = "docx"
-			case "application/vnd.ms-excel":
-				documentSource.Format = "xls"
-			case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-				documentSource.Format = "xlsx"
+			// than file extension or upstream-declared media type).
+			if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
+				documentSource.Format = fetchedFormat
 			}
 			documentSource.Source.Bytes = &fetchedB64
 			return []BedrockContentBlock{
@@ -1267,17 +1301,25 @@ func convertContentBlock(ctx context.Context, block schemas.ChatContentBlock) ([
 		if block.File.FileData != nil {
 			fileData := *block.File.FileData
 
-			// Check if it's a data URL and extract raw base64
-			if strings.HasPrefix(fileData, "data:") {
-				urlInfo := schemas.ExtractURLTypeInfo(fileData)
-				if urlInfo.DataURLWithoutPrefix != nil {
-					documentSource.Source.Bytes = urlInfo.DataURLWithoutPrefix
-					return []BedrockContentBlock{
-						{
-							Document: documentSource,
-						},
-					}, nil
+			if isDataURL {
+				if dataURLIsBase64 {
+					documentSource.Source.Bytes = &dataURLPayload
+				} else {
+					// Inline percent-encoded payload (data:text/plain,Hello%20World)
+					if decoded, err := url.PathUnescape(dataURLPayload); err == nil {
+						dataURLPayload = decoded
+					}
+					if isText {
+						documentSource.Source.Text = &dataURLPayload
+					}
+					encoded := base64.StdEncoding.EncodeToString([]byte(dataURLPayload))
+					documentSource.Source.Bytes = &encoded
 				}
+				return []BedrockContentBlock{
+					{
+						Document: documentSource,
+					},
+				}, nil
 			}
 
 			// Set text or bytes based on file type
@@ -2450,6 +2492,141 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 		wrapped = append(wrapped, '}')
 		return BedrockContentBlock{JSON: json.RawMessage(wrapped)}
 	}
+}
+
+// BedrockMaxCachePoints is the number of cache checkpoints Bedrock accepts in one Converse
+// request. Exceeding it is a hard rejection, not a degradation: verified live against
+// bedrock/global.anthropic.claude-haiku-4-5 with five markers, which returns
+// "ValidationException: A maximum of 4 blocks with cache_control may be provided. Found 5."
+// The same cap and message apply on the native Anthropic API and on Vertex.
+const BedrockMaxCachePoints = 4
+
+// clampBedrockCachePoints drops the EARLIEST cachePoint elements when a request carries more than
+// Bedrock accepts, and returns how many it dropped.
+//
+// Which end to drop matters. Converse caches cumulatively up to each cachePoint, so a marker
+// later in render order (toolConfig -> system -> messages) anchors a strictly longer prefix than
+// an earlier one. Dropping the earliest therefore costs only an intermediate checkpoint, while
+// dropping the latest would surrender the longest cached prefix outright — the exact failure this
+// package's mid-conversation reminder fix exists to prevent.
+//
+// This is reachable in ordinary traffic, not just pathological input: a Claude Code request
+// carries 2 system breakpoints, one per cache_control-bearing tool result, and one per inlined
+// mid-conversation reminder. Two system + one tool result + one reminder is already exactly 4.
+// Without this clamp the next marker turns a request that merely cached poorly into one that
+// fails outright.
+func clampBedrockCachePoints(req *BedrockConverseRequest) int {
+	if req == nil {
+		return 0
+	}
+
+	total := 0
+	if req.ToolConfig != nil {
+		for i := range req.ToolConfig.Tools {
+			if req.ToolConfig.Tools[i].CachePoint != nil {
+				total++
+			}
+		}
+	}
+	for i := range req.System {
+		if req.System[i].CachePoint != nil {
+			total++
+		}
+	}
+	for i := range req.Messages {
+		for j := range req.Messages[i].Content {
+			if req.Messages[i].Content[j].CachePoint != nil {
+				total++
+			}
+			// Nested tool-result markers count against the same per-request cap — AWS counts
+			// checkpoints across `messages` as a whole, and convertToolMessages emits a CachePoint
+			// inside ToolResult.Content whenever a client puts cache_control on a tool-result
+			// block. Both sibling passes (stripCachePointsFromBedrockRequest,
+			// downgradeExtendedCacheTTLInBedrockRequest) already recurse here; missing it would
+			// let a request with 4 direct plus 1 nested marker reach Bedrock at 5 and be rejected
+			// by the very limit this clamp exists to respect.
+			if tr := req.Messages[i].Content[j].ToolResult; tr != nil {
+				for k := range tr.Content {
+					if tr.Content[k].CachePoint != nil {
+						total++
+					}
+				}
+			}
+		}
+	}
+
+	excess := total - BedrockMaxCachePoints
+	if excess <= 0 {
+		return 0
+	}
+
+	dropped := 0
+	// Walk in render order so the ones removed are the earliest.
+	if req.ToolConfig != nil {
+		nt := 0
+		for i := range req.ToolConfig.Tools {
+			tool := req.ToolConfig.Tools[i]
+			if tool.CachePoint != nil && dropped < excess {
+				dropped++
+				tool.CachePoint = nil
+				// A cache-point-only entry has nothing left to say; drop it rather than emit {}.
+				if tool.ToolSpec == nil && tool.SystemTool == nil {
+					continue
+				}
+			}
+			req.ToolConfig.Tools[nt] = tool
+			nt++
+		}
+		req.ToolConfig.Tools = req.ToolConfig.Tools[:nt]
+	}
+	ns := 0
+	for i := range req.System {
+		sys := req.System[i]
+		if sys.CachePoint != nil && dropped < excess {
+			dropped++
+			sys.CachePoint = nil
+			if sys.Text == nil && sys.GuardContent == nil {
+				continue
+			}
+		}
+		req.System[ns] = sys
+		ns++
+	}
+	req.System = req.System[:ns]
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		nc := 0
+		for j := range content {
+			block := content[j]
+			// Nested tool-result markers render at their parent block's position, so they are
+			// visited before the parent to keep the earliest-first removal order intact.
+			// ToolResult is a pointer, so trimming through the local copy mutates the real one.
+			if tr := block.ToolResult; tr != nil && dropped < excess {
+				inner := tr.Content
+				ni := 0
+				for k := range inner {
+					if inner[k].CachePoint != nil && dropped < excess {
+						dropped++
+						continue
+					}
+					inner[ni] = inner[k]
+					ni++
+				}
+				tr.Content = inner[:ni]
+			}
+			if block.CachePoint != nil && dropped < excess {
+				dropped++
+				// cachePoint elements are standalone in Converse (same assumption
+				// stripCachePointsFromBedrockRequest makes), so the block goes with the marker.
+				continue
+			}
+			content[nc] = block
+			nc++
+		}
+		req.Messages[i].Content = content[:nc]
+	}
+
+	return dropped
 }
 
 // stripCachePointsFromBedrockRequest removes all CachePoint blocks from a

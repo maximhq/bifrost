@@ -21,17 +21,39 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			ChatToolMessage: message.ChatToolMessage,
 		}
 		if message.OpenAIChatAssistantMessage != nil {
+			// Callers replay assistant reasoning under any of three keys. Normalize them
+			// onto Reasoning so downstream provider logic sees replayed reasoning
+			// regardless of spelling — DeepSeek in particular gates thinking on it.
+			reasoning := message.OpenAIChatAssistantMessage.Reasoning
+			if reasoning == nil {
+				reasoning = message.OpenAIChatAssistantMessage.ReasoningAlias
+			}
+			if reasoning == nil {
+				for _, detail := range message.OpenAIChatAssistantMessage.ReasoningDetails {
+					if detail.Text != nil {
+						reasoning = detail.Text
+						break
+					}
+				}
+			}
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				Refusal:     message.OpenAIChatAssistantMessage.Refusal,
-				Reasoning:   message.OpenAIChatAssistantMessage.Reasoning,
-				Annotations: message.OpenAIChatAssistantMessage.Annotations,
-				ToolCalls:   message.OpenAIChatAssistantMessage.ToolCalls,
+				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
+				Reasoning:        reasoning,
+				ReasoningDetails: message.OpenAIChatAssistantMessage.ReasoningDetails,
+				Annotations:      message.OpenAIChatAssistantMessage.Annotations,
+				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
 	}
 	return bifrostMessages
 }
 
+// ConvertBifrostMessagesToOpenAIMessages converts Bifrost chat messages to the
+// OpenAI wire format, dropping neutral-format fields the OpenAI wire has no
+// carrier for. Over-long tool call IDs are stripped of embedded provider
+// reasoning signatures, and tool messages lose is_error so providers that reject
+// unknown message parameters never see it.
+// The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
@@ -52,6 +74,14 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 				toolMsgCopy.ToolCallID = &stripped
 				openaiMessages[i].ChatToolMessage = &toolMsgCopy
 			}
+		}
+		// The OpenAI wire format has no tool-error field; strip is_error so
+		// providers that reject unknown message parameters never see it. Clone
+		// first — ChatToolMessage is shared with the caller's input.
+		if openaiMessages[i].ChatToolMessage != nil && openaiMessages[i].ChatToolMessage.IsError != nil {
+			toolMsgCopy := *openaiMessages[i].ChatToolMessage
+			toolMsgCopy.IsError = nil
+			openaiMessages[i].ChatToolMessage = &toolMsgCopy
 		}
 		if message.ChatAssistantMessage != nil {
 			// Strip the same embedded signature from over-long assistant tool call IDs. Clone the
@@ -134,6 +164,9 @@ func isOpenAIReasoningModel(model string) bool {
 func normalizeOpenAIReasoningEffort(model string, effort string) string {
 	switch effort {
 	case "minimal":
+		if supportsOpenAIMinimalReasoningEffort(model) {
+			return effort
+		}
 		return "low"
 	case "max":
 		if supportsMaxReasoningEffort(model) {
@@ -164,6 +197,27 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 		strings.HasPrefix(modelLower, "gpt-5.4") ||
 		strings.HasPrefix(modelLower, "gpt-5.5") ||
 		strings.HasPrefix(modelLower, "gpt-5.6")
+}
+
+// supportsOpenAIMinimalReasoningEffort reports models that natively accept "minimal" effort.
+// Per OpenAI's official docs (developers.openai.com/api/docs/guides/latest-model), the original
+// GPT-5 family — "gpt-5", "gpt-5-mini", "gpt-5-nano" — supports "minimal, low, medium, high".
+// Every later GPT-5 dot-revision (5.1, 5.2, 5.3-codex, 5.4, 5.5, 5.6-family, and their own
+// mini/nano/pro/codex variants) dropped "minimal" from their reasoning.effort enum in favor of
+// "none"/"xhigh"/"max". o1/o3/o4-series and gpt-oss also do not support it. Models without
+// confirmed capability data conservatively fall back to "low".
+func supportsOpenAIMinimalReasoningEffort(model string) bool {
+	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
+	if parsedModel != "" {
+		model = parsedModel
+	}
+	modelLower := strings.ToLower(model)
+	switch modelLower {
+	case "gpt-5", "gpt-5-mini", "gpt-5-nano":
+		return true
+	default:
+		return false
+	}
 }
 
 // supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).

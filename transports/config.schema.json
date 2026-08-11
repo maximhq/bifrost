@@ -492,17 +492,30 @@
               },
               "reset_duration": {
                 "type": "string",
-                "description": "Budget reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Y')"
+                "description": "Budget reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Q', '1Y')"
+              },
+              "reset_config": {
+                "type": "object",
+                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly ('1Q').",
+                "properties": {
+                  "quarter_start_month": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 12,
+                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted or 0 means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                  }
+                },
+                "additionalProperties": false
               },
               "current_usage": {
                 "type": "number",
-                "description": "Current usage in dollars",
+                "description": "Seed value only: current usage in dollars, applied when the budget is first created. Runtime-owned thereafter - the value here is ignored on every subsequent sync so a config.json reload cannot overwrite live accounting.",
                 "default": 0
               },
               "last_reset": {
                 "type": "string",
                 "format": "date-time",
-                "description": "Last time budget was reset"
+                "description": "Seed value only: last time the budget was reset, applied when the budget is first created. Runtime-owned thereafter, like current_usage."
               },
               "virtual_key_id": {
                 "type": "string",
@@ -559,6 +572,13 @@
             "required": ["id", "max_limit", "reset_duration"],
             "additionalProperties": false,
             "allOf": [
+              {
+                "if": { "required": ["reset_config"] },
+                "then": {
+                  "required": ["reset_duration"],
+                  "properties": { "reset_duration": { "const": "1Q" } }
+                }
+              },
               {
                 "if": {
                   "not": {
@@ -627,13 +647,13 @@
               },
               "token_current_usage": {
                 "type": "integer",
-                "description": "Current token usage",
+                "description": "Seed value only: current token usage, applied when the rate limit is first created. Runtime-owned thereafter - the value here is ignored on every subsequent sync so a config.json reload cannot overwrite live counters.",
                 "default": 0
               },
               "token_last_reset": {
                 "type": "string",
                 "format": "date-time",
-                "description": "Last time token counter was reset"
+                "description": "Seed value only: last time the token counter was reset, applied when the rate limit is first created. Runtime-owned thereafter, like token_current_usage."
               },
               "request_max_limit": {
                 "type": "integer",
@@ -645,13 +665,13 @@
               },
               "request_current_usage": {
                 "type": "integer",
-                "description": "Current request usage",
+                "description": "Seed value only: current request usage, applied when the rate limit is first created. Runtime-owned thereafter - the value here is ignored on every subsequent sync so a config.json reload cannot overwrite live counters.",
                 "default": 0
               },
               "request_last_reset": {
                 "type": "string",
                 "format": "date-time",
-                "description": "Last time request counter was reset"
+                "description": "Seed value only: last time the request counter was reset, applied when the rate limit is first created. Runtime-owned thereafter, like request_current_usage."
               },
               "calendar_aligned": {
                 "type": "boolean",
@@ -2657,12 +2677,12 @@
                   "properties": {
                     "service_name": {
                       "type": "string",
-                      "description": "Name of the service to report to Datadog",
+                      "description": "Name of the service to report to Datadog (can use env. prefix)",
                       "default": "bifrost"
                     },
                     "ml_app": {
                       "type": "string",
-                      "description": "ML application name for LLM Observability grouping (defaults to service_name)"
+                      "description": "ML application name for LLM Observability grouping (defaults to service_name, can use env. prefix)"
                     },
                     "agent_addr": {
                       "type": "string",
@@ -2694,11 +2714,11 @@
                     },
                     "env": {
                       "type": "string",
-                      "description": "Environment tag (e.g., production, staging)"
+                      "description": "Environment tag (e.g., production, staging, can use env. prefix)"
                     },
                     "version": {
                       "type": "string",
-                      "description": "Service version tag"
+                      "description": "Service version tag (can use env. prefix)"
                     },
                     "custom_tags": {
                       "type": "object",
@@ -3152,6 +3172,11 @@
           "description": "Whether this profile exports traces and metrics",
           "default": true
         },
+        "traces_enabled": {
+          "type": "boolean",
+          "description": "Enable trace export for this profile. When false, no traces are sent and collector_url is not required, giving a metrics-only profile (pair with metrics_enabled).",
+          "default": true
+        },
         "service_name": {
           "type": "string",
           "description": "Service name to be used for tracing",
@@ -3221,7 +3246,21 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+          "description": "Custom headers sent to both the trace and metrics endpoints. Supports env.VAR_NAME prefix for environment variable substitution."
+        },
+        "trace_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the trace endpoint, overlaid on headers (same key wins). Supports env.VAR_NAME prefix."
+        },
+        "metrics_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the metrics endpoint, overlaid on headers (same key wins). Useful when a collector requires a per-signal header, e.g. a Databricks table name. Supports env.VAR_NAME prefix."
         },
         "tls_ca_cert": {
           "type": "string",
@@ -3239,14 +3278,28 @@
       "allOf": [
         {
           "if": {
-            "not": {
-              "properties": {
-                "enabled": {
-                  "const": false
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
                 }
               },
-              "required": ["enabled"]
-            }
+              {
+                "not": {
+                  "properties": {
+                    "traces_enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["traces_enabled"]
+                }
+              }
+            ]
           },
           "then": {
             "required": ["collector_url", "trace_type", "protocol"]
@@ -3262,7 +3315,7 @@
             "required": ["metrics_enabled"]
           },
           "then": {
-            "required": ["metrics_endpoint"]
+            "required": ["metrics_endpoint", "protocol"]
           }
         }
       ],
@@ -4842,25 +4895,87 @@
             "headers",
             "oauth",
             "per_user_oauth",
-            "per_user_headers"
+            "per_user_headers",
+            "token_exchange"
           ],
           "description": "Authentication type for MCP connection"
         },
-        "oauth_config_id": {
-          "type": "string",
-          "description": "OAuth config ID reference (required when auth_type is 'oauth' or 'per_user_oauth')"
+        "token_exchange": {
+          "type": "object",
+          "description": "Delegated token-exchange configuration for auth_type 'token_exchange': each caller's identity-provider token is exchanged at runtime for a short-lived token scoped to this server's audience. The exchange endpoint and grant shape come from the deployment's identity-provider integration; the application performing the exchange is configured here. Requires user-identity authentication to be available. The MCP client lands in `pending_verification` state at boot; an admin verifies it once from the UI (as themselves).",
+          "properties": {
+            "audience": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Resource identifier the exchanged token is scoped to at the identity provider (e.g. 'api://jira-mcp')"
+            },
+            "client_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Identity-provider application authorized to perform exchanges for this audience — a dedicated registration carrying the token-exchange (or on-behalf-of) grant, not the SSO login application. Can use env. or vault. prefix."
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "Secret for the exchange application; omit for public clients. Can use env. or vault. prefix."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional scopes to request on the exchanged token. Include 'offline_access' (where the identity provider supports it) so exchanges issue refresh tokens, keeping the retained admin discovery credential self-renewing."
+            }
+          },
+          "required": ["audience", "client_id"],
+          "additionalProperties": false
+        },
+        "oauth_config": {
+          "type": "object",
+          "description": "Inline OAuth provider configuration for auth_type 'oauth' or 'per_user_oauth'. All inner fields are optional — missing URLs are resolved via RFC 8414 discovery and a missing client_id triggers RFC 7591 dynamic client registration at admin-click time. The client lands in `pending_verification` state at boot; an admin runs the verification flow once from the MCP Gateway UI.",
+          "properties": {
+            "client_id": {
+              "type": "string",
+              "description": "OAuth client ID (optional — Dynamic Client Registration is used when omitted; can use env. or vault. prefix)"
+            },
+            "client_secret": {
+              "type": "string",
+              "description": "OAuth client secret (optional — omit for PKCE public clients or DCR; can use env. or vault. prefix)"
+            },
+            "authorize_url": {
+              "type": "string",
+              "description": "Provider authorize endpoint (optional — discovered from the MCP server URL when omitted)"
+            },
+            "token_url": {
+              "type": "string",
+              "description": "Provider token endpoint (optional — discovered when omitted)"
+            },
+            "registration_url": {
+              "type": "string",
+              "description": "Dynamic Client Registration endpoint (optional — discovered when omitted)"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "OAuth scopes to request"
+            }
+          },
+          "additionalProperties": false
+        },
+        "per_user_header_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Required header names each end-user must supply when auth_type is 'per_user_headers'. Schema only — values are submitted per-user at runtime. The MCP client lands in `pending_verification` state at boot; an admin submits sample values once from the UI to verify the connection and discover tools."
         },
         "headers": {
           "type": "object",
           "description": "Headers to send with the request (for headers auth type)",
           "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "per_user_header_keys": {
-          "type": "array",
-          "description": "Header names each caller must supply when auth_type is 'per_user_headers'. Required (non-empty) for that auth type.",
-          "items": {
             "type": "string"
           }
         },
@@ -4940,6 +5055,11 @@
           "description": "Whether the MCP server supports ping for health checks (default: true)",
           "default": true
         },
+        "needs_session_stickiness": {
+          "type": "boolean",
+          "description": "Only meaningful for connection_type 'http': whether this client maintains one persistent connection reused across every caller (true) or connects fresh per call (false, the default for newly created clients). SSE and STDIO always behave as sticky regardless of this field.",
+          "default": false
+        },
         "tool_pricing": {
           "type": "object",
           "description": "Tool pricing map (tool name to cost per execution)",
@@ -4976,17 +5096,77 @@
       },
       "required": ["name", "connection_type"],
       "additionalProperties": false,
-      "if": {
-        "properties": {
-          "auth_type": {
-            "enum": ["oauth", "per_user_oauth"]
+      "allOf": [
+        {
+          "$comment": "per_user_headers requires the admin to declare which header names users must submit. OAuth-based types have no required input — the connection_string drives RFC 8414 discovery + RFC 7591 dynamic client registration when oauth_config is omitted or its inner fields are blank.",
+          "if": {
+            "properties": {
+              "auth_type": {
+                "const": "per_user_headers"
+              }
+            },
+            "required": ["auth_type"]
+          },
+          "then": {
+            "required": ["per_user_header_keys"]
           }
         },
-        "required": ["auth_type"]
-      },
-      "then": {
-        "required": ["oauth_config_id"]
-      },
+        {
+          "$comment": "oauth_config only applies to OAuth-based auth types; forbid it elsewhere (including entries that omit auth_type, which defaults to headers) so a misplaced block fails validation instead of being silently ignored.",
+          "if": {
+            "not": {
+              "properties": {
+                "auth_type": {
+                  "enum": ["oauth", "per_user_oauth"]
+                }
+              },
+              "required": ["auth_type"]
+            }
+          },
+          "then": {
+            "not": {
+              "required": ["oauth_config"]
+            }
+          }
+        },
+        {
+          "$comment": "per_user_header_keys only applies to auth_type 'per_user_headers'; forbid it elsewhere so a misplaced declaration fails validation instead of being silently ignored.",
+          "if": {
+            "not": {
+              "properties": {
+                "auth_type": {
+                  "const": "per_user_headers"
+                }
+              },
+              "required": ["auth_type"]
+            }
+          },
+          "then": {
+            "not": {
+              "required": ["per_user_header_keys"]
+            }
+          }
+        },
+        {
+          "$comment": "token_exchange requires its scoping block (audience), and the block only applies to that auth type; forbid it elsewhere so a misplaced declaration fails validation instead of being silently ignored.",
+          "if": {
+            "properties": {
+              "auth_type": {
+                "const": "token_exchange"
+              }
+            },
+            "required": ["auth_type"]
+          },
+          "then": {
+            "required": ["token_exchange"]
+          },
+          "else": {
+            "not": {
+              "required": ["token_exchange"]
+            }
+          }
+        }
+      ],
       "oneOf": [
         {
           "properties": {
@@ -5785,6 +5965,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -5841,6 +6022,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -5891,6 +6073,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
@@ -5949,6 +6132,7 @@
           "items": { "type": "string" }
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -5998,6 +6182,7 @@
           "default": "groups"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6056,6 +6241,7 @@
           "default": "groups"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6140,6 +6326,7 @@
           "description": "JWT claim field for team IDs"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6484,6 +6671,21 @@
     },
     "budget_line": {
       "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "required": ["reset_config"]
+          },
+          "then": {
+            "required": ["reset_duration"],
+            "properties": {
+              "reset_duration": {
+                "const": "1Q"
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -6495,7 +6697,20 @@
         },
         "reset_duration": {
           "type": "string",
-          "description": "Reset window, e.g. \"1M\", \"1h\""
+          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\""
+        },
+        "reset_config": {
+          "type": "object",
+          "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+          "properties": {
+            "quarter_start_month": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 12,
+              "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted or 0 means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates."
+            }
+          },
+          "additionalProperties": false
         },
         "calendar_aligned": {
           "type": "boolean",
@@ -7441,7 +7656,7 @@
     },
     "scim_attribute_role_mappings": {
       "type": "array",
-      "description": "Ordered list of attribute -> role mappings (first match wins).",
+      "description": "List of attribute -> role mappings. When a user resolves to more than one role (from these mappings, the native roles claim, or group/attribute channels), roleResolutionStrategy decides which single role is assigned: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates this mappings list top to bottom and the first matching rule wins.",
       "items": {
         "type": "object",
         "properties": {
@@ -7461,6 +7676,12 @@
         "required": ["attribute", "value", "role"],
         "additionalProperties": false
       }
+    },
+    "scim_role_resolution_strategy": {
+      "type": "string",
+      "enum": ["highestPermissionCount", "order"],
+      "default": "highestPermissionCount",
+      "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
     },
     "scim_attribute_team_mappings": {
       "type": "array",

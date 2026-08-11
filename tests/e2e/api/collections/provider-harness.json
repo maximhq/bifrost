@@ -1378,7 +1378,7 @@
                       }
                     },
                     {
-                      "name": "anthropic/claude-opus-4-1",
+                      "name": "anthropic/claude-opus-4-6",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -1389,7 +1389,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"anthropic/claude-opus-4-1\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
+                          "raw": "{\n  \"model\": \"anthropic/claude-opus-4-6\",\n  \"messages\": [{ \"role\": \"user\", \"content\": \"Hello\" }]\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/v1/chat/completions",
@@ -18492,7 +18492,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Latest news\"}]}],\n  \"tools\": [{\"googleSearch\":{}}]\n}"
+                  "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Latest news on AI regulation in EU.\"}]}],\n  \"tools\": [{\"googleSearch\":{}}]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/{{genaiModel}}:generateContent",
@@ -45418,6 +45418,11 @@
                   "  var j = pm.response.json();",
                   "  pm.expect(j.content, 'expected content array').to.be.an('array').that.is.not.empty;",
                   "});",
+                  "pm.test('Non-streaming response carries encrypted reasoning as redacted_thinking - #5186', function () {",
+                  "  var content = pm.response.json().content || [];",
+                  "  var redacted = content.filter(function (c) { return c.type === 'redacted_thinking' && c.data; });",
+                  "  pm.expect(redacted, 'expected a redacted_thinking block with non-empty data, got: ' + JSON.stringify(content.map(function (c) { return c.type; }))).to.not.be.empty;",
+                  "});",
                   "// Capture the replay content for the next request only when a redacted_thinking",
                   "// block with non-empty data is actually present, so the replay case skips",
                   "// instead of false-failing when the model didn't produce encrypted content.",
@@ -45669,13 +45674,26 @@
                   "  var j = pm.response.json();",
                   "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
                   "  pm.expect(msg, 'expected an assistant message').to.be.an('object');",
-                  "  pm.expect(msg.reasoning_details, 'expected a non-empty reasoning_details array (regression of PR #4943 if empty/missing)').to.be.an('array').that.is.not.empty;",
+                  "  var d = j.usage && j.usage.completion_tokens_details;",
+                  "  var rt = (d && d.reasoning_tokens) || 0;",
+                  "  // Opus 4.7 is adaptive-only: whether it thinks at all is the model's own",
+                  "  // per-request decision, so requiring reasoning_details unconditionally",
+                  "  // asserts that decision rather than anything Bifrost controls. Verified",
+                  "  // live - Bifrost sent thinking{type:adaptive,display:summarized} plus",
+                  "  // output_config{effort:high} and Anthropic replied content ['text'] with",
+                  "  // output_tokens_details.thinking_tokens = 0. Assert the real contract:",
+                  "  // reasoning tokens billed means the details must survive the mapping.",
+                  "  if (rt > 0) {",
+                  "    pm.expect(msg.reasoning_details, 'reasoning_tokens=' + rt + ' were billed, so reasoning_details must be populated (regression of PR #4943 if empty/missing)').to.be.an('array').that.is.not.empty;",
+                  "  } else {",
+                  "    pm.expect(msg.content, 'no reasoning tokens billed, so the model must at least have answered').to.be.a('string').that.is.not.empty;",
+                  "  }",
                   "});",
                   "pm.collectionVariables.unset('anthropicThinkingReplayMessage39');",
                   "try {",
                   "  var body = pm.response.json();",
                   "  var msg = body.choices[0].message;",
-                  "  if (msg && msg.reasoning_details && msg.reasoning_details.length) {",
+                  "  if (msg) {",
                   "    pm.collectionVariables.set('anthropicThinkingReplayMessage39', JSON.stringify(msg));",
                   "  }",
                   "} catch (e) {}"
@@ -45693,7 +45711,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"messages\":[{\"role\":\"user\",\"content\":\"Solve 41*37 and explain your steps.\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Carefully compute 8473 * 2917 by long multiplication, showing every partial product, then verify the result by a completely different method and reconcile any discrepancy.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -45737,7 +45755,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048},\"messages\":[{\"role\":\"user\",\"content\":\"Solve 41*37 and explain your steps.\"},{{anthropicThinkingReplayMessage39}},{\"role\":\"user\",\"content\":\"Now double that result.\"}]}"
+              "raw": "{\"model\":\"anthropic/claude-opus-4-7\",\"max_tokens\":4096,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Carefully compute 8473 * 2917 by long multiplication, showing every partial product, then verify the result by a completely different method and reconcile any discrepancy.\"},{{anthropicThinkingReplayMessage39}},{\"role\":\"user\",\"content\":\"Now double that result.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -48598,6 +48616,1222 @@
             }
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "42. Cohere Encrypted Reasoning Round-Trip (PR #5982)",
+      "description": "Regression coverage for the Cohere half of PR #5982. Cohere's API has no encrypted-reasoning field, so a replay token travels out inside a thinking block marked '[ENCRYPTED_REASONING: ...]'. That was only half a round trip: egress wrote the marker, and nothing on ingress read it back, so every thinking block - marker included - was mapped to ordinary reasoning text. The token never reached ResponsesReasoning.EncryptedContent, and the marker itself leaked to clients as visible model reasoning, then got replayed as if it were content. Case 1 pins that reasoning comes back as a reasoning item and captures the turn; case 2 replays it and asserts both that the replay is accepted and that the transport marker never appears in the response.",
+      "item": [
+        {
+          "name": "cohere/command-a-reasoning /v1/responses returns reasoning + captures replay input - PR #5982",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Cohere reasoning returned as a reasoning output item', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+                  "  var reasoning = j.output.filter(function (o) { return o.type === 'reasoning'; });",
+                  "  pm.expect(reasoning.length, 'expected at least one reasoning output item').to.be.above(0);",
+                  "  // The replay row checks this too, but only that row - a capture response",
+                  "  // that leaked the marker would slip through whenever the replay response",
+                  "  // happened to carry no reasoning item.",
+                  "  pm.expect(pm.response.text(), 'the transport marker leaked into the capture response')",
+                  "    .to.not.include('ENCRYPTED_REASONING');",
+                  "});",
+                  "// Capture the exact turn to replay: the original user message plus the",
+                  "// assistant output echoed verbatim. Echoing verbatim is the point - it is",
+                  "// what carries any encrypted_content back out to the provider.",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  if (body.output && body.output.length) {",
+                  "    var input = [{ type: 'message', role: 'user', content: \"Work out 17 * 23 step by step, then give just the number.\" }]",
+                  "      .concat(body.output);",
+        "    // Cohere's API has no encrypted-reasoning field, so a Cohere response",
+        "    // never carries encrypted_content on its own - which means a replay",
+        "    // built purely from its output would exercise none of the marker path",
+        "    // and the leak assertion below would pass vacuously. A client CAN send",
+        "    // one (replaying reasoning captured elsewhere), and that is the shape",
+        "    // under test, so attach a deterministic token to the reasoning items.",
+        "    for (var i = 0; i < input.length; i++) {",
+        "      if (input[i] && input[i].type === 'reasoning' && !input[i].encrypted_content) {",
+        "        input[i].encrypted_content = 'bifrost-e2e-encrypted-reasoning-5982';",
+        "      }",
+        "    }",
+                  "    pm.collectionVariables.set('cohereReasoningReplayInput5982', JSON.stringify(input));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cohere/command-a-reasoning-08-2025\", \"input\": \"Work out 17 * 23 step by step, then give just the number.\", \"reasoning\": {\"effort\": \"medium\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cohere/command-a-reasoning /v1/responses replay preserves encrypted reasoning - PR #5982",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step did not run: the body placeholder stays\n// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Replayed Cohere reasoning is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "// The regression this folder exists for. Cohere has no encrypted-reasoning",
+                  "// field, so Bifrost smuggles the replay token out inside a marked thinking",
+                  "// block. Pre-fix nothing decoded that marker on the way back in, so it",
+                  "// surfaced to the client as ordinary reasoning TEXT - the model appearing to",
+                  "// have literally thought '[ENCRYPTED_REASONING: ...]', and the token that was",
+                  "// meant to land in encrypted_content lost.",
+                  "pm.test('Transport marker never surfaces as visible reasoning text', function () {",
+                  "  pm.expect(pm.response.text(), 'the [ENCRYPTED_REASONING: ...] transport marker leaked to the client')",
+                  "    .to.not.include('ENCRYPTED_REASONING');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cohere/command-a-reasoning-08-2025\", \"input\": {{cohereReasoningReplayInput5982}}, \"reasoning\": {\"effort\": \"medium\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: DOCX document via type:file data URL, no file_type (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.toUpperCase(), 'model did not read the document contents').to.include('BIFROST7788');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the verification code found in the attached document.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report.docx\",\n            \"file_data\": \"data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,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\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: CSV document via type:file data URL, no file_type (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.toUpperCase(), 'model did not read the document contents').to.include('BIFROST7788');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the verification code found in the attached document.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report.csv\",\n            \"file_data\": \"data:text/csv;base64,Y29kZSxyZXZlbnVlCkJJRlJPU1Q3Nzg4LDQyCg==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: PDF document via type:file data URL still works, no file_type (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.toUpperCase(), 'model did not read the document contents').to.include('BIFROST7788');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the verification code found in the attached document.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report.pdf\",\n            \"file_data\": \"data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA5OSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcwMCBUZCAoUXVhcnRlcmx5IHJlcG9ydC4gVmVyaWZpY2F0aW9uIGNvZGUgQklGUk9TVDc3ODguIFJldmVudWUgNDIgbWlsbGlvbi4pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzkwIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDYwCiUlRU9GCg==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: data URL with charset parameter parsed, not sent verbatim (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.toUpperCase(), 'model did not read the document contents').to.include('BIFROST7788');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the verification code found in the attached document.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report.txt\",\n            \"file_data\": \"data:text/plain;charset=utf-8;base64,UXVhcnRlcmx5IHJlcG9ydC4gVmVyaWZpY2F0aW9uIGNvZGUgQklGUk9TVDc3ODguIFJldmVudWUgNDIgbWlsbGlvbi4=\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: opaque media type falls back to filename extension (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  // content-only assertion: this case pins format resolution, not document text",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report.xlsx\",\n            \"file_data\": \"data:application/octet-stream;base64,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\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: explicit file_type wins over the data URL media type (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  // content-only assertion: this case pins format resolution, not document text",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report\",\n            \"file_type\": \"text/csv\",\n            \"file_data\": \"data:application/octet-stream;base64,Y29kZSxyZXZlbnVlCkJJRlJPU1Q3Nzg4LDQyCg==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: inline non-base64 text data URL percent-decoded (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.toUpperCase(), 'model did not read the document contents').to.include('BIFROST7788');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the verification code found in the attached document.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report.txt\",\n            \"file_data\": \"data:text/plain,Quarterly%20report.%20Verification%20code%20BIFROST7788.%20Revenue%2042%20million.\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: unidentifiable document keeps the pdf default (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  // content-only assertion: this case pins format resolution, not document text",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report\",\n            \"file_data\": \"data:application/octet-stream;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA1IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA5OSA+PgpzdHJlYW0KQlQgL0YxIDE0IFRmIDcyIDcwMCBUZCAoUXVhcnRlcmx5IHJlcG9ydC4gVmVyaWZpY2F0aW9uIGNvZGUgQklGUk9TVDc3ODguIFJldmVudWUgNDIgbWlsbGlvbi4pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzkwIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDYwCiUlRU9GCg==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: type:file file_url fetched and inlined (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  // content-only assertion: this case pins format resolution, not document text",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"letter.pdf\",\n            \"file_url\": \"https://www.berkshirehathaway.com/letters/2024ltr.pdf\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: XLSX document via type:file data URL, streaming (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('stream completed without an error frame', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body).to.include('data:');",
+                  "  pm.expect(body.toLowerCase()).to.not.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with only the verification code found in the attached document.\"\n        },\n        {\n          \"type\": \"file\",\n          \"file\": {\n            \"filename\": \"report.xlsx\",\n            \"file_data\": \"data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBBQAAAAIACWDB12wXVXT/gAAADMCAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbK1RvU7DMBDeeQrLaxU7ZUAINe1QYASG8gCHfUms+E8+t6Rvj5NCB1QQA9Pp7vuVvdqMzrIDJjLBN3wpas7Qq6CN7xr+unusbjmjDF6DDR4bfkTim/XVaneMSKyIPTW8zzneSUmqRwckQkRfkDYkB7msqZMR1AAdyuu6vpEq+Iw+V3ny4MXsHlvY28wexnI/NUloibPtiTmFNRxitEZBLrg8eP0tpvqMEEU5c6g3kRaFwOXliAn6OeFL+FweJxmN7AVSfgJXaHK08j2k4S2EQfzucqFnaFujUAe1d0UiKCYETT1idlbMUzgwfvGHAjOb5DyW/9zk7H8uIuc/X38AUEsDBBQAAAAIACWDB11+b8CFsQAAACoBAAALAAAAX3JlbHMvLnJlbHONzzsOwjAMBuCdU0TeaVoGhFBDF4TUFZUDhNR9qEkcJQHa25MRKgZGy/4/22U1G82e6MNIVkCR5cDQKmpH2wu4NZftAViI0rZSk0UBCwaoTpvyilrGlAnD6AJLiA0ChhjdkfOgBjQyZOTQpk5H3siYSt9zJ9Uke+S7PN9z/2nACmV1K8DXbQGsWRz+g1PXjQrPpB4GbfyxYzWRZOl7jAJmzV/kpzvRlCUUeDqGf714egNQSwMEFAAAAAgAJYMHXRSkGmDBAAAAHgEAAA8AAAB4bC93b3JrYm9vay54bWyNj01Ow0AMhfc9xch7OimLCkVJuqmQukX0AEPGaUbN2CN7gPb2GAJ7Vv7Te35fd7jlxX2gaGLqYbdtwCGNHBNdeji/Pj88gdMaKIaFCXu4o8Jh2HSfLNc35qszPWkPc62l9V7HGXPQLRcku0wsOVQb5eK1CIaoM2LNi39smr3PIRGsDq38x4OnKY145PE9I9XVRHAJ1dLrnIqCRft5ocNaHYVssV+wsFRD+d6dopGCkzZZI6e4Az90/le26fwf2/AFUEsDBBQAAAAIACWDB11vJc8gtAAAACsBAAAaAAAAeGwvX3JlbHMvd29ya2Jvb2sueG1sLnJlbHONz80KwjAMAOC7T1Fyd9k8iMi6XUTYVeYDlC77YVtbmvqzt7d4EBUPnkIS8iXJy/s8iSt5HqyRkCUpCDLaNoPpJJzr43oHgoMyjZqsIQkLMZTFKj/RpEKc4X5wLCJiWEIfgtsjsu5pVpxYRyZ2WutnFWLqO3RKj6oj3KTpFv27AV+oqBoJvmoyEPXi6B/ctu2g6WD1ZSYTfuzAm/Uj90Qhosp3FCS8SozPkCVRBYzX4MePxQNQSwMEFAAAAAgAJYMHXZQTUAbeAAAAgAEAABgAAAB4bC93b3Jrc2hlZXRzL3NoZWV0MS54bWx1kNtqwzAMhu/3FEb3rdIw1jBsl5VS2NVg7R7AJGpjlsjB1tLt7eeU0R1Y73T49f2S9Oq979RIMfnABhbzAhRxHRrPRwMv++2sApXEceO6wGTggxKs7I0+hfiaWiJRGcDJQCsy3COmuqXepXkYiHPnEGLvJKfxiGmI5JrzUN9hWRR32DvPkGnn4saJy3EMJxXzKmB1PQUPC1BiwHPnmXYSc90nq8XmLUmjWI1TjvWXfn1NH2kkfvszgtnu27S8mJZXIOvH7fPTbr9cVtV/3hNgtLelxvEXH39eiJfn2U9QSwECFAMUAAAACAAlgwddsF1V0/4AAAAzAgAAEwAAAAAAAAAAAAAAgAEAAAAAW0NvbnRlbnRfVHlwZXNdLnhtbFBLAQIUAxQAAAAIACWDB11+b8CFsQAAACoBAAALAAAAAAAAAAAAAACAAS8BAABfcmVscy8ucmVsc1BLAQIUAxQAAAAIACWDB10UpBpgwQAAAB4BAAAPAAAAAAAAAAAAAACAAQkCAAB4bC93b3JrYm9vay54bWxQSwECFAMUAAAACAAlgwddbyXPILQAAAArAQAAGgAAAAAAAAAAAAAAgAH3AgAAeGwvX3JlbHMvd29ya2Jvb2sueG1sLnJlbHNQSwECFAMUAAAACAAlgwddlBNQBt4AAACAAQAAGAAAAAAAAAAAAAAAgAHjAwAAeGwvd29ya3NoZWV0cy9zaGVldDEueG1sUEsFBgAAAAAFAAUARQEAAPcEAAAAAA==\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: /v1/responses input_file XLSX data URL, no file_type (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  pm.expect(c.toUpperCase(), 'model did not read the document contents').to.include('BIFROST7788');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Reply with only the verification code found in the attached document.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"report.xlsx\",\n          \"file_data\": \"data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,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\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: /v1/responses input_file CSV data URL, no file_type (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  // content-only assertion: this case pins format resolution, not document text",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"report.csv\",\n          \"file_data\": \"data:text/csv;base64,Y29kZSxyZXZlbnVlCkJJRlJPU1Q3Nzg4LDQyCg==\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bedrock Claude: /v1/responses input_file file_url fetched and inlined (Haiku 4.5) - #5472",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// #5472: an OpenAI type:\"file\" part carries the document MIME only inside the",
+                  "// file_data data URL. Bedrock's converter used to ignore it and label every",
+                  "// document format:\"pdf\", so Converse rejected non-PDF documents.",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "var body = pm.response.text();",
+                  "pm.test('document format not mislabeled as pdf', function () {",
+                  "  pm.expect(body).to.not.include('The PDF specified was not valid');",
+                  "  pm.expect(body).to.not.include('could not be parsed as the specified format');",
+                  "  pm.expect(body).to.not.include('The document source bytes');",
+                  "});",
+                  "pm.test('document accepted and answered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  var c = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) ||",
+                  "          (j.output && JSON.stringify(j.output)) || '';",
+                  "  pm.expect(c).to.be.a('string').and.not.empty;",
+                  "  // content-only assertion: this case pins format resolution, not document text",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Summarize this document in one sentence.\"\n        },\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"letter.pdf\",\n          \"file_url\": \"https://www.berkshirehathaway.com/letters/2024ltr.pdf\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "43. Gemini Reasoning Signature Replay (PR #5982)",
+      "description": "Multi-turn reasoning replay for Gemini through /v1/responses. Gemini returns a thought signature on reasoning that accompanies a function call, and requires it back unmodified when the tool result is sent - a dropped or rewritten signature is rejected on the continuation, so a converter that keeps only part of a reasoning item fails here and nowhere else. The harness had 71 reasoning rows and not one that replayed reasoning back on a second turn, which is the only shape that exercises this. Case 1 captures a reasoning + function_call turn; case 2 replays it with the tool result.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses reasoning + tool call captures replay input - PR #5982",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Gemini returns reasoning alongside the tool call', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+                  "  // Asserted, not merely hoped for: the replay row skips when the capture",
+                  "  // stored nothing, so without this a run where Gemini did not call the",
+                  "  // tool passes green having tested no signature preservation at all.",
+                  "  var kinds = j.output.map(function (o) { return o.type; });",
+                  "  pm.expect(kinds, 'no function_call came back, so the replay row would silently skip').to.include('function_call');",
+                  "  pm.expect(kinds, 'no reasoning item came back, so there is no thought signature to preserve').to.include('reasoning');",
+                  "});",
+                  "// Only capture when a function call came back: the replay case is about a",
+                  "// reasoning item sitting next to a function_call, which is the shape whose",
+                  "// thought signature has to survive. Without one there is nothing to pin, so",
+                  "// the replay skips rather than false-failing.",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  var fc = (body.output || []).filter(function (o) { return o.type === 'function_call'; })[0];",
+                  "  if (fc && fc.call_id) {",
+                  "    var input = [{ type: 'message', role: 'user', content: \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\" }]",
+                  "      .concat(body.output)",
+                  "      .concat([{ type: 'function_call_output', call_id: fc.call_id, output: '{\"time\": \"21:00 JST\"}' }]);",
+                  "    // Force the shape the converters used to mangle: a reasoning item",
+                  "    // carrying BOTH summary text and a signature. Bifrost now sends that",
+                  "    // text back as a thought part, which is what this row validates against",
+                  "    // the live API - the thinking guide requires thought blocks resent",
+                  "    // intact, but does not document constructed thought parts on input, so",
+                  "    // only a real call settles whether Gemini accepts them.",
+                  "    for (var i = 0; i < input.length; i++) {",
+                  "      if (input[i] && input[i].type === 'reasoning') {",
+                  "        if (!input[i].summary || !input[i].summary.length) {",
+                  "          input[i].summary = [{ type: 'summary_text', text: 'Checking the timezone before calling the tool.' }];",
+                  "        }",
+                  "      }",
+                  "    }",
+                  "    pm.collectionVariables.set('geminiReasoningReplayInput5982', JSON.stringify(input));",
+                  "    var reasoning = (body.output || []).filter(function (o) { return o.type === 'reasoning'; });",
+                  "    pm.collectionVariables.set('geminiReasoningCount5982', String(reasoning.length));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-2.5-flash\", \"input\": \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\", \"tools\": [{\"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"tool_choice\": {\"type\": \"function\", \"name\": \"get_time\"}, \"reasoning\": {\"effort\": \"low\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses replay preserves thought signature - PR #5982",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step did not run: the body placeholder stays\n// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('Replayed Gemini reasoning + tool call is accepted', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Gemini rejected the replayed turn - the thought signature did not survive the round trip')",
+                  "    .to.not.include('thought_signature');",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('Gemini accepts replayed thought text, not just the signature', function () {",
+                  "  var t = pm.response.text() || '';",
+                  "  pm.expect(t, 'Gemini rejected a constructed thought part on input').to.not.include('INVALID_ARGUMENT');",
+                  "  pm.expect(pm.response.code, 'replay with thought text failed: ' + t).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-2.5-flash\", \"input\": {{geminiReasoningReplayInput5982}}, \"tools\": [{\"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"reasoning\": {\"effort\": \"low\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "44. Encrypted Reasoning Fail-Soft (unverifiable payload degrades instead of 400)",
+      "description": "Bifrost's encrypted-reasoning fail-soft (core/encryptedreasoning.go) detects an upstream refusal of a replayed\nreasoning payload, strips encrypted_content from the reasoning items, and retries once on the same key, so the\nturn degrades to a normal answer instead of failing. This fires whenever a conversation changes model family or\ncredential mid-flight (a routing rule or a fallback is enough) and the client replays the earlier provider’s\nreasoning verbatim.\n\nThe detector originally recognised only OpenAI’s wording (invalid_encrypted_content / \"could not be verified\").\nAnthropic refuses with \"messages.N.content.0: Invalid `data` in `redacted_thinking` block\" — HTTP 400 and no error\ncode — which fell through and reached the client as a hard 400.\n\nFIXTURE CONSTRAINT — do not \"normalise\" these bodies: the reasoning item must carry NO \"content\" key at all.\nBifrost’s own Responses output emits \"content\": [], and an empty-but-present array sends\nconvertBifrostReasoningToAnthropicThinking down its content-blocks branch, which emits nothing and silently drops\nencrypted_content. The request then succeeds without the upstream ever validating the payload — a silent false pass.\n\nA synthetic unverifiable blob is used rather than a captured one: the upstream rejects any payload it cannot\nverify identically, and this keeps each case self-contained (no capture chaining, one request each).",
+      "item": [
+        {
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses unverifiable encrypted reasoning degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('unverifiable encrypted reasoning degrades instead of 400ing', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Anthropic rejection reached the client; the encrypted-reasoning fail-soft did not fire').to.not.include('redacted_thinking');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().output, 'no output returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000001\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness01\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"391\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"reasoning\":{\"max_tokens\":1024},\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /openai/v1/responses streaming unverifiable encrypted reasoning degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('streaming turn degrades instead of erroring on unverifiable reasoning', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'Anthropic rejection surfaced in the stream; the fail-soft did not fire').to.not.include('redacted_thinking');",
+                  "  pm.expect(pm.response.code, 'stream request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(body, 'stream never completed').to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000001\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness01\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"391\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"reasoning\":{\"max_tokens\":1024},\"max_output_tokens\":256,\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5-mini /openai/v1/responses unverifiable encrypted reasoning degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('OpenAI-side encrypted reasoning fail-soft still heals', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'OpenAI rejection reached the client; the original fail-soft clause regressed').to.not.include('invalid_encrypted_content');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().output, 'no output returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5-mini\",\"input\":[{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000001\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness01\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"391\"}]},{\"role\":\"user\",\"content\":\"Reply with just the number 782.\"}],\"reasoning\":{\"effort\":\"low\"},\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "45. Encrypted Reasoning Fail-Soft on Compaction (/v1/responses/compact degrades instead of 400)",
+      "description": "Bifrost's encrypted-reasoning fail-soft (core/encryptedreasoning.go) also has to reach /v1/responses/compact.\nCodex's remote compaction replays the entire prior transcript in one request, so it is the call most likely to\ncarry reasoning items minted under a different key or org - exactly the payload the upstream refuses with 400\ninvalid_encrypted_content.\n\nCompaction is a separate top-level request shape in Bifrost (schemas.BifrostRequest.CompactionRequest, its own Input and\nRawRequestBody), not a flag on the Responses request. The strip originally keyed off ResponsesRequest alone and returned\nfalse for compaction, so the detector matched, the retry never fired, and the raw 400 reached the client - Codex surfaced\nit as \"Error running remote compact task\" and retried the identical body forever.\n\nFIXTURE CONSTRAINT - the two cases cover both strip outcomes and must not be collapsed: the first reasoning item keeps a\nsummary so the stripped item survives the retry, the second has none so the item is dropped entirely rather than sent as a\nbare id the upstream never issued. A synthetic unverifiable blob is used rather than a captured one: the upstream refuses any\npayload it cannot verify identically, and this keeps each case self-contained.",
+      "item": [
+        {
+          "name": "openai/gpt-5-mini /openai/v1/responses/compact unverifiable encrypted reasoning degrades - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('compaction with unverifiable encrypted reasoning degrades instead of 400ing', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'upstream rejection reached the client; the fail-soft does not cover the compaction request shape').to.not.include('invalid_encrypted_content');",
+                  "  pm.expect(pm.response.code, 'compaction failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, 'compaction did not complete after the stripped retry').to.equal('response.compaction');",
+                  "  pm.expect(j.output, 'no output returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.output[j.output.length - 1].type, 'compaction item missing from the output').to.equal('compaction');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5-mini\",\"input\":[{\"role\":\"user\",\"content\":\"What is the capital of France?\"},{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000002\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Recalling what the user asked about France.\"}],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness02\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The capital of France is Paris.\"}]},{\"role\":\"user\",\"content\":\"What is it known for?\"},{\"type\":\"message\",\"id\":\"msg_bfharness03\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The Eiffel Tower, the Louvre, and its cuisine.\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/compact",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "compact"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5-mini /openai/v1/responses/compact summary-less reasoning item is dropped - failsoft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('compaction with unverifiable encrypted reasoning degrades instead of 400ing', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'upstream rejection reached the client; the fail-soft does not cover the compaction request shape').to.not.include('invalid_encrypted_content');",
+                  "  pm.expect(pm.response.code, 'compaction failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, 'compaction did not complete after the stripped retry').to.equal('response.compaction');",
+                  "  pm.expect(j.output, 'no output returned after the stripped retry').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(body, 'the emptied reasoning item was forwarded as a bare id instead of being dropped').to.not.include('rs_bfharness0000000000000000000000000000000000002');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5-mini\",\"input\":[{\"role\":\"user\",\"content\":\"What is the capital of France?\"},{\"type\":\"reasoning\",\"id\":\"rs_bfharness0000000000000000000000000000000000002\",\"summary\":[],\"encrypted_content\":\"gAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0IvgAAAAABqdgntZpz92rFHmQx7Kd3vTn8LpWs2Yb6Hj9Rf4Mc1Ae5Gu0Iv\"},{\"type\":\"message\",\"id\":\"msg_bfharness02\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The capital of France is Paris.\"}]},{\"role\":\"user\",\"content\":\"What is it known for?\"},{\"type\":\"message\",\"id\":\"msg_bfharness03\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The Eiffel Tower, the Louvre, and its cuisine.\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses/compact",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses",
+                "compact"
+              ]
+            }
+          }
         }
       ]
     }

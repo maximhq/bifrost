@@ -8,13 +8,14 @@ interface CopyableIdProps {
 	/** Entity name used in the toast, tooltip, and aria-label, e.g. "Team" -> "Copy team ID". */
 	entityLabel?: string;
 	className?: string;
+	testId?: string;
 }
 
 /**
  * Icon-only click-to-copy control for an entity id, sized to sit inline beside a
  * sheet title. The full id lives in the tooltip so it never competes with the name.
  */
-export function CopyableId({ id, entityLabel, className }: CopyableIdProps) {
+export function CopyableId({ id, entityLabel, className, testId }: CopyableIdProps) {
 	const value = String(id ?? "");
 	const noun = entityLabel ? `${entityLabel.toLowerCase()} ID` : "ID";
 	const { copy, copied } = useCopyToClipboard({
@@ -33,6 +34,7 @@ export function CopyableId({ id, entityLabel, className }: CopyableIdProps) {
 						copy(value);
 					}}
 					aria-label={`Copy ${noun}`}
+					data-testid={testId}
 					className={cn(
 						"text-muted-foreground hover:text-foreground hover:bg-muted inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded transition-colors",
 						className,

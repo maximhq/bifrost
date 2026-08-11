@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,10 +16,173 @@ import (
 	"time"
 )
 
+// killedCommands records the subprocesses the SIGINT handler actually reaped,
+// so a cell can distinguish "the harness killed my subprocess" from "my
+// subprocess failed on its own". The process-global `interrupted` flag cannot
+// make that distinction: a Ctrl-C landing after this cell's subprocess already
+// exited would otherwise relabel this cell's genuine failure as "interrupted"
+// and clear its error, hiding a real regression behind the very status that
+// exists to keep interruptions distinguishable from regressions.
+var killedCommands sync.Map // *exec.Cmd -> struct{}
+
+// errSubprocessKilled marks an error caused by the harness reaping this cell's
+// own subprocess.
+var errSubprocessKilled = errors.New("harness killed this cell's subprocess")
+
+// markKilled records that the signal handler killed cmd.
+func markKilled(cmd *exec.Cmd) { killedCommands.Store(cmd, struct{}{}) }
+
+// annotateIfKilled tags err with errSubprocessKilled when cmd is one the signal
+// handler reaped, leaving unrelated failures untouched.
+func annotateIfKilled(cmd *exec.Cmd, err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := killedCommands.Load(cmd); !ok {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errSubprocessKilled, err)
+}
+
+// cellWasInterrupted reports whether runErr is this cell's own subprocess being
+// reaped on Ctrl-C, rather than a genuine failure that merely coincided with one.
+//
+// Identity is the only evidence accepted: the tag annotateIfKilled attaches from
+// the specific *exec.Cmd the signal handler reaped. Matching "signal: killed" in
+// the message would be wrong twice over -- the errors here embed tailStr of the
+// CLI's own output, so a CLI that merely printed those words would mask its
+// failure, and exec.CommandContext reports the same text when the per-turn
+// context deadline kills the process, which is a real timeout. Either would
+// clear runErr and hide a regression, the exact failure this exists to prevent.
+// Drivers whose kill surfaces through a pipe or scanner instead of cmd.Wait must
+// therefore route their errors through annotateIfKilled themselves.
+func cellWasInterrupted(runErr error) bool {
+	return errors.Is(runErr, errSubprocessKilled)
+}
+
 // activeCommands tracks every running CLI subprocess so the SIGINT handler
 // in TestMain can reap them. Sequential cells means there's at most one at
 // a time today, but the sync.Map keeps us future-proof.
-var activeCommands sync.Map // *exec.Cmd -> struct{}
+var activeCommands sync.Map // *exec.Cmd -> *trackedCmd
+
+// trackedCmd carries the lifecycle state the signal handler needs before it may
+// signal a command.
+//
+// The pgid is captured at Start rather than looked up at kill time. A lookup
+// takes the pid of a command that may already have been reaped, and the kernel
+// is free to have recycled that pid; the value captured while the child is
+// certainly still ours cannot drift.
+type trackedCmd struct {
+	pgid int
+
+	mu     sync.Mutex
+	reaped bool
+}
+
+// trackCmd registers cmd as signallable. Call it immediately after cmd.Start.
+func trackCmd(cmd *exec.Cmd) {
+	activeCommands.Store(cmd, &trackedCmd{pgid: processGroupID(cmd)})
+}
+
+// untrackCmd marks cmd reaped and unregisters it. Call it after cmd.Wait has
+// returned, at which point the pid is no longer ours to signal.
+func untrackCmd(cmd *exec.Cmd) {
+	if v, ok := activeCommands.Load(cmd); ok {
+		if tc, ok := v.(*trackedCmd); ok {
+			tc.mu.Lock()
+			tc.reaped = true
+			tc.mu.Unlock()
+		}
+	}
+	activeCommands.Delete(cmd)
+}
+
+// killIfLive terminates cmd's process group on behalf of the signal handler,
+// unless cmd has already been reaped.
+//
+// The reaped check is the point of this function. sync.Map.Range may hand the
+// handler an entry whose deferred Delete has not run yet, and cmd.Wait has by
+// then returned the pid to the kernel's pool. Signalling it means aiming
+// SIGKILL at a process group that may now belong to something else entirely -
+// and syscall.Kill on a negative pid carries none of os.Process.Kill's
+// ErrProcessDone protection, so nothing downstream would catch the mistake.
+//
+// Holding the mutex across the check and the kill is what makes the pair
+// atomic against untrackCmd. It cannot shrink the window between wait4
+// returning inside cmd.Wait and untrackCmd taking the lock - no userspace code
+// can, since pid recycling is the kernel's to schedule - but it does mean the
+// handler and the reaper can never interleave halfway through.
+func killIfLive(cmd *exec.Cmd, tc *trackedCmd) {
+	if cmd.Process == nil || tc == nil {
+		return
+	}
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.reaped {
+		return
+	}
+	// Record before killing: the cell reads this to prove the kill was ours
+	// rather than a coincident genuine failure.
+	markKilled(cmd)
+	// Group kill, not Process.Kill: these CLIs spawn servers and helpers of
+	// their own, and orphaning those on Ctrl-C leaves them billing tokens
+	// against the user's keys long after the harness has exited.
+	_ = killCmdGroup(cmd, tc.pgid)
+}
+
+// cmdWaitDelay bounds how long cmd.Wait may keep blocking after the process is
+// gone or its context has been cancelled.
+//
+// Without it a cell can hang unboundedly, and the timeouts already in this file
+// are powerless to stop it. The drivers hand exec an ordinary io.Writer for
+// Stdout/Stderr rather than an *os.File, so exec allocates an os.Pipe and a
+// copying goroutine, and Wait blocks until that goroutine sees EOF -- which
+// needs *every* holder of the write end to close it. A CLI that spawned a
+// server child (opencode always does) leaves that grandchild holding the fd, so
+// killing the direct child on deadline achieves nothing: Wait never returns,
+// the cell never records a result, and because the model subtest is serial
+// while only its scenarios are parallel, the entire remaining matrix stalls
+// behind it. isolateProcessGroup removes the usual cause; WaitDelay is the
+// backstop for whatever the group kill misses, converting a wedged suite into
+// an ordinary reported failure.
+//
+// 15s is generous relative to pipe drain (milliseconds) and short relative to
+// any turn timeout, so it never truncates a healthy cell.
+const cmdWaitDelay = 15 * time.Second
+
+// waitErr normalizes the error cmd.Wait returns, clearing the one case that is
+// not a failure of the turn.
+//
+// cmdWaitDelay exists because a CLI's background server child keeps the
+// inherited stdout pipe open after the CLI itself exits, so exec's copying
+// goroutine never sees EOF. That is the normal shutdown of a healthy turn, not
+// a fault: the process exited 0 and its output was fully captured, and only the
+// orphaned writer is late. Left unhandled, Wait's ErrWaitDelay turns every such
+// turn into a reported failure - most often on opencode, which always spawns
+// that child.
+//
+// os/exec returns ErrWaitDelay "instead of nil", so an ExitError outranks it and
+// a genuinely failing turn (including one killed by a signal) still surfaces as
+// its exit status. The ExitCode check is therefore belt-and-braces rather than
+// load-bearing, kept so the suppression cannot widen if that ordering ever
+// changes. TestWaitErrPreservesNonZeroExitUnderWaitDelay pins the ordering.
+func waitErr(cmd *exec.Cmd, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+		return nil
+	}
+	return err
+}
+
+// prepareCmd applies the two guards every CLI subprocess in this harness needs.
+// Call it between exec.CommandContext and cmd.Start.
+func prepareCmd(cmd *exec.Cmd) *exec.Cmd {
+	cmd.WaitDelay = cmdWaitDelay
+	isolateProcessGroup(cmd)
+	return cmd
+}
 
 // Turn is one user→model exchange in a scenario.
 //
@@ -30,7 +194,16 @@ var activeCommands sync.Map // *exec.Cmd -> struct{}
 //	               "I don't have access to web search" that would otherwise
 //	               pass a positive-only assertion)
 type Turn struct {
-	Send              string
+	Send string
+
+	// AttachImage, if set, is an absolute path to a local image file to
+	// attach to this turn via the CLI's own attachment mechanism (see
+	// CLI.AttachImageArgs). Only meaningful for single-turn scenarios
+	// (Pattern A / runSingleTurn) -- CLIs with no attachment flag (Claude)
+	// ignore this at the args level; reference the path in Send instead so
+	// their own file-read tool can open it.
+	AttachImage string
+
 	AssertText        []string
 	AssertTextFold    []string
 	AssertTextAny     []string
@@ -58,7 +231,7 @@ func (e assertionError) Unwrap() error {
 // runSingleTurn executes a one-shot prompt: spawn binary, read combined
 // stdout+stderr, return what we got. Any assertion is performed by the
 // scenario after this returns.
-func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, turn Turn, env []string, mirror io.Writer) (string, error) {
+func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, turn Turn, env []string, mirror io.Writer, effort string) (string, error) {
 	t.Helper()
 	timeout := turn.Timeout
 	if timeout == 0 {
@@ -67,8 +240,16 @@ func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, tur
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	args := cli.SingleTurnArgs(model, turn.Send)
-	cmd := exec.CommandContext(cctx, cli.Binary, args...)
+	var extra []string
+	if turn.AttachImage != "" && cli.AttachImageArgs != nil {
+		extra = append(extra, cli.AttachImageArgs(turn.AttachImage)...)
+	}
+	if effort != "" && cli.EffortArgs != nil {
+		extra = append(extra, cli.EffortArgs(effort)...)
+	}
+
+	args := cli.SingleTurnArgs(model, turn.Send, extra)
+	cmd := prepareCmd(exec.CommandContext(cctx, cli.Binary, args...))
 	cmd.Env = append(os.Environ(), env...)
 
 	var combined bytes.Buffer
@@ -78,17 +259,17 @@ func runSingleTurn(ctx context.Context, t *testing.T, cli CLI, model string, tur
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start %s: %w", cli.Binary, err)
 	}
-	activeCommands.Store(cmd, struct{}{})
-	defer activeCommands.Delete(cmd)
+	trackCmd(cmd)
+	defer untrackCmd(cmd)
 
-	if err := cmd.Wait(); err != nil {
+	if err := waitErr(cmd, cmd.Wait()); err != nil {
 		// Treat non-zero exit as a soft failure so the assertion path can
 		// still inspect what we got. Include the buffer tail in the error
 		// message so a t.Fatal report shows what the CLI actually printed,
 		// not just "exit status 1".
 		out := combined.String()
-		return out, fmt.Errorf("%s exit: %w; output tail:\n%s",
-			cli.Binary, err, tailStr(out, 600))
+		return out, annotateIfKilled(cmd, fmt.Errorf("%s exit: %w; output tail:\n%s",
+			cli.Binary, err, tailStr(out, 600)))
 	}
 	return combined.String(), nil
 }
@@ -132,7 +313,7 @@ func (d *claudeStreamJSON) Start(ctx context.Context, t *testing.T, cli CLI, mod
 		args = append(args, "--model", model)
 	}
 
-	cmd := exec.CommandContext(cctx, cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, cli.Binary, args...))
 	cmd.Env = append(os.Environ(), env...)
 
 	stdinPipe, err := cmd.StdinPipe()
@@ -148,7 +329,7 @@ func (d *claudeStreamJSON) Start(ctx context.Context, t *testing.T, cli CLI, mod
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", cli.Binary, err)
 	}
-	activeCommands.Store(cmd, struct{}{})
+	trackCmd(cmd)
 
 	d.cmd = cmd
 	d.stdin = stdinPipe
@@ -175,7 +356,7 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 		return "", err
 	}
 	if _, err := d.stdin.Write(append(line, '\n')); err != nil {
-		return "", fmt.Errorf("write user msg: %w", err)
+		return "", annotateIfKilled(d.cmd, fmt.Errorf("write user msg: %w", err))
 	}
 
 	deadline := time.After(timeout)
@@ -186,6 +367,7 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 	ch := make(chan result, 1)
 	go func() {
 		var assistantText strings.Builder
+		var toolMarkers strings.Builder
 		for d.stdout.Scan() {
 			raw := d.stdout.Bytes()
 			if d.mirror != nil {
@@ -195,7 +377,7 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 			if err := json.Unmarshal(raw, &ev); err != nil {
 				continue
 			}
-			extractAssistantText(ev, &assistantText)
+			extractAssistantText(ev, &assistantText, &toolMarkers)
 			if evType, _ := ev["type"].(string); evType == "result" {
 				// Authoritative success/failure signal per the Agent SDK docs.
 				if isErr, _ := ev["is_error"].(bool); isErr {
@@ -211,11 +393,14 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 					return
 				}
 				// Prefer the canonical result.result field; fall back to the
-				// accumulated assistant content blocks if it's absent.
+				// accumulated assistant content blocks if it's absent. Tool-use
+				// markers are tracked separately and always appended, since
+				// result.result only ever contains genuine model text.
 				text := assistantText.String()
 				if r, _ := ev["result"].(string); r != "" {
 					text = r
 				}
+				text += toolMarkers.String()
 				ch <- result{text: text}
 				return
 			}
@@ -228,11 +413,14 @@ func (d *claudeStreamJSON) Send(t *testing.T, prompt string, timeout time.Durati
 			tailStr(d.stderr.String(), 400))}
 	}()
 
+	// A reaped subprocess surfaces here as a scanner error or a truncated
+	// stream, never as cmd.Wait -- so this is where the kill has to be tagged
+	// for cellWasInterrupted to see it.
 	select {
 	case r := <-ch:
-		return r.text, r.err
+		return r.text, annotateIfKilled(d.cmd, r.err)
 	case <-deadline:
-		return "", fmt.Errorf("turn timed out after %s", timeout)
+		return "", annotateIfKilled(d.cmd, fmt.Errorf("turn timed out after %s", timeout))
 	}
 }
 
@@ -245,14 +433,33 @@ func (d *claudeStreamJSON) Close() {
 	}
 	if d.cmd != nil {
 		_ = d.cmd.Wait()
-		activeCommands.Delete(d.cmd)
+		untrackCmd(d.cmd)
 	}
 }
 
-// extractAssistantText walks a Claude stream-json event and appends any text
-// the assistant produced. We deliberately ignore tool_use / tool_result blocks
-// because tests assert on the natural-language portion of responses.
-func extractAssistantText(ev map[string]any, out *strings.Builder) {
+// agentToolUseMarker is appended to a turn's asserted text whenever the
+// CLI's JSONL/stream-JSON output shows the model actually invoking a
+// subagent-delegation tool — Claude's built-in `Agent` tool_use block, or
+// Codex's `collab_tool_call` item with tool == "spawn_agent" (see
+// codex-rs/exec/src/exec_events.rs,
+// https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/exec/src/exec_events.rs).
+// The subagent-delegation scenario asserts on this marker instead of
+// natural-language prose, since neither CLI's tool-call payload is prose.
+const agentToolUseMarker = "\n[BIFROST_E2E_AGENT_TOOL_USE]\n"
+
+// claudeToolUseMarkers maps a Claude tool_use block's name to the marker to
+// emit. The subagent tool was renamed Task -> Agent in Claude Code v2.1.63;
+// both names are mapped defensively in case a run is pinned to an older CLI.
+var claudeToolUseMarkers = map[string]string{"Agent": agentToolUseMarker, "Task": agentToolUseMarker}
+
+// extractAssistantText walks a Claude stream-json event, appending assistant
+// text to out and a synthetic marker to markers for any tool_use block whose
+// name we care about (see claudeToolUseMarkers). markers is tracked
+// separately from out because Send() prefers the stream's canonical
+// result.result field over the accumulated text once present, and that field
+// only ever contains real model text — a marker folded into out would be
+// silently dropped.
+func extractAssistantText(ev map[string]any, out, markers *strings.Builder) {
 	t, _ := ev["type"].(string)
 	if t != "assistant" {
 		return
@@ -267,9 +474,16 @@ func extractAssistantText(ev map[string]any, out *strings.Builder) {
 		if block == nil {
 			continue
 		}
-		if bt, _ := block["type"].(string); bt == "text" {
+		switch block["type"] {
+		case "text":
 			if s, _ := block["text"].(string); s != "" {
 				out.WriteString(s)
+			}
+		case "tool_use":
+			if name, _ := block["name"].(string); name != "" {
+				if marker, ok := claudeToolUseMarkers[name]; ok {
+					markers.WriteString(marker)
+				}
 			}
 		}
 	}
@@ -293,8 +507,35 @@ func extractJSONAssistantText(raw string) (string, bool) {
 		if isAssistantEvent(ev) {
 			appendJSONText(ev, &out)
 		}
+		appendAgentToolUseMarker(ev, &out)
 	}
 	return out.String(), sawJSON
+}
+
+// appendAgentToolUseMarker walks a decoded event looking for a Codex
+// collab_tool_call item whose "tool" is "spawn_agent" and appends the shared
+// agentToolUseMarker. Runs independently of isAssistantEvent: a
+// collab_tool_call item is correctly not assistant text (see
+// codex-rs/exec/src/exec_events.rs,
+// https://github.com/openai/codex/blob/rust-v0.145.0/codex-rs/exec/src/exec_events.rs),
+// so it would never reach appendJSONText otherwise. Mirrors
+// isAssistantEvent's item/message/delta wrapper-key descent so it needs no
+// new event shapes to be taught.
+func appendAgentToolUseMarker(v any, out *strings.Builder) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	if typ, _ := m["type"].(string); typ == "collab_tool_call" {
+		if tool, _ := m["tool"].(string); tool == "spawn_agent" {
+			out.WriteString(agentToolUseMarker)
+		}
+	}
+	for _, key := range []string{"item", "message", "delta"} {
+		if child, ok := m[key]; ok {
+			appendAgentToolUseMarker(child, out)
+		}
+	}
 }
 
 func isAssistantEvent(v any) bool {
@@ -384,15 +625,26 @@ func codexResumeDriver() multiTurnDriver { return &codexResume{} }
 
 func (d *codexResume) Start(ctx context.Context, t *testing.T, cli CLI, model string, env []string, mirror io.Writer) error {
 	t.Helper()
-	tempHome, err := os.MkdirTemp("", "bifrost-clis-codex-home-*")
-	if err != nil {
-		return fmt.Errorf("create temp codex home: %w", err)
+	// codexPreLaunch already minted a per-cell CODEX_HOME and wrote the Bifrost
+	// provider config into it; reuse that directory so `resume --last` reads the
+	// same config and session store. Minting a second one here would shadow the
+	// config (os/exec keeps the last occurrence of a duplicated env key), sending
+	// codex back to api.openai.com. The fallback branch only runs if a caller
+	// wires this driver up without the prelaunch.
+	tempHome, ok := envValue(env, "CODEX_HOME")
+	if !ok {
+		var err error
+		tempHome, err = os.MkdirTemp("", "bifrost-clis-codex-home-*")
+		if err != nil {
+			return fmt.Errorf("create temp codex home: %w", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(tempHome) })
+		env = append(env, "CODEX_HOME="+tempHome)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(tempHome) })
 
 	d.cli = cli
 	d.model = model
-	d.envBase = append(env, "CODEX_HOME="+tempHome)
+	d.envBase = env
 	d.mirror = mirror
 	d.tempHome = tempHome
 	d.ctx = ctx
@@ -419,7 +671,7 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 	}
 	d.turnIndex++
 
-	cmd := exec.CommandContext(cctx, d.cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, d.cli.Binary, args...))
 	cmd.Env = append(os.Environ(), d.envBase...)
 
 	var stdout bytes.Buffer
@@ -429,19 +681,20 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start codex turn %d: %w", d.turnIndex, err)
 	}
-	activeCommands.Store(cmd, struct{}{})
-	defer activeCommands.Delete(cmd)
+	trackCmd(cmd)
+	defer untrackCmd(cmd)
 
-	if err := cmd.Wait(); err != nil {
+	if err := waitErr(cmd, cmd.Wait()); err != nil {
 		out := stdout.String()
-		return out, fmt.Errorf("codex turn %d exit: %w; output tail:\n%s",
-			d.turnIndex, err, tailStr(out, 600))
+		return out, annotateIfKilled(cmd, fmt.Errorf("codex turn %d exit: %w; output tail:\n%s",
+			d.turnIndex, err, tailStr(out, 600)))
 	}
 	return stdout.String(), nil
 }
 
 func (d *codexResume) Close() {
-	// CODEX_HOME cleanup is registered via t.Cleanup in Start.
+	// CODEX_HOME cleanup belongs to whoever created the directory: codexPreLaunch
+	// (via runCell's t.Cleanup) normally, or Start's fallback branch otherwise.
 }
 
 // ---- OpenCode: chained `run` + `run --continue` ----
@@ -487,7 +740,9 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 	cctx, cancel := context.WithTimeout(d.ctx, timeout)
 	defer cancel()
 
-	args := []string{"run", "--dangerously-skip-permissions", "--format", "json"}
+	// See the SingleTurnArgs comment in matrix_test.go for why no
+	// permission-bypass flag is passed here.
+	args := []string{"run", "--format", "json"}
 	if d.turnIndex > 0 {
 		args = append(args, "--continue")
 	}
@@ -497,7 +752,7 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 	args = append(args, prompt)
 	d.turnIndex++
 
-	cmd := exec.CommandContext(cctx, d.cli.Binary, args...)
+	cmd := prepareCmd(exec.CommandContext(cctx, d.cli.Binary, args...))
 	cmd.Env = append(os.Environ(), d.envBase...)
 
 	var stdout bytes.Buffer
@@ -507,13 +762,13 @@ func (d *opencodeResume) Send(t *testing.T, prompt string, timeout time.Duration
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start opencode turn %d: %w", d.turnIndex, err)
 	}
-	activeCommands.Store(cmd, struct{}{})
-	defer activeCommands.Delete(cmd)
+	trackCmd(cmd)
+	defer untrackCmd(cmd)
 
-	if err := cmd.Wait(); err != nil {
+	if err := waitErr(cmd, cmd.Wait()); err != nil {
 		out := stdout.String()
-		return out, fmt.Errorf("opencode turn %d exit: %w; output tail:\n%s",
-			d.turnIndex, err, tailStr(out, 600))
+		return out, annotateIfKilled(cmd, fmt.Errorf("opencode turn %d exit: %w; output tail:\n%s",
+			d.turnIndex, err, tailStr(out, 600)))
 	}
 	return stdout.String(), nil
 }

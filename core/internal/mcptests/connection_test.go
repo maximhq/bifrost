@@ -36,7 +36,7 @@ func TestHTTPConnection(t *testing.T) {
 	clients := manager.GetClients()
 	require.Len(t, clients, 1, "should have one client")
 	assert.Equal(t, schemas.MCPConnectionTypeHTTP, clients[0].ConnectionInfo.Type)
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 }
 
 func TestHTTPConnectionInvalidURL(t *testing.T) {
@@ -55,7 +55,7 @@ func TestHTTPConnectionInvalidURL(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		clients = manager.GetClients()
 		if len(clients) > 0 {
-			assert.Equal(t, schemas.MCPConnectionStateDisconnected, clients[0].State)
+			assert.Equal(t, schemas.MCPConnectionStateUnstable, clients[0].State)
 		}
 	}
 }
@@ -86,7 +86,7 @@ func TestSSEConnection(t *testing.T) {
 	clients := manager.GetClients()
 	require.Len(t, clients, 1, "should have one client")
 	assert.Equal(t, schemas.MCPConnectionTypeSSE, clients[0].ConnectionInfo.Type)
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 }
 
 func TestSSEConnectionReconnect(t *testing.T) {
@@ -115,7 +115,7 @@ func TestSSEConnectionReconnect(t *testing.T) {
 
 	// Verify still connected
 	clients = manager.GetClients()
-	AssertClientState(t, clients, clientID, schemas.MCPConnectionStateConnected)
+	AssertClientState(t, clients, clientID, schemas.MCPConnectionStateHealthy)
 }
 
 // =============================================================================
@@ -169,7 +169,7 @@ func TestSTDIOConnectionTimeout(t *testing.T) {
 	clients := manager.GetClients()
 	if len(clients) > 0 {
 		// Client should be in disconnected or error state
-		assert.NotEqual(t, schemas.MCPConnectionStateConnected, clients[0].State)
+		assert.NotEqual(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 	}
 }
 
@@ -366,7 +366,7 @@ func TestConnectionWithHeaders(t *testing.T) {
 	clients := manager.GetClients()
 
 	require.Len(t, clients, 1, "should have one client")
-	assert.Equal(t, schemas.MCPConnectionStateConnected, clients[0].State)
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 }
 
 func TestConnectionWithEnvironmentVariables(t *testing.T) {
@@ -399,7 +399,7 @@ func TestInvalidConnectionType(t *testing.T) {
 	// Verify client was not added or is in error state
 	clients := manager.GetClients()
 	if len(clients) > 0 {
-		assert.NotEqual(t, schemas.MCPConnectionStateConnected, clients[0].State)
+		assert.NotEqual(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 	}
 }
 
@@ -419,6 +419,6 @@ func TestConnectionWithMissingRequiredFields(t *testing.T) {
 
 	// Client should not be connected
 	if len(clients) > 0 {
-		assert.NotEqual(t, schemas.MCPConnectionStateConnected, clients[0].State)
+		assert.NotEqual(t, schemas.MCPConnectionStateHealthy, clients[0].State)
 	}
 }

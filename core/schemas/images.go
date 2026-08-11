@@ -203,6 +203,17 @@ type ImageUsage struct {
 	OutputTokens        int                `json:"output_tokens,omitempty"` // Always image tokens unless OutputTokensDetails is not nil
 	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
 	NumInputImages      int                `json:"-"` // Number of input images from the request (populated by Bifrost)
+	Cost                *BifrostCost       `json:"cost,omitempty"` // Only for the providers which support cost calculation
+	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
+	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
+}
+
+// NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the image path.
+func (u *ImageUsage) NormalizeProviderCost() {
+	if u == nil || u.Cost != nil {
+		return
+	}
+	u.Cost = costFromUSDTicks(u.CostInUsdTicks)
 }
 
 type ImageTokenDetails struct {
@@ -226,6 +237,12 @@ func (u *ImageUsage) DeepCopy() *ImageUsage {
 	if u.OutputTokensDetails != nil {
 		details := *u.OutputTokensDetails
 		out.OutputTokensDetails = &details
+	}
+	if u.CostInUsdTicks != nil {
+		out.CostInUsdTicks = new(*u.CostInUsdTicks)
+	}
+	if u.Cost != nil {
+		out.Cost = new(*u.Cost)
 	}
 	return &out
 }

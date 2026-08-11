@@ -3,11 +3,14 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Label } from "@/components/ui/label";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import MultiBudgetLines from "@/components/ui/multibudgets";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { resetDurationOptions } from "@/lib/constants/governance";
+import { budgetSignature } from "@/lib/utils/governance";
 import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getModelLimitScope, getModelLimitScopes } from "@/lib/registries/modelLimitScopes";
@@ -48,6 +51,7 @@ const formSchema = z
 					id: z.string().optional(),
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string().optional(),
+					reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 				}),
 			)
 			.optional(),
@@ -80,6 +84,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 	const { data: providersData } = useGetProvidersQuery();
 	const [createModelConfig, { isLoading: isCreating }] = useCreateModelConfigMutation();
+	// Defers the save until the operator says whether to clear accumulated spend.
+	const resetPrompt = useBudgetUsageResetPrompt<FormData>();
 	const [updateModelConfig, { isLoading: isUpdating }] = useUpdateModelConfigMutation();
 	const [getModels] = useLazyGetModelsQuery();
 	const isLoading = isCreating || isUpdating;
@@ -119,6 +125,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				id: b.id,
 				max_limit: b.max_limit,
 				reset_duration: b.reset_duration,
+				reset_config: b.reset_config,
 			})),
 			tokenMaxLimit: modelConfig?.rate_limit?.token_max_limit ?? undefined,
 			tokenResetDuration: modelConfig?.rate_limit?.token_reset_duration || "1h",
@@ -152,6 +159,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					id: b.id,
 					max_limit: b.max_limit,
 					reset_duration: b.reset_duration,
+					reset_config: b.reset_config,
 				})),
 				tokenMaxLimit: modelConfig.rate_limit?.token_max_limit ?? undefined,
 				tokenResetDuration: modelConfig.rate_limit?.token_reset_duration || "1h",
@@ -161,12 +169,39 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		}
 	}, [modelConfig, form]);
 
+	// A budget config change on an existing limit is when clearing accumulated
+	// spend becomes a meaningful choice; creating one has no usage to reset.
+	// Compared without ids on purpose: form rows carry none while persisted rows do,
+	// so including them would report a change on every save. The shared signature
+	// folds in the fiscal quarter, which a limit-and-duration comparison misses -
+	// moving Q1 from April to July reschedules the reset without touching either.
+	const budgetsChanged = (data: FormData) => {
+		if (!isEditing || !modelConfig) return false;
+		const next = (data.budgets ?? [])
+			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
+			.map((b) => ({ max_limit: b.max_limit, reset_duration: b.reset_duration, reset_config: b.reset_config }));
+		const current = (modelConfig.budgets ?? []).map((b) => ({
+			max_limit: b.max_limit ?? undefined,
+			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
+		}));
+		return budgetSignature(next) !== budgetSignature(current);
+	};
+
 	const onSubmit = async (data: FormData) => {
 		if (!canSubmit) {
 			toast.error("You don't have permission to perform this action");
 			return;
 		}
 
+		if (budgetsChanged(data)) {
+			resetPrompt.ask(data);
+			return;
+		}
+		await saveModelLimit(data, false);
+	};
+
+	const saveModelLimit = async (data: FormData, resetBudgetUsage: boolean) => {
 		if (!hasAnyLimit) {
 			form.setError("root", { message: "At least one budget or rate limit is required" });
 			return;
@@ -179,7 +214,12 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 			// reconciled server-side; an empty array removes all budgets.
 			const budgetsPayload = (data.budgets ?? [])
 				.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
-				.map((b) => ({ id: b.id, max_limit: b.max_limit as number, reset_duration: b.reset_duration || "1M" }));
+				.map((b) => ({
+					id: b.id,
+					max_limit: b.max_limit as number,
+					reset_duration: b.reset_duration || "1M",
+					reset_config: b.reset_config,
+				}));
 
 			if (isEditing && modelConfig) {
 				const hadRateLimit = !!modelConfig.rate_limit;
@@ -214,6 +254,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						provider: provider,
 						budgets: budgetsPayload,
 						rate_limit: rateLimitPayload,
+						// Only sent when the operator explicitly chose to clear spend.
+						reset_budget_usage: resetBudgetUsage || undefined,
 					},
 				}).unwrap();
 				toast.success("Limit updated successfully");
@@ -431,6 +473,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										id: b.id,
 										max_limit: b.max_limit,
 										reset_duration: b.reset_duration ?? "1M",
+										reset_config: b.reset_config,
 									}))}
 									onChange={(lines) => form.setValue("budgets", lines, { shouldDirty: true })}
 								/>
@@ -537,6 +580,13 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						</div>
 					</form>
 				</Form>
+				<BudgetUsageResetDialog
+					data-testid="model-limit-budget-reset-dialog"
+					ownerLabel="limit"
+					open={resetPrompt.isOpen}
+					onOpenChange={resetPrompt.setOpen}
+					onChoice={(resetUsage) => resetPrompt.resolve((data) => saveModelLimit(data, resetUsage))}
+				/>
 			</SheetContent>
 		</Sheet>
 	);

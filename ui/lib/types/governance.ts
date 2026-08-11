@@ -2,10 +2,17 @@
 
 import { ModelProviderName, RequestType } from "./config";
 
+/** Window settings the reset duration cannot express. Only valid on "1Q". */
+export interface BudgetResetConfig {
+	/** First month of Q1 as 1-12; omitted means January. */
+	quarter_start_month?: number;
+}
+
 export interface Budget {
 	id: string;
 	max_limit: number; // In dollars
-	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q"
+	reset_config?: BudgetResetConfig;
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
 	override_amount?: number;
@@ -234,6 +241,8 @@ export interface UpdateTeamRequest {
 	budgets?: CreateBudgetRequest[]; // Replaces all team budgets; empty array clears
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface CreateCustomerRequest {
@@ -250,17 +259,21 @@ export interface UpdateCustomerRequest {
 	budget?: UpdateBudgetRequest; // deprecated: use budgets
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface CreateBudgetRequest {
 	id?: string;
 	max_limit: number; // In dollars
-	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Q"
+	reset_config?: BudgetResetConfig;
 }
 
 export interface UpdateBudgetRequest {
 	max_limit?: number;
 	reset_duration?: string;
+	reset_config?: BudgetResetConfig;
 }
 
 export interface CreateRateLimitRequest {
@@ -413,6 +426,8 @@ export interface UpdateModelConfigRequest {
 	provider?: string; // Optional provider - if empty/null, applies to all providers
 	budgets?: CreateBudgetRequest[]; // Full desired set; reconciled against existing
 	rate_limit?: UpdateRateLimitRequest;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface GetModelConfigsParams {
@@ -597,6 +612,8 @@ export interface UpdateProviderGovernanceRequest {
 	budgets?: CreateBudgetRequest[]; // [] = remove all
 	rate_limit?: UpdateRateLimitRequest;
 	calendar_aligned?: boolean;
+	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
+	reset_budget_usage?: boolean;
 }
 
 export interface GetProviderGovernanceResponse {

@@ -1,6 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { DottedSeparator } from "@/components/ui/separator";
@@ -69,6 +71,8 @@ function governanceToFormValues(provGov: ProviderGovernance | undefined): FormDa
 
 export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps) {
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
+	// Defers the save until the operator says whether to clear accumulated spend.
+	const resetPrompt = useBudgetUsageResetPrompt<FormData>();
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 
 	const { data: providerGovernanceData } = useGetProviderGovernanceQuery(undefined, {
@@ -111,7 +115,29 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 		}
 	}, [showCalendarAlignment, watchedCalendarAligned, form]);
 
+	// A budget config change on existing provider governance is when clearing
+	// accumulated spend becomes a meaningful choice.
+	const budgetsChanged = (data: FormData) => {
+		const signature = (rows: { max_limit?: number | null; reset_duration?: string }[]) =>
+			[...rows]
+				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}`)
+				.sort()
+				.join("|");
+		const existing = providerGovernance?.budgets ?? [];
+		if (existing.length === 0) return false;
+		const next = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
+		return signature(next) !== signature(existing);
+	};
+
 	const onSubmit = async (data: FormData) => {
+		if (budgetsChanged(data)) {
+			resetPrompt.ask(data);
+			return;
+		}
+		await saveGovernance(data, false);
+	};
+
+	const saveGovernance = async (data: FormData, resetBudgetUsage: boolean) => {
 		try {
 			const validBudgets = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
 			const hasAlignableBudget = validBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
@@ -155,6 +181,8 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					budgets: budgetsPayload,
 					...(budgetsPayload !== undefined ? { calendar_aligned: hasAlignableBudget && data.calendarAligned } : {}),
 					rate_limit: rateLimitPayload,
+					// Only sent when the operator explicitly chose to clear spend.
+					reset_budget_usage: resetBudgetUsage || undefined,
 				},
 			}).unwrap();
 
@@ -287,6 +315,13 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					</Button>
 				</div>
 			</form>
+			<BudgetUsageResetDialog
+				data-testid="provider-governance-budget-reset-dialog"
+				ownerLabel="provider"
+				open={resetPrompt.isOpen}
+				onOpenChange={resetPrompt.setOpen}
+				onChoice={(resetUsage) => resetPrompt.resolve((data) => saveGovernance(data, resetUsage))}
+			/>
 		</Form>
 	);
 }

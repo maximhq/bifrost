@@ -24,13 +24,37 @@ const J = (v) => JSON.stringify(v);
 // 1024-token minimum). Model choices reuse exact IDs already proven elsewhere in this
 // collection (e.g. the existing Round 16 rows, effortModels in augment-provider-harness.mjs)
 // rather than guessing new ones.
+// cacheReadGuaranteed decides between a hard assertion and a reported measurement, and
+// is a separate axis from explicitCache. An accepted cache_control breakpoint is a
+// contract: a repeat of the same prefix must read it back, so a miss is a real defect.
+// Gemini's implicit caching is not. Google promises only to "automatically pass on cost
+// savings if your request hits caches" and frames its own advice as ways to "improve
+// implicit cache hit likelihood" (https://ai.google.dev/gemini-api/docs/caching).
+//
+// Measured here directly, with and without Bifrost in the path, byte-identical repeats of
+// the same prefix alternate between a miss and a full hit with no discernible pattern -
+// the same behaviour crossprovider-cache-matrix.mjs already records from its own runs
+// (gemini-2.5-flash 0%/97%/0%/0%). Asserting a hit on rounds 2 AND 3 of only 3 rounds
+// therefore fails intermittently for something Bifrost does not control. That file solves
+// it by running more rounds and asserting only "cached at least once"; this one has just
+// 3 rounds, so the Gemini row reports instead of asserting.
+//
+// OpenAI stays asserted despite also being implicit: it has been stable across runs here,
+// and the token-parity suite additionally pins it with an affinity key. This is a remedy
+// for a documented non-guarantee that was observed flapping, not a blanket implicit-cache
+// policy.
 const CACHING_BACKENDS = [
-  { key: "openai", label: "OpenAI", model: "openai/gpt-4o-mini", explicitCache: false },
-  { key: "anthropic", label: "Anthropic", model: "anthropic/claude-haiku-4-5", explicitCache: true },
-  { key: "gemini", label: "Gemini", model: "gemini/gemini-2.5-flash", explicitCache: false },
-  { key: "vertex", label: "Vertex (Claude)", model: "vertex/claude-sonnet-4-6", explicitCache: true },
-  { key: "bedrock", label: "Bedrock (Claude)", model: "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0", explicitCache: true },
+  { key: "openai", label: "OpenAI", model: "openai/gpt-4o-mini", explicitCache: false, cacheReadGuaranteed: true },
+  { key: "anthropic", label: "Anthropic", model: "anthropic/claude-haiku-4-5", explicitCache: true, cacheReadGuaranteed: true },
+  { key: "gemini", label: "Gemini", model: "gemini/gemini-2.5-flash", explicitCache: false, cacheReadGuaranteed: false },
+  { key: "vertex", label: "Vertex (Claude)", model: "vertex/claude-sonnet-4-6", explicitCache: true, cacheReadGuaranteed: true },
+  { key: "bedrock", label: "Bedrock (Claude)", model: "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0", explicitCache: true, cacheReadGuaranteed: true },
 ];
+
+// Floor for "the prefix was on the wire". Deliberately far below {{cachePrefix}}'s real size and
+// far above a bare question (~20 tokens), so it separates the two cases without being sensitive to
+// tokenizer differences across the five backends.
+const PREFIX_MIN_PROMPT_TOKENS = 500;
 
 const QUESTIONS = [
   "In one sentence, what is this operating manual mostly about?",
@@ -38,10 +62,19 @@ const QUESTIONS = [
   "In one sentence, summarize the tone requirements this manual describes.",
 ];
 
-const systemBlock = (explicitCache) => {
+// The prefix rides a system MESSAGE, not a top-level `system` field. These rows post to
+// /v1/chat/completions, whose schema has no top-level `system` - that is the Anthropic Messages
+// shape. An unknown top-level key lands in ExtraParams and is dropped unless passthrough-extra-
+// params is on, so the earlier top-level form silently sent no prefix at all: rounds 2-3 reported
+// prompt_tokens of 17-20 and the model answered "I don't see any manual attached", which then read
+// as a cache miss on all five backends when nothing had ever been cached.
+//
+// cache_control rides the content block (ChatContentBlock carries it on this surface), matching
+// how the hand-written Round 16 rows in the collection already attach cache breakpoints.
+const systemMessage = (explicitCache) => {
   const block = { type: "text", text: "{{cachePrefix}}" };
   if (explicitCache) block.cache_control = { type: "ephemeral" };
-  return [block];
+  return { role: "system", content: [block] };
 };
 
 const extractScript = `
@@ -58,8 +91,7 @@ export function buildPromptCachingHitVerificationItems() {
       const body = {
         model: backend.model,
         max_tokens: 300,
-        system: systemBlock(backend.explicitCache),
-        messages: [{ role: "user", content: QUESTIONS[round - 1] }],
+        messages: [systemMessage(backend.explicitCache), { role: "user", content: QUESTIONS[round - 1] }],
       };
       const isReadRound = round >= 2;
       const script = isReadRound
@@ -69,9 +101,29 @@ pm.test(${J(`Prompt caching hit-verification: ${backend.key} round ${round} succ
   pm.expect(pm.response.code, "request failed: " + pm.response.text()).to.be.below(400);
 });
 if (pm.response.code < 400) {
-  pm.test(${J(`Prompt caching hit-verification: ${backend.key} round ${round} - cache read hit (cached_tokens > 0)`)}, function () {
-    pm.expect(cached, "prompt=" + prompt + " cached=" + cached + " (usage=" + JSON.stringify(u) + ") - identical {{cachePrefix}} was sent in round 1, expected a cache read here").to.be.above(0);
+  // Assert the prefix actually went out BEFORE judging the cache. A dropped prefix and a genuine
+  // cache miss both surface as cached_tokens 0, and conflating them is how a wire-shape bug hid
+  // here as five backends' worth of "caching is broken". {{cachePrefix}} is far over 1024 tokens,
+  // so a prompt this small means the prefix never left the harness.
+  pm.test(${J(`Prompt caching hit-verification: ${backend.key} round ${round} - prefix was actually sent`)}, function () {
+    pm.expect(prompt, "prompt_tokens=" + prompt + " (usage=" + JSON.stringify(u) + ") - {{cachePrefix}} is >1024 tokens, so this request cannot have carried it; the cache assertion below would be meaningless").to.be.above(${PREFIX_MIN_PROMPT_TOKENS});
   });
+  ${
+    backend.cacheReadGuaranteed
+      ? `pm.test(${J(`Prompt caching hit-verification: ${backend.key} round ${round} - cache read hit (cached_tokens > 0)`)}, function () {
+    pm.expect(cached, "prompt=" + prompt + " cached=" + cached + " (usage=" + JSON.stringify(u) + ") - identical {{cachePrefix}} was sent in round 1, expected a cache read here").to.be.above(0);
+  });`
+      : // Best-effort caching on this backend: a miss is allowed behaviour, so it must not fail
+        // the run. Still assert what IS invariant regardless of whether the cache engaged - the
+        // counter must be a real number and can never exceed the prompt it came from - so a
+        // nonsense value is still caught. The hit/miss is logged so a permanent regression to
+        // 0% stays visible in the run output instead of disappearing entirely.
+        `pm.test(${J(`Prompt caching hit-verification: ${backend.key} round ${round} - cached_tokens coherent (best-effort cache, hit not guaranteed)`)}, function () {
+    pm.expect(cached, "cached=" + cached + " (usage=" + JSON.stringify(u) + ")").to.be.a("number").that.is.at.least(0);
+    pm.expect(cached, "cached=" + cached + " exceeds prompt=" + prompt + " (usage=" + JSON.stringify(u) + ")").to.be.at.most(prompt);
+  });
+  console.log("IMPLICIT_CACHE_OBSERVATION", JSON.stringify({ backend: ${J(backend.key)}, model: ${J(backend.model)}, round: ${round}, prompt: prompt, cached: cached, hit: cached > 0 }));`
+  }
 }`.trim()
         : `
 ${extractScript}
