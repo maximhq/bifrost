@@ -589,6 +589,9 @@ func (provider *RunwareProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
 	url := provider.buildPassthroughURL(req)
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -639,6 +642,16 @@ func (provider *RunwareProvider) Passthrough(
 			PassthroughPath:         req.Path,
 		},
 		PassthroughUsage: passthroughUsage,
+	}
+
+	// Honor the provider's raw-payload exposure config: expose the raw upstream request/response
+	// to callers only when send_back_raw_request/response is enabled (internal store_raw logging is
+	// handled separately by the logging layer).
+	if sendBackRawRequest {
+		bifrostResponse.ExtraFields.RawRequest = string(req.Body)
+	}
+	if sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = string(body)
 	}
 
 	return bifrostResponse, nil
