@@ -1,0 +1,127 @@
+---
+title: "Render"
+description: "Deploy the Bifrost container as a Render web service"
+icon: "cloud"
+---
+
+Render can run the versioned Bifrost image as a web service. The deployment below uses PostgreSQL so configuration and logs survive service replacement.
+
+<Note>
+**Support level: Preview.** This guide is not continuously exercised against a live Render service. Render image services require `linux/amd64`, which is present in the Bifrost release manifest.
+</Note>
+
+## Compatibility summary
+
+| Model | Compatibility | Constraint |
+|---|---|---|
+| One OSS replica with Render persistent disk and SQLite | **Preview** | SQLite is OSS-only; the disk is single-instance and disables zero-downtime deploys. |
+| One replica with external PostgreSQL 16+ | **Preview** | Compatible with ephemeral replacement; live qualification remains required. |
+| Multiple OSS replicas with DB-managed config | **Not supported** | OSS processes do not synchronize in-memory configuration. |
+| Enterprise mesh | **Unqualified** | Render web services expose one HTTP port; peer discovery and TCP+UDP cluster networking are not documented here. |
+
+Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support the SQLite alternative on this page.
+
+See [Bifrost Deployment Requirements](/deployment-guides/runtime-contract) for the shared container values.
+
+## Deploy Bifrost
+
+Render does not provide a CLI command that fully creates an image-backed web service. The steps below minimize dashboard work and make every Bifrost value explicit.
+
+### Step 1: Create the Bifrost configuration
+
+```bash
+cat > config.json <<'JSON'
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "setup_token": "env.BIFROST_SETUP_TOKEN",
+  "client": {
+    "enforce_auth_on_inference": true
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {"host": "env.PG_HOST", "port": "5432", "user": "env.PG_USER", "password": "env.PG_PASSWORD", "db_name": "env.PG_DATABASE", "ssl_mode": "require"}
+  }
+}
+JSON
+
+base64 < config.json | tr -d '\n'
+```
+
+Copy the printed base64 value. It contains no database password; the sensitive values remain separate Render secret environment variables.
+
+### Step 2: Create the web service
+
+In Render, choose **New → Web Service → Existing Image**, then set:
+
+| Render field | Value |
+|---|---|
+| Image | `docker.io/maximhq/bifrost:<BIFROST_VERSION>` |
+| Health path | `/health` |
+| Docker command | `/bin/sh -c 'printf "%s" "$BIFROST_CONFIG_B64" \| base64 -d > /app/data/config.json && exec /app/docker-entrypoint.sh'` |
+
+### Step 3: Add environment variables and deploy
+
+Add these values in **Environment**. Mark the password, encryption key, setup token, and encoded configuration as secret.
+
+```text
+APP_HOST=0.0.0.0
+APP_PORT=10000
+PORT=10000
+BIFROST_CONFIG_B64=<BASE64_OUTPUT_FROM_STEP_1>
+PG_HOST=<POSTGRES_HOST>
+PG_USER=<POSTGRES_USER>
+PG_PASSWORD=<POSTGRES_PASSWORD>
+PG_DATABASE=<POSTGRES_DATABASE>
+BIFROST_ENCRYPTION_KEY=<STABLE_ENCRYPTION_KEY>
+BIFROST_SETUP_TOKEN=<SETUP_TOKEN>
+```
+
+Deploy one instance. Render Postgres is one option; any PostgreSQL 16 or later server reachable from the service is valid. The configuration requires authentication on inference routes. Use the setup token to [create the first admin account](/quickstart/gateway/setting-up-auth), then [create a virtual key](/features/governance/virtual-keys) before sending inference traffic or sharing the public service URL with clients.
+
+### Step 4: Verify
+
+```bash
+curl --fail --show-error https://<RENDER_HOSTNAME>/health
+```
+
+Inspect the Render logs if the health check does not pass. Bifrost must be able to resolve and connect to the configured PostgreSQL host during startup.
+
+### One-click status
+
+Render supports a **Deploy to Render** button backed by a root `render.yaml`. Bifrost does not publish that Blueprint yet. A safe Blueprint must pin a tested Bifrost image and provide a reviewed configuration/secret flow; it would then need an automated update and smoke test for every Bifrost release. This guide therefore does not link to an unverified button.
+
+## SQLite storage alternative (OSS only)
+
+This alternative is available only for OSS Bifrost. For a single-instance SQLite deployment, create `config.json` from the [SQLite configuration](/deployment-guides/runtime-contract#sqlite), encode it as shown in Step 1, and keep the same Docker command. Remove the PostgreSQL environment variables, attach a paid persistent disk at `/app/data`, and keep one instance.
+
+Verify that the disk is writable by container UID `1000` before storing customer configuration. A Render disk is attached to one service instance and prevents zero-downtime replacement. Enterprise deployments must use PostgreSQL 16 or later instead.
+
+## External access
+
+Render's web-service URL and managed TLS are one optional frontend implementation. A private service plus an external gateway is also valid. The frontend must meet the shared HTTP, health, SSE, WebSocket, timeout, and forwarded-header contract.
+
+## Scaling and upgrades
+
+- OSS persistent-disk SQLite: one instance and a brief interruption during replacement.
+- PostgreSQL-backed OSS configuration: one instance.
+- File-only OSS: several instances only with identical immutable configuration and no shared SQLite.
+- Enterprise: do not claim mesh support until peer networking and the exact Enterprise release are qualified; broker mode is an advanced alternative to evaluate.
+
+For updates, deploy an immutable tag/digest and retain it in the registry for rollback. Image-backed services do not redeploy automatically merely because a tag's digest changes. Follow the [upgrade guidance](/deployment-guides/runtime-contract#upgrade-bifrost).
+
+## Troubleshooting
+
+- Port not detected: set both `APP_PORT=10000` and `PORT=10000`.
+- Disk deployment exits: verify `/app/data` ownership/write access for UID `1000`.
+- Configuration disappears: no persistent disk was attached and stores remained local.
+- No zero-downtime rollout: this is a documented Render disk limitation, not a Bifrost health-check failure.
+- `/health` `503`: inspect configured store connectivity, not only process state.
+
+Domains, managed TLS, private networking, Render Postgres, disk snapshots, alerts, and log integrations are optional platform/production features. Complete the [deployment verification checklist](/deployment-guides/runtime-contract#verify-the-deployment) and see [Enterprise clustering](/enterprise/clustering) for multinode designs.
