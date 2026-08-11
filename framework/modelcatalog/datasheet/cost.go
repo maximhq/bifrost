@@ -1211,6 +1211,7 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
+	catalogProvider := normalizeProvider(provider)
 	var aliasModelID, aliasModelName string
 	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
 		aliasModelID = rka.ModelID
@@ -1239,7 +1240,7 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		if candidate == "" {
 			continue
 		}
-		base, exists := s.getBasePricing(candidate, provider, requestType)
+		base, exists := s.getBasePricing(candidate, catalogProvider, requestType)
 		if exists && base != nil {
 			result, _ := s.applyPricingOverrides(overrideKey, requestType, *base, scopes)
 			return &result

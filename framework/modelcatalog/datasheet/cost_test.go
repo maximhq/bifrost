@@ -1921,6 +1921,31 @@ func TestGetPricing_DirectLookup(t *testing.T) {
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
+func TestCalculateCost_TogetherAliasUsesTogetherAIPricingWithCache(t *testing.T) {
+	const model = "zai-org/GLM-5.2"
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(model, "together_ai", "chat"): {
+			Model:                   model,
+			Provider:                "together_ai",
+			Mode:                    "chat",
+			InputCostPerToken:       bifrost.Ptr(1.40 / 1_000_000),
+			CacheReadInputTokenCost: bifrost.Ptr(0.26 / 1_000_000),
+			OutputCostPerToken:      bifrost.Ptr(4.40 / 1_000_000),
+		},
+	})
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     36_807_862,
+		CompletionTokens: 54_932,
+		TotalTokens:      36_862_794,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens: 33_829_760,
+		},
+	}
+
+	cost := s.CalculateCost(makeChatResponse("together", model, usage), nil)
+	assert.InDelta(t, 13.2067812, cost, 1e-9)
+}
+
 func TestGetPricing_GeminiFallsBackToVertex(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gemini-2.0-flash", "vertex", "chat"): {

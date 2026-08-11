@@ -349,10 +349,12 @@ func makeKey(model, provider, mode string) string {
 	return model + "|" + provider + "|" + mode
 }
 
-// normalizeProvider folds upstream-datasheet provider name variants
-// (vertex_ai, google-vertex, etc.) onto bifrost's canonical provider names.
+// normalizeProvider folds equivalent provider identifiers onto the canonical
+// provider name used by the pricing catalog.
 func normalizeProvider(p string) string {
 	switch {
+	case p == "together":
+		return "together_ai"
 	case strings.Contains(p, "vertex_ai") || p == "google-vertex":
 		return string(schemas.Vertex)
 	case strings.Contains(p, "bedrock"):
