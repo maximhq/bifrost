@@ -172,6 +172,8 @@ type PrometheusPlugin struct {
 	CostTotal                      *prometheus.CounterVec
 	RoutingEmbeddingRequestsTotal  *prometheus.CounterVec
 	RoutingEmbeddingCostTotal      *prometheus.CounterVec
+	RoutingLLMRequestsTotal        *prometheus.CounterVec
+	RoutingLLMCostTotal            *prometheus.CounterVec
 	StreamInterTokenLatencySeconds *prometheus.HistogramVec
 	StreamFirstTokenLatencySeconds *prometheus.HistogramVec
 	RequestRetries                 *prometheus.HistogramVec
@@ -505,6 +507,27 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		[]string{"provider", "model", "phase"},
 	)
 
+	// The llm classifier's counters are separate rather than a phase or
+	// mechanism label on the embedding pair above: they count chat
+	// completions, not embeddings, and folding them into embedding-named
+	// metrics would silently misdescribe what the provider billed. No phase
+	// label either — the llm classifier has no warmup.
+	bifrostRoutingLLMRequestsTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_llm_requests_total",
+			Help: "Total number of chat completions made by llm complexity routing, labeled by the classifier provider/model.",
+		},
+		[]string{"provider", "model"},
+	)
+
+	bifrostRoutingLLMCostTotal := factory.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "bifrost_routing_llm_cost_total",
+			Help: "Total cost in USD of llm complexity routing completions, labeled by the classifier provider/model. Recorded regardless of whether the cost counts toward budgets.",
+		},
+		[]string{"provider", "model"},
+	)
+
 	bifrostStreamInterTokenLatencySeconds := factory.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "bifrost_stream_inter_token_latency_seconds",
@@ -598,6 +621,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CostTotal:                      bifrostCostTotal,
 		RoutingEmbeddingRequestsTotal:  bifrostRoutingEmbeddingRequestsTotal,
 		RoutingEmbeddingCostTotal:      bifrostRoutingEmbeddingCostTotal,
+		RoutingLLMRequestsTotal:        bifrostRoutingLLMRequestsTotal,
+		RoutingLLMCostTotal:            bifrostRoutingLLMCostTotal,
 		StreamInterTokenLatencySeconds: bifrostStreamInterTokenLatencySeconds,
 		StreamFirstTokenLatencySeconds: bifrostStreamFirstTokenLatencySeconds,
 		RequestRetries:                 bifrostRequestRetries,
@@ -1091,10 +1116,22 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// cost also folds into bifrost_cost_total via CalculateCost).
 			extraFields := result.GetExtraFields()
 			if rd := extraFields.RoutingDebug; rd != nil && rd.ProviderUsed != nil && rd.ModelUsed != nil {
-				p.RoutingEmbeddingRequestsTotal.WithLabelValues(*rd.ProviderUsed, *rd.ModelUsed, routingEmbeddingPhaseRequest).Inc()
-				if p.pricingManager != nil {
-					if embeddingCost := p.pricingManager.CalculateRoutingEmbeddingCost(rd, pricingScopes); embeddingCost > 0 {
-						p.RoutingEmbeddingCostTotal.WithLabelValues(*rd.ProviderUsed, *rd.ModelUsed, routingEmbeddingPhaseRequest).Add(embeddingCost)
+				// A stamp carrying OutputTokens is an llm classification chat
+				// completion; without it, a semantic classification embed. The
+				// cost calculation branches on the same signal.
+				if rd.OutputTokens != nil {
+					p.RoutingLLMRequestsTotal.WithLabelValues(*rd.ProviderUsed, *rd.ModelUsed).Inc()
+					if p.pricingManager != nil {
+						if llmCost := p.pricingManager.CalculateRoutingEmbeddingCost(rd, pricingScopes); llmCost > 0 {
+							p.RoutingLLMCostTotal.WithLabelValues(*rd.ProviderUsed, *rd.ModelUsed).Add(llmCost)
+						}
+					}
+				} else {
+					p.RoutingEmbeddingRequestsTotal.WithLabelValues(*rd.ProviderUsed, *rd.ModelUsed, routingEmbeddingPhaseRequest).Inc()
+					if p.pricingManager != nil {
+						if embeddingCost := p.pricingManager.CalculateRoutingEmbeddingCost(rd, pricingScopes); embeddingCost > 0 {
+							p.RoutingEmbeddingCostTotal.WithLabelValues(*rd.ProviderUsed, *rd.ModelUsed, routingEmbeddingPhaseRequest).Add(embeddingCost)
+						}
 					}
 				}
 			}

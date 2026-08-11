@@ -238,6 +238,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.ComplexityMechanisms) > 0 {
 		baseQuery = baseQuery.Where("complexity_mechanism IN ?", filters.ComplexityMechanisms)
 	}
+	if filters.ComplexitySessionID != "" {
+		baseQuery = baseQuery.Where("complexity_session_id = ?", filters.ComplexitySessionID)
+	}
 	if len(filters.ComplexitySessionModes) > 0 {
 		baseQuery = baseQuery.Where("complexity_session_mode IN ?", filters.ComplexitySessionModes)
 	}

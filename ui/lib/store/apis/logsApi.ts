@@ -32,6 +32,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.parent_request_id) {
 		params.parent_request_id = filters.parent_request_id;
 	}
+	if (filters.complexity_session_id) {
+		params.complexity_session_id = filters.complexity_session_id;
+	}
 	if (filters.providers && filters.providers.length > 0) {
 		params.providers = filters.providers.join(",");
 	}

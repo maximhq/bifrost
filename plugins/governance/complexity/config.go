@@ -43,10 +43,12 @@ const (
 	MechanismSemantic = "semantic"
 	MechanismSkipped  = "skipped"
 	// MechanismSession means pinned mode reused a tier without classifying this
-	// request. Cache-aware mode deliberately keeps MechanismSemantic or
+	// request. Cache-aware mode deliberately keeps the classifying mechanism or
 	// MechanismSkipped because its classifier runs before session policy decides
 	// whether to hold or switch the tier.
 	MechanismSession = "session"
+	// MechanismLLM means the chat-completion classifier published the tier.
+	MechanismLLM = "llm"
 )
 
 // Default boundaries are retained for the dormant lexical analyzer and its
@@ -65,6 +67,9 @@ type EditableKeywordConfig = configstore.ComplexityEditableKeywordConfig
 // SemanticConfig is the embedding-based classifier configuration. Its
 // exemplars are the shared per-tier keyword lists in EditableKeywordConfig.
 type SemanticConfig = configstore.ComplexitySemanticConfig
+
+// LLMConfig is the chat-completion classifier configuration.
+type LLMConfig = configstore.ComplexityLLMConfig
 
 // AnalyzerConfig is the runtime configuration for the complexity analyzer.
 type AnalyzerConfig = configstore.ComplexityAnalyzerConfig

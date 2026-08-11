@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
@@ -97,6 +98,7 @@ type GovernancePlugin struct {
 
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 	semanticClassifier *complexity.SemanticClassifier
+	llmClassifier      *complexity.LLMClassifier
 	// complexitySessionConfig mirrors the analyzer config's session block so the
 	// request path can read mode, ttl, and identity sources without holding the
 	// whole config. Kept in step by storeComplexityAnalyzerConfig, so it follows
@@ -117,6 +119,12 @@ type GovernancePlugin struct {
 	// until then. Atomic because warmup fires it from a background worker while
 	// plugin reloads may re-wire it.
 	warmupEmbedUsageObserver atomic.Pointer[WarmupEmbedUsageObserver]
+
+	// chatRequestExecutor is wired by the HTTP server after the bifrost client
+	// exists (post-Init) via SetChatRequestExecutor, exactly like
+	// embeddingRequestExecutor; the llm complexity classifier reads it on the
+	// request hot path.
+	chatRequestExecutor atomic.Pointer[ChatRequestExecutor]
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -265,6 +273,7 @@ func Init(
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
 		semanticClassifier:    complexity.NewSemanticClassifier(ctx, logger),
+		llmClassifier:         complexity.NewLLMClassifier(logger),
 	}
 	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, governanceConfig))
 	return plugin, nil
@@ -361,6 +370,7 @@ func InitFromStore(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 		semanticClassifier:    complexity.NewSemanticClassifier(ctx, logger),
+		llmClassifier:         complexity.NewLLMClassifier(logger),
 	}
 	plugin.storeComplexityAnalyzerConfig(resolveAnalyzerConfigFromStoreOrArg(ctx, logger, configStore, nil))
 	return plugin, nil
@@ -401,6 +411,14 @@ func (p *GovernancePlugin) ComplexitySemanticStatus() complexity.SemanticStatusI
 		return complexity.SemanticStatusInfo{State: complexity.SemanticStatusDisabled}
 	}
 	return p.semanticClassifier.Status()
+}
+
+// ComplexityLLMStatus returns the current llm classifier readiness.
+func (p *GovernancePlugin) ComplexityLLMStatus() complexity.LLMStatusInfo {
+	if p.llmClassifier == nil {
+		return complexity.LLMStatusInfo{State: complexity.LLMStatusDisabled}
+	}
+	return p.llmClassifier.Status()
 }
 
 // SetComplexitySessionKVStore installs the backing store for session state.
@@ -456,6 +474,9 @@ func (p *GovernancePlugin) storeComplexityAnalyzerConfig(config *complexity.Anal
 	}
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.Configure(resolved)
+	}
+	if p.llmClassifier != nil {
+		p.llmClassifier.Configure(resolved)
 	}
 }
 
@@ -811,12 +832,14 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				return nil
 			}
 
-			// Semantic classification is the only mechanism. Without it there is no
-			// tier to publish: the lexical scorer still exists for historical
-			// configs but is never run, because the phrase lists an operator
-			// authors are semantic exemplars — whole sentences — and scoring them
-			// as literal keywords produces tiers that look authoritative while
-			// resting on matches the operator never intended.
+			// Semantic classification is the only primary mechanism. Without it
+			// there is no tier to publish: the lexical scorer still exists for
+			// historical configs but is never run, because the phrase lists an
+			// operator authors are semantic exemplars — whole sentences — and
+			// scoring them as literal keywords produces tiers that look
+			// authoritative while resting on matches the operator never
+			// intended. The llm classifier is not an alternative primary
+			// either: it engages only below, after a semantic non-answer.
 			if p.semanticClassifier == nil || !p.semanticClassifier.IsConfigured() {
 				if p.logger != nil {
 					p.logger.Debug("[Governance] %s", noSemanticClassifierLog)
@@ -869,15 +892,14 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				)
 				return result
 			}
-			// Whatever `fallback` a persisted config still carries, there is
-			// nowhere to fall back to: semantic is the only mechanism that runs.
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
 			// One line per decision, naming the cause. The level is part of the
 			// message: a classifier that could not run is an operator problem,
 			// while a request that resembled nothing in the tier lists is routine
-			// and would be noise at Warn.
+			// and would be noise at Warn. The consequence clause is composed
+			// separately because a semantic non-answer now has two possible
+			// endings: skipped, or handed to the llm fallback.
 			unavailableLevel := schemas.LogLevelWarn
-			unavailableLog := "Semantic complexity classification unavailable, so no complexity tier is published"
+			unavailableCause := "Semantic complexity classification unavailable"
 			switch {
 			case rejectedResult != nil:
 				unavailableLevel = schemas.LogLevelInfo
@@ -885,9 +907,9 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				// the difference between "the floor is set too high for a phrase
 				// that genuinely fits" and "nothing in the tier lists resembles
 				// this request".
-				unavailableLog = withMatchedExemplar(
+				unavailableCause = withMatchedExemplar(
 					fmt.Sprintf(
-						"Semantic complexity rejected: nearest tier=%s similarity=%.2f below min_similarity=%.2f, so no complexity tier is published",
+						"Semantic complexity rejected: nearest tier=%s similarity=%.2f below min_similarity=%.2f",
 						rejectedResult.Tier,
 						rejectedResult.Score,
 						rejectedResult.MinSimilarity,
@@ -899,12 +921,26 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				// and naming it as merely "unavailable" sends the operator hunting
 				// for a broken provider or an incomplete warmup instead of raising
 				// semantic.timeout.
-				unavailableLog = fmt.Sprintf(
-					"Semantic complexity classification timed out after %s, so no complexity tier is published",
+				unavailableCause = fmt.Sprintf(
+					"Semantic complexity classification timed out after %s",
 					p.semanticClassifier.Timeout(),
 				)
 			}
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, unavailableLevel, unavailableLog)
+			// The fallback engages on every semantic non-answer alike —
+			// rejection, timeout, unfinished warmup, unwired executor — because
+			// each one leaves the same hole: a rule referencing complexity_tier
+			// that cannot match. Its own outcome is logged by
+			// computeLLMComplexity, so this line only records the handoff.
+			if p.llmClassifier != nil && p.llmClassifier.FallbackEnabled() {
+				ctx.AppendRoutingEngineLog(
+					schemas.RoutingEngineRoutingRule,
+					schemas.LogLevelInfo,
+					unavailableCause+"; falling back to the LLM classifier",
+				)
+				return p.computeLLMComplexity(ctx, input)
+			}
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, unavailableLevel, unavailableCause+", so no complexity tier is published")
 			return nil
 		}
 	}

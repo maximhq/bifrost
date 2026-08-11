@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -33,6 +34,50 @@ func newTestSQLiteStore(t *testing.T) *RDBLogStore {
 		t.Fatalf("newSqliteLogStore() error = %v", err)
 	}
 	return store
+}
+
+func TestComplexitySessionIDExactFilterSQLite(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 1, 2, 3, 4, 0, 0, time.UTC)
+	sessionIDs := []string{"conversation-abc", "conversation-abc", "conversation-other"}
+
+	for i, sessionID := range sessionIDs {
+		entry := &Log{
+			ID:        fmt.Sprintf("session-filter-%d", i),
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+			Object:    "chat.completion",
+			Provider:  "openai",
+			Model:     "gpt-4o-mini",
+			Status:    "success",
+		}
+		entry.ComplexitySessionID = &sessionID
+		if err := store.Create(ctx, entry); err != nil {
+			t.Fatalf("Create(%s) error = %v", entry.ID, err)
+		}
+	}
+
+	filters := SearchFilters{ComplexitySessionID: "conversation-abc"}
+	result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchLogs() error = %v", err)
+	}
+	if len(result.Logs) != 2 {
+		t.Fatalf("expected two matching session rows, got %d", len(result.Logs))
+	}
+	for _, entry := range result.Logs {
+		if entry.ComplexitySessionID == nil || *entry.ComplexitySessionID != "conversation-abc" {
+			t.Fatalf("exact filter returned non-matching row %s", entry.ID)
+		}
+	}
+
+	stats, err := store.GetStats(ctx, filters)
+	if err != nil {
+		t.Fatalf("GetStats() error = %v", err)
+	}
+	if stats.TotalRequests != 2 {
+		t.Fatalf("expected filtered stats total 2, got %d", stats.TotalRequests)
+	}
 }
 
 func TestCancelledStatusIncludedInLogAggregates(t *testing.T) {

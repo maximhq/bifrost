@@ -1819,6 +1819,11 @@ type BifrostRoutingDebug struct {
 	ProviderUsed *string `json:"provider_used,omitempty"`
 	ModelUsed    *string `json:"model_used,omitempty"`
 	InputTokens  *int    `json:"input_tokens,omitempty"`
+	// OutputTokens is present only when the routing classification was a chat
+	// completion (the llm classifier). Its presence is the signal that cost
+	// calculation must price the call at chat rates; a semantic classification
+	// embed never sets it.
+	OutputTokens *int `json:"output_tokens,omitempty"`
 
 	// CountTowardBudgets carries the governance count_toward_budgets flag to
 	// cost calculation, which cannot see governance config. When true, the

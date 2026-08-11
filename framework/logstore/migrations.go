@@ -2720,6 +2720,11 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
+		name:  "idx_logs_complexity_session_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_complexity_session_id ON logs(complexity_session_id) WHERE complexity_session_id IS NOT NULL",
+	},
+	{
+		table: "logs",
 		name:  "idx_logs_complexity_session_mode",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_complexity_session_mode ON logs(complexity_session_mode) WHERE complexity_session_mode IS NOT NULL",
 	},

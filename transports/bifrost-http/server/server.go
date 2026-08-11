@@ -1073,6 +1073,22 @@ func (s *BifrostHTTPServer) GetComplexitySemanticStatus(ctx context.Context) (co
 	return provider.ComplexitySemanticStatus(), nil
 }
 
+// GetComplexityLLMStatus returns the current llm complexity classifier
+// readiness from the governance plugin.
+func (s *BifrostHTTPServer) GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return complexity.LLMStatusInfo{}, fmt.Errorf("governance plugin not found: %w", err)
+	}
+	provider, ok := governancePlugin.(interface {
+		ComplexityLLMStatus() complexity.LLMStatusInfo
+	})
+	if !ok {
+		return complexity.LLMStatusInfo{}, fmt.Errorf("governance plugin does not expose llm complexity status")
+	}
+	return provider.ComplexityLLMStatus(), nil
+}
+
 // GetComplexitySessionStoreStatus returns what the session-state backend can
 // guarantee, or nil when no store is attached. A nil result is not an error: it
 // means session state has no backing store, which is normal when session
@@ -2005,6 +2021,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if governanceWarmupObserverPlugin, ok := plugin.(governance.WarmupEmbedUsageObserverSetter); ok {
 		governanceWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
 	}
+	if governanceChatPlugin, ok := plugin.(governance.ChatExecutorSetter); ok {
+		governanceChatPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
+	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
@@ -2650,6 +2669,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	governanceWarmupObserverPlugin, err := lib.FindPluginAs[governance.WarmupEmbedUsageObserverSetter](s.Config, s.getGovernancePluginName())
 	if err == nil && governanceWarmupObserverPlugin != nil {
 		governanceWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.ObserveWarmupRoutingEmbedding)
+	}
+	// Add governance plugin chat request executor if it exists (used for llm
+	// complexity classification).
+	governanceChatPlugin, err := lib.FindPluginAs[governance.ChatExecutorSetter](s.Config, s.getGovernancePluginName())
+	if err == nil && governanceChatPlugin != nil {
+		governanceChatPlugin.SetChatRequestExecutor(s.Client.ChatCompletionRequest)
 	}
 
 	// Initialize Sidekiq runner for background jobs

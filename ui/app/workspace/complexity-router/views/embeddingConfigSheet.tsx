@@ -7,7 +7,12 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Switch } from "@/components/ui/switch";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
-import { MAX_SEMANTIC_MESSAGE_HISTORY, MIN_SEMANTIC_MESSAGE_HISTORY, SEMANTIC_VECTOR_STORE_OPTIONS } from "@/lib/types/complexityRouter";
+import {
+	MAX_SEMANTIC_MESSAGE_HISTORY,
+	MIN_SEMANTIC_MESSAGE_HISTORY,
+	SEMANTIC_FALLBACK_OPTIONS,
+	SEMANTIC_VECTOR_STORE_OPTIONS,
+} from "@/lib/types/complexityRouter";
 import { ModelProvider, ModelProviderName } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
@@ -338,6 +343,51 @@ export default function EmbeddingConfigSheet({
 										</p>
 									)}
 								</div>
+							</div>
+
+							{/* Fallback classifier. Lives here rather than in its own sheet
+							    because it is a property of semantic classification — what to
+							    do when it cannot answer — and is meaningless without it. The
+							    fallback model's own settings (and its prompt, on the page)
+							    appear once this is switched on. */}
+							<div className="space-y-2 border-t pt-4">
+								<FieldLabel
+									htmlFor="semantic-fallback"
+									tooltip={
+										<span className="space-y-1.5">
+											{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
+												<span key={option.value} className="block">
+													<b>{option.label}</b>: {option.description}
+												</span>
+											))}
+										</span>
+									}
+								>
+									When no phrase matches confidently
+								</FieldLabel>
+								<Controller
+									control={control}
+									name="semantic.fallback"
+									render={({ field }) => (
+										<Select value={field.value ?? "none"} onValueChange={field.onChange} disabled={!canUpdate || !isConfigured}>
+											<SelectTrigger className="w-full" id="semantic-fallback" data-testid="complexity-router-semantic-fallback-select">
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent>
+												{SEMANTIC_FALLBACK_OPTIONS.map((option) => (
+													<SelectItem key={option.value} value={option.value}>
+														{option.label}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+									)}
+								/>
+								{semantic?.fallback === "llm" && (
+									<p className="text-muted-foreground text-xs leading-relaxed">
+										Configure the fallback model from the page header, and its prompt in the section below the phrase lists.
+									</p>
+								)}
 							</div>
 
 							{/* Budget attribution */}
