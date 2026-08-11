@@ -11,18 +11,25 @@
 business-units:
   get:
     operationId: listBusinessUnits
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List business units
     description: Returns a paginated list of business units, each with its team count.
     tags:
       - Governance
     parameters:
-      - name: page
+      - name: offset
         in: query
-        description: Page number (1-based)
+        description: Zero-based result offset
         schema:
           type: integer
-          minimum: 1
-          default: 1
+          minimum: 0
+          default: 0
       - name: limit
         in: query
         description: Maximum number of business units to return (max 100)
@@ -50,6 +57,13 @@ business-units:
 
   post:
     operationId: createBusinessUnit
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create business unit
     description: Creates a new business unit. Names must be unique.
     tags:
@@ -83,12 +97,19 @@ business-units:
 business-units-by-id:
   get:
     operationId: getBusinessUnit
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Get business unit
     description: Returns a specific business unit by ID, including governance and team count.
     tags:
       - Governance
     parameters:
-      - name: id
+      - name: business_unit_id
         in: path
         required: true
         description: Business unit ID
@@ -112,8 +133,63 @@ business-units-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+  put:
+    operationId: updateBusinessUnit
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
+    summary: Update business unit
+    description: Updates the business unit name.
+    tags:
+      - Governance
+    parameters:
+      - name: business_unit_id
+        in: path
+        required: true
+        description: Business unit ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateBusinessUnitRequest'
+    security:
+      - ManagementBearerAuth: []
+    responses:
+      '200':
+        description: Business unit updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/BusinessUnitMutationResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '409':
+        description: A business unit with this name already exists
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
   delete:
     operationId: deleteBusinessUnit
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete business unit
     description: |
       Deletes a business unit. Any teams assigned to it are atomically unassigned
@@ -121,7 +197,7 @@ business-units-by-id:
     tags:
       - Governance
     parameters:
-      - name: id
+      - name: business_unit_id
         in: path
         required: true
         description: Business unit ID
@@ -150,24 +226,31 @@ business-units-by-id:
 business-units-teams:
   get:
     operationId: listBusinessUnitTeams
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: List business unit teams
     description: Returns a paginated list of teams assigned to the business unit.
     tags:
       - Governance
     parameters:
-      - name: id
+      - name: business_unit_id
         in: path
         required: true
         description: Business unit ID
         schema:
           type: string
-      - name: page
+      - name: offset
         in: query
-        description: Page number (1-based)
+        description: Zero-based result offset
         schema:
           type: integer
-          minimum: 1
-          default: 1
+          minimum: 0
+          default: 0
       - name: limit
         in: query
         description: Maximum number of teams to return (max 100)
@@ -201,6 +284,13 @@ business-units-teams:
 
   post:
     operationId: assignTeamToBusinessUnit
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Assign team to business unit
     description: |
       Assigns an existing team to the business unit. Returns 409 if the team is
@@ -208,7 +298,7 @@ business-units-teams:
     tags:
       - Governance
     parameters:
-      - name: id
+      - name: business_unit_id
         in: path
         required: true
         description: Business unit ID
@@ -249,12 +339,19 @@ business-units-teams:
 business-units-team-by-id:
   delete:
     operationId: removeTeamFromBusinessUnit
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Remove team from business unit
     description: Unassigns a team from the business unit.
     tags:
       - Governance
     parameters:
-      - name: id
+      - name: business_unit_id
         in: path
         required: true
         description: Business unit ID
@@ -291,6 +388,13 @@ business-units-team-by-id:
 business-units-governance:
   post:
     operationId: createBusinessUnitGovernance
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Create business unit governance
     description: |
       Configures budget and/or rate limit governance for a business unit. At least
@@ -299,7 +403,7 @@ business-units-governance:
     tags:
       - Governance
     parameters:
-      - name: id
+      - name: business_unit_id
         in: path
         required: true
         description: Business unit ID
@@ -339,6 +443,13 @@ business-units-governance:
 
   put:
     operationId: updateBusinessUnitGovernance
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Update business unit governance
     description: |
       Updates budget and/or rate limit governance for a business unit. Passing an
@@ -346,7 +457,7 @@ business-units-governance:
     tags:
       - Governance
     parameters:
-      - name: id
+      - name: business_unit_id
         in: path
         required: true
         description: Business unit ID
@@ -380,12 +491,19 @@ business-units-governance:
 
   delete:
     operationId: deleteBusinessUnitGovernance
+    x-mint:
+      metadata:
+        tag: Enterprise
+      content: |
+        <Note>
+          This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
+        </Note>
     summary: Delete business unit governance
     description: Removes all budget and rate limit governance from a business unit.
     tags:
       - Governance
     parameters:
-      - name: id
+      - name: business_unit_id
         in: path
         required: true
         description: Business unit ID
