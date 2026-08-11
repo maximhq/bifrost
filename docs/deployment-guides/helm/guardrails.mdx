@@ -344,7 +344,7 @@ bifrost:
 
           # Plain-value fields (no env.* support)
           violation_threshold: 0.7              # 0.0–1.0; higher = more permissive
-          policy_id: ""                          # optional: single policy ID
+          policy_id: "YOUR_GRAYSWAN_POLICY_ID"    # required: single policy ID
           policy_ids: []                         # optional: multiple policy IDs
           rules: {}                              # optional: inline rule map
           sampling_rate: 100
@@ -527,7 +527,7 @@ Any field marked **env.\* supported** below accepts a bare `"env.VAR_NAME"` stri
 | `base_url` | No | Yes | Custom API base URL (uses Gray Swan default if unset) |
 | `reasoning_mode` | No | Yes | `"standard"` \| `"fast"` \| `"off"` (default: `"standard"`) |
 | `violation_threshold` | No | **Plain only** | `0.0`–`1.0`; higher = more permissive (default: `0.5`) |
-| `policy_id` | No | **Plain only** | Single policy ID string |
+| `policy_id` | Yes | **Plain only** | Required Gray Swan policy ID string |
 | `policy_ids` | No | **Plain only** | Multiple policy IDs (string array) |
 | `rules` | No | **Plain only** | Inline rule map (`{ "rule_name": "description" }`) |
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
