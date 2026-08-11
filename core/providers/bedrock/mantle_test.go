@@ -64,7 +64,7 @@ func TestMantleOpenAIURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := mantleOpenAIURL(tc.region, tc.model, tc.path); got != tc.want {
+			if got := mantleOpenAIURL(nil, tc.region, tc.model, tc.path); got != tc.want {
 				t.Errorf("mantleOpenAIURL(%q, %q, %q) = %q, want %q", tc.region, tc.model, tc.path, got, tc.want)
 			}
 		})
