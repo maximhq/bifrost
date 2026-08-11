@@ -170,18 +170,24 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 }
 
 // supportsOpenAIMinimalReasoningEffort reports models that natively accept "minimal" effort.
-// Per OpenAI's official per-model docs (developers.openai.com/api/docs/guides/latest-model),
-// "minimal" is confirmed only for the original "gpt-5" model. Every later GPT-5 dot-revision
-// (5.1, 5.2, 5.3-codex, 5.4, 5.5, 5.6-family) dropped "minimal" from its reasoning.effort enum
-// in favor of "none"/"xhigh"/"max". o1/o3/o4-series and gpt-oss also do not support it. Models
-// without confirmed capability data conservatively fall back to "low".
+// Per OpenAI's official docs (developers.openai.com/api/docs/guides/latest-model), the original
+// GPT-5 family — "gpt-5", "gpt-5-mini", "gpt-5-nano" — supports "minimal, low, medium, high".
+// Every later GPT-5 dot-revision (5.1, 5.2, 5.3-codex, 5.4, 5.5, 5.6-family, and their own
+// mini/nano/pro/codex variants) dropped "minimal" from their reasoning.effort enum in favor of
+// "none"/"xhigh"/"max". o1/o3/o4-series and gpt-oss also do not support it. Models without
+// confirmed capability data conservatively fall back to "low".
 func supportsOpenAIMinimalReasoningEffort(model string) bool {
 	_, parsedModel := schemas.ParseModelString(model, schemas.OpenAI)
 	if parsedModel != "" {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
-	return modelLower == "gpt-5"
+	switch modelLower {
+	case "gpt-5", "gpt-5-mini", "gpt-5-nano":
+		return true
+	default:
+		return false
+	}
 }
 
 // supportsMaxReasoningEffort reports models that natively accept "max" effort (e.g. GPT-5.6, DeepSeek V4, GLM-5.2).
