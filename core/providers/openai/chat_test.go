@@ -171,6 +171,24 @@ func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
 			expected: "low",
 		},
 		{
+			name:     "maps minimal to low for o1",
+			model:    "o1",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o4",
+			model:    "o4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-oss",
+			model:    "gpt-oss",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
 			name:     "maps max to xhigh for xhigh-capable model",
 			model:    "gpt-5.4",
 			effort:   "max",
@@ -392,6 +410,24 @@ func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEff
 		{
 			name:     "maps minimal to low for o3",
 			model:    "o3",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o1",
+			model:    "o1",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for o4",
+			model:    "o4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps minimal to low for gpt-oss",
+			model:    "gpt-oss",
 			effort:   "minimal",
 			expected: "low",
 		},
