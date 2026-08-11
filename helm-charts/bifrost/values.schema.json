@@ -153,7 +153,7 @@
             },
             "existingSecret": {
               "type": "string",
-              "description": "Secret holding the admin credentials; defaults to the existingSecret from governance.authConfig or authConfig. Must exist in the ServiceMonitor's namespace."
+              "description": "Secret holding the admin credentials; in the Helm release namespace, defaults to the existingSecret from the active governance.authConfig or authConfig. Required explicitly when the ServiceMonitor uses another namespace."
             },
             "usernameKey": {
               "type": "string",

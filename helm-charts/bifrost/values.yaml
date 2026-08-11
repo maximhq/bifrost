@@ -116,15 +116,16 @@ serviceMonitor:
   # Turn this on whenever auth is enabled.
   basicAuth:
     enabled: false
-    # Secret holding the admin credentials. Defaults to the existingSecret already
-    # configured under bifrost.governance.authConfig (preferred) or bifrost.authConfig,
-    # so rotating the admin password rotates the scrape credentials with it. Prometheus
-    # can only read credentials from a Secret, so inline adminUsername/adminPassword
-    # will not work — use existingSecret there, or point this at a Secret yourself.
-    # The Secret must exist in the ServiceMonitor's namespace (see `namespace` above).
+    # Secret holding the admin credentials. In the Helm release namespace, defaults
+    # to the Secret configured under the active bifrost.governance.authConfig
+    # (preferred) or bifrost.authConfig, so rotating the admin password rotates the
+    # scrape credentials with it. If the ServiceMonitor `namespace` differs, set this
+    # field explicitly to a Secret in that namespace. Prometheus cannot use inline
+    # adminUsername/adminPassword values.
     existingSecret: ""
-    # Keys within that Secret. Default to the usernameKey/passwordKey of the authConfig
-    # the secret was resolved from, falling back to "username" / "password".
+    # Keys within the Secret. When the Secret is inherited from an authConfig, these
+    # inherit that config's usernameKey/passwordKey. With an explicit existingSecret,
+    # they default to "username" / "password".
     usernameKey: ""
     passwordKey: ""
   # Bearer-token auth for the scrape, as an alternative to basicAuth (mutually

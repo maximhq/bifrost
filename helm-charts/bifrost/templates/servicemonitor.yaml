@@ -1,4 +1,5 @@
 {{- if .Values.serviceMonitor.enabled }}
+{{- $serviceMonitorNamespace := default .Release.Namespace .Values.serviceMonitor.namespace }}
 {{- $basicAuth := .Values.serviceMonitor.basicAuth | default dict }}
 {{- if and $basicAuth.enabled .Values.serviceMonitor.authorization }}
 {{- fail "ERROR: serviceMonitor.basicAuth.enabled and serviceMonitor.authorization are mutually exclusive; a scrape endpoint carries at most one authentication method. Pick one." }}
@@ -8,23 +9,38 @@
 {{- $basicAuthPasswordKey := "" }}
 {{- if $basicAuth.enabled }}
 {{/*
-  Inherit the credentials Secret from whichever authConfig the deployment already wires
-  into BIFROST_ADMIN_USERNAME/PASSWORD (governance first, then the deprecated top-level
-  one) so rotating the admin password rotates the scrape credentials with it. An explicit
-  serviceMonitor.basicAuth.existingSecret takes over entirely — its keys must not be
-  inherited from an authConfig pointing at a different Secret.
+  Match the config renderer's auth precedence: governance is active only when
+  it contributes a non-empty auth_config, otherwise the top-level authConfig is
+  active only when it contributes one. An explicit basicAuth Secret bypasses
+  this selection and owns its key names.
 */}}
+{{- $governanceAuth := .Values.bifrost.governance.authConfig | default dict }}
+{{- $topLevelAuth := .Values.bifrost.authConfig | default dict }}
+{{- $governanceUsernameConfigured := or (and $governanceAuth.existingSecret $governanceAuth.usernameKey) $governanceAuth.adminUsername }}
+{{- $governancePasswordConfigured := or (and $governanceAuth.existingSecret $governanceAuth.passwordKey) $governanceAuth.adminPassword }}
+{{- $governanceAuthActive := or $governanceUsernameConfigured $governancePasswordConfigured $governanceAuth.isEnabled $governanceAuth.disableAuthOnInference }}
+{{- $topLevelUsernameConfigured := or (and $topLevelAuth.existingSecret $topLevelAuth.usernameKey (not $governanceAuth.existingSecret)) $topLevelAuth.adminUsername }}
+{{- $topLevelPasswordConfigured := or (and $topLevelAuth.existingSecret $topLevelAuth.passwordKey (not $governanceAuth.existingSecret)) $topLevelAuth.adminPassword }}
+{{- $topLevelAuthActive := or $topLevelUsernameConfigured $topLevelPasswordConfigured $topLevelAuth.isEnabled $topLevelAuth.disableAuthOnInference }}
 {{- $authSource := dict }}
+{{- $authSourceName := "" }}
 {{- if $basicAuth.existingSecret }}
-{{- $authSource = dict }}
-{{- else if and .Values.bifrost.governance .Values.bifrost.governance.authConfig .Values.bifrost.governance.authConfig.existingSecret }}
-{{- $authSource = .Values.bifrost.governance.authConfig }}
-{{- else if and .Values.bifrost.authConfig .Values.bifrost.authConfig.existingSecret }}
-{{- $authSource = .Values.bifrost.authConfig }}
+{{- else if ne $serviceMonitorNamespace .Release.Namespace }}
+{{- fail "ERROR: serviceMonitor.namespace differs from the Helm release namespace, so serviceMonitor.basicAuth.existingSecret must be set explicitly. ServiceMonitor Secret references resolve in the ServiceMonitor namespace and cannot inherit the workload auth Secret." }}
+{{- else if $governanceAuthActive }}
+{{- $authSource = $governanceAuth }}
+{{- $authSourceName = "bifrost.governance.authConfig" }}
+{{- else if $topLevelAuthActive }}
+{{- $authSource = $topLevelAuth }}
+{{- $authSourceName = "bifrost.authConfig" }}
 {{- end }}
 {{- $basicAuthSecret = $basicAuth.existingSecret | default (index $authSource "existingSecret") }}
 {{- if not $basicAuthSecret }}
-{{- fail "ERROR: serviceMonitor.basicAuth.enabled is true but no credentials Secret could be resolved. Prometheus reads scrape credentials from a Secret only, so inline bifrost.authConfig.adminUsername/adminPassword cannot be used. Either set bifrost.authConfig.existingSecret (or bifrost.governance.authConfig.existingSecret) so the admin credentials live in a Secret, or point serviceMonitor.basicAuth.existingSecret at a Secret that holds them. The Secret must exist in the ServiceMonitor's namespace." }}
+{{- if $authSourceName }}
+{{- fail (printf "ERROR: serviceMonitor.basicAuth.enabled is true but the active %s does not use an existing Secret. Prometheus cannot read inline adminUsername/adminPassword values. Configure existingSecret on the active authConfig, or set serviceMonitor.basicAuth.existingSecret explicitly." $authSourceName) }}
+{{- else }}
+{{- fail "ERROR: serviceMonitor.basicAuth.enabled is true but no active authConfig with an existing Secret could be resolved. Configure bifrost.governance.authConfig or bifrost.authConfig with an existingSecret, or set serviceMonitor.basicAuth.existingSecret explicitly." }}
+{{- end }}
 {{- end }}
 {{- $basicAuthUsernameKey = $basicAuth.usernameKey | default (index $authSource "usernameKey") | default "username" }}
 {{- $basicAuthPasswordKey = $basicAuth.passwordKey | default (index $authSource "passwordKey") | default "password" }}
@@ -33,7 +49,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "bifrost.fullname" . }}
-  namespace: {{ default .Release.Namespace .Values.serviceMonitor.namespace }}
+  namespace: {{ $serviceMonitorNamespace }}
   labels:
     {{- include "bifrost.labels" . | nindent 4 }}
     {{- with .Values.serviceMonitor.additionalLabels }}

@@ -52,9 +52,33 @@ test_template() {
   fi
 }
 
+# Function to verify that an invalid values combination fails with the expected message
+test_template_failure() {
+  local test_name=$1
+  local expected_error=$2
+  shift 2
+  local helm_args=("$@")
+
+  if helm template bifrost ./helm-charts/bifrost \
+    --set image.tag=v1.0.0 \
+    "${helm_args[@]}" \
+    > /tmp/helm-template-output.yaml 2>&1; then
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Expected rendering to fail${NC}"
+    return 1
+  elif grep -Fq "$expected_error" /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+    echo -e "${YELLOW}  Expected error containing: $expected_error${NC}"
+    head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+    return 1
+  fi
+}
+
 # 1. Storage Combinations (9 tests)
 echo ""
-echo -e "${CYAN}📦 1/7 - Testing Storage Combinations (9 tests)...${NC}"
+echo -e "${CYAN}📦 1/8 - Testing Storage Combinations (9 tests)...${NC}"
 echo "---------------------------------------------------"
 
 # config=no, logs=no
@@ -126,7 +150,7 @@ test_template "config=postgres, logs=postgres" \
 
 # 2. Vector Store Combinations (6 tests)
 echo ""
-echo -e "${CYAN}🗄️  2/7 - Testing Vector Store Combinations (6 tests)...${NC}"
+echo -e "${CYAN}🗄️  2/8 - Testing Vector Store Combinations (6 tests)...${NC}"
 echo "--------------------------------------------------------"
 
 # Weaviate
@@ -175,7 +199,7 @@ test_template "sqlite + qdrant" \
 
 # 3. Special Configurations (7 tests)
 echo ""
-echo -e "${CYAN}⚙️  3/7 - Testing Special Configurations (7 tests)...${NC}"
+echo -e "${CYAN}⚙️  3/8 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
 
 # semantic cache: direct mode (dimension: 1, no provider/keys)
@@ -251,7 +275,7 @@ test_template "production-like config" \
 
 # 4. New Property Rendering (Gap 1-8 tests)
 echo ""
-echo -e "${CYAN}🆕 4/7 - Testing New Property Rendering (Gap 1-8)...${NC}"
+echo -e "${CYAN}🆕 4/8 - Testing New Property Rendering (Gap 1-8)...${NC}"
 echo "-----------------------------------------------------"
 
 # Gap 1+2: Client new properties
@@ -337,7 +361,7 @@ test_template "combined: all new Gap 1-9 fields" \
 
 # 5. Plugin Name Validation
 echo ""
-echo -e "${CYAN}🔌 5/7 - Validating Plugin Names Match Go Registry...${NC}"
+echo -e "${CYAN}🔌 5/8 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
 # Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")
@@ -366,7 +390,7 @@ fi
 
 # 6. Custom Plugin Placement and Order Rendering
 echo ""
-echo -e "${CYAN}🔧 6/7 - Validating Custom Plugin placement and order Rendering...${NC}"
+echo -e "${CYAN}🔧 6/8 - Validating Custom Plugin placement and order Rendering...${NC}"
 echo "-------------------------------------------------------------------"
 
 # Test custom plugin renders successfully with placement and order
@@ -423,7 +447,7 @@ fi
 
 # 7. Security Context Rendering
 echo ""
-echo -e "${CYAN}🔒 7/7 - Validating OpenShift-compatible Security Contexts...${NC}"
+echo -e "${CYAN}🔒 7/8 - Validating OpenShift-compatible Security Contexts...${NC}"
 echo "----------------------------------------------------------------"
 
 # Images before v1.6.4 use a non-numeric `USER appuser`, so kubelet can only
@@ -490,6 +514,38 @@ else
   head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
 fi
 
+
+# 8. ServiceMonitor Authentication
+echo ""
+echo -e "${CYAN}📊 8/8 - Validating ServiceMonitor Authentication...${NC}"
+echo "--------------------------------------------------------"
+
+test_template "same-namespace ServiceMonitor inherits active auth Secret" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set bifrost.authConfig.existingSecret=admin-secret
+
+test_template_failure "cross-namespace ServiceMonitor requires explicit Secret" \
+  "serviceMonitor.basicAuth.existingSecret must be set explicitly" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.namespace=monitoring \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set bifrost.authConfig.existingSecret=admin-secret
+
+test_template_failure "active governance inline auth rejects top-level Secret fallback" \
+  "active bifrost.governance.authConfig does not use an existing Secret" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set bifrost.governance.authConfig.isEnabled=true \
+  --set bifrost.governance.authConfig.adminUsername=governance-user \
+  --set bifrost.governance.authConfig.adminPassword=governance-pass \
+  --set bifrost.authConfig.existingSecret=top-level-secret
+
+test_template "cross-namespace ServiceMonitor accepts explicit Secret" \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.namespace=monitoring \
+  --set serviceMonitor.basicAuth.enabled=true \
+  --set serviceMonitor.basicAuth.existingSecret=monitoring-secret
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
 

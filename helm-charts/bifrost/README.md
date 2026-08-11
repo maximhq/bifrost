@@ -1133,11 +1133,11 @@ serviceMonitor:
   enabled: true
   basicAuth:
     enabled: true
-    # existingSecret / usernameKey / passwordKey default to the authConfig above,
+    # In the release namespace these fields default to the active authConfig above,
     # so rotating the admin password rotates the scrape credentials with it.
 ```
 
-The Secret must exist in the `ServiceMonitor`'s namespace (relevant if you set `serviceMonitor.namespace`). If `basicAuth.enabled` is true and no Secret can be resolved, the render fails with a message pointing at `existingSecret` rather than producing a `ServiceMonitor` that would quietly scrape 401s.
+The Secret must exist in the `ServiceMonitor`'s namespace. Auth-config Secret inheritance is available only when the `ServiceMonitor` uses the Helm release namespace; if you set `serviceMonitor.namespace` to another namespace, set `serviceMonitor.basicAuth.existingSecret` explicitly to a Secret there. If `basicAuth.enabled` is true and no Secret can be resolved, the render fails rather than producing a `ServiceMonitor` that would quietly scrape 401s.
 
 To authenticate with a bearer token instead, use `serviceMonitor.authorization` (mutually exclusive with `basicAuth`). To leave `/metrics` open instead of authenticating the scrape, add it to `bifrost.client.whitelistedRoutes` — note that this exposes metrics to anyone who can reach the pod.
 
