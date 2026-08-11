@@ -429,12 +429,38 @@ func buildSubjectExchangeForm(idp *schemas.TokenExchangeIdP, cfg *schemas.MCPTok
 // When defaultToAudience is set and no scopes are configured, it falls back
 // to "<audience>/.default" (the resource-wide form used by grant shapes that
 // have no separate audience parameter).
+//
+// One narrow case combines both instead of choosing one: per Microsoft's own
+// OBO documentation, ".default" cannot be combined with other delegated
+// scopes (AADSTS70011) *except* "offline_access" —
+//
+//	"you must not combine .default with other delegated scopes like
+//	User.Read, Mail.Read, profile, or User.ReadWrite.All in the same
+//	request. This will result in AADSTS70011 errors... offline_access is
+//	sometimes accepted with .default to enable refresh tokens, but should
+//	not be combined with any additional delegated scopes."
+//	— https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow
+//
+// So when the configured scopes are exactly ["offline_access"] — the shape
+// our own docs recommend adding for a self-renewing admin discovery
+// credential — the audience-derived default is prepended rather than
+// replaced. Without this, that recommendation would silently drop resource
+// access entirely: a defaultToAudience grant shape has no separate audience
+// parameter, so "scope=offline_access" alone requests nothing but a refresh
+// token, for no resource. Any other configured scope is left as a full
+// replacement, not combined: Microsoft's rule above forbids combining
+// .default with genuinely custom scopes, so the caller has opted into
+// naming exactly what they want and .default must not be added alongside it.
 func scopeParam(cfg *schemas.MCPTokenExchangeConfig, defaultToAudience bool) string {
+	audienceDefault := strings.TrimSuffix(cfg.Audience, "/") + "/.default"
+	if defaultToAudience && len(cfg.Scopes) == 1 && strings.TrimSpace(cfg.Scopes[0]) == "offline_access" {
+		return audienceDefault + " offline_access"
+	}
 	if len(cfg.Scopes) > 0 {
 		return strings.Join(cfg.Scopes, " ")
 	}
 	if defaultToAudience {
-		return strings.TrimSuffix(cfg.Audience, "/") + "/.default"
+		return audienceDefault
 	}
 	return ""
 }
