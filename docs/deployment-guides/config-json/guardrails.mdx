@@ -418,7 +418,7 @@ Calls CrowdStrike AIDR's `guard_chat_completions` endpoint for policy-driven AI 
           "base_url": "env.GRAYSWAN_BASE_URL",
           "reasoning_mode": "standard",
           "violation_threshold": 0.7,
-          "policy_id": "",
+          "policy_id": "YOUR_GRAYSWAN_POLICY_ID",
           "policy_ids": [],
           "rules": {},
           "sampling_rate": 100
@@ -629,7 +629,7 @@ Any field marked **env.\* supported** accepts a bare `"env.VAR_NAME"` string in 
 | `base_url` | No | Yes | Custom API base URL (uses Gray Swan default if unset) |
 | `reasoning_mode` | No | Yes | `"standard"` \| `"fast"` \| `"off"` (default: `"standard"`) |
 | `violation_threshold` | No | **Plain only** | `0.0`–`1.0`; higher = more permissive (default: `0.5`) |
-| `policy_id` | No | **Plain only** | Single policy ID string |
+| `policy_id` | Yes | **Plain only** | Required Gray Swan policy ID string |
 | `policy_ids` | No | **Plain only** | Multiple policy IDs (string array) |
 | `rules` | No | **Plain only** | Inline rule map (`{ "rule_name": "description" }`) |
 | `sampling_rate` | No | **Plain only** | `0`–`100`; percentage of requests to evaluate (default: `100`) |
