@@ -6029,6 +6029,19 @@ func executeRequestWithRetries[T any](
 	req *schemas.BifrostRequest,
 	logger schemas.Logger,
 ) (result T, bifrostError *schemas.BifrostError) {
+	// These values are request-scoped outputs. Clear them even when capture is
+	// disabled so a reused BifrostContext cannot leak metadata from a prior request.
+	ctx.ResetProviderRequestIDState(false)
+
+	providerRequestIDHeader, providerRequestIDConfigErr := schemas.ResolveProviderRequestIDHeader(providerKey, config)
+	if providerRequestIDConfigErr != nil {
+		return result, newBifrostErrorFromMsg(providerRequestIDConfigErr.Error())
+	}
+	captureProviderRequestID := providerRequestIDHeader != ""
+	if captureProviderRequestID {
+		ctx.ResetProviderRequestIDState(true)
+	}
+
 	var attempts int
 
 	// Emit the terminal routing-engine entry on every return path — including
@@ -6084,6 +6097,11 @@ func executeRequestWithRetries[T any](
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
+
+		if captureProviderRequestID {
+			ctx.ClearValue(schemas.BifrostContextKeyProviderResponseHeaders)
+			ctx.ClearCurrentProviderRequestID()
+		}
 
 		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
 		// doesn't carry over records from a previous request.
@@ -6410,6 +6428,28 @@ func executeRequestWithRetries[T any](
 		// Attempt the request
 		result, bifrostError = requestHandler(currentKey)
 
+		// Response headers are available as soon as the provider handler returns,
+		// including for streaming requests. Publish both the current ID and trail
+		// record before inspecting the first SSE chunk: a fast provider stream can
+		// finish its async post-hooks while this goroutine is blocked waiting for
+		// that chunk, and those hooks must observe the complete attempt metadata.
+		capturedProviderRequestID := ""
+		if captureProviderRequestID {
+			if headers, ok := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+				capturedProviderRequestID = providerUtils.ExtractProviderRequestIDWithLogger(headers, providerRequestIDHeader, logger)
+				if capturedProviderRequestID != "" {
+					var statusCode *int
+					if bifrostError != nil && bifrostError.StatusCode != nil {
+						status := *bifrostError.StatusCode
+						statusCode = &status
+					}
+					ctx.RecordProviderRequestIDAttempt(schemas.ProviderRequestIDRecord{
+						Attempt: attempts, Provider: providerKey, RequestID: capturedProviderRequestID, HeaderName: providerRequestIDHeader, StatusCode: statusCode,
+					})
+				}
+			}
+		}
+
 		// For streaming requests that returned success, check if the first chunk
 		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
 		// This enables retries and fallbacks for providers that embed errors in
@@ -6446,6 +6486,13 @@ func executeRequestWithRetries[T any](
 					result = any(checkedStream).(T)
 				}
 			}
+		}
+
+		// A provider can surface an error only in the first SSE chunk. The trail
+		// record was intentionally published before waiting for that chunk, so fill
+		// in the newly discovered status with a copy-on-write context update.
+		if capturedProviderRequestID != "" && bifrostError != nil && bifrostError.StatusCode != nil {
+			ctx.UpdateProviderRequestIDRecordStatus(attempts, capturedProviderRequestID, *bifrostError.StatusCode)
 		}
 
 		// Check if result is a streaming channel - if so, defer span completion
