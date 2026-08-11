@@ -84,19 +84,21 @@ provider "kubernetes" {
 }
 ```
 
-## Supported Deployments
+## Implemented Deployments
 
-| Cloud Provider | Service      | Description                        |
-|----------------|--------------|------------------------------------|
-| `aws`          | `ecs`        | AWS Elastic Container Service      |
-| `aws`          | `eks`        | AWS Elastic Kubernetes Service     |
-| `gcp`          | `gke`        | Google Kubernetes Engine           |
-| `gcp`          | `cloud-run`  | Google Cloud Run                   |
-| `azure`        | `aks`        | Azure Kubernetes Service           |
-| `azure`        | `aci`        | Azure Container Instances          |
-| `kubernetes`   | `deployment` | Any existing Kubernetes cluster    |
+| Cloud Provider | Service      | Description                        | Qualification |
+|----------------|--------------|------------------------------------|---------------|
+| `aws`          | `ecs`        | AWS Elastic Container Service      | Preview |
+| `aws`          | `eks`        | AWS Elastic Kubernetes Service     | Preview |
+| `gcp`          | `gke`        | Google Kubernetes Engine           | Preview |
+| `gcp`          | `cloud-run`  | Google Cloud Run                   | Preview |
+| `azure`        | `aks`        | Azure Kubernetes Service           | Preview |
+| `azure`        | `aci`        | Azure Container Instances          | Preview |
+| `kubernetes`   | `deployment` | Any existing Kubernetes cluster    | Preview |
 
 Invalid combinations (e.g. `cloud_provider = "aws"` with `service = "gke"`) are rejected at plan time with a clear error message.
+
+> **Preview:** these targets have maintained Terraform implementations and mocked plan tests, but are not continuously deployed to live cloud accounts. Validate the generated plan, networking, IAM, persistence, and rollback in a non-production account before adoption.
 
 ## Configuration Merging
 
@@ -106,7 +108,7 @@ The module supports three ways to provide Bifrost configuration, which are merge
 2. **Base config string** (`config_json`) -- complete JSON config as a string (used if no file is provided).
 3. **Individual variables** (`encryption_key`, `auth_config`, `providers_config`, etc.) -- override matching top-level keys from the base config.
 
-Individual variables always take precedence over the base config. This lets you keep secrets out of your config file and inject them via Terraform variables or a secrets manager.
+Individual variables always take precedence over the base config. Sensitive values passed through Terraform variables can still be stored in Terraform state. Use an encrypted remote backend with tightly restricted access, audit state reads, and avoid exposing resolved configuration in CI logs.
 
 Set `schema_url` to write a mirrored schema location into `$schema` for isolated deployments. It accepts an HTTP(S) URL, `file://` URL, or filesystem path, and defaults to `https://www.getbifrost.ai/schema`.
 
@@ -146,7 +148,7 @@ For `scim_config` with `provider = "okta"`, set `config.issuerUrl`, `config.clie
 
 ## Testing
 
-Tests use Terraform's native test framework (requires Terraform >= 1.7) with `mock_provider` — no cloud credentials needed.
+Tests use Terraform's native test framework (requires Terraform >= 1.7) with `mock_provider` — no cloud credentials needed. They validate configuration and planned resources; they do not prove that a live cloud deployment, upgrade, or rollback succeeds.
 
 ```bash
 cd terraform/modules/bifrost
