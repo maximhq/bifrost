@@ -536,3 +536,90 @@ func TestValidateExchangeConfig(t *testing.T) {
 		t.Fatal("expected error for missing client_id")
 	}
 }
+
+// useIdPCredentialsClientConfig builds a client that reuses the SSO login
+// application's credentials instead of a dedicated exchange app — audience
+// only, no client_id/client_secret of its own (validateExchangeConfig allows
+// this; the resolved IdP is expected to supply the client ID instead).
+func useIdPCredentialsClientConfig() *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{
+		ID:       "client-idp",
+		Name:     "IdP-Credentialed Exchange Client",
+		AuthType: schemas.MCPAuthTypeTokenExchange,
+		TokenExchange: &schemas.MCPTokenExchangeConfig{
+			Audience:          "api://client-idp",
+			UseIdPCredentials: true,
+		},
+	}
+}
+
+// TestGetExchangedAccessTokenUseIdPCredentialsMissingClientID pins the
+// subject-token exchange path (GetExchangedAccessToken -> rawExchange) to a
+// clear, actionable error — not a request sent upstream with client_id=
+// (empty) — when UseIdPCredentials is set but the resolved IdP has no client
+// ID configured.
+func TestGetExchangedAccessTokenUseIdPCredentialsMissingClientID(t *testing.T) {
+	var hits atomic.Int64
+	server := tokenEndpointStub(t, &hits, nil, "unused", 3600)
+	defer server.Close()
+
+	p := NewOAuth2Provider(nil, nil)
+	p.retryBaseDelay = time.Millisecond
+	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
+		available: true,
+		idp: &schemas.TokenExchangeIdP{
+			TokenEndpoint: server.URL,
+			GrantShape:    schemas.TokenExchangeGrantRFC8693,
+			// IdPClientID deliberately left empty.
+		},
+	})
+
+	config := useIdPCredentialsClientConfig()
+	if _, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), config); err == nil {
+		t.Fatal("expected error when use_idp_credentials is set but the resolved IdP has no client ID")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("token endpoint hits = %d, want 0 (must fail before sending client_id= empty)", got)
+	}
+}
+
+// TestRefreshExchangeAdminTokenUseIdPCredentialsMissingClientID mirrors the
+// above for the refresh-token renewal path (refreshExchangeAdminToken), the
+// other caller of exchangeClientCredentials.
+func TestRefreshExchangeAdminTokenUseIdPCredentialsMissingClientID(t *testing.T) {
+	var hits atomic.Int64
+	server := tokenEndpointStub(t, &hits, nil, "unused", 3600)
+	defer server.Close()
+
+	store := newTestConfigStore()
+	config := useIdPCredentialsClientConfig()
+	store.mcpClients = map[string]*schemas.MCPClientConfig{config.ID: config}
+
+	p := NewOAuth2Provider(store, nil)
+	p.retryBaseDelay = time.Millisecond
+	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
+		available: true,
+		idp: &schemas.TokenExchangeIdP{
+			TokenEndpoint: server.URL,
+			GrantShape:    schemas.TokenExchangeGrantRFC8693,
+			// IdPClientID deliberately left empty.
+		},
+	})
+
+	if err := p.RetainExchangeAdminCredential(context.Background(), config, &schemas.OAuth2TokenExchangeResponse{
+		AccessToken:  "retained-idp",
+		RefreshToken: "refresh-idp",
+		TokenType:    "Bearer",
+		ExpiresIn:    1,
+	}); err != nil {
+		t.Fatalf("RetainExchangeAdminCredential returned error: %v", err)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	if _, err := p.GetAdminAccessToken(context.Background(), config.ID); err == nil {
+		t.Fatal("expected error renewing when use_idp_credentials is set but the resolved IdP has no client ID")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("token endpoint hits = %d, want 0 (must fail before sending client_id= empty)", got)
+	}
+}
