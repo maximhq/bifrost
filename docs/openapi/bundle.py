@@ -312,6 +312,8 @@ class OpenAPIBundler:
                     else value
                 )
 
+        annotate_deprecated_operations(output)
+
         return output
 
     def _resolve_paths(self, paths: Dict[str, Any], entry_path: Path) -> Dict[str, Any]:
@@ -332,6 +334,73 @@ class OpenAPIBundler:
             else:
                 resolved[path_name] = self._resolve_value(path_ref, entry_path)
         return resolved
+
+
+# -----------------------------------------------------------------------------
+# Deprecation annotations
+# -----------------------------------------------------------------------------
+
+HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head", "trace")
+
+REMOVAL_PHRASES = {
+    "following-major-release": "the following major release",
+}
+
+DEPRECATION_TAG = "Removing soon"
+DEPRECATED_SUMMARY_SUFFIX = " (deprecated path)"
+
+
+def annotate_deprecated_operations(spec: Dict[str, Any]) -> int:
+    """
+    Mark every operation carrying `x-bifrost-successor` as deprecating soon.
+
+    Legacy aliases $ref their successor operation, so they inherit its summary
+    verbatim. Mintlify derives a page route from tag + summary, meaning an alias
+    and its successor would collide on the same route. Suffixing the summary both
+    disambiguates the route and labels the endpoint in the navigation.
+
+    Runs on the bundled output so the annotations stay in sync with the
+    successor operations the aliases are defined against.
+    """
+    annotated = 0
+    for path_item in spec.get("paths", {}).values():
+        if not isinstance(path_item, dict):
+            continue
+        for method in HTTP_METHODS:
+            operation = path_item.get(method)
+            if not isinstance(operation, dict):
+                continue
+            successor = operation.get("x-bifrost-successor")
+            if not successor:
+                continue
+
+            operation["deprecated"] = True
+
+            summary = str(operation.get("summary") or "")
+            if not summary.endswith(DEPRECATED_SUMMARY_SUFFIX):
+                operation["summary"] = summary + DEPRECATED_SUMMARY_SUFFIX
+
+            removal = REMOVAL_PHRASES.get(
+                str(operation.get("x-bifrost-removal") or ""), "a future major release"
+            )
+            notice = (
+                "<Warning>\n"
+                f"  This path is deprecated and will be removed in {removal}.\n"
+                f"  Use `{successor}` instead.\n"
+                "</Warning>\n"
+            )
+
+            # x-mint is inherited from the successor - copy before mutating so the
+            # successor's own metadata is left untouched.
+            x_mint = copy.deepcopy(operation.get("x-mint") or {})
+            metadata = dict(x_mint.get("metadata") or {})
+            metadata["tag"] = DEPRECATION_TAG
+            x_mint["metadata"] = metadata
+            x_mint["content"] = notice + str(x_mint.get("content") or "")
+            operation["x-mint"] = x_mint
+
+            annotated += 1
+    return annotated
 
 
 # -----------------------------------------------------------------------------
