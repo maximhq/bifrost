@@ -1936,6 +1936,16 @@
       "key": "webhook_name",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "vk_budget_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "vk_budget_max_limit",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -3176,6 +3186,8 @@
                   "        pm.expect(vk.budgets).to.be.an('array').with.length.greaterThan(0);",
                   "        pm.expect(vk.rate_limit).to.be.an('object');",
                   "        pm.expect(vk.provider_configs).to.be.an('array').with.length.greaterThan(0);",
+                  "        pm.collectionVariables.set('vk_budget_id', String(vk.budgets[0].id));",
+                  "        pm.collectionVariables.set('vk_budget_max_limit', String(vk.budgets[0].max_limit));",
                   "    });",
                   "}"
                 ],
@@ -3363,6 +3375,138 @@
                 "governance",
                 "virtual-keys",
                 "{{vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Set Virtual Key Budget Override",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// This mutates a real budget, so it must never fall back to placeholder ids:",
+                  "// skip unless the create above captured the VK and its budget.",
+                  "var missing = ['vk_id', 'vk_budget_id', 'vk_budget_max_limit'].filter(function (key) {",
+                  "  return !pm.collectionVariables.get(key);",
+                  "});",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('vk_override_amount', '7.5');",
+                  "pm.request.body.raw = JSON.stringify({ amount: 7.5, mode: 'forever' });"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Virtual key budget override is applied', function () {",
+                  "    pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body).to.have.property('budget');",
+                  "    pm.expect(body.budget.override_mode).to.equal('forever');",
+                  "    pm.expect(Number(body.budget.override_amount)).to.equal(7.5);",
+                  "});",
+                  "",
+                  "pm.test('Override raises the effective limit above the base budget', function () {",
+                  "    var body = pm.response.json();",
+                  "    var base = Number(pm.collectionVariables.get('vk_budget_max_limit'));",
+                  "    pm.expect(Number(body.effective_max_limit)).to.be.above(base);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}/budgets/{{vk_budget_id}}/override",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}",
+                "budgets",
+                "{{vk_budget_id}}",
+                "override"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Remove Virtual Key Budget Override",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Mirrors the guard on the Set request: no placeholder ids reach a real budget.",
+                  "var missing = ['vk_id', 'vk_budget_id', 'vk_budget_max_limit'].filter(function (key) {",
+                  "  return !pm.collectionVariables.get(key);",
+                  "});",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Virtual key budget override is cleared', function () {",
+                  "    pm.expect(pm.response.code, pm.response.text().slice(0, 300)).to.be.within(200, 299);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body).to.have.property('budget');",
+                  "    pm.expect(body.budget.override_mode || '').to.equal('');",
+                  "    pm.expect(Number(body.budget.override_amount || 0)).to.equal(0);",
+                  "});",
+                  "",
+                  "pm.test('Effective limit falls back to the base budget', function () {",
+                  "    var body = pm.response.json();",
+                  "    var base = Number(pm.collectionVariables.get('vk_budget_max_limit'));",
+                  "    pm.expect(Number(body.effective_max_limit)).to.equal(base);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}/budgets/{{vk_budget_id}}/override",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vk_id}}",
+                "budgets",
+                "{{vk_budget_id}}",
+                "override"
               ]
             }
           }
