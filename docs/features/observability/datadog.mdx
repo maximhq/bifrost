@@ -63,16 +63,16 @@ Datadog officially supports agentless submission for [LLM Observability](https:/
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `service_name` | `string` | No | `bifrost` | Service name displayed in Datadog APM |
-| `ml_app` | `string` | No | (uses `service_name`) | ML application name for LLM Observability grouping |
+| `service_name` | `string` | No | `bifrost` | Service name displayed in Datadog APM (supports `env.VAR_NAME`) |
+| `ml_app` | `string` | No | (uses `service_name`) | ML application name for LLM Observability grouping (supports `env.VAR_NAME`) |
 | `agent_addr` | `string` | No | `localhost:8126` | Datadog Agent address as combined `host:port` (agent mode only, supports `env.VAR_NAME`). Overridden by `agent_host` when set |
 | `agent_host` | `string` | No | - | Datadog Agent host, set separately from the port (agent mode only, supports `env.VAR_NAME`). Takes precedence over `agent_addr` |
 | `agent_port` | `string` | No | `8126` | Datadog Agent port, used with `agent_host` (agent mode only, supports `env.VAR_NAME`) |
 | `dogstatsd_addr` | `string` | No | `localhost:8125` | DogStatsD server address as combined `host:port` (agent mode only, supports `env.VAR_NAME`). Overridden by `dogstatsd_host` when set |
 | `dogstatsd_host` | `string` | No | - | DogStatsD server host, set separately from the port (agent mode only, supports `env.VAR_NAME`). Takes precedence over `dogstatsd_addr` |
 | `dogstatsd_port` | `string` | No | `8125` | DogStatsD server port, used with `dogstatsd_host` (agent mode only, supports `env.VAR_NAME`) |
-| `env` | `string` | No | - | Environment tag (e.g., `production`, `staging`) |
-| `version` | `string` | No | - | Service version tag |
+| `env` | `string` | No | - | Environment tag (e.g., `production`, `staging`) (supports `env.VAR_NAME`) |
+| `version` | `string` | No | - | Service version tag (supports `env.VAR_NAME`) |
 | `custom_tags` | `object` | No | - | Additional tags for all traces and metrics |
 | `enable_metrics` | `bool` | No | `true` | Enable metrics emission |
 | `enable_traces` | `bool` | No | `true` | Enable APM traces |
@@ -86,10 +86,13 @@ Datadog officially supports agentless submission for [LLM Observability](https:/
 
 ### Environment Variable Substitution
 
-The `api_key`, `agent_addr`, `agent_host`, `agent_port`, `dogstatsd_addr`, `dogstatsd_host`, `dogstatsd_port`, and `custom_tags` fields support environment variable substitution using the `env.` prefix:
+The `service_name`, `ml_app`, `env`, `version`, `api_key`, `agent_addr`, `agent_host`, `agent_port`, `dogstatsd_addr`, `dogstatsd_host`, `dogstatsd_port`, and `custom_tags` fields support environment variable substitution using the `env.` prefix:
 
 ```json
 {
+  "service_name": "env.BIFROST_DD_SERVICE",
+  "env": "env.BIFROST_DD_ENV",
+  "version": "env.BIFROST_DD_VERSION",
   "api_key": "env.DD_API_KEY",
   "agent_addr": "env.DD_AGENT_ADDR",
   "dogstatsd_addr": "env.DD_DOGSTATSD_ADDR",
