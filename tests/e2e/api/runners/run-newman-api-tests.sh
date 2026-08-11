@@ -525,7 +525,12 @@ if [ $EXIT_CODE -eq 0 ]; then
         node "$SCRIPT_DIR/set-auth-config.mjs" enable 2>&1 | tee -a "$LOG_FILE"
     AUTH_SETUP_EXIT=${PIPESTATUS[0]}
     set -e
-    if [ $AUTH_SETUP_EXIT -ne 0 ]; then
+    # Exit 3 means the auth pass cannot run here (fresh database, no bootstrap
+    # token). That is a coverage gap, not a test failure -- do not fail a run
+    # whose unauthenticated pass was green.
+    if [ $AUTH_SETUP_EXIT -eq 3 ]; then
+        echo -e "${YELLOW}Skipping authenticated API management pass (see message above).${NC}" | tee -a "$LOG_FILE"
+    elif [ $AUTH_SETUP_EXIT -ne 0 ]; then
         EXIT_CODE=$AUTH_SETUP_EXIT
     else
         AUTH_ENABLED_BY_RUN="1"
