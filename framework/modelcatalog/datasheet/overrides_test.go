@@ -471,6 +471,33 @@ func TestPatchPricing_CostPerRequestZero(t *testing.T) {
 	assert.Equal(t, 0.0, *patched.CostPerRequest)
 }
 
+func TestPatchPricing_MegapixelImageTiers(t *testing.T) {
+	base := configstoreTables.TableModelPricing{
+		Model:    "prunaai/p-image-upscale",
+		Provider: "replicate",
+		Mode:     "image_generation",
+	}
+
+	patched := patchPricing(base, Options{
+		OutputCostPerImageAbove4Megapixels:  bifrost.Ptr(0.01),
+		OutputCostPerImageAbove8Megapixels:  bifrost.Ptr(0.02),
+		OutputCostPerImageAbove16Megapixels: bifrost.Ptr(0.04),
+		OutputCostPerImageAbove32Megapixels: bifrost.Ptr(0.06),
+		OutputCostPerImageAbove64Megapixels: bifrost.Ptr(0.12),
+	})
+
+	require.NotNil(t, patched.OutputCostPerImageAbove4Megapixels)
+	require.NotNil(t, patched.OutputCostPerImageAbove8Megapixels)
+	require.NotNil(t, patched.OutputCostPerImageAbove16Megapixels)
+	require.NotNil(t, patched.OutputCostPerImageAbove32Megapixels)
+	require.NotNil(t, patched.OutputCostPerImageAbove64Megapixels)
+	assert.Equal(t, 0.01, *patched.OutputCostPerImageAbove4Megapixels)
+	assert.Equal(t, 0.02, *patched.OutputCostPerImageAbove8Megapixels)
+	assert.Equal(t, 0.04, *patched.OutputCostPerImageAbove16Megapixels)
+	assert.Equal(t, 0.06, *patched.OutputCostPerImageAbove32Megapixels)
+	assert.Equal(t, 0.12, *patched.OutputCostPerImageAbove64Megapixels)
+}
+
 func TestApplyScopedOverrides_ScopePrecedence(t *testing.T) {
 	s := newTestStore()
 
