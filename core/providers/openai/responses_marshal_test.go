@@ -163,7 +163,16 @@ func TestNormalizeOpenAIReasoningEffort(t *testing.T) {
 		effort   string
 		expected string
 	}{
-		{"minimal maps to low", "gpt-5", "minimal", "low"},
+		{"preserves minimal for gpt-5", "gpt-5", "minimal", "minimal"},
+		{"preserves minimal for gpt-5-mini", "gpt-5-mini", "minimal", "minimal"},
+		{"preserves minimal for gpt-5-nano", "gpt-5-nano", "minimal", "minimal"},
+		{"maps minimal to low for gpt-5.4", "gpt-5.4", "minimal", "low"},
+		{"maps minimal to low for gpt-5.2", "gpt-5.2", "minimal", "low"},
+		{"maps minimal to low for gpt-5.6", "gpt-5.6", "minimal", "low"},
+		{"maps minimal to low for o3", "o3", "minimal", "low"},
+		{"maps minimal to low for o1", "o1", "minimal", "low"},
+		{"maps minimal to low for o4", "o4", "minimal", "low"},
+		{"maps minimal to low for gpt-oss", "gpt-oss", "minimal", "low"},
 		{"gpt-5.6 keeps max", "gpt-5.6", "max", "max"},
 		{"gpt-5.6 variant keeps max", "gpt-5.6-terra", "max", "max"},
 		{"gpt-5.6 keeps xhigh", "gpt-5.6", "xhigh", "xhigh"},
