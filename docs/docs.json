@@ -112,6 +112,7 @@
             "pages": [
               "migration-guides/v2.0.0",
               "migration-guides/v1.5.0",
+              "migration-guides/governance-api-namespace",
               "migration-guides/litellm"
             ]
           },
@@ -701,10 +702,987 @@
             ]
           },
           {
-            "group": "API Reference",
-            "openapi": "openapi/openapi.json"
+            "group": "Inference",
+            "pages": [
+              {
+                "group": "Models",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/models"
+                ]
+              },
+              {
+                "group": "Chat Completions",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/chat/completions"
+                ]
+              },
+              {
+                "group": "Text Completions",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/completions"
+                ]
+              },
+              {
+                "group": "Responses",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/responses",
+                  "POST /v1/responses",
+                  "GET /v1/responses/{response_id}",
+                  "DELETE /v1/responses/{response_id}",
+                  "POST /v1/responses/{response_id}/cancel",
+                  "GET /v1/responses/{response_id}/input_items"
+                ]
+              },
+              {
+                "group": "OCR",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/ocr"
+                ]
+              },
+              {
+                "group": "Rerank",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/rerank"
+                ]
+              },
+              {
+                "group": "Embeddings",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/embeddings"
+                ]
+              },
+              {
+                "group": "Audio",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/audio/speech",
+                  "POST /v1/audio/transcriptions"
+                ]
+              },
+              {
+                "group": "Images",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/images/generations",
+                  "POST /v1/images/edits",
+                  "POST /v1/images/variations"
+                ]
+              },
+              {
+                "group": "Videos",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/videos",
+                  "POST /v1/videos",
+                  "GET /v1/videos/{video_id}",
+                  "DELETE /v1/videos/{video_id}",
+                  "GET /v1/videos/{video_id}/content",
+                  "POST /v1/videos/{video_id}/remix"
+                ]
+              },
+              {
+                "group": "Count Tokens",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/responses/input_tokens"
+                ]
+              },
+              {
+                "group": "Compaction",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/responses/compact"
+                ]
+              },
+              {
+                "group": "Batch",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/batches",
+                  "POST /v1/batches",
+                  "GET /v1/batches/{batch_id}",
+                  "POST /v1/batches/{batch_id}/cancel",
+                  "GET /v1/batches/{batch_id}/results"
+                ]
+              },
+              {
+                "group": "Files",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/files",
+                  "POST /v1/files",
+                  "GET /v1/files/{file_id}",
+                  "DELETE /v1/files/{file_id}",
+                  "GET /v1/files/{file_id}/content"
+                ]
+              },
+              {
+                "group": "Containers",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/containers",
+                  "POST /v1/containers",
+                  "GET /v1/containers/{container_id}",
+                  "DELETE /v1/containers/{container_id}",
+                  "GET /v1/containers/{container_id}/files",
+                  "POST /v1/containers/{container_id}/files",
+                  "GET /v1/containers/{container_id}/files/{file_id}",
+                  "DELETE /v1/containers/{container_id}/files/{file_id}",
+                  "GET /v1/containers/{container_id}/files/{file_id}/content"
+                ]
+              },
+              {
+                "group": "Async Jobs",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/async/chat/completions",
+                  "POST /v1/async/completions",
+                  "POST /v1/async/responses",
+                  "POST /v1/async/embeddings",
+                  "POST /v1/async/audio/speech",
+                  "POST /v1/async/audio/transcriptions",
+                  "POST /v1/async/images/generations",
+                  "POST /v1/async/images/edits",
+                  "POST /v1/async/images/variations",
+                  "GET /v1/async/chat/completions/{job_id}",
+                  "GET /v1/async/completions/{job_id}",
+                  "GET /v1/async/responses/{job_id}",
+                  "GET /v1/async/embeddings/{job_id}",
+                  "GET /v1/async/audio/speech/{job_id}",
+                  "GET /v1/async/audio/transcriptions/{job_id}",
+                  "GET /v1/async/images/generations/{job_id}",
+                  "GET /v1/async/images/edits/{job_id}",
+                  "GET /v1/async/images/variations/{job_id}",
+                  "POST /v1/async/rerank",
+                  "GET /v1/async/rerank/{job_id}",
+                  "POST /v1/async/ocr",
+                  "GET /v1/async/ocr/{job_id}"
+                ]
+              },
+              {
+                "group": "Realtime",
+                "expanded": false,
+                "pages": [
+                  "GET /v1/realtime",
+                  "POST /v1/realtime/calls",
+                  "POST /v1/realtime/client_secrets",
+                  "POST /v1/realtime/sessions"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              {
+                "group": "OpenAI Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /openai/v1/chat/completions",
+                  "POST /openai/openai/deployments/{deployment-id}/chat/completions",
+                  "POST /openai/v1/completions",
+                  "POST /openai/openai/deployments/{deployment-id}/completions",
+                  "GET /openai/v1/responses",
+                  "POST /openai/v1/responses",
+                  "POST /openai/openai/deployments/{deployment-id}/responses",
+                  "POST /openai/v1/responses/input_tokens",
+                  "GET /openai/v1/responses/{response_id}",
+                  "DELETE /openai/v1/responses/{response_id}",
+                  "POST /openai/v1/responses/{response_id}/cancel",
+                  "GET /openai/v1/responses/{response_id}/input_items",
+                  "POST /openai/v1/responses/compact",
+                  "POST /openai/v1/embeddings",
+                  "POST /openai/openai/deployments/{deployment-id}/embeddings",
+                  "POST /openai/v1/audio/speech",
+                  "POST /openai/openai/deployments/{deployment-id}/audio/speech",
+                  "POST /openai/v1/audio/transcriptions",
+                  "POST /openai/openai/deployments/{deployment-id}/audio/transcriptions",
+                  "GET /openai/v1/models",
+                  "GET /openai/openai/deployments/{deployment-id}/models",
+                  "GET /openai/v1/batches",
+                  "POST /openai/v1/batches",
+                  "GET /openai/v1/batches/{batch_id}",
+                  "POST /openai/v1/batches/{batch_id}/cancel",
+                  "POST /openai/v1/images/generations",
+                  "POST /openai/openai/deployments/{deployment-id}/images/generations",
+                  "GET /openai/v1/files",
+                  "POST /openai/v1/files",
+                  "GET /openai/v1/files/{file_id}",
+                  "DELETE /openai/v1/files/{file_id}",
+                  "GET /openai/v1/files/{file_id}/content",
+                  "GET /openai/v1/containers",
+                  "POST /openai/v1/containers",
+                  "GET /openai/v1/containers/{container_id}",
+                  "DELETE /openai/v1/containers/{container_id}",
+                  "GET /openai/v1/containers/{container_id}/files",
+                  "POST /openai/v1/containers/{container_id}/files",
+                  "GET /openai/v1/containers/{container_id}/files/{file_id}",
+                  "DELETE /openai/v1/containers/{container_id}/files/{file_id}",
+                  "GET /openai/v1/containers/{container_id}/files/{file_id}/content",
+                  "GET /openai/v1/videos",
+                  "POST /openai/v1/videos",
+                  "GET /openai/v1/videos/{video_id}",
+                  "DELETE /openai/v1/videos/{video_id}",
+                  "GET /openai/v1/videos/{video_id}/content",
+                  "POST /openai/v1/videos/{video_id}/remix",
+                  "GET /openai/v1/realtime",
+                  "POST /openai/v1/realtime/calls",
+                  "POST /openai/v1/realtime/client_secrets",
+                  "POST /openai/v1/realtime/sessions"
+                ]
+              },
+              {
+                "group": "Anthropic Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /anthropic/v1/messages",
+                  "POST /anthropic/v1/messages/{path}",
+                  "POST /anthropic/v1/complete",
+                  "GET /anthropic/v1/models",
+                  "POST /anthropic/v1/messages/count_tokens",
+                  "GET /anthropic/v1/messages/batches",
+                  "POST /anthropic/v1/messages/batches",
+                  "GET /anthropic/v1/messages/batches/{batch_id}",
+                  "POST /anthropic/v1/messages/batches/{batch_id}/cancel",
+                  "GET /anthropic/v1/messages/batches/{batch_id}/results",
+                  "GET /anthropic/v1/files",
+                  "POST /anthropic/v1/files",
+                  "GET /anthropic/v1/files/{file_id}/content",
+                  "DELETE /anthropic/v1/files/{file_id}"
+                ]
+              },
+              {
+                "group": "GenAI Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /genai/v1beta/models/{model}:generateContent",
+                  "POST /genai/v1beta/models/{model}:streamGenerateContent",
+                  "POST /genai/v1beta/models/{model}:embedContent",
+                  "POST /genai/v1beta/models/{model}:countTokens",
+                  "POST /genai/v1beta/models/{model}:predict",
+                  "GET /genai/v1beta/models",
+                  "POST /genai/upload/v1beta/files",
+                  "GET /genai/v1beta/files",
+                  "GET /genai/v1beta/files/{file_id}",
+                  "DELETE /genai/v1beta/files/{file_id}",
+                  "GET /genai/v1beta/batches",
+                  "GET /genai/v1beta/batches/{batch_id}",
+                  "POST /genai/v1beta/batches/{batch_id}",
+                  "DELETE /genai/v1beta/batches/{batch_id}",
+                  "GET /genai/v1beta/cachedContents",
+                  "POST /genai/v1beta/cachedContents",
+                  "GET /genai/v1beta/cachedContents/{cached_id}",
+                  "PATCH /genai/v1beta/cachedContents/{cached_id}",
+                  "DELETE /genai/v1beta/cachedContents/{cached_id}",
+                  "POST /genai/v1/rank",
+                  "GET /genai/v1beta/models/{model}/operations/{operation_id}"
+                ]
+              },
+              {
+                "group": "Bedrock Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /bedrock/model/{modelId}/converse",
+                  "POST /bedrock/model/{modelId}/converse-stream",
+                  "POST /bedrock/model/{modelId}/invoke",
+                  "POST /bedrock/model/{modelId}/invoke-with-response-stream",
+                  "POST /bedrock/model/{modelId}/count-tokens",
+                  "POST /bedrock/model-invocation-job",
+                  "GET /bedrock/model-invocation-jobs",
+                  "GET /bedrock/model-invocation-job/{job_arn}",
+                  "POST /bedrock/model-invocation-job/{job_arn}/stop",
+                  "GET /bedrock/files/{bucket}",
+                  "GET /bedrock/files/{bucket}/{key}",
+                  "PUT /bedrock/files/{bucket}/{key}",
+                  "DELETE /bedrock/files/{bucket}/{key}",
+                  "HEAD /bedrock/files/{bucket}/{key}"
+                ]
+              },
+              {
+                "group": "Cohere Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /cohere/v2/chat",
+                  "POST /cohere/v2/embed",
+                  "POST /cohere/v2/rerank",
+                  "POST /cohere/v1/tokenize"
+                ]
+              },
+              {
+                "group": "Cursor Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /cursor/v1/chat/completions",
+                  "GET /cursor/v1/models",
+                  "POST /cursor/v1/complete",
+                  "POST /cursor/v1/messages",
+                  "POST /cursor/v1/messages/{path}",
+                  "POST /cursor/v1/messages/count_tokens",
+                  "GET /cursor/v1beta/models",
+                  "POST /cursor/v1beta/models/{model}",
+                  "GET /cursor/v1beta/models/{model}/operations/{operation_id}",
+                  "POST /cursor/v1/rank",
+                  "POST /cursor/model/{modelId}/converse",
+                  "POST /cursor/model/{modelId}/converse-stream",
+                  "POST /cursor/model/{modelId}/invoke",
+                  "POST /cursor/model/{modelId}/invoke-with-response-stream",
+                  "POST /cursor/rerank",
+                  "POST /cursor/model/{modelId}/count-tokens",
+                  "POST /cursor/v2/chat",
+                  "POST /cursor/v2/embed",
+                  "POST /cursor/v2/rerank",
+                  "POST /cursor/v1/tokenize"
+                ]
+              },
+              {
+                "group": "LiteLLM Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /litellm/v1/completions",
+                  "POST /litellm/v1/chat/completions",
+                  "POST /litellm/v1/embeddings",
+                  "GET /litellm/v1/models",
+                  "POST /litellm/v1/responses",
+                  "POST /litellm/v1/responses/input_tokens",
+                  "POST /litellm/v1/audio/speech",
+                  "POST /litellm/v1/audio/transcriptions",
+                  "POST /litellm/anthropic/v1/messages",
+                  "GET /litellm/genai/v1beta/models",
+                  "POST /litellm/genai/v1beta/models/{model}:generateContent",
+                  "POST /litellm/genai/v1beta/models/{model}:streamGenerateContent",
+                  "POST /litellm/bedrock/model/{modelId}/converse",
+                  "POST /litellm/bedrock/model/{modelId}/converse-stream",
+                  "POST /litellm/cohere/v2/chat",
+                  "POST /litellm/cohere/v2/embed",
+                  "POST /litellm/cohere/v1/tokenize"
+                ]
+              },
+              {
+                "group": "LangChain Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /langchain/v1/completions",
+                  "POST /langchain/v1/chat/completions",
+                  "POST /langchain/v1/embeddings",
+                  "GET /langchain/v1/models",
+                  "POST /langchain/v1/responses",
+                  "POST /langchain/v1/responses/input_tokens",
+                  "POST /langchain/v1/audio/speech",
+                  "POST /langchain/v1/audio/transcriptions",
+                  "POST /langchain/anthropic/v1/messages",
+                  "POST /langchain/anthropic/v1/messages/count_tokens",
+                  "GET /langchain/genai/v1beta/models",
+                  "POST /langchain/genai/v1beta/models/{model}:generateContent",
+                  "POST /langchain/genai/v1beta/models/{model}:streamGenerateContent",
+                  "POST /langchain/bedrock/model/{modelId}/converse",
+                  "POST /langchain/bedrock/model/{modelId}/converse-stream",
+                  "POST /langchain/cohere/v2/chat",
+                  "POST /langchain/cohere/v2/embed",
+                  "POST /langchain/cohere/v1/tokenize"
+                ]
+              },
+              {
+                "group": "PydanticAI Integration",
+                "expanded": false,
+                "pages": [
+                  "POST /pydanticai/v1/completions",
+                  "POST /pydanticai/v1/chat/completions",
+                  "POST /pydanticai/v1/embeddings",
+                  "GET /pydanticai/v1/models",
+                  "POST /pydanticai/v1/responses",
+                  "POST /pydanticai/v1/responses/input_tokens",
+                  "POST /pydanticai/v1/audio/speech",
+                  "POST /pydanticai/v1/audio/transcriptions",
+                  "POST /pydanticai/anthropic/v1/messages",
+                  "GET /pydanticai/genai/v1beta/models",
+                  "POST /pydanticai/genai/v1beta/models/{model}:generateContent",
+                  "POST /pydanticai/genai/v1beta/models/{model}:streamGenerateContent",
+                  "POST /pydanticai/bedrock/model/{modelId}/converse",
+                  "POST /pydanticai/bedrock/model/{modelId}/converse-stream",
+                  "POST /pydanticai/cohere/v2/chat",
+                  "POST /pydanticai/cohere/v2/embed",
+                  "POST /pydanticai/cohere/v1/tokenize"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Platform",
+            "pages": [
+              {
+                "group": "Health",
+                "expanded": false,
+                "pages": [
+                  "GET /health"
+                ]
+              },
+              {
+                "group": "Configuration",
+                "expanded": false,
+                "pages": [
+                  "GET /api/config",
+                  "PUT /api/config",
+                  "GET /api/version",
+                  "GET /api/proxy-config",
+                  "PUT /api/proxy-config",
+                  "POST /api/pricing/force-sync"
+                ]
+              },
+              {
+                "group": "Session",
+                "expanded": false,
+                "pages": [
+                  "POST /api/session/login",
+                  "POST /api/session/logout",
+                  "GET /api/session/is-auth-enabled",
+                  "POST /api/session/ws-ticket"
+                ]
+              },
+              {
+                "group": "Providers",
+                "expanded": false,
+                "pages": [
+                  "GET /api/providers",
+                  "POST /api/providers",
+                  "GET /api/providers/{provider}",
+                  "PUT /api/providers/{provider}",
+                  "DELETE /api/providers/{provider}",
+                  "GET /api/providers/{provider}/keys",
+                  "POST /api/providers/{provider}/keys",
+                  "GET /api/providers/{provider}/keys/{key_id}",
+                  "PUT /api/providers/{provider}/keys/{key_id}",
+                  "DELETE /api/providers/{provider}/keys/{key_id}",
+                  "GET /api/keys",
+                  "GET /api/models",
+                  "GET /api/models/details",
+                  "GET /api/models/parameters",
+                  "GET /api/models/base"
+                ]
+              },
+              {
+                "group": "Plugins",
+                "expanded": false,
+                "pages": [
+                  "GET /api/plugins",
+                  "POST /api/plugins",
+                  "GET /api/plugins/builtins",
+                  "GET /api/plugins/{name}",
+                  "PUT /api/plugins/{name}",
+                  "DELETE /api/plugins/{name}"
+                ]
+              },
+              {
+                "group": "MCP",
+                "expanded": false,
+                "pages": [
+                  "POST /v1/mcp/tool/execute",
+                  "GET /api/mcp/clients",
+                  "POST /api/mcp/client",
+                  "PUT /api/mcp/client/{id}",
+                  "DELETE /api/mcp/client/{id}",
+                  "POST /api/mcp/client/{id}/reconnect",
+                  "POST /api/mcp/client/{id}/complete-oauth",
+                  "POST /api/mcp/client/{id}/initiate-verification",
+                  "POST /api/mcp/client/{id}/reauthorize",
+                  "POST /api/mcp/client/{id}/verify-headers",
+                  "POST /api/mcp/client/{id}/verify-exchange",
+                  "GET /api/mcp/sessions",
+                  "DELETE /api/mcp/sessions/{id}",
+                  "POST /api/mcp/sessions/{id}/reauth",
+                  "GET /api/mcp/per-user-headers/flows/{id}",
+                  "PUT /api/mcp/per-user-headers/flows/{id}",
+                  "DELETE /api/mcp/per-user-headers/credential/{id}"
+                ]
+              },
+              {
+                "group": "MCP Tool Groups",
+                "expanded": false,
+                "pages": [
+                  "GET /api/mcp/tool-groups",
+                  "POST /api/mcp/tool-groups",
+                  "GET /api/mcp/tool-groups/{id}",
+                  "PUT /api/mcp/tool-groups/{id}",
+                  "DELETE /api/mcp/tool-groups/{id}"
+                ]
+              },
+              {
+                "group": "OAuth",
+                "expanded": false,
+                "pages": [
+                  "GET /api/oauth/per-user/flows/{id}",
+                  "GET /api/oauth/per-user/flows/{id}/start",
+                  "GET /api/oauth/callback",
+                  "GET /api/oauth/config/{id}/status",
+                  "DELETE /api/oauth/config/{id}"
+                ]
+              },
+              {
+                "group": "Circuit Breaker",
+                "expanded": false,
+                "pages": [
+                  "GET /api/circuit-breaker/policies",
+                  "POST /api/circuit-breaker/policies",
+                  "PUT /api/circuit-breaker/policies/{name}",
+                  "DELETE /api/circuit-breaker/policies/{name}",
+                  "GET /api/circuit-breaker/state"
+                ]
+              },
+              {
+                "group": "Logging",
+                "expanded": false,
+                "pages": [
+                  "GET /api/logs",
+                  "DELETE /api/logs",
+                  "GET /api/logs/{id}",
+                  "GET /api/logs/sessions/{session_id}",
+                  "GET /api/logs/sessions/{session_id}/summary",
+                  "GET /api/logs/stats",
+                  "GET /api/logs/histogram",
+                  "GET /api/logs/histogram/tokens",
+                  "GET /api/logs/histogram/cost",
+                  "GET /api/logs/histogram/models",
+                  "GET /api/logs/histogram/latency",
+                  "GET /api/logs/histogram/cost/by-provider",
+                  "GET /api/logs/histogram/tokens/by-provider",
+                  "GET /api/logs/histogram/latency/by-provider",
+                  "GET /api/logs/histogram/cost/by-dimension",
+                  "GET /api/logs/histogram/tokens/by-dimension",
+                  "GET /api/logs/histogram/latency/by-dimension",
+                  "GET /api/logs/dropped",
+                  "GET /api/logs/filterdata",
+                  "GET /api/logs/rankings",
+                  "GET /api/logs/dashboard",
+                  "POST /api/logs/recalculate-cost",
+                  "GET /api/logs/recalculate-cost/status",
+                  "GET /api/mcp-logs",
+                  "DELETE /api/mcp-logs",
+                  "GET /api/mcp-logs/{id}",
+                  "GET /api/mcp-logs/stats",
+                  "GET /api/mcp-logs/filterdata",
+                  "GET /api/mcp-logs/histogram",
+                  "GET /api/mcp-logs/histogram/cost",
+                  "GET /api/mcp-logs/histogram/top-tools"
+                ]
+              },
+              {
+                "group": "Prompt Repository",
+                "expanded": false,
+                "pages": [
+                  "GET /api/prompt-repo/folders",
+                  "POST /api/prompt-repo/folders",
+                  "GET /api/prompt-repo/folders/{id}",
+                  "PUT /api/prompt-repo/folders/{id}",
+                  "DELETE /api/prompt-repo/folders/{id}",
+                  "GET /api/prompt-repo/prompts",
+                  "POST /api/prompt-repo/prompts",
+                  "GET /api/prompt-repo/prompts/{id}",
+                  "PUT /api/prompt-repo/prompts/{id}",
+                  "DELETE /api/prompt-repo/prompts/{id}",
+                  "GET /api/prompt-repo/prompts/{id}/versions",
+                  "POST /api/prompt-repo/prompts/{id}/versions",
+                  "GET /api/prompt-repo/versions/{id}",
+                  "DELETE /api/prompt-repo/versions/{id}",
+                  "GET /api/prompt-repo/prompts/{id}/sessions",
+                  "POST /api/prompt-repo/prompts/{id}/sessions",
+                  "GET /api/prompt-repo/sessions/{id}",
+                  "PUT /api/prompt-repo/sessions/{id}",
+                  "DELETE /api/prompt-repo/sessions/{id}",
+                  "PUT /api/prompt-repo/sessions/{id}/rename",
+                  "POST /api/prompt-repo/sessions/{id}/commit"
+                ]
+              },
+              {
+                "group": "Skills",
+                "expanded": false,
+                "pages": [
+                  "POST /api/skills/files/upload",
+                  "DELETE /api/skills/files/orphans",
+                  "GET /api/skills/all/version",
+                  "PUT /api/skills/all/version",
+                  "GET /api/skills",
+                  "POST /api/skills",
+                  "GET /api/skills/{id}",
+                  "PUT /api/skills/{id}",
+                  "DELETE /api/skills/{id}",
+                  "GET /api/skills/{id}/versions",
+                  "POST /api/skills/{id}/shift-version",
+                  "GET /api/skills/serve/claude-code/.claude-plugin/marketplace.json",
+                  "GET /api/skills/serve/codex/.agents/plugins/marketplace.json",
+                  "GET /api/skills/serve/all/download.zip",
+                  "GET /api/skills/serve/{skill-name}/download.zip",
+                  "GET /api/skills/serve/{skill-name}/files/{filepath}"
+                ]
+              },
+              {
+                "group": "Cache",
+                "expanded": false,
+                "pages": [
+                  "DELETE /api/cache/clear/{cacheId}",
+                  "DELETE /api/cache/clear-by-key/{cacheKey}"
+                ]
+              },
+              {
+                "group": "Vault",
+                "expanded": false,
+                "pages": [
+                  "POST /api/vault/flush-cache"
+                ]
+              },
+              {
+                "group": "Infrastructure",
+                "expanded": false,
+                "pages": [
+                  "GET /ws",
+                  "GET /mcp",
+                  "POST /mcp",
+                  "GET /metrics"
+                ]
+              },
+              {
+                "group": "Webhooks",
+                "expanded": false,
+                "pages": [
+                  "GET /api/webhooks",
+                  "POST /api/webhooks",
+                  "GET /api/webhooks/{id}",
+                  "PUT /api/webhooks/{id}",
+                  "DELETE /api/webhooks/{id}",
+                  "POST /api/webhooks/{id}/rotate-secret",
+                  "POST /api/webhooks/{id}/test",
+                  "GET /api/webhooks/{id}/deliveries",
+                  "POST /api/webhooks/deliveries/{id}/redeliver"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Governance",
+            "pages": [
+              {
+                "group": "Teams",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/teams",
+                  "POST /api/governance/teams",
+                  "GET /api/governance/teams/{team_id}",
+                  "PUT /api/governance/teams/{team_id}",
+                  "DELETE /api/governance/teams/{team_id}",
+                  "GET /api/governance/teams/{team_id}/members",
+                  "POST /api/governance/teams/{team_id}/members",
+                  "DELETE /api/governance/teams/{team_id}/members/{user_id}",
+                  "GET /api/governance/users/{user_id}/teams",
+                  "PUT /api/governance/users/{user_id}/teams",
+                  "GET /api/governance/teams/{team_id}/customers",
+                  "POST /api/governance/teams/{team_id}/customers",
+                  "DELETE /api/governance/teams/{team_id}/customers/{customer_id}",
+                  "GET /api/governance/customers/{customer_id}/teams",
+                  "GET /api/governance/business-units/{business_unit_id}/teams",
+                  "POST /api/governance/business-units/{business_unit_id}/teams",
+                  "DELETE /api/governance/business-units/{business_unit_id}/teams/{team_id}"
+                ]
+              },
+              {
+                "group": "Virtual Keys",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/virtual-keys",
+                  "POST /api/governance/virtual-keys",
+                  "GET /api/governance/virtual-keys/quota",
+                  "GET /api/governance/virtual-keys/{vk_id}",
+                  "PUT /api/governance/virtual-keys/{vk_id}",
+                  "DELETE /api/governance/virtual-keys/{vk_id}",
+                  "GET /api/governance/virtual-keys/{vk_id}/users",
+                  "POST /api/governance/virtual-keys/{vk_id}/users",
+                  "DELETE /api/governance/virtual-keys/{vk_id}/users/{user_id}",
+                  "PUT /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override",
+                  "DELETE /api/governance/virtual-keys/{vk_id}/budgets/{budget_id}/override",
+                  "GET /api/governance/users/{user_id}/virtual-keys",
+                  "GET /api/governance/users/email/{email}/virtual-keys"
+                ]
+              },
+              {
+                "group": "Customers",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/customers",
+                  "POST /api/governance/customers",
+                  "GET /api/governance/customers/{customer_id}",
+                  "PUT /api/governance/customers/{customer_id}",
+                  "DELETE /api/governance/customers/{customer_id}"
+                ]
+              },
+              {
+                "group": "Users",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/users",
+                  "POST /api/governance/users",
+                  "GET /api/governance/users/{user_id}",
+                  "DELETE /api/governance/users/{user_id}",
+                  "GET /api/governance/users/email/{email}",
+                  "GET /api/governance/users/me/permissions",
+                  "PUT /api/governance/users/{user_id}/role",
+                  "POST /api/governance/users/{user_id}/governance",
+                  "PUT /api/governance/users/{user_id}/governance",
+                  "DELETE /api/governance/users/{user_id}/governance"
+                ]
+              },
+              {
+                "group": "Business Units",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/business-units",
+                  "POST /api/governance/business-units",
+                  "GET /api/governance/business-units/{business_unit_id}",
+                  "PUT /api/governance/business-units/{business_unit_id}",
+                  "DELETE /api/governance/business-units/{business_unit_id}",
+                  "POST /api/governance/business-units/{business_unit_id}/governance",
+                  "PUT /api/governance/business-units/{business_unit_id}/governance",
+                  "DELETE /api/governance/business-units/{business_unit_id}/governance",
+                  "GET /api/governance/business-units/{business_unit_id}/customers",
+                  "POST /api/governance/business-units/{business_unit_id}/customers",
+                  "DELETE /api/governance/business-units/{business_unit_id}/customers/{customer_id}",
+                  "GET /api/governance/customers/{customer_id}/business-units"
+                ]
+              },
+              {
+                "group": "Access Profiles",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/access-profiles",
+                  "POST /api/governance/access-profiles",
+                  "GET /api/governance/access-profiles/{profile_id}",
+                  "PUT /api/governance/access-profiles/{profile_id}",
+                  "DELETE /api/governance/access-profiles/{profile_id}",
+                  "PUT /api/governance/access-profiles/{profile_id}/activate",
+                  "PUT /api/governance/access-profiles/{profile_id}/deactivate",
+                  "POST /api/governance/access-profiles/{profile_id}/clone",
+                  "POST /api/governance/access-profiles/{profile_id}/propagate",
+                  "POST /api/governance/access-profiles/{profile_id}/roles",
+                  "DELETE /api/governance/access-profiles/{profile_id}/roles/{role_id}",
+                  "GET /api/governance/access-profiles/{profile_id}/versions",
+                  "GET /api/governance/access-profiles/{profile_id}/versions/{version}",
+                  "GET /api/governance/access-profiles/{profile_id}/audit-logs",
+                  "GET /api/governance/access-profiles/audit-logs",
+                  "GET /api/governance/users/{user_id}/access-profiles",
+                  "DELETE /api/governance/users/{user_id}/access-profiles/{profile_id}",
+                  "PUT /api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
+                  "DELETE /api/governance/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
+                  "POST /api/governance/users/{user_id}/access-profiles/{profile_id}/virtual-keys",
+                  "DELETE /api/governance/users/{user_id}/access-profiles/virtual-keys/{vk_id}"
+                ]
+              },
+              {
+                "group": "RBAC",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/rbac/roles",
+                  "POST /api/governance/rbac/roles",
+                  "GET /api/governance/rbac/roles/{role_id}",
+                  "PUT /api/governance/rbac/roles/{role_id}",
+                  "DELETE /api/governance/rbac/roles/{role_id}",
+                  "GET /api/governance/rbac/roles/{role_id}/permissions",
+                  "PUT /api/governance/rbac/roles/{role_id}/permissions",
+                  "GET /api/governance/rbac/resources",
+                  "GET /api/governance/rbac/operations",
+                  "GET /api/governance/rbac/permissions"
+                ]
+              },
+              {
+                "group": "Audit Logs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/audit-logs",
+                  "GET /api/governance/audit-logs/filterdata",
+                  "GET /api/governance/audit-logs/export",
+                  "GET /api/governance/audit-logs/{id}",
+                  "GET /api/governance/audit-logs/{id}/verify"
+                ]
+              },
+              {
+                "group": "Budgets & Rate Limits",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/budgets",
+                  "GET /api/governance/rate-limits"
+                ]
+              },
+              {
+                "group": "Routing Rules",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/routing-rules",
+                  "POST /api/governance/routing-rules",
+                  "GET /api/governance/routing-rules/{rule_id}",
+                  "PUT /api/governance/routing-rules/{rule_id}",
+                  "DELETE /api/governance/routing-rules/{rule_id}"
+                ]
+              },
+              {
+                "group": "Model Configs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/model-configs",
+                  "POST /api/governance/model-configs",
+                  "GET /api/governance/model-configs/{mc_id}",
+                  "PUT /api/governance/model-configs/{mc_id}",
+                  "DELETE /api/governance/model-configs/{mc_id}"
+                ]
+              },
+              {
+                "group": "Provider Governance",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/providers",
+                  "PUT /api/governance/providers/{provider_name}",
+                  "DELETE /api/governance/providers/{provider_name}"
+                ]
+              },
+              {
+                "group": "Pricing Overrides",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/pricing-overrides",
+                  "POST /api/governance/pricing-overrides",
+                  "PUT /api/governance/pricing-overrides/{id}",
+                  "DELETE /api/governance/pricing-overrides/{id}"
+                ]
+              },
+              {
+                "group": "Complexity Analyzer",
+                "expanded": false,
+                "pages": [
+                  "GET /api/governance/complexity-analyzer-config",
+                  "PUT /api/governance/complexity-analyzer-config",
+                  "POST /api/governance/complexity-analyzer-config/reset"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Deprecated",
+            "pages": [
+              {
+                "group": "Virtual Keys",
+                "expanded": false,
+                "pages": [
+                  "GET /api/virtual-keys/{vk_id}/users",
+                  "POST /api/virtual-keys/{vk_id}/users",
+                  "DELETE /api/virtual-keys/{vk_id}/users/{user_id}"
+                ]
+              },
+              {
+                "group": "Teams",
+                "expanded": false,
+                "pages": [
+                  "GET /api/teams/{team_id}/customers",
+                  "POST /api/teams/{team_id}/customers",
+                  "DELETE /api/teams/{team_id}/customers/{customer_id}",
+                  "GET /api/teams/{team_id}/members",
+                  "POST /api/teams/{team_id}/members",
+                  "DELETE /api/teams/{team_id}/members/{user_id}"
+                ]
+              },
+              {
+                "group": "Customers",
+                "expanded": false,
+                "pages": [
+                  "GET /api/customers/{customer_id}/teams"
+                ]
+              },
+              {
+                "group": "RBAC",
+                "expanded": false,
+                "pages": [
+                  "GET /api/roles",
+                  "POST /api/roles",
+                  "GET /api/roles/{role_id}",
+                  "PUT /api/roles/{role_id}",
+                  "DELETE /api/roles/{role_id}",
+                  "GET /api/roles/{role_id}/permissions",
+                  "PUT /api/roles/{role_id}/permissions",
+                  "GET /api/resources",
+                  "GET /api/operations",
+                  "GET /api/permissions"
+                ]
+              },
+              {
+                "group": "Users",
+                "expanded": false,
+                "pages": [
+                  "GET /api/users",
+                  "POST /api/users",
+                  "GET /api/users/{user_id}",
+                  "DELETE /api/users/{user_id}",
+                  "GET /api/users/me/permissions",
+                  "PUT /api/users/{user_id}/role",
+                  "GET /api/users/{user_id}/teams",
+                  "PUT /api/users/{user_id}/teams",
+                  "GET /api/users/email/{email}/virtual-keys",
+                  "GET /api/users/email/{email}",
+                  "GET /api/users/{user_id}/virtual-keys"
+                ]
+              },
+              {
+                "group": "Governance",
+                "expanded": false,
+                "pages": [
+                  "GET /api/teams",
+                  "POST /api/teams",
+                  "GET /api/teams/{team_id}",
+                  "PUT /api/teams/{team_id}",
+                  "DELETE /api/teams/{team_id}"
+                ]
+              },
+              {
+                "group": "Access Profiles",
+                "expanded": false,
+                "pages": [
+                  "GET /api/access-profiles",
+                  "POST /api/access-profiles",
+                  "GET /api/access-profiles/{profile_id}",
+                  "PUT /api/access-profiles/{profile_id}",
+                  "DELETE /api/access-profiles/{profile_id}",
+                  "PUT /api/access-profiles/{profile_id}/activate",
+                  "PUT /api/access-profiles/{profile_id}/deactivate",
+                  "POST /api/access-profiles/{profile_id}/clone",
+                  "POST /api/access-profiles/{profile_id}/propagate",
+                  "POST /api/access-profiles/{profile_id}/roles",
+                  "DELETE /api/access-profiles/{profile_id}/roles/{role_id}",
+                  "GET /api/access-profiles/{profile_id}/versions",
+                  "GET /api/access-profiles/{profile_id}/versions/{version}",
+                  "GET /api/access-profiles/{profile_id}/audit-logs",
+                  "GET /api/access-profiles/audit-logs",
+                  "GET /api/users/{user_id}/access-profiles",
+                  "PUT /api/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
+                  "DELETE /api/users/{user_id}/access-profiles/{profile_id}/budgets/{budget_id}/override",
+                  "DELETE /api/users/{user_id}/access-profiles/{profile_id}",
+                  "POST /api/users/{user_id}/access-profiles/{profile_id}/virtual-keys",
+                  "DELETE /api/users/{user_id}/access-profiles/virtual-keys/{vk_id}"
+                ]
+              },
+              {
+                "group": "Audit Logs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/audit-logs",
+                  "GET /api/audit-logs/filterdata",
+                  "GET /api/audit-logs/export",
+                  "GET /api/audit-logs/{id}",
+                  "GET /api/audit-logs/{id}/verify"
+                ]
+              }
+            ]
           }
-        ]
+        ],
+        "openapi": "openapi/openapi.json"
       },
       {
         "tab": "Contributing",
