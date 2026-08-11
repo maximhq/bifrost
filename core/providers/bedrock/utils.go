@@ -78,6 +78,45 @@ func resolveBedrockRegion(ctx *schemas.BifrostContext, key schemas.Key, model st
 	return DefaultBedrockRegion
 }
 
+// resolveBedrockHost returns the host to dial for an AWS endpoint service: the configured VPC
+// endpoint override when set, otherwise the public regional host built from the region. The
+// returned value is a bare host, so callers keep ownership of the scheme and path — including
+// the bucket prefix S3's virtual-hosted URLs carry.
+func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	if endpoints != nil {
+		var override *schemas.SecretVar
+		switch service {
+		case bedrockServiceRuntime:
+			override = endpoints.Runtime
+		case bedrockServiceControlPlane:
+			override = endpoints.ControlPlane
+		case bedrockServiceMantle:
+			override = endpoints.Mantle
+		case bedrockServiceAgentRuntime:
+			override = endpoints.AgentRuntime
+		case bedrockServiceS3:
+			override = endpoints.S3
+		}
+		if host := schemas.NormalizeEndpointHost(override); host != "" {
+			return host
+		}
+	}
+	// Mantle is the odd one out: its public host lives under api.aws, not amazonaws.com.
+	if service == bedrockServiceMantle {
+		return fmt.Sprintf("%s.%s.api.aws", service, region)
+	}
+	return fmt.Sprintf("%s.%s.amazonaws.com", service, region)
+}
+
+// bedrockEndpoints returns the endpoint overrides on a key config, tolerating a nil config so
+// callers on the API-key auth path (where BedrockKeyConfig may be absent) need no guard.
+func bedrockEndpoints(cfg *schemas.BedrockKeyConfig) *schemas.BedrockEndpoints {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Endpoints
+}
+
 // resolveBedrockARN returns the inference-profile / resource ARN prepended
 // to the Bedrock URL path. Priority: alias-level BedrockAliasCfg
 // InferenceProfileARN > key-level BedrockKeyConfig.ARN. Returns empty when
