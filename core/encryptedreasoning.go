@@ -47,9 +47,37 @@ func isEncryptedReasoningRejection(err *schemas.BifrostError) bool {
 		(strings.Contains(message, "invalid `data`") && strings.Contains(message, "`redacted_thinking` block"))
 }
 
+// encryptedReasoningCarriers returns the input array and raw body of the request
+// shape that replays reasoning items, or nils when this request carries none.
+//
+// Three endpoints replay the same []ResponsesMessage and all three reach the
+// provider through the retry loop that calls the strip: /v1/responses, its
+// token-counting twin, and /v1/responses/compact. The last one is a separate
+// top-level request rather than a flag on the first, and a coding CLI resuming a
+// session hits it with the entire prior transcript -- the exact payload most likely
+// to be refused. Keying the strip off one shape would hand that 400 straight to
+// the client, so the shapes are resolved here and rewritten by one code path.
+//
+// Pointers are returned rather than values because both branches write back.
+func encryptedReasoningCarriers(req *schemas.BifrostRequest) (input *[]schemas.ResponsesMessage, rawBody *[]byte) {
+	if req == nil {
+		return nil, nil
+	}
+	switch {
+	case req.ResponsesRequest != nil:
+		return &req.ResponsesRequest.Input, &req.ResponsesRequest.RawRequestBody
+	case req.CountTokensRequest != nil:
+		return &req.CountTokensRequest.Input, &req.CountTokensRequest.RawRequestBody
+	case req.CompactionRequest != nil:
+		return &req.CompactionRequest.Input, &req.CompactionRequest.RawRequestBody
+	default:
+		return nil, nil
+	}
+}
+
 // stripResponsesEncryptedContent removes encrypted_content from every reasoning item
-// in a Responses request, reporting whether anything changed. Reasoning items left
-// with nothing to say -- no summary and no content blocks -- are dropped entirely
+// in a Responses-shaped request, reporting whether anything changed. Reasoning items
+// left with nothing to say -- no summary and no content blocks -- are dropped entirely
 // rather than forwarded as bare ids the upstream never issued.
 //
 // Summaries, ids, and every other item are preserved: the model loses the verbatim
@@ -70,7 +98,8 @@ func isEncryptedReasoningRejection(err *schemas.BifrostError) bool {
 // body streams straight from a reader that core never parsed and cannot rewrite, so
 // claiming a change would buy a second identical upstream call.
 func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
-	if req == nil || req.ResponsesRequest == nil {
+	inputRef, rawBodyRef := encryptedReasoningCarriers(req)
+	if inputRef == nil {
 		return false
 	}
 	if ctx != nil {
@@ -78,15 +107,15 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 			return false
 		}
 		if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-			return stripRawResponsesEncryptedContent(req.ResponsesRequest)
+			return stripRawResponsesEncryptedContent(rawBodyRef)
 		}
 	}
 
-	if len(req.ResponsesRequest.Input) == 0 {
+	if len(*inputRef) == 0 {
 		return false
 	}
 
-	input := req.ResponsesRequest.Input
+	input := *inputRef
 	stripped := make([]schemas.ResponsesMessage, 0, len(input))
 	changed := false
 
@@ -112,7 +141,7 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 		return false
 	}
 
-	req.ResponsesRequest.Input = stripped
+	*inputRef = stripped
 	return true
 }
 
@@ -120,8 +149,11 @@ func stripResponsesEncryptedContent(ctx *schemas.BifrostContext, req *schemas.Bi
 // body, which is what reaches the provider when the caller opted into passthrough.
 // Each surviving item keeps its original bytes (minus the deleted field) so fields
 // Bifrost's schema does not model are not lost on the way through.
-func stripRawResponsesEncryptedContent(req *schemas.BifrostResponsesRequest) bool {
-	body := req.RawRequestBody
+func stripRawResponsesEncryptedContent(rawBody *[]byte) bool {
+	if rawBody == nil {
+		return false
+	}
+	body := *rawBody
 	if len(body) == 0 {
 		return false
 	}
@@ -158,6 +190,6 @@ func stripRawResponsesEncryptedContent(req *schemas.BifrostResponsesRequest) boo
 	if err != nil {
 		return false
 	}
-	req.RawRequestBody = updated
+	*rawBody = updated
 	return true
 }
