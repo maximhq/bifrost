@@ -7,10 +7,10 @@
 //
 // so a caller MUST supply that fully-qualified URL via NetworkConfig.BaseURL —
 // there is no global default that omits the account id. The provider appends
-// `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` per request,
-// matching the convention used by every other OpenAI-compat provider in this
-// repo (Cerebras, Groq, etc.), so the trailing `/v1` is intentionally NOT part
-// of the base URL.
+// `/v1/chat/completions` and `/v1/embeddings` for inference requests. Model
+// discovery uses Cloudflare's native `/models/search` endpoint, which shares
+// the same account-scoped base URL. The trailing `/v1` is intentionally NOT
+// part of the base URL.
 //
 // See: https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/
 package cloudflare
@@ -19,6 +19,9 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,20 +98,110 @@ func (provider *CloudflareProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Cloudflare
 }
 
-// ListModels performs a list models request to Cloudflare's OpenAI-compatible
-// /v1/models endpoint.
-func (provider *CloudflareProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return openai.HandleOpenAIListModelsRequest(
-		ctx,
-		provider.client,
-		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
-		keys,
-		provider.networkConfig.ExtraHeaders,
+// listModelsByKey fetches and converts Cloudflare's account-scoped model catalog.
+func (provider *CloudflareProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	const perPage = 50
+
+	cloudflareResponse := CloudflareListModelsResponse{
+		Result: make([]CloudflareModel, 0),
+	}
+	var totalLatency time.Duration
+	var rawResponses []interface{}
+
+	for page := 1; page <= schemas.MaxPaginationRequests; page++ {
+		endpoint, err := url.Parse(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/search"))
+		if err != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("invalid Cloudflare models URL: %v", err),
+				},
+			}
+		}
+		query := endpoint.Query()
+		query.Set("page", strconv.Itoa(page))
+		query.Set("per_page", strconv.Itoa(perPage))
+		endpoint.RawQuery = query.Encode()
+
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(endpoint.String())
+		req.Header.SetMethod(http.MethodGet)
+		req.Header.SetContentType("application/json")
+		if key.Value.GetValue() != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+		}
+
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		wait()
+		totalLatency += latency
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			return nil, bifrostErr
+		}
+
+		if resp.StatusCode() != fasthttp.StatusOK {
+			bifrostErr = providerUtils.SetErrorLatency(ParseCloudflareError(resp), totalLatency)
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			return nil, bifrostErr
+		}
+
+		responseBody := append([]byte(nil), resp.Body()...)
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		var pageResponse CloudflareListModelsResponse
+		_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(
+			responseBody,
+			&pageResponse,
+			nil,
+			false,
+			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		)
+		if bifrostErr != nil {
+			return nil, providerUtils.SetErrorLatency(bifrostErr, totalLatency)
+		}
+		if !pageResponse.Success {
+			return nil, providerUtils.SetErrorLatency(pageResponse.ToBifrostError(), totalLatency)
+		}
+
+		cloudflareResponse.Result = append(cloudflareResponse.Result, pageResponse.Result...)
+		if rawResponse != nil {
+			rawResponses = append(rawResponses, rawResponse)
+		}
+
+		if pageResponse.ResultInfo != nil && pageResponse.ResultInfo.TotalPages > 0 {
+			if page >= pageResponse.ResultInfo.TotalPages {
+				break
+			}
+		} else if len(pageResponse.Result) < perPage {
+			break
+		}
+	}
+
+	response := cloudflareResponse.ToBifrostListModelsResponse(
 		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		key.Models,
+		key.BlacklistedModels,
+		key.Aliases,
+		request.Unfiltered,
 	)
+	response.ExtraFields.Latency = totalLatency.Milliseconds()
+	if len(rawResponses) == 1 {
+		response.ExtraFields.RawResponse = rawResponses[0]
+	} else if len(rawResponses) > 1 {
+		response.ExtraFields.RawResponse = rawResponses
+	}
+
+	return response, nil
+}
+
+// ListModels performs model discovery through Cloudflare's native Models Search API.
+func (provider *CloudflareProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	return providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.listModelsByKey)
 }
 
 // ChatCompletion performs a chat completion request to Cloudflare Workers AI.
