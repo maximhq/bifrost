@@ -492,7 +492,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Cloudflare:
 		return []schemas.Key{
 			{
-				Value:          *schemas.NewEnvVar("env.CLOUDFLARE_API_KEY"),
+				Value:          *schemas.NewSecretVar("env.CLOUDFLARE_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),

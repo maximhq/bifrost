@@ -2,7 +2,9 @@
 //
 // Workers AI exposes an OpenAI-compatible surface for chat completions and
 // embeddings under the per-account path
-//   https://api.cloudflare.com/client/v4/accounts/{account_id}/ai
+//
+//	https://api.cloudflare.com/client/v4/accounts/{account_id}/ai
+//
 // so a caller MUST supply that fully-qualified URL via NetworkConfig.BaseURL —
 // there is no global default that omits the account id. The provider appends
 // `/v1/chat/completions`, `/v1/embeddings`, and `/v1/models` per request,
@@ -16,6 +18,7 @@ package cloudflare
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -67,17 +70,21 @@ func NewCloudflareProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	// ReadTimeout so long SSE responses are governed by the per-stream idle
 	// timeout instead of the overall request timeout.
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
 	config.NetworkConfig.BaseURL = strings.TrimRight(baseURL, "/")
+	networkConfig := config.NetworkConfig
+	if networkConfig.ExtraHeaders != nil {
+		networkConfig.ExtraHeaders = maps.Clone(networkConfig.ExtraHeaders)
+	}
 
 	return &CloudflareProvider{
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
-		networkConfig:       config.NetworkConfig,
+		networkConfig:       networkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
@@ -111,11 +118,12 @@ func (provider *CloudflareProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		nil,
 		provider.logger,
@@ -125,22 +133,19 @@ func (provider *CloudflareProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // ChatCompletionStream performs a streaming chat completion request to
 // Cloudflare Workers AI using the OpenAI-compatible SSE format.
 func (provider *CloudflareProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	var authHeader map[string]string
-	if key.Value.GetValue() != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
-	}
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
-		authHeader,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		schemas.Cloudflare,
+		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -159,7 +164,7 @@ func (provider *CloudflareProvider) Embedding(ctx *schemas.BifrostContext, key s
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
-		key,
+		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -347,6 +352,11 @@ func (provider *CloudflareProvider) BatchResults(_ *schemas.BifrostContext, _ []
 // CountTokens is not supported by the Cloudflare provider.
 func (provider *CloudflareProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}
+
+// Compaction is not supported by the Cloudflare provider.
+func (provider *CloudflareProvider) Compaction(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Cloudflare provider.
