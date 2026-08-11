@@ -96562,6 +96562,11 @@
             "minimum": 0,
             "description": "Anthropic data-residency multiplier applied when usage.inference_geo == \"us\"."
           },
+          "cost_per_request": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Flat fee added once per billed request, on top of any usage-based cost."
+          },
           "ocr_cost_per_page": {
             "type": "number",
             "minimum": 0
