@@ -407,6 +407,12 @@ export interface OpenAIConfig {
 	disable_store?: boolean;
 }
 
+// ProviderRequestIDConfig controls capture of the upstream request ID response header.
+export interface ProviderRequestIDConfig {
+	enabled: boolean;
+	header_name?: string;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -415,6 +421,7 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	provider_request_id?: ProviderRequestIDConfig;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	status?: "unknown" | "success" | "list_models_failed";
@@ -443,6 +450,7 @@ export interface AddProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	provider_request_id?: ProviderRequestIDConfig;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 }
@@ -455,6 +463,7 @@ export interface UpdateProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	provider_request_id?: ProviderRequestIDConfig;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 }
@@ -661,7 +670,12 @@ export const DefaultCoreConfig: CoreConfig = {
 	dual_credential_conflict_behavior: "prefer_idp",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
-	compat: { convert_text_to_chat: false, convert_chat_to_responses: false, should_drop_params: false, should_convert_params: false },
+	compat: {
+		convert_text_to_chat: false,
+		convert_chat_to_responses: false,
+		should_drop_params: false,
+		should_convert_params: false,
+	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
