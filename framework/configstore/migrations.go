@@ -471,6 +471,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notifications_table"}, run: migrationAddNotificationsTable},
 	{IDs: []string{"add_batch_jobs_table"}, run: migrationAddBatchJobsTable},
 	{IDs: []string{"add_image_megapixel_tier_pricing_columns"}, run: migrationAddImageMegapixelTierPricingColumns},
+	{IDs: []string{"add_provider_request_id_config_column"}, run: migrationAddProviderRequestIDConfigColumn},
 }
 
 func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
@@ -11947,11 +11948,11 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 	migrationName := "add_batch_jobs_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-  m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-  ID: migrationName,
-  Migrate: func(tx *gorm.DB) error {
-    tx = tx.WithContext(ctx)
-    var createTable string
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			var createTable string
 			switch tx.Dialector.Name() {
 			case "postgres":
 				createTable = `
@@ -12039,7 +12040,7 @@ func migrationAddBatchJobsTable(ctx context.Context, db *gorm.DB, logger schemas
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while creating batch_jobs table: %s", err.Error())
-  }
+	}
 	return nil
 }
 
@@ -12082,6 +12083,28 @@ func migrationAddImageMegapixelTierPricingColumns(ctx context.Context, db *gorm.
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running add_image_megapixel_tier_pricing_columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProviderRequestIDConfigColumn adds the JSON configuration column.
+func migrationAddProviderRequestIDConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_provider_request_id_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "provider_request_id_config_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableProvider{}, "provider_request_id_config_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding provider request ID config column: %s", err.Error())
 	}
 	return nil
 }

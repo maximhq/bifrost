@@ -28,3 +28,5 @@ This release adds 18 database migrations. `merge_oauth_token_tables`, `drop_oaut
 
 All eight logstore migrations in this release alter `logs` or `mcp_tool_logs`, the two highest-insert tables in Bifrost, and several also build indexes on them. On a busy instance those index builds block concurrent log inserts until they complete. Schedule the upgrade for a low-traffic period, or expect elevated log-write latency while the migrations run.
 </Warning>
+[feat]: persist and query provider request IDs in SQL and ClickHouse log stores [@qixiangyang](https://github.com/qixiangyang)
+[feat]: persist provider request ID capture settings in provider configuration [@qixiangyang](https://github.com/qixiangyang)
