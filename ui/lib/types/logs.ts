@@ -882,10 +882,13 @@ export interface RecalculateCostProgress {
 }
 
 // RecalcJobStatus is the status of a background cost-recalculation job, returned by
-// POST /api/logs/recalculate-cost (202/409) and GET /api/logs/recalculate-cost/status.
+// POST /api/logs/recalculate-cost (202/409), POST /api/logs/recalculate-cost/cancel
+// and GET /api/logs/recalculate-cost/status.
 export interface RecalcJobStatus {
 	id?: string;
-	status: "idle" | "pending" | "running" | "completed" | "failed";
+	// "cancelled" is terminal like completed/failed: the job was stopped on request,
+	// and the counters describe the work it committed before stopping.
+	status: "idle" | "pending" | "running" | "completed" | "failed" | "cancelled";
 	total: number;
 	processed: number;
 	updated: number;
