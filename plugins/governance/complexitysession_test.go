@@ -768,6 +768,7 @@ func TestUpdateSessionTierRecordRequiresSustainedDowngrade(t *testing.T) {
 	config := sessionTierTestConfig()
 	record := sessionTierTestRecord(now)
 	record.RouteObservations["current-route"] = SessionRouteObservation{
+		Tier:             complexity.TierComplex,
 		CachedReadTokens: 128,
 		CacheObserved:    true,
 		LastSeenAt:       now.Add(-time.Minute),
@@ -820,6 +821,7 @@ func TestUpdateSessionTierRecordDowngradeCacheGate(t *testing.T) {
 		{
 			name: "ambiguous zero is unknown",
 			observed: map[string]SessionRouteObservation{"route": {
+				Tier:          complexity.TierComplex,
 				CacheObserved: true,
 				LastSeenAt:    now.Add(-time.Minute),
 			}},
@@ -828,6 +830,7 @@ func TestUpdateSessionTierRecordDowngradeCacheGate(t *testing.T) {
 		{
 			name: "stale observation is unknown without provider cache ttl",
 			observed: map[string]SessionRouteObservation{"route": {
+				Tier:             complexity.TierComplex,
 				CachedReadTokens: 128,
 				CacheObserved:    true,
 				LastSeenAt:       now.Add(-2 * time.Hour),
@@ -837,6 +840,7 @@ func TestUpdateSessionTierRecordDowngradeCacheGate(t *testing.T) {
 		{
 			name: "future observation is unknown",
 			observed: map[string]SessionRouteObservation{"route": {
+				Tier:             complexity.TierComplex,
 				CachedReadTokens: 128,
 				CacheObserved:    true,
 				LastSeenAt:       now.Add(time.Minute),
@@ -846,6 +850,7 @@ func TestUpdateSessionTierRecordDowngradeCacheGate(t *testing.T) {
 		{
 			name: "large cache holds tier",
 			observed: map[string]SessionRouteObservation{"route": {
+				Tier:             complexity.TierComplex,
 				CachedReadTokens: 4096,
 				CacheObserved:    true,
 				LastSeenAt:       now.Add(-time.Minute),
@@ -855,6 +860,7 @@ func TestUpdateSessionTierRecordDowngradeCacheGate(t *testing.T) {
 		{
 			name: "small positive cache permits downgrade",
 			observed: map[string]SessionRouteObservation{"route": {
+				Tier:             complexity.TierComplex,
 				CachedReadTokens: 128,
 				CacheObserved:    true,
 				LastSeenAt:       now.Add(-time.Minute),
@@ -863,21 +869,40 @@ func TestUpdateSessionTierRecordDowngradeCacheGate(t *testing.T) {
 			wantSwitch: true,
 		},
 		{
-			name: "freshest route observation wins",
+			// A fallback that served one turn is the newest observation and is
+			// cold by construction. Taking the newest let a transient detour mask
+			// the primary route's warm cache and license a downgrade that would
+			// discard it, so the strongest evidence in the tier wins instead.
+			name: "warm route outweighs a fresher cold fallback",
 			observed: map[string]SessionRouteObservation{
-				"older-warm": {
+				"primary-warm": {
+					Tier:             complexity.TierComplex,
 					CachedReadTokens: 4096,
 					CacheObserved:    true,
 					LastSeenAt:       now.Add(-2 * time.Minute),
 				},
-				"newer-small": {
+				"fallback-cold": {
+					Tier:             complexity.TierComplex,
 					CachedReadTokens: 128,
 					CacheObserved:    true,
 					LastSeenAt:       now.Add(-time.Minute),
 				},
 			},
-			wantReason: sessionTierReasonDowngraded,
-			wantSwitch: true,
+			wantReason: sessionTierReasonCacheWorthHolding,
+		},
+		{
+			// Cache built before an earlier switch belongs to a tier the session
+			// has left, and is not at risk from the move being considered.
+			name: "observation from a tier the session left is ignored",
+			observed: map[string]SessionRouteObservation{
+				"left-tier-warm": {
+					Tier:             complexity.TierSimple,
+					CachedReadTokens: 4096,
+					CacheObserved:    true,
+					LastSeenAt:       now.Add(-time.Minute),
+				},
+			},
+			wantReason: sessionTierReasonCacheStateUnknown,
 		},
 	}
 
@@ -911,6 +936,7 @@ func TestUpdateSessionTierRecordAvoidsRepeatedCacheHoldWrites(t *testing.T) {
 	record.PendingTurns = 2
 	record.PendingMinScore = 0.9
 	record.RouteObservations["route"] = SessionRouteObservation{
+		Tier:             complexity.TierComplex,
 		CachedReadTokens: 4096,
 		CacheObserved:    true,
 		LastSeenAt:       now.Add(-time.Minute),

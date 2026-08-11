@@ -273,6 +273,7 @@ func TestWithComplexitySessionCacheAwareRequiresSustainedDowngrade(t *testing.T)
 		Tier:      complexity.TierComplex,
 		DecidedAt: time.Now().Add(-time.Minute),
 		RouteObservations: map[string]SessionRouteObservation{"route": {
+			Tier:             complexity.TierComplex,
 			CachedReadTokens: 128,
 			CacheObserved:    true,
 			LastSeenAt:       time.Now(),
@@ -629,8 +630,13 @@ func sessionWithObservations(t *testing.T) (*GovernancePlugin, *kvSessionStore, 
 	ctx := sessionTestContext(t, "session-abc")
 	state := p.resolveComplexitySessionState(ctx, nil)
 	require.NotNil(t, state)
-	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: "COMPLEX"}, state.Config.TTL)
+	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: complexity.TierComplex}, state.Config.TTL)
 	require.NoError(t, err)
+	// The tier this turn published. The request path sets it before the response
+	// hook runs; an observation that cannot be attributed to a tier is dropped,
+	// because weighing it against a tier it says nothing about is worse than
+	// having no observation at all.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, complexity.TierComplex)
 	return p, sessionStore, state, ctx
 }
 
@@ -719,8 +725,9 @@ func TestRecordSessionRouteObservationDoesNotWriteWhenUnchanged(t *testing.T) {
 	ctx := sessionTestContext(t, "session-abc")
 	state := p.resolveComplexitySessionState(ctx, nil)
 	require.NotNil(t, state)
-	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: "COMPLEX"}, state.Config.TTL)
+	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: complexity.TierComplex}, state.Config.TTL)
 	require.NoError(t, err)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, complexity.TierComplex)
 
 	response := chatResponseWithCacheDetails(4096, true)
 	p.recordSessionRouteObservation(ctx, response, schemas.OpenAI, "gpt-4o", true)
@@ -849,12 +856,40 @@ func TestBoundSessionRouteObservationsEvictsLeastRecent(t *testing.T) {
 		}
 	}
 
-	boundSessionRouteObservations(observations, maxSessionRouteObservations)
+	boundSessionRouteObservations(observations, maxSessionRouteObservations, "")
 
 	require.Len(t, observations, maxSessionRouteObservations)
 	// The four oldest went; the most recent survived.
 	assert.NotContains(t, observations, "a")
 	assert.Contains(t, observations, string(rune('a'+maxSessionRouteObservations+3)))
+}
+
+// Only the held tier's observations are ever read by a switch decision, so
+// evicting them to make room for a tier the session has already left would blind
+// the decision this history exists to inform.
+func TestBoundSessionRouteObservationsKeepsHeldTierLast(t *testing.T) {
+	now := time.Now()
+	observations := map[string]SessionRouteObservation{}
+	// The held tier's entries are the oldest, so plain LRU would evict them first.
+	for i := 0; i < 3; i++ {
+		observations["held-"+string(rune('a'+i))] = SessionRouteObservation{
+			Tier:       complexity.TierComplex,
+			LastSeenAt: now.Add(time.Duration(i) * time.Minute),
+		}
+	}
+	for i := 0; i < maxSessionRouteObservations; i++ {
+		observations["left-"+string(rune('a'+i))] = SessionRouteObservation{
+			Tier:       complexity.TierSimple,
+			LastSeenAt: now.Add(time.Duration(100+i) * time.Minute),
+		}
+	}
+
+	boundSessionRouteObservations(observations, maxSessionRouteObservations, complexity.TierComplex)
+
+	require.Len(t, observations, maxSessionRouteObservations)
+	for i := 0; i < 3; i++ {
+		assert.Contains(t, observations, "held-"+string(rune('a'+i)), "an observation for the held tier was evicted")
+	}
 }
 
 func TestSessionCachedTokensMateriallyChanged(t *testing.T) {
@@ -866,4 +901,59 @@ func TestSessionCachedTokensMateriallyChanged(t *testing.T) {
 	assert.False(t, sessionCachedTokensMateriallyChanged(4096, 4200))
 	// A large move is.
 	assert.True(t, sessionCachedTokensMateriallyChanged(4096, 8192))
+}
+
+// Two tiers can resolve to the same provider and model, so the tier has to be
+// part of the observation key. Sharing one would let the later tier's cache
+// evidence silently overwrite the earlier tier's.
+func TestEffectiveSessionRouteIdentitySeparatesTiers(t *testing.T) {
+	ctx := sessionTestContext(t, "session-abc")
+
+	complexRoute := effectiveSessionRouteIdentity(ctx, complexity.TierComplex, schemas.OpenAI, "gpt-4o")
+	mediumRoute := effectiveSessionRouteIdentity(ctx, complexity.TierMedium, schemas.OpenAI, "gpt-4o")
+
+	require.NotEmpty(t, complexRoute)
+	assert.NotEqual(t, complexRoute, mediumRoute, "one route served two tiers under a single key")
+}
+
+// An observation recorded while the session was on a different tier describes a
+// cache that the move under consideration would not discard, so it must not
+// keep the session where it is.
+func TestRecordSessionRouteObservationAttributesTheHeldTier(t *testing.T) {
+	p, sessionStore, state, ctx := sessionWithObservations(t)
+
+	p.recordSessionRouteObservation(ctx, chatResponseWithCacheDetails(4096, true), schemas.OpenAI, "gpt-4o", true)
+
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, record.RouteObservations, 1)
+	for _, observation := range record.RouteObservations {
+		assert.Equal(t, complexity.TierComplex, observation.Tier, "the observation was stored without a tier to attribute it to")
+	}
+
+	// The same route observed while the session sits on a lower tier is a
+	// separate fact, not an overwrite of the one above.
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, complexity.TierMedium)
+	p.recordSessionRouteObservation(ctx, chatResponseWithCacheDetails(64, true), schemas.OpenAI, "gpt-4o", true)
+
+	record, found, err = sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Len(t, record.RouteObservations, 2, "a second tier's observation overwrote the first")
+}
+
+// A turn that published no tier cannot be attributed, and an unattributed
+// observation is worse than none: it would be weighed against a tier it says
+// nothing about.
+func TestRecordSessionRouteObservationSkipsUnattributedTurns(t *testing.T) {
+	p, sessionStore, state, ctx := sessionWithObservations(t)
+	ctx.ClearValue(schemas.BifrostContextKeyGovernanceComplexityTier)
+
+	p.recordSessionRouteObservation(ctx, chatResponseWithCacheDetails(4096, true), schemas.OpenAI, "gpt-4o", true)
+
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Empty(t, record.RouteObservations)
 }
