@@ -101,5 +101,8 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if config.OpenAIConfig != nil {
 		providerConfig.OpenAIConfig = config.OpenAIConfig
 	}
+	if config.ProviderRequestID != nil {
+		providerConfig.ProviderRequestID = config.ProviderRequestID
+	}
 	return providerConfig, nil
 }

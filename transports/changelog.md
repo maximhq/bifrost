@@ -87,3 +87,5 @@ Every logstore migration above alters `logs` or `mcp_tool_logs`, the two highest
 - [#5900](https://github.com/maximhq/bifrost/issues/5900) - [Bug]: Streaming continuation chunks materialize omitted tool-call metadata as null
 - [#5978](https://github.com/maximhq/bifrost/issues/5978) - [Bug]: Gemini egress reports truncated responses as FinishReason OTHER, IncompleteDetails switch matches a string that never occurs
 - [#6044](https://github.com/maximhq/bifrost/issues/6044) - [Bug]: normalizeOpenAIReasoningEffort maps 'minimal' to 'low' for ALL OpenAI models, even ones that natively support 'minimal'
+[feat]: support exact provider request ID filtering in log APIs [@qixiangyang](https://github.com/qixiangyang)
+[feat]: expose provider request ID capture settings through the HTTP management API [@qixiangyang](https://github.com/qixiangyang)

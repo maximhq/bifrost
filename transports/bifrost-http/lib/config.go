@@ -1447,6 +1447,9 @@ func processProvider(
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
 		return err
 	}
+	if err := NormalizeProviderRequestIDConfig(&providerCfgInFile, provider); err != nil {
+		return err
+	}
 
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -1484,6 +1487,9 @@ func processAuthoritativeProvider(
 	provider := schemas.ModelProvider(strings.ToLower(providerName))
 	if err := ValidateCustomProvider(providerCfgInFile, provider); err != nil {
 		logger.Warn("invalid custom provider config for %s (writing through): %v", provider, err)
+	}
+	if err := NormalizeProviderRequestIDConfig(&providerCfgInFile, provider); err != nil {
+		logger.Warn("invalid provider request ID config for %s (writing through): %v", provider, err)
 	}
 	baseProvider := provider
 	if providerCfgInFile.CustomProviderConfig != nil && providerCfgInFile.CustomProviderConfig.BaseProviderType != "" {
@@ -7137,6 +7143,22 @@ func (c *Config) GetVectorStoreConfigRedacted(ctx context.Context) (*vectorstore
 		return &redactedVectorStoreConfig, nil
 	}
 	return nil, nil
+}
+
+// NormalizeProviderRequestIDConfig validates and canonicalizes provider request ID capture config.
+func NormalizeProviderRequestIDConfig(config *configstore.ProviderConfig, provider schemas.ModelProvider) error {
+	if config == nil {
+		return nil
+	}
+	runtimeConfig := &schemas.ProviderConfig{
+		CustomProviderConfig: config.CustomProviderConfig,
+		ProviderRequestID:    config.ProviderRequestID,
+	}
+	if err := schemas.NormalizeProviderRequestIDConfig(provider, runtimeConfig); err != nil {
+		return err
+	}
+	config.ProviderRequestID = runtimeConfig.ProviderRequestID
+	return nil
 }
 
 // ValidateCustomProvider validates the custom provider configuration
