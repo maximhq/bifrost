@@ -335,8 +335,8 @@ func (c *ComplexitySemanticConfig) Validate() error {
 // an explicit "off" are equivalent at runtime; use Enabled to test either.
 //
 // "pinned" classifies once per session and reuses the tier until the pin is
-// released. "cache_aware" classifies every request and gates tier changes; it
-// cannot skip classification because it needs the proposal to decide.
+// released. "cache_aware" classifies every turn whose routing rules consult
+// complexity and gates tier changes; it needs that proposal to decide.
 const (
 	ComplexitySessionModeOff        = "off"
 	ComplexitySessionModePinned     = "pinned"

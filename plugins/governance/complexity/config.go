@@ -42,11 +42,10 @@ const (
 const (
 	MechanismSemantic = "semantic"
 	MechanismSkipped  = "skipped"
-	// MechanismSession means the tier was reused from session state rather than
-	// classified for this request. It is a distinct value rather than reporting
-	// the mechanism that originally decided it: the whole point of the pin is
-	// that no classifier ran for this turn, and recording "semantic" would make
-	// a log of held turns indistinguishable from a log of embedded ones.
+	// MechanismSession means pinned mode reused a tier without classifying this
+	// request. Cache-aware mode deliberately keeps MechanismSemantic or
+	// MechanismSkipped because its classifier runs before session policy decides
+	// whether to hold or switch the tier.
 	MechanismSession = "session"
 )
 

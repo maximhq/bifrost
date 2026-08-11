@@ -3711,15 +3711,15 @@
     },
     "complexity_session_config": {
       "type": "object",
-      "description": "Session state settings. When enabled, a conversation's complexity tier is resolved once and reused for later turns instead of being reclassified every turn, which keeps the provider-side prompt cache intact and skips the per-turn embedding call. Session state is node-local unless a shared backend is configured, so on multi-replica deployments turns handled by different replicas may resolve tiers independently.",
+      "description": "Session state settings. Pinned mode resolves a conversation's complexity tier once and reuses it, preserving the provider-side prompt cache and skipping later embedding calls. Cache-aware mode reclassifies every turn that uses complexity routing, then gates tier changes to avoid discarding valuable cache state. Session state is node-local unless a shared backend is configured, so on multi-replica deployments turns handled by different replicas may resolve tiers independently.",
       "properties": {
         "mode": {
           "type": "string",
           "enum": ["off", "pinned", "cache_aware"],
-          "description": "'off' disables session state and classifies every turn (default). 'pinned' classifies turn 1 and holds that tier for the session. 'cache_aware' additionally allows tier switches when the classifier is confident enough and the cache being protected is small enough to be worth discarding."
+          "description": "'off' disables session state and classifies every turn (default). 'pinned' classifies turn 1 and holds that tier for the session. 'cache_aware' classifies every complexity-routed turn (including its embedding cost), then switches only when the classifier is confident enough and the cache being protected is small enough to discard."
         },
         "ttl": {
-          "description": "How long a session record survives without traffic (duration string like '1h' or '30m', or milliseconds as a number; default: 1h). The window slides on every read, so it measures idle time rather than total session age.",
+          "description": "How long a session record stays active without traffic (duration string like '1h' or '30m', or milliseconds as a number; default: 1h). Reads keep the session alive using a throttled refresh, so the setting measures idle time rather than total session age.",
           "oneOf": [
             {
               "type": "string",

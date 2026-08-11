@@ -909,9 +909,10 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
-	// Session state short-circuits classification for an established conversation.
-	// Wrapping keeps that inside the lazy closure, so a request whose rules never
-	// mention complexity_tier still performs no session work.
+	// Session policy stays inside the lazy closure: pinned mode can short-circuit
+	// classification, while cache-aware mode classifies and gates a tier change.
+	// A request whose rules never mention complexity_tier still performs neither
+	// classification nor session-store work.
 	computeComplexity = p.withComplexitySession(ctx, sessionState, computeComplexity)
 
 	// Target stickiness keys on the resolved identity, not the raw header, so a

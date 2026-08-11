@@ -32,6 +32,22 @@ func (f *failingSessionStore) Create(context.Context, string, *SessionComplexity
 	return false, f.createErr
 }
 
+type failingUpdateSessionStore struct {
+	SessionStore
+	err     error
+	updates int
+}
+
+func (f *failingUpdateSessionStore) Update(
+	context.Context,
+	string,
+	time.Duration,
+	SessionRecordUpdater,
+) (*SessionComplexityRecord, bool, error) {
+	f.updates++
+	return nil, true, f.err
+}
+
 func sessionRoutePlugin(t *testing.T, store SessionStore, sessionConfig *configstore.ComplexitySessionConfig) *GovernancePlugin {
 	t.Helper()
 	p := &GovernancePlugin{logger: NewMockLogger()}
@@ -56,6 +72,13 @@ func cacheAwareSessionConfig() *configstore.ComplexitySessionConfig {
 	config := enabledSessionConfig()
 	config.Mode = configstore.ComplexitySessionModeCacheAware
 	return config
+}
+
+func semanticSessionProposal(ctx *schemas.BifrostContext, tier string, score float64) *complexity.ComplexityResult {
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, tier)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, score)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSemantic)
+	return &complexity.ComplexityResult{Tier: tier, Score: score}
 }
 
 // The second argument is a deadline, not a timestamp. It has to be in the
@@ -123,6 +146,182 @@ func TestWithComplexitySessionPublishesSessionMechanism(t *testing.T) {
 	mechanism, _ := held.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism).(string)
 	assert.Equal(t, "MEDIUM", tier)
 	assert.Equal(t, complexity.MechanismSession, mechanism)
+}
+
+// Cache-aware mode pays for a proposal on every relevant turn, but an unchanged
+// decision must not turn that read path into one replicated write per request.
+func TestWithComplexitySessionCacheAwareClassifiesEveryTurnWithoutWritingUnchangedTier(t *testing.T) {
+	sessionStore, store := newTestKVSessionStore(t)
+	_, targetKV := newTestKVSessionStore(t)
+	p := sessionRoutePlugin(t, sessionStore, cacheAwareSessionConfig())
+	ctx := sessionTestContext(t, "session-abc")
+	state := p.resolveComplexitySessionState(ctx, nil)
+	require.NotNil(t, state)
+
+	classifyCalls := 0
+	classify := func() *complexity.ComplexityResult {
+		classifyCalls++
+		return semanticSessionProposal(ctx, complexity.TierComplex, 0.95)
+	}
+	first := p.withComplexitySession(ctx, state, classify)()
+	require.NotNil(t, first)
+	require.Equal(t, complexity.TierComplex, first.Tier)
+
+	// Count only established-session decisions. The initial Create is expected
+	// to write; equal-tier decisions after it are not.
+	delegate := &forwardingKVDelegate{target: targetKV}
+	store.SetDelegate(delegate)
+	for range 5 {
+		result := p.withComplexitySession(ctx, state, classify)()
+		require.NotNil(t, result)
+		assert.Equal(t, complexity.TierComplex, result.Tier)
+	}
+
+	assert.Equal(t, 6, classifyCalls)
+	assert.Zero(t, delegate.Sets(), "an unchanged cache-aware tier was replicated on every turn")
+}
+
+func TestWithComplexitySessionCacheAwareEscalatesAndKeepsSemanticMechanism(t *testing.T) {
+	config := cacheAwareSessionConfig()
+	config.SwitchMinSimilarity = 0.8
+	sessionStore, _ := newTestKVSessionStore(t)
+	p := sessionRoutePlugin(t, sessionStore, config)
+	ctx := sessionTestContext(t, "session-abc")
+	state := p.resolveComplexitySessionState(ctx, nil)
+	require.NotNil(t, state)
+	created, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{
+		Tier:      complexity.TierSimple,
+		DecidedAt: time.Now().Add(-time.Minute),
+	}, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	result := p.withComplexitySession(ctx, state, func() *complexity.ComplexityResult {
+		return semanticSessionProposal(ctx, complexity.TierComplex, 0.93)
+	})()
+	require.NotNil(t, result)
+	assert.Equal(t, complexity.TierComplex, result.Tier)
+	assert.Equal(t, complexity.MechanismSemantic, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	assert.Equal(t, 0.93, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore))
+
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, complexity.TierComplex, record.Tier)
+	assert.Equal(t, 1, record.SwitchCount)
+	assert.False(t, record.DecidedAt.IsZero())
+}
+
+func TestWithComplexitySessionCacheAwareRequiresSustainedDowngrade(t *testing.T) {
+	config := cacheAwareSessionConfig()
+	config.SwitchMinSimilarity = 0.8
+	config.DowngradeAfterNTurns = 2
+	config.MinCachedTokensToHold = 1024
+	sessionStore, _ := newTestKVSessionStore(t)
+	p := sessionRoutePlugin(t, sessionStore, config)
+	ctx := sessionTestContext(t, "session-abc")
+	state := p.resolveComplexitySessionState(ctx, nil)
+	require.NotNil(t, state)
+	created, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{
+		Tier:      complexity.TierComplex,
+		DecidedAt: time.Now().Add(-time.Minute),
+		RouteObservations: map[string]SessionRouteObservation{"route": {
+			CachedReadTokens: 128,
+			CacheObserved:    true,
+			LastSeenAt:       time.Now(),
+		}},
+	}, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	first := p.withComplexitySession(ctx, state, func() *complexity.ComplexityResult {
+		return semanticSessionProposal(ctx, complexity.TierMedium, 0.93)
+	})()
+	require.NotNil(t, first)
+	assert.Equal(t, complexity.TierComplex, first.Tier)
+	assert.Equal(t, complexity.TierComplex, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	assert.Equal(t, complexity.MechanismSemantic, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	_, hasScore := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
+	assert.False(t, hasScore, "a held tier kept the score calculated for a different proposal")
+
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, complexity.TierComplex, record.Tier)
+	assert.Equal(t, complexity.TierMedium, record.PendingTier)
+	assert.Equal(t, 1, record.PendingTurns)
+
+	second := p.withComplexitySession(ctx, state, func() *complexity.ComplexityResult {
+		return semanticSessionProposal(ctx, complexity.TierMedium, 0.91)
+	})()
+	require.NotNil(t, second)
+	assert.Equal(t, complexity.TierMedium, second.Tier)
+	assert.Equal(t, 0.91, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore))
+
+	record, found, err = sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, complexity.TierMedium, record.Tier)
+	assert.Equal(t, 1, record.SwitchCount)
+	assert.Empty(t, record.PendingTier)
+	assert.Zero(t, record.PendingTurns)
+}
+
+func TestWithComplexitySessionCacheAwareHoldsWhenClassificationHasNoTier(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	p := sessionRoutePlugin(t, sessionStore, cacheAwareSessionConfig())
+	ctx := sessionTestContext(t, "session-abc")
+	state := p.resolveComplexitySessionState(ctx, nil)
+	require.NotNil(t, state)
+	created, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{
+		Tier:            complexity.TierComplex,
+		PendingTier:     complexity.TierMedium,
+		PendingTurns:    1,
+		PendingMinScore: 0.9,
+	}, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	result := p.withComplexitySession(ctx, state, func() *complexity.ComplexityResult {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
+		return nil
+	})()
+	require.NotNil(t, result)
+	assert.Equal(t, complexity.TierComplex, result.Tier)
+	assert.Equal(t, complexity.TierComplex, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
+	assert.Equal(t, complexity.MechanismSkipped, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Empty(t, record.PendingTier)
+	assert.Zero(t, record.PendingTurns)
+}
+
+func TestWithComplexitySessionCacheAwareFallsBackWhenUpdateFails(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	broken := &failingUpdateSessionStore{SessionStore: sessionStore, err: errors.New("backend down")}
+	p := sessionRoutePlugin(t, broken, cacheAwareSessionConfig())
+	ctx := sessionTestContext(t, "session-abc")
+	state := p.resolveComplexitySessionState(ctx, nil)
+	require.NotNil(t, state)
+	created, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{
+		Tier: complexity.TierSimple,
+	}, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	result := p.withComplexitySession(ctx, state, func() *complexity.ComplexityResult {
+		return semanticSessionProposal(ctx, complexity.TierComplex, 0.95)
+	})()
+	require.NotNil(t, result)
+	assert.Equal(t, complexity.TierComplex, result.Tier)
+	assert.Equal(t, 1, broken.updates)
+
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, complexity.TierSimple, record.Tier, "a failed update mutated the stored tier")
 }
 
 // A failed or rejected classification must not be stored. Pinning "no tier"
@@ -376,7 +575,7 @@ func sessionWithObservations(t *testing.T) (*GovernancePlugin, *kvSessionStore, 
 	ctx := sessionTestContext(t, "session-abc")
 	state := p.resolveComplexitySessionState(ctx, nil)
 	require.NotNil(t, state)
-	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: "COMPLEX"}, state.TTL)
+	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: "COMPLEX"}, state.Config.TTL)
 	require.NoError(t, err)
 	return p, sessionStore, state, ctx
 }
@@ -390,14 +589,14 @@ func TestRecordSessionRouteObservationSkipsPinnedMode(t *testing.T) {
 	ctx := sessionTestContext(t, "session-abc")
 	state := p.resolveComplexitySessionState(ctx, nil)
 	require.NotNil(t, state)
-	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: "COMPLEX"}, state.TTL)
+	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: "COMPLEX"}, state.Config.TTL)
 	require.NoError(t, err)
 
 	delegate := &forwardingKVDelegate{target: targetKV}
 	store.SetDelegate(delegate)
 	p.recordSessionRouteObservation(ctx, chatResponseWithCacheDetails(4096, true), schemas.OpenAI, "gpt-4o", true)
 
-	record, found, err := sessionStore.Get(context.Background(), state.Key, state.TTL)
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Empty(t, record.RouteObservations)
@@ -411,7 +610,7 @@ func TestRecordSessionRouteObservationStoresCacheSize(t *testing.T) {
 
 	p.recordSessionRouteObservation(ctx, chatResponseWithCacheDetails(4096, true), schemas.OpenAI, "gpt-4o", true)
 
-	record, found, err := sessionStore.Get(context.Background(), state.Key, state.TTL)
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, record.RouteObservations, 1)
@@ -434,7 +633,7 @@ func TestRecordSessionRouteObservationTreatsAmbiguousZeroAsUnknown(t *testing.T)
 
 	p.recordSessionRouteObservation(ctx, response, schemas.Gemini, "gemini-2.5-pro", true)
 
-	record, found, err := sessionStore.Get(context.Background(), state.Key, state.TTL)
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, record.RouteObservations, 1)
@@ -451,7 +650,7 @@ func TestRecordSessionRouteObservationIgnoresNonFinalChunks(t *testing.T) {
 
 	p.recordSessionRouteObservation(ctx, chatResponseWithCacheDetails(4096, true), schemas.OpenAI, "gpt-4o", false)
 
-	record, found, err := sessionStore.Get(context.Background(), state.Key, state.TTL)
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Empty(t, record.RouteObservations)
@@ -466,7 +665,7 @@ func TestRecordSessionRouteObservationDoesNotWriteWhenUnchanged(t *testing.T) {
 	ctx := sessionTestContext(t, "session-abc")
 	state := p.resolveComplexitySessionState(ctx, nil)
 	require.NotNil(t, state)
-	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: "COMPLEX"}, state.TTL)
+	_, err := sessionStore.Create(context.Background(), state.Key, &SessionComplexityRecord{Tier: "COMPLEX"}, state.Config.TTL)
 	require.NoError(t, err)
 
 	response := chatResponseWithCacheDetails(4096, true)
@@ -493,7 +692,7 @@ func TestRecordSessionRouteObservationSeparatesRoutes(t *testing.T) {
 	p.recordSessionRouteObservation(ctx, chatResponseWithCacheDetails(4096, true), schemas.OpenAI, "gpt-4o", true)
 	p.recordSessionRouteObservation(ctx, chatResponseWithCacheDetails(128, true), schemas.Anthropic, "claude-3-5-sonnet", true)
 
-	record, found, err := sessionStore.Get(context.Background(), state.Key, state.TTL)
+	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Len(t, record.RouteObservations, 2)
