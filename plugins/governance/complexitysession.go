@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 const (
@@ -81,6 +82,37 @@ type SessionComplexityRecord struct {
 	// It is a map so primary, fallback, and destination warmth remain separate.
 	// Writers are responsible for bounding retained history.
 	RouteObservations map[string]SessionRouteObservation `json:"route_observations,omitempty"`
+}
+
+// sessionTierDecisionReason is a stable, machine-readable explanation of a
+// cache-aware tier decision. The integration layer may turn it into a richer
+// routing log, but policy remains independent of logging and request state.
+type sessionTierDecisionReason string
+
+const (
+	sessionTierReasonInvalidState          sessionTierDecisionReason = "invalid_state"
+	sessionTierReasonInvalidProposal       sessionTierDecisionReason = "invalid_proposal"
+	sessionTierReasonNoProposal            sessionTierDecisionReason = "no_proposal"
+	sessionTierReasonSameTier              sessionTierDecisionReason = "same_tier"
+	sessionTierReasonBelowSwitchSimilarity sessionTierDecisionReason = "below_switch_similarity"
+	sessionTierReasonSwitchLimitReached    sessionTierDecisionReason = "switch_limit_reached"
+	sessionTierReasonEscalated             sessionTierDecisionReason = "escalated"
+	sessionTierReasonDowngradePending      sessionTierDecisionReason = "downgrade_pending"
+	sessionTierReasonCacheStateUnknown     sessionTierDecisionReason = "cache_state_unknown"
+	sessionTierReasonCacheWorthHolding     sessionTierDecisionReason = "cache_worth_holding"
+	sessionTierReasonDowngraded            sessionTierDecisionReason = "downgraded"
+)
+
+// sessionTierDecision is the result of applying cache-aware session policy.
+// Tier is the value to publish for this turn. Switched distinguishes a tier
+// move from a hold, while RecordChanged tells the caller whether persistence is
+// necessary even when the tier stayed put, such as while advancing a pending
+// downgrade.
+type sessionTierDecision struct {
+	Tier          string
+	Switched      bool
+	RecordChanged bool
+	Reason        sessionTierDecisionReason
 }
 
 // SessionStoreStatus describes the guarantees of the active session-state
@@ -383,6 +415,184 @@ func cloneSessionComplexityRecord(record *SessionComplexityRecord) *SessionCompl
 	cloned := *record
 	cloned.RouteObservations = maps.Clone(record.RouteObservations)
 	return &cloned
+}
+
+// updateSessionTierRecord applies cache-aware switching policy to record and
+// returns the tier to publish for this turn. It mutates only the supplied
+// caller-owned record and performs no I/O, logging, or store access.
+//
+// Callers must invoke it from inside SessionStore.Update so the decision and
+// its PendingTurns/SwitchCount mutations use the latest record atomically. A
+// false RecordChanged result lets the caller abort the write, avoiding an
+// unnecessary replication message for an ordinary held turn.
+func updateSessionTierRecord(
+	record *SessionComplexityRecord,
+	proposed *complexity.ComplexityResult,
+	config *configstore.ComplexitySessionConfig,
+	now time.Time,
+) sessionTierDecision {
+	if record == nil {
+		return sessionTierDecision{Reason: sessionTierReasonInvalidState}
+	}
+	if config == nil || config.Mode != configstore.ComplexitySessionModeCacheAware {
+		return sessionTierDecision{Tier: record.Tier, Reason: sessionTierReasonInvalidState}
+	}
+
+	currentRank, currentValid := sessionTierRank(record.Tier)
+	if !currentValid {
+		return sessionTierDecision{Tier: record.Tier, Reason: sessionTierReasonInvalidState}
+	}
+	if proposed == nil || proposed.Tier == "" {
+		return heldSessionTierDecision(record, sessionTierReasonNoProposal)
+	}
+
+	proposedRank, proposedValid := sessionTierRank(proposed.Tier)
+	if !proposedValid {
+		return heldSessionTierDecision(record, sessionTierReasonInvalidProposal)
+	}
+	if proposedRank == currentRank {
+		return heldSessionTierDecision(record, sessionTierReasonSameTier)
+	}
+
+	escalating := proposedRank > currentRank
+	if !meetsSessionSwitchSimilarity(proposed.Score, config.SwitchMinSimilarity) &&
+		!(escalating && config.AlwaysAllowEscalation) {
+		return heldSessionTierDecision(record, sessionTierReasonBelowSwitchSimilarity)
+	}
+	if config.MaxSwitchesPerSession > 0 && record.SwitchCount >= config.MaxSwitchesPerSession {
+		return heldSessionTierDecision(record, sessionTierReasonSwitchLimitReached)
+	}
+	if escalating {
+		return switchedSessionTierDecision(record, proposed.Tier, now, sessionTierReasonEscalated)
+	}
+
+	requiredTurns := config.DowngradeAfterNTurns
+	if requiredTurns < 1 {
+		requiredTurns = 1
+	}
+	recordChanged := advancePendingSessionTier(record, proposed.Tier, proposed.Score, requiredTurns)
+	if record.PendingTurns < requiredTurns {
+		return unswitchedSessionTierDecision(record, sessionTierReasonDowngradePending, recordChanged)
+	}
+
+	observation, ok := latestUsableSessionRouteObservation(record, now, config.TTL)
+	if !ok || !observation.CacheObserved || observation.CachedReadTokens <= 0 {
+		return unswitchedSessionTierDecision(record, sessionTierReasonCacheStateUnknown, recordChanged)
+	}
+	if observation.CachedReadTokens >= config.MinCachedTokensToHold {
+		return unswitchedSessionTierDecision(record, sessionTierReasonCacheWorthHolding, recordChanged)
+	}
+
+	return switchedSessionTierDecision(record, proposed.Tier, now, sessionTierReasonDowngraded)
+}
+
+func sessionTierRank(tier string) (int, bool) {
+	switch tier {
+	case complexity.TierSimple:
+		return 0, true
+	case complexity.TierMedium:
+		return 1, true
+	case complexity.TierComplex:
+		return 2, true
+	default:
+		return 0, false
+	}
+}
+
+func meetsSessionSwitchSimilarity(score, threshold float64) bool {
+	return threshold <= 0 || score >= threshold
+}
+
+func heldSessionTierDecision(record *SessionComplexityRecord, reason sessionTierDecisionReason) sessionTierDecision {
+	return unswitchedSessionTierDecision(record, reason, clearPendingSessionTier(record))
+}
+
+func unswitchedSessionTierDecision(
+	record *SessionComplexityRecord,
+	reason sessionTierDecisionReason,
+	recordChanged bool,
+) sessionTierDecision {
+	return sessionTierDecision{
+		Tier:          record.Tier,
+		RecordChanged: recordChanged,
+		Reason:        reason,
+	}
+}
+
+func clearPendingSessionTier(record *SessionComplexityRecord) bool {
+	if record.PendingTier == "" && record.PendingTurns == 0 && record.PendingMinScore == 0 {
+		return false
+	}
+	record.PendingTier = ""
+	record.PendingTurns = 0
+	record.PendingMinScore = 0
+	return true
+}
+
+func advancePendingSessionTier(record *SessionComplexityRecord, tier string, score float64, requiredTurns int) bool {
+	if record.PendingTier != tier || record.PendingTurns <= 0 {
+		record.PendingTier = tier
+		record.PendingTurns = 1
+		record.PendingMinScore = score
+		return true
+	}
+
+	changed := false
+	if record.PendingTurns < requiredTurns {
+		record.PendingTurns++
+		changed = true
+	}
+	if score < record.PendingMinScore {
+		record.PendingMinScore = score
+		changed = true
+	}
+	return changed
+}
+
+// latestUsableSessionRouteObservation returns the freshest route fact that is
+// no newer than now and still within the session observation window. We use the
+// latest served route because tier selection happens before routing, so the
+// destination route for a proposed tier is not known yet.
+//
+// A stale fact is unknown, not cold: session TTL is not proof of a provider's
+// prompt-cache TTL, and guessing expiry could discard a still-warm cache.
+func latestUsableSessionRouteObservation(
+	record *SessionComplexityRecord,
+	now time.Time,
+	ttl time.Duration,
+) (SessionRouteObservation, bool) {
+	if record == nil || now.IsZero() || ttl <= 0 {
+		return SessionRouteObservation{}, false
+	}
+
+	var latest SessionRouteObservation
+	for _, observation := range record.RouteObservations {
+		if observation.LastSeenAt.After(latest.LastSeenAt) {
+			latest = observation
+		}
+	}
+	if latest.LastSeenAt.IsZero() || latest.LastSeenAt.After(now) || now.Sub(latest.LastSeenAt) > ttl {
+		return SessionRouteObservation{}, false
+	}
+	return latest, true
+}
+
+func switchedSessionTierDecision(
+	record *SessionComplexityRecord,
+	tier string,
+	now time.Time,
+	reason sessionTierDecisionReason,
+) sessionTierDecision {
+	record.Tier = tier
+	record.DecidedAt = now
+	record.SwitchCount++
+	clearPendingSessionTier(record)
+	return sessionTierDecision{
+		Tier:          record.Tier,
+		Switched:      true,
+		RecordChanged: true,
+		Reason:        reason,
+	}
 }
 
 // resolveSessionID walks the enabled identity sources in their fixed precedence
