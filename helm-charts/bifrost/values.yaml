@@ -514,7 +514,8 @@ bifrost:
       #
       # - name: "example-oauth-mcp"
       #   connectionType: "http"
-      #   connectionString: "https://my-mcp.corp/mcp"
+      #   httpConfig:
+      #     url: "https://my-mcp.corp/mcp"
       #   # authType "oauth": one shared OAuth token used for every caller.
       #   # authType "per_user_oauth": each user authenticates individually via OAuth flow.
       #   # oauthConfig is optional for both - missing URLs are discovered via RFC 8414 and a

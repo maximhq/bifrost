@@ -6196,6 +6196,11 @@
               "required": ["tokenExchange"]
             }
           }
+        },
+        {
+          "not": {
+            "required": ["oauthConfigId"]
+          }
         }
       ]
     },
