@@ -1,0 +1,105 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- $serviceMonitorNamespace := default .Release.Namespace .Values.serviceMonitor.namespace }}
+{{- $basicAuth := .Values.serviceMonitor.basicAuth | default dict }}
+{{- if and $basicAuth.enabled .Values.serviceMonitor.authorization }}
+{{- fail "ERROR: serviceMonitor.basicAuth.enabled and serviceMonitor.authorization are mutually exclusive; a scrape endpoint carries at most one authentication method. Pick one." }}
+{{- end }}
+{{- $basicAuthSecret := "" }}
+{{- $basicAuthUsernameKey := "" }}
+{{- $basicAuthPasswordKey := "" }}
+{{- if $basicAuth.enabled }}
+{{/*
+  Match the config renderer's auth precedence: governance is active only when
+  it contributes a non-empty auth_config, otherwise the top-level authConfig is
+  active only when it contributes one. An explicit basicAuth Secret bypasses
+  this selection and owns its key names.
+*/}}
+{{- $governanceAuth := .Values.bifrost.governance.authConfig | default dict }}
+{{- $topLevelAuth := .Values.bifrost.authConfig | default dict }}
+{{- $governanceUsernameConfigured := or (and $governanceAuth.existingSecret $governanceAuth.usernameKey) $governanceAuth.adminUsername }}
+{{- $governancePasswordConfigured := or (and $governanceAuth.existingSecret $governanceAuth.passwordKey) $governanceAuth.adminPassword }}
+{{- $governanceAuthActive := or $governanceUsernameConfigured $governancePasswordConfigured $governanceAuth.isEnabled $governanceAuth.disableAuthOnInference }}
+{{- $topLevelUsernameConfigured := or (and $topLevelAuth.existingSecret $topLevelAuth.usernameKey (not $governanceAuth.existingSecret)) $topLevelAuth.adminUsername }}
+{{- $topLevelPasswordConfigured := or (and $topLevelAuth.existingSecret $topLevelAuth.passwordKey (not $governanceAuth.existingSecret)) $topLevelAuth.adminPassword }}
+{{- $topLevelAuthActive := or $topLevelUsernameConfigured $topLevelPasswordConfigured $topLevelAuth.isEnabled $topLevelAuth.disableAuthOnInference }}
+{{- $authSource := dict }}
+{{- $authSourceName := "" }}
+{{- if $basicAuth.existingSecret }}
+{{- else if ne $serviceMonitorNamespace .Release.Namespace }}
+{{- fail "ERROR: serviceMonitor.namespace differs from the Helm release namespace, so serviceMonitor.basicAuth.existingSecret must be set explicitly. ServiceMonitor Secret references resolve in the ServiceMonitor namespace and cannot inherit the workload auth Secret." }}
+{{- else if $governanceAuthActive }}
+{{- $authSource = $governanceAuth }}
+{{- $authSourceName = "bifrost.governance.authConfig" }}
+{{- else if $topLevelAuthActive }}
+{{- $authSource = $topLevelAuth }}
+{{- $authSourceName = "bifrost.authConfig" }}
+{{- end }}
+{{- $basicAuthSecret = $basicAuth.existingSecret | default (index $authSource "existingSecret") }}
+{{- if not $basicAuthSecret }}
+{{- if $authSourceName }}
+{{- fail (printf "ERROR: serviceMonitor.basicAuth.enabled is true but the active %s does not use an existing Secret. Prometheus cannot read inline adminUsername/adminPassword values. Configure existingSecret on the active authConfig, or set serviceMonitor.basicAuth.existingSecret explicitly." $authSourceName) }}
+{{- else }}
+{{- fail "ERROR: serviceMonitor.basicAuth.enabled is true but no active authConfig with an existing Secret could be resolved. Configure bifrost.governance.authConfig or bifrost.authConfig with an existingSecret, or set serviceMonitor.basicAuth.existingSecret explicitly." }}
+{{- end }}
+{{- end }}
+{{- $basicAuthUsernameKey = $basicAuth.usernameKey | default (index $authSource "usernameKey") | default "username" }}
+{{- $basicAuthPasswordKey = $basicAuth.passwordKey | default (index $authSource "passwordKey") | default "password" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "bifrost.fullname" . }}
+  namespace: {{ $serviceMonitorNamespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  endpoints:
+    - port: http
+      path: {{ .Values.serviceMonitor.path | quote }}
+      {{- with .Values.serviceMonitor.interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.scheme }}
+      scheme: {{ . }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $basicAuth.enabled }}
+      basicAuth:
+        username:
+          name: {{ $basicAuthSecret }}
+          key: {{ $basicAuthUsernameKey }}
+        password:
+          name: {{ $basicAuthSecret }}
+          key: {{ $basicAuthPasswordKey }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.authorization }}
+      authorization:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if hasKey .Values.serviceMonitor "honorLabels" }}
+      honorLabels: {{ .Values.serviceMonitor.honorLabels }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "bifrost.serverSelectorLabels" . | nindent 6 }}
+{{- end }}
