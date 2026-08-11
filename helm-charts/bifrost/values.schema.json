@@ -5473,6 +5473,38 @@
                 }
               },
               "additionalProperties": false
+            },
+            "endpoints": {
+              "type": "object",
+              "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+              "properties": {
+                "runtime": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock-runtime service, which serves all inference (can use env. prefix)"
+                },
+                "control_plane": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock service, which serves model listing and batch jobs (can use env. prefix)"
+                },
+                "mantle": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock-mantle service, which serves mantle-routed models (can use env. prefix)"
+                },
+                "agent_runtime": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock-agent-runtime service, which serves rerank (can use env. prefix)"
+                },
+                "s3": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the s3 service, which serves batch file I/O. Must carry the literal \"bucket.\" prefix, since Bifrost prepends the bucket name to build the virtual-hosted URL. A Gateway endpoint needs no value here (can use env. prefix)"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "required": ["region"],
@@ -5512,6 +5544,18 @@
             "project_id": {
               "type": "string",
               "description": "Bedrock project ID scoping the Mantle sub-surface (OpenAI-compatible gpt-*/Gemma routing) via the OpenAI-Project header. When empty, AWS routes to the account's default project. No effect on the Converse/bedrock-runtime paths (can use env. prefix)"
+            },
+            "endpoints": {
+              "type": "object",
+              "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+              "properties": {
+                "mantle": {
+                  "type": "string",
+                  "pattern": "\\.",
+                  "description": "Host for the bedrock-mantle service (can use env. prefix)"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "required": ["region"],
@@ -6412,6 +6456,38 @@
                         }
                       }
                     }
+                  },
+                  "endpoints": {
+                    "type": "object",
+                    "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+                    "properties": {
+                      "runtime": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the bedrock-runtime service, which serves all inference (can use env. prefix)"
+                      },
+                      "control_plane": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the bedrock service, which serves model listing and batch jobs (can use env. prefix)"
+                      },
+                      "mantle": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the bedrock-mantle service, which serves mantle-routed models (can use env. prefix)"
+                      },
+                      "agent_runtime": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the bedrock-agent-runtime service, which serves rerank (can use env. prefix)"
+                      },
+                      "s3": {
+                        "type": "string",
+                        "pattern": "\\.",
+                        "description": "Host for the s3 service, which serves batch file I/O. Must carry the literal \"bucket.\" prefix, since Bifrost prepends the bucket name to build the virtual-hosted URL. A Gateway endpoint needs no value here (can use env. prefix)"
+                      }
+                    },
+                    "additionalProperties": false
                   }
                 },
                 "additionalProperties": false

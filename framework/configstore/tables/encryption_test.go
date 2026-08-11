@@ -912,6 +912,95 @@ func TestTableKey_BedrockMantleProjectID_RoundTrip(t *testing.T) {
 	assert.Equal(t, "us-east-1", found.BedrockMantleKeyConfig.Region.GetValue())
 }
 
+// TestTableKey_BedrockEndpoints_RoundTrip verifies the VPC endpoint hosts survive a save/find
+// cycle on both Bedrock configs. The columns are the only persistence path: BedrockKeyConfig is
+// a virtual field, so an endpoint without a column is silently dropped on write.
+func TestTableKey_BedrockEndpoints_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	const runtimeHost = "vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com"
+	const mantleHost = "vpce-0abc123-x1y2z3.bedrock-mantle.eu-west-2.vpce.amazonaws.com"
+
+	key := &TableKey{
+		Name:       "bedrock-vpce-key",
+		ProviderID: 1,
+		Provider:   "bedrock",
+		KeyID:      "bedrock-vpce-uuid",
+		Value:      *schemas.NewSecretVar(""),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-VPCE"),
+			SecretKey: *schemas.NewSecretVar("wJalr-VPCE"),
+			Region:    schemas.NewSecretVar("eu-west-2"),
+			Endpoints: &schemas.BedrockEndpoints{
+				Runtime: schemas.NewSecretVar(runtimeHost),
+			},
+		},
+		BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-VPCE-MANTLE"),
+			SecretKey: *schemas.NewSecretVar("wJalr-VPCE-MANTLE"),
+			Region:    schemas.NewSecretVar("eu-west-2"),
+			Endpoints: &schemas.BedrockEndpoints{
+				Mantle: schemas.NewSecretVar(mantleHost),
+			},
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	assert.NotContains(t, raw["bedrock_endpoints_json"], runtimeHost)
+	assert.NotContains(t, raw["bedrock_mantle_endpoints_json"], mantleHost)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.BedrockKeyConfig)
+	require.NotNil(t, found.BedrockKeyConfig.Endpoints)
+	require.NotNil(t, found.BedrockKeyConfig.Endpoints.Runtime)
+	assert.Equal(t, runtimeHost, found.BedrockKeyConfig.Endpoints.Runtime.GetValue())
+	// Services the user left blank must stay unset so the public regional host is used.
+	assert.Nil(t, found.BedrockKeyConfig.Endpoints.ControlPlane)
+	assert.Nil(t, found.BedrockKeyConfig.Endpoints.S3)
+
+	require.NotNil(t, found.BedrockMantleKeyConfig)
+	require.NotNil(t, found.BedrockMantleKeyConfig.Endpoints)
+	require.NotNil(t, found.BedrockMantleKeyConfig.Endpoints.Mantle)
+	assert.Equal(t, mantleHost, found.BedrockMantleKeyConfig.Endpoints.Mantle.GetValue())
+}
+
+// TestTableKey_BedrockEndpointsCleared_RoundTrip verifies clearing the endpoints on an existing
+// key wipes the column, so a key edited back to the public endpoints stops dialling the VPCE.
+func TestTableKey_BedrockEndpointsCleared_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "bedrock-vpce-cleared-key",
+		ProviderID: 1,
+		Provider:   "bedrock",
+		KeyID:      "bedrock-vpce-cleared-uuid",
+		Value:      *schemas.NewSecretVar(""),
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIA-VPCE"),
+			SecretKey: *schemas.NewSecretVar("wJalr-VPCE"),
+			Region:    schemas.NewSecretVar("eu-west-2"),
+			Endpoints: &schemas.BedrockEndpoints{
+				Runtime: schemas.NewSecretVar("vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com"),
+			},
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	key.BedrockKeyConfig.Endpoints = nil
+	require.NoError(t, db.Save(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.BedrockKeyConfig)
+	assert.Nil(t, found.BedrockKeyConfig.Endpoints)
+	assert.Equal(t, "eu-west-2", found.BedrockKeyConfig.Region.GetValue())
+}
+
 // ============================================================================
 // MCP — edge cases for connection string / headers combinations
 // ============================================================================
