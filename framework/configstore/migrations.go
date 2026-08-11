@@ -466,6 +466,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_admin_auth_mode_indexes"}, run: migrationAddMCPAdminAuthModeIndexes},
 	{IDs: []string{"add_mcp_client_token_exchange_json_column"}, run: migrationAddMCPClientTokenExchangeJSONColumn},
 	{IDs: []string{"add_needs_session_stickiness_column"}, run: migrationAddNeedsSessionStickinessColumn},
+	{IDs: []string{"add_bedrock_endpoints_columns"}, run: migrationAddBedrockEndpointsColumns},
 }
 
 // quoteSQLiteIdentifier quotes a SQLite identifier, escaping any double quotes.
@@ -11854,4 +11855,40 @@ func migrationAddMCPAdminAuthModeIndexes(ctx context.Context, db *gorm.DB, logge
 			return nil
 		},
 	})
+}
+
+// migrationAddBedrockEndpointsColumns adds the bedrock_endpoints_json and
+// bedrock_mantle_endpoints_json columns to the config_keys table. They hold the interface VPC
+// endpoint hosts dialled in place of the public regional endpoints, serialized as
+// schemas.BedrockEndpoints.
+func migrationAddBedrockEndpointsColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_bedrock_endpoints_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	columns := []string{"bedrock_endpoints_json", "bedrock_mantle_endpoints_json"}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, column); err != nil {
+					return fmt.Errorf("failed to add %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, column := range columns {
+				if err := dropColumnIfExists(tx, logger, &tables.TableKey{}, column); err != nil {
+					return fmt.Errorf("failed to drop %s column: %w", column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
 }
