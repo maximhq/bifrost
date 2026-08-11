@@ -818,6 +818,27 @@ bifrost:
           url: "https://mcp.example.com/headers"
         authType: "per_user_headers"
         perUserHeaderKeys: ["Authorization", "X-Api-Key"]
+      - name: "oauth-server"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/oauth"
+        authType: "oauth"
+        oauthConfig:
+          clientId: "env.OAUTH_CLIENT_ID"
+          clientSecret: "env.OAUTH_CLIENT_SECRET"
+          authorizeUrl: "https://idp.example.com/authorize"
+          tokenUrl: "https://idp.example.com/token"
+          scopes: ["read", "write"]
+      - name: "token-exchange-server"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/token-exchange"
+        authType: "token_exchange"
+        tokenExchange:
+          audience: "api://jira-mcp"
+          clientId: "env.EXCHANGE_CLIENT_ID"
+          clientSecret: "env.EXCHANGE_CLIENT_SECRET"
+          scopes: ["offline_access"]
     toolManagerConfig:
       toolExecutionTimeout: 60
       maxAgentDepth: 5
@@ -848,6 +869,21 @@ assert_field_value 'mcp client[2] connection_string' '.mcp.client_configs.[2].co
 assert_field_value 'mcp client[3] auth_type' '.mcp.client_configs.[3].auth_type' '"per_user_headers"'
 assert_field_value 'mcp client[3] per_user_header_keys[0]' '.mcp.client_configs.[3].per_user_header_keys.[0]' '"Authorization"'
 assert_field_value 'mcp client[3] per_user_header_keys[1]' '.mcp.client_configs.[3].per_user_header_keys.[1]' '"X-Api-Key"'
+
+# oauth client (inline oauth_config bootstrap block)
+assert_field_value 'mcp client[4] auth_type' '.mcp.client_configs.[4].auth_type' '"oauth"'
+assert_field_value 'mcp client[4] oauth_config.client_id' '.mcp.client_configs.[4].oauth_config.client_id' '"env.OAUTH_CLIENT_ID"'
+assert_field_value 'mcp client[4] oauth_config.client_secret' '.mcp.client_configs.[4].oauth_config.client_secret' '"env.OAUTH_CLIENT_SECRET"'
+assert_field_value 'mcp client[4] oauth_config.authorize_url' '.mcp.client_configs.[4].oauth_config.authorize_url' '"https://idp.example.com/authorize"'
+assert_field_value 'mcp client[4] oauth_config.token_url' '.mcp.client_configs.[4].oauth_config.token_url' '"https://idp.example.com/token"'
+assert_field_value 'mcp client[4] oauth_config.scopes[0]' '.mcp.client_configs.[4].oauth_config.scopes.[0]' '"read"'
+
+# token_exchange client
+assert_field_value 'mcp client[5] auth_type' '.mcp.client_configs.[5].auth_type' '"token_exchange"'
+assert_field_value 'mcp client[5] token_exchange.audience' '.mcp.client_configs.[5].token_exchange.audience' '"api://jira-mcp"'
+assert_field_value 'mcp client[5] token_exchange.client_id' '.mcp.client_configs.[5].token_exchange.client_id' '"env.EXCHANGE_CLIENT_ID"'
+assert_field_value 'mcp client[5] token_exchange.client_secret' '.mcp.client_configs.[5].token_exchange.client_secret' '"env.EXCHANGE_CLIENT_SECRET"'
+assert_field_value 'mcp client[5] token_exchange.scopes[0]' '.mcp.client_configs.[5].token_exchange.scopes.[0]' '"offline_access"'
 
 # Tool manager config
 assert_field_value 'mcp tool_manager_config.tool_execution_timeout' '.mcp.tool_manager_config.tool_execution_timeout' '60'

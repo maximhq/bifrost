@@ -1172,10 +1172,45 @@ false
 {{- else if hasKey $client "authType" }}
 {{- $_ := set $cc "auth_type" $client.authType }}
 {{- end }}
-{{- if hasKey $client "oauth_config_id" }}
-{{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
-{{- else if hasKey $client "oauthConfigId" }}
-{{- $_ := set $cc "oauth_config_id" $client.oauthConfigId }}
+{{- /* Map oauthConfig -> oauth_config (inline OAuth bootstrap block) */ -}}
+{{- if $client.oauthConfig }}
+{{- $oauthConfig := dict }}
+{{- if $client.oauthConfig.clientId }}
+{{- $_ := set $oauthConfig "client_id" $client.oauthConfig.clientId }}
+{{- end }}
+{{- if $client.oauthConfig.clientSecret }}
+{{- $_ := set $oauthConfig "client_secret" $client.oauthConfig.clientSecret }}
+{{- end }}
+{{- if $client.oauthConfig.authorizeUrl }}
+{{- $_ := set $oauthConfig "authorize_url" $client.oauthConfig.authorizeUrl }}
+{{- end }}
+{{- if $client.oauthConfig.tokenUrl }}
+{{- $_ := set $oauthConfig "token_url" $client.oauthConfig.tokenUrl }}
+{{- end }}
+{{- if $client.oauthConfig.registrationUrl }}
+{{- $_ := set $oauthConfig "registration_url" $client.oauthConfig.registrationUrl }}
+{{- end }}
+{{- if $client.oauthConfig.scopes }}
+{{- $_ := set $oauthConfig "scopes" $client.oauthConfig.scopes }}
+{{- end }}
+{{- $_ := set $cc "oauth_config" $oauthConfig }}
+{{- end }}
+{{- /* Map tokenExchange -> token_exchange */ -}}
+{{- if $client.tokenExchange }}
+{{- $tokenExchange := dict }}
+{{- if $client.tokenExchange.audience }}
+{{- $_ := set $tokenExchange "audience" $client.tokenExchange.audience }}
+{{- end }}
+{{- if $client.tokenExchange.clientId }}
+{{- $_ := set $tokenExchange "client_id" $client.tokenExchange.clientId }}
+{{- end }}
+{{- if $client.tokenExchange.clientSecret }}
+{{- $_ := set $tokenExchange "client_secret" $client.tokenExchange.clientSecret }}
+{{- end }}
+{{- if $client.tokenExchange.scopes }}
+{{- $_ := set $tokenExchange "scopes" $client.tokenExchange.scopes }}
+{{- end }}
+{{- $_ := set $cc "token_exchange" $tokenExchange }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}

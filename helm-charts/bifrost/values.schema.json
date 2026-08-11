@@ -5909,12 +5909,71 @@
         },
         "authType": {
           "type": "string",
-          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers"],
+          "enum": ["none", "headers", "oauth", "per_user_oauth", "per_user_headers", "token_exchange"],
           "description": "Authentication type for MCP connection"
         },
-        "oauthConfigId": {
-          "type": "string",
-          "description": "OAuth config ID reference"
+        "oauthConfig": {
+          "type": "object",
+          "description": "Inline OAuth provider configuration for authType 'oauth' or 'per_user_oauth'. All fields are optional - missing URLs are resolved via RFC 8414 discovery and a missing clientId triggers RFC 7591 dynamic client registration at admin-click time. The client lands in a pending_verification state at boot; an admin runs the verification flow once from the MCP Gateway UI.",
+          "properties": {
+            "clientId": {
+              "type": "string",
+              "description": "OAuth client ID (optional - Dynamic Client Registration is used when omitted; can use env. or vault. prefix)"
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "OAuth client secret (optional - omit for PKCE public clients or DCR; can use env. or vault. prefix)"
+            },
+            "authorizeUrl": {
+              "type": "string",
+              "description": "Provider authorize endpoint (optional - discovered from the MCP server URL when omitted)"
+            },
+            "tokenUrl": {
+              "type": "string",
+              "description": "Provider token endpoint (optional - discovered when omitted)"
+            },
+            "registrationUrl": {
+              "type": "string",
+              "description": "Dynamic Client Registration endpoint (optional - discovered when omitted)"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "OAuth scopes to request"
+            }
+          },
+          "additionalProperties": false
+        },
+        "tokenExchange": {
+          "type": "object",
+          "description": "Delegated token-exchange configuration for authType 'token_exchange': each caller's identity-provider token is exchanged at runtime for a short-lived token scoped to this server's audience. Requires user-identity authentication to be available. The client lands in a pending_verification state at boot; an admin verifies it once from the UI.",
+          "properties": {
+            "audience": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Resource identifier the exchanged token is scoped to at the identity provider (e.g. 'api://jira-mcp')"
+            },
+            "clientId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Identity-provider application authorized to perform exchanges for this audience - a dedicated registration carrying the token-exchange grant, not the SSO login application. Can use env. or vault. prefix."
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "Secret for the exchange application; omit for public clients. Can use env. or vault. prefix."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Optional scopes to request on the exchanged token. Include 'offline_access' where the identity provider supports it so exchanges issue refresh tokens."
+            }
+          },
+          "required": ["audience", "clientId"],
+          "additionalProperties": false
         },
         "headers": {
           "type": "object",
@@ -6100,6 +6159,41 @@
               "perUserHeaderKeys": {
                 "minItems": 1
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "authType": {
+                  "enum": ["oauth", "per_user_oauth"]
+                }
+              },
+              "required": ["authType"]
+            }
+          },
+          "then": {
+            "not": {
+              "required": ["oauthConfig"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "authType": {
+                "const": "token_exchange"
+              }
+            },
+            "required": ["authType"]
+          },
+          "then": {
+            "required": ["tokenExchange"]
+          },
+          "else": {
+            "not": {
+              "required": ["tokenExchange"]
             }
           }
         }

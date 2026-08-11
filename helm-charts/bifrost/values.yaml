@@ -515,14 +515,37 @@ bifrost:
       # - name: "example-oauth-mcp"
       #   connectionType: "http"
       #   connectionString: "https://my-mcp.corp/mcp"
-      #   # authType "oauth": shared OAuth token; provide oauthConfigId referencing an existing oauth_config.
-      #   # authType "per_user_oauth": each user authenticates individually via OAuth flow;
-      #   #   oauth_config is registered via the API (POST /api/mcp/clients), not configured here.
+      #   # authType "oauth": one shared OAuth token used for every caller.
+      #   # authType "per_user_oauth": each user authenticates individually via OAuth flow.
+      #   # oauthConfig is optional for both - missing URLs are discovered via RFC 8414 and a
+      #   # missing clientId triggers RFC 7591 dynamic client registration at admin-click time.
+      #   # The client lands in a pending_verification state at boot; an admin runs the
+      #   # verification flow once from the MCP Gateway UI.
       #   authType: "oauth"
-      #   oauthConfigId: "my-oauth-config-id"   # ID of the OAuth config created in Bifrost
+      #   oauthConfig:
+      #     clientId: "env.GOOGLE_OAUTH_CLIENT_ID"        # optional - omit to use Dynamic Client Registration
+      #     clientSecret: "env.GOOGLE_OAUTH_CLIENT_SECRET" # optional - omit for PKCE public clients or DCR
+      #     authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth"  # optional - discovered when omitted
+      #     tokenUrl: "https://oauth2.googleapis.com/token"                # optional - discovered when omitted
+      #     scopes: ["https://www.googleapis.com/auth/drive.readonly"]
       #   # When true, this MCP server is accessible to all virtual keys without explicit per-key assignment.
       #   # If a virtual key has an explicit MCP config for this server, that config takes precedence.
       #   allowOnAllVirtualKeys: false
+      #
+      # - name: "example-token-exchange-mcp"
+      #   connectionType: "http"
+      #   httpConfig:
+      #     url: "https://my-mcp.corp/mcp"
+      #   # authType "token_exchange": each caller's identity-provider token is exchanged at
+      #   # runtime for a short-lived token scoped to this server's audience. Requires
+      #   # user-identity authentication to be available. The client lands in a
+      #   # pending_verification state at boot; an admin verifies it once from the UI.
+      #   authType: "token_exchange"
+      #   tokenExchange:
+      #     audience: "api://jira-mcp"                     # resource identifier at the identity provider
+      #     clientId: "env.JIRA_EXCHANGE_CLIENT_ID"         # dedicated token-exchange app registration
+      #     clientSecret: "env.JIRA_EXCHANGE_CLIENT_SECRET" # omit for public clients
+      #     scopes: ["offline_access"]                      # keeps the exchange self-renewing
       #
       # - name: "example-per-user-headers-mcp"
       #   connectionType: "http"
