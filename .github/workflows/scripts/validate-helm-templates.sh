@@ -100,12 +100,16 @@ test_service_monitor_auth_output() {
     return 1
   fi
 
-  local secret_ref_count
+  local secret_ref_count username_ref password_ref
   secret_ref_count=$(grep -Fc "          name: $expected_secret" "$HELM_OUTPUT_FILE" || true)
+  username_ref=$(awk '/^[[:space:]]+username:[[:space:]]*$/ { print; getline; print; getline; print; exit }' "$HELM_OUTPUT_FILE")
+  password_ref=$(awk '/^[[:space:]]+password:[[:space:]]*$/ { print; getline; print; getline; print; exit }' "$HELM_OUTPUT_FILE")
   if grep -Fq "  namespace: $expected_namespace" "$HELM_OUTPUT_FILE" \
     && [ "$secret_ref_count" -eq 2 ] \
-    && grep -Fq "          key: $expected_username_key" "$HELM_OUTPUT_FILE" \
-    && grep -Fq "          key: $expected_password_key" "$HELM_OUTPUT_FILE"; then
+    && grep -Fq "          name: $expected_secret" <<<"$username_ref" \
+    && grep -Fq "          key: $expected_username_key" <<<"$username_ref" \
+    && grep -Fq "          name: $expected_secret" <<<"$password_ref" \
+    && grep -Fq "          key: $expected_password_key" <<<"$password_ref"; then
     report_result "$test_name" 0
   else
     report_result "$test_name" 1
