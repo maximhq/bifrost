@@ -61,6 +61,17 @@ type CostRecalcJobMeta struct {
 	Message string `json:"message,omitempty"`
 }
 
+// stoppedEarlyMessage summarizes a run that ended before walking the whole window,
+// so a cancelled (or shutdown-interrupted) job still reports what it committed.
+// Costs already written are kept — they are correct, just incomplete in coverage.
+func stoppedEarlyMessage(meta *CostRecalcJobMeta) string {
+	msg := fmt.Sprintf("Stopped early after checking %d log(s): %d cost value(s) recalculated, %d skipped.", meta.Processed, meta.Updated, meta.Skipped)
+	if meta.Total > 0 && int64(meta.Processed) < meta.Total {
+		msg += fmt.Sprintf(" %d log(s) in the selected window were not checked.", meta.Total-int64(meta.Processed))
+	}
+	return msg
+}
+
 // CountRecalcTargets returns how many logs fall in scope for a cost recalculation
 // with the given filters. missingCostOnly narrows to rows that currently have no
 // cost. It counts via the same raw-table SearchLogs path the worker walks (which
@@ -149,7 +160,11 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 
 	for {
 		if err := ctx.Err(); err != nil {
-			// Cancelled (shutdown). Persist the cursor so a resume continues here.
+			// Stopped early — either a user cancellation or a node shutdown. Record what
+			// was done and persist the cursor; on shutdown a resume continues from here,
+			// on a cancellation the checkpoint is rejected (the row is no longer running)
+			// and the runner stores this same snapshot against the cancelled job instead.
+			meta.Message = stoppedEarlyMessage(&meta)
 			_ = checkpoint(snapshot())
 			return snapshot(), err
 		}
@@ -248,6 +263,13 @@ func (p *LoggerPlugin) RunCostRecalcJob(ctx context.Context, metaJSON string, ch
 		}
 
 		if err := checkpoint(snapshot()); err != nil {
+			// A cancellation flips the job row out of running, so the checkpoint is
+			// rejected before the loop gets back to its ctx.Err() guard. Report the
+			// cancellation, not the checkpoint write, as the reason the job stopped.
+			if cerr := ctx.Err(); cerr != nil {
+				meta.Message = stoppedEarlyMessage(&meta)
+				return snapshot(), cerr
+			}
 			return snapshot(), fmt.Errorf("failed to checkpoint cost recalc progress: %w", err)
 		}
 
