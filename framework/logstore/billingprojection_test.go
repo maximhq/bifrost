@@ -68,6 +68,20 @@ func TestListProjectionIncludesBillingScalars(t *testing.T) {
 	}
 }
 
+func TestListProjectionIncludesComplexitySessionFields(t *testing.T) {
+	cols := newProjectionTestStore(t).listSelectColumns()
+	for _, field := range []string{
+		"complexity_session_id",
+		"complexity_session_mode",
+		"complexity_session_tier_source",
+		"complexity_session_switch_count",
+	} {
+		if !containsColumn(cols, field) {
+			t.Fatalf("listSelectColumns is missing %q; log exports would silently drop session observability", field)
+		}
+	}
+}
+
 func TestBillingProjectionSelectsEveryPricingInput(t *testing.T) {
 	cols := newProjectionTestStore(t).billingSelectColumns()
 	for _, scalar := range billingScalarColumns {

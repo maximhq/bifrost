@@ -46,38 +46,41 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers            []string          `json:"providers,omitempty"`
-	Models               []string          `json:"models,omitempty"`
-	Aliases              []string          `json:"aliases,omitempty"`
-	Status               []string          `json:"status,omitempty"`
-	StopReasons          []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
-	Objects              []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
-	ParentRequestID      string            `json:"parent_request_id,omitempty"`
+	Providers                    []string          `json:"providers,omitempty"`
+	Models                       []string          `json:"models,omitempty"`
+	Aliases                      []string          `json:"aliases,omitempty"`
+	Status                       []string          `json:"status,omitempty"`
+	StopReasons                  []string          `json:"stop_reasons,omitempty"` // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
+	Objects                      []string          `json:"objects,omitempty"`      // For filtering by request type (chat.completion, text.completion, embedding)
+	ParentRequestID              string            `json:"parent_request_id,omitempty"`
 	RootsOnly         bool              `json:"roots_only,omitempty"` // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
-	SelectedKeyIDs       []string          `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs        []string          `json:"virtual_key_ids,omitempty"`
-	RoutingRuleIDs       []string          `json:"routing_rule_ids,omitempty"`
-	ComplexityTiers      []string          `json:"complexity_tiers,omitempty"`      // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	ComplexityMechanisms []string          `json:"complexity_mechanisms,omitempty"` // For filtering by complexity classification mechanism (semantic, skipped)
-	TeamIDs              []string          `json:"team_ids,omitempty"`
-	CustomerIDs          []string          `json:"customer_ids,omitempty"`
-	UserIDs              []string          `json:"user_ids,omitempty"`
-	BusinessUnitIDs      []string          `json:"business_unit_ids,omitempty"`
-	RoutingEngineUsed    []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	Apps              []string          `json:"apps,omitempty"`                // Backend-detected client apps
-	UserAgents        []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
-	StartTime            *time.Time        `json:"start_time,omitempty"`
-	EndTime              *time.Time        `json:"end_time,omitempty"`
-	MinLatency           *float64          `json:"min_latency,omitempty"`
-	MaxLatency           *float64          `json:"max_latency,omitempty"`
-	MinTokens            *int              `json:"min_tokens,omitempty"`
-	MaxTokens            *int              `json:"max_tokens,omitempty"`
-	MinCost              *float64          `json:"min_cost,omitempty"`
-	MaxCost              *float64          `json:"max_cost,omitempty"`
-	MissingCostOnly      bool              `json:"missing_cost_only,omitempty"`
-	CacheHitTypes        []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
-	ContentSearch        string            `json:"content_search,omitempty"`
-	MetadataFilters      map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	SelectedKeyIDs               []string          `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs                []string          `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs               []string          `json:"routing_rule_ids,omitempty"`
+	ComplexityTiers              []string          `json:"complexity_tiers,omitempty"`                // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
+	ComplexityMechanisms         []string          `json:"complexity_mechanisms,omitempty"`           // For filtering by complexity classification mechanism (semantic, skipped)
+	ComplexitySessionID          string            `json:"complexity_session_id,omitempty"`           // Exact opaque session ID used by session-aware complexity routing
+	ComplexitySessionModes       []string          `json:"complexity_session_modes,omitempty"`        // Session policy mode (pinned, cache_aware)
+	ComplexitySessionTierSources []string          `json:"complexity_session_tier_sources,omitempty"` // Published tier source (classified, memoised, held)
+	TeamIDs                      []string          `json:"team_ids,omitempty"`
+	CustomerIDs                  []string          `json:"customer_ids,omitempty"`
+	UserIDs                      []string          `json:"user_ids,omitempty"`
+	BusinessUnitIDs              []string          `json:"business_unit_ids,omitempty"`
+	RoutingEngineUsed            []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
+	Apps                         []string          `json:"apps,omitempty"`                // Backend-detected client apps
+	UserAgents                   []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
+	StartTime                    *time.Time        `json:"start_time,omitempty"`
+	EndTime                      *time.Time        `json:"end_time,omitempty"`
+	MinLatency                   *float64          `json:"min_latency,omitempty"`
+	MaxLatency                   *float64          `json:"max_latency,omitempty"`
+	MinTokens                    *int              `json:"min_tokens,omitempty"`
+	MaxTokens                    *int              `json:"max_tokens,omitempty"`
+	MinCost                      *float64          `json:"min_cost,omitempty"`
+	MaxCost                      *float64          `json:"max_cost,omitempty"`
+	MissingCostOnly              bool              `json:"missing_cost_only,omitempty"`
+	CacheHitTypes                []string          `json:"cache_hit_types,omitempty"` // For filtering by local-cache hit type ("direct", "semantic")
+	ContentSearch                string            `json:"content_search,omitempty"`
+	MetadataFilters              map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
@@ -169,6 +172,17 @@ func (u *UserAgentMapping) BeforeCreate(tx *gorm.DB) error {
 		return errors.New("id is required")
 	}
 	return nil
+}
+
+// ComplexitySessionLogFields contains the nullable request-log facts emitted
+// when session policy evaluates a complexity-routed turn. Its anonymous
+// embedding in Log keeps both the database columns and JSON response fields
+// flat.
+type ComplexitySessionLogFields struct {
+	ComplexitySessionID          *string `gorm:"type:varchar(255);index:idx_logs_complexity_session_id" json:"complexity_session_id,omitempty"` // Raw opaque session identity for exact log lookup; never place PII or secrets in this value
+	ComplexitySessionMode        *string `gorm:"type:varchar(20)" json:"complexity_session_mode,omitempty"`                                     // Session policy evaluated for this turn (pinned, cache_aware)
+	ComplexitySessionTierSource  *string `gorm:"type:varchar(20)" json:"complexity_session_tier_source,omitempty"`                              // Published tier source (classified, memoised, held); NULL when no tier was established
+	ComplexitySessionSwitchCount *int    `gorm:"column:complexity_session_switch_count" json:"complexity_session_switch_count,omitempty"`       // Persisted tier-switch count; NULL when store failure makes it unknowable
 }
 
 // Log represents a complete log entry for a request/response cycle
@@ -354,6 +368,8 @@ type Log struct {
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
 	RoutingRule *tables.TableRoutingRule `gorm:"-" json:"routing_rule,omitempty"` // redacted
+
+	ComplexitySessionLogFields
 
 	// usageRebuiltFromColumns records that TokenUsageParsed came from the lossy
 	// denormalized-column rebuild in DeserializeFields rather than from a real

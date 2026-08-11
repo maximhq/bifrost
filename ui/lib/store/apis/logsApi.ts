@@ -68,6 +68,12 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.complexity_mechanisms && filters.complexity_mechanisms.length > 0) {
 		params.complexity_mechanisms = filters.complexity_mechanisms.join(",");
 	}
+	if (filters.complexity_session_modes && filters.complexity_session_modes.length > 0) {
+		params.complexity_session_modes = filters.complexity_session_modes.join(",");
+	}
+	if (filters.complexity_session_tier_sources && filters.complexity_session_tier_sources.length > 0) {
+		params.complexity_session_tier_sources = filters.complexity_session_tier_sources.join(",");
+	}
 	if (filters.period) {
 		params.period = filters.period;
 	} else {

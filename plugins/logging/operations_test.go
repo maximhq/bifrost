@@ -270,6 +270,10 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 		"region": "us-east",
 	})
 	ctx.SetValue(schemas.BifrostIsAsyncRequest, true)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexitySessionID, "conversation-abc")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexitySessionMode, "cache_aware")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexitySessionTierSource, "held")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexitySessionSwitchCount, 0)
 
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
@@ -313,6 +317,18 @@ func TestPostLLMHookNoPendingErrorPreservesMetadata(t *testing.T) {
 	}
 	if got := logEntry.MetadataParsed["isAsyncRequest"]; got != true {
 		t.Fatalf("expected async metadata true, got %#v", got)
+	}
+	if logEntry.ComplexitySessionID == nil || *logEntry.ComplexitySessionID != "conversation-abc" {
+		t.Fatalf("expected minimal error entry to preserve complexity session ID, got %v", logEntry.ComplexitySessionID)
+	}
+	if logEntry.ComplexitySessionMode == nil || *logEntry.ComplexitySessionMode != "cache_aware" {
+		t.Fatalf("expected minimal error entry to preserve complexity session mode, got %v", logEntry.ComplexitySessionMode)
+	}
+	if logEntry.ComplexitySessionTierSource == nil || *logEntry.ComplexitySessionTierSource != "held" {
+		t.Fatalf("expected minimal error entry to preserve complexity session tier source, got %v", logEntry.ComplexitySessionTierSource)
+	}
+	if logEntry.ComplexitySessionSwitchCount == nil || *logEntry.ComplexitySessionSwitchCount != 0 {
+		t.Fatalf("expected known zero switch count, got %v", logEntry.ComplexitySessionSwitchCount)
 	}
 }
 
@@ -648,6 +664,10 @@ func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, "COMPLEX")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, "lexical")
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityScore, 0.42)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexitySessionID, "conversation-abc")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexitySessionMode, "pinned")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexitySessionTierSource, "memoised")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexitySessionSwitchCount, 2)
 
 	statusCode := 500
 	bifrostErr := &schemas.BifrostError{
@@ -680,6 +700,18 @@ func TestPostLLMHookCapturesComplexityRoutingContext(t *testing.T) {
 	}
 	if entry.ComplexityScore == nil || *entry.ComplexityScore != 0.42 {
 		t.Fatalf("expected complexity_score 0.42, got %v", entry.ComplexityScore)
+	}
+	if entry.ComplexitySessionID == nil || *entry.ComplexitySessionID != "conversation-abc" {
+		t.Fatalf("expected complexity_session_id, got %v", entry.ComplexitySessionID)
+	}
+	if entry.ComplexitySessionMode == nil || *entry.ComplexitySessionMode != "pinned" {
+		t.Fatalf("expected complexity_session_mode pinned, got %v", entry.ComplexitySessionMode)
+	}
+	if entry.ComplexitySessionTierSource == nil || *entry.ComplexitySessionTierSource != "memoised" {
+		t.Fatalf("expected complexity_session_tier_source memoised, got %v", entry.ComplexitySessionTierSource)
+	}
+	if entry.ComplexitySessionSwitchCount == nil || *entry.ComplexitySessionSwitchCount != 2 {
+		t.Fatalf("expected complexity_session_switch_count 2, got %v", entry.ComplexitySessionSwitchCount)
 	}
 }
 

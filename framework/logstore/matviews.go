@@ -948,6 +948,8 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.StopReasons) == 0 &&
 		len(f.ComplexityTiers) == 0 &&
 		len(f.ComplexityMechanisms) == 0 &&
+		len(f.ComplexitySessionModes) == 0 &&
+		len(f.ComplexitySessionTierSources) == 0 &&
 		f.MinLatency == nil && f.MaxLatency == nil &&
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&

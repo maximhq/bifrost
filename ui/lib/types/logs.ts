@@ -2,6 +2,7 @@
 
 import { DBKey, VirtualKey } from "./governance";
 import { RoutingRule } from "./routingRules";
+import type { ComplexitySessionTierSource, SessionMode } from "./complexityRouter";
 
 // Speech and Transcription types
 export interface VoiceConfig {
@@ -570,6 +571,10 @@ export interface LogEntry {
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
 	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
+	complexity_session_id?: string; // Raw opaque session ID used for exact log lookup
+	complexity_session_mode?: Exclude<SessionMode, "off">;
+	complexity_session_tier_source?: ComplexitySessionTierSource;
+	complexity_session_switch_count?: number; // Absent when the session store could not provide a trustworthy count
 	routing_engine_logs?: string; // Human-readable routing decision logs
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	selected_key?: DBKey;
@@ -647,6 +652,8 @@ export interface LogFilters {
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	complexity_mechanisms?: string[]; // For filtering by complexity classification mechanism (semantic, skipped)
+	complexity_session_modes?: string[];
+	complexity_session_tier_sources?: string[];
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format

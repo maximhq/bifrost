@@ -81,6 +81,29 @@ func semanticSessionProposal(ctx *schemas.BifrostContext, tier string, score flo
 	return &complexity.ComplexityResult{Tier: tier, Score: score}
 }
 
+func assertComplexitySessionLogContext(
+	t *testing.T,
+	ctx *schemas.BifrostContext,
+	state *complexitySessionState,
+	tierSource string,
+	switchCount *int,
+) {
+	t.Helper()
+	require.Equal(t, state.ID, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionID))
+	assert.NotContains(t, state.Key, state.ID, "raw session identity reached the KV key")
+	require.Equal(t, state.Config.Mode, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionMode))
+	if tierSource == "" {
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionTierSource))
+	} else {
+		assert.Equal(t, tierSource, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionTierSource))
+	}
+	if switchCount == nil {
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionSwitchCount))
+	} else {
+		assert.Equal(t, *switchCount, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionSwitchCount))
+	}
+}
+
 // The second argument is a deadline, not a timestamp. It has to be in the
 // future: an expired context makes every store call fail validation, which the
 // session path deliberately degrades to plain classification — so the tests
@@ -117,6 +140,7 @@ func TestWithComplexitySessionReusesTierAfterFirstTurn(t *testing.T) {
 	require.NotNil(t, first)
 	assert.Equal(t, "COMPLEX", first.Tier)
 	assert.Equal(t, 1, classifyCalls)
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceClassified, schemas.Ptr(0))
 
 	for i := 0; i < 5; i++ {
 		held := p.withComplexitySession(ctx, state, classify)()
@@ -124,6 +148,27 @@ func TestWithComplexitySessionReusesTierAfterFirstTurn(t *testing.T) {
 		assert.Equal(t, "COMPLEX", held.Tier)
 	}
 	assert.Equal(t, 1, classifyCalls, "classifier ran again for an established session")
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceMemoised, schemas.Ptr(0))
+}
+
+// Resolving identity is eager for sticky target selection, but observability
+// must stay coupled to the lazy complexity closure. Otherwise every request in
+// a session would look complexity-routed even when no rule inspected its tier.
+func TestWithComplexitySessionDoesNotPublishLogContextBeforeEvaluation(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	p := sessionRoutePlugin(t, sessionStore, enabledSessionConfig())
+	ctx := sessionTestContext(t, "session-abc")
+	state := p.resolveComplexitySessionState(ctx, nil)
+	require.NotNil(t, state)
+
+	_ = p.withComplexitySession(ctx, state, func() *complexity.ComplexityResult {
+		return &complexity.ComplexityResult{Tier: complexity.TierSimple}
+	})
+
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionID))
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionMode))
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionTierSource))
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionSwitchCount))
 }
 
 // A held turn must report that it was held. Recording "semantic" would make a
@@ -179,6 +224,7 @@ func TestWithComplexitySessionCacheAwareClassifiesEveryTurnWithoutWritingUnchang
 
 	assert.Equal(t, 6, classifyCalls)
 	assert.Zero(t, delegate.Sets(), "an unchanged cache-aware tier was replicated on every turn")
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceClassified, schemas.Ptr(0))
 }
 
 func TestWithComplexitySessionCacheAwareEscalatesAndKeepsSemanticMechanism(t *testing.T) {
@@ -203,6 +249,7 @@ func TestWithComplexitySessionCacheAwareEscalatesAndKeepsSemanticMechanism(t *te
 	assert.Equal(t, complexity.TierComplex, result.Tier)
 	assert.Equal(t, complexity.MechanismSemantic, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 	assert.Equal(t, 0.93, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore))
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceClassified, schemas.Ptr(1))
 
 	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
@@ -243,6 +290,7 @@ func TestWithComplexitySessionCacheAwareRequiresSustainedDowngrade(t *testing.T)
 	assert.Equal(t, complexity.MechanismSemantic, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
 	_, hasScore := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64)
 	assert.False(t, hasScore, "a held tier kept the score calculated for a different proposal")
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceHeld, schemas.Ptr(0))
 
 	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
@@ -257,6 +305,7 @@ func TestWithComplexitySessionCacheAwareRequiresSustainedDowngrade(t *testing.T)
 	require.NotNil(t, second)
 	assert.Equal(t, complexity.TierMedium, second.Tier)
 	assert.Equal(t, 0.91, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore))
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceClassified, schemas.Ptr(1))
 
 	record, found, err = sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
@@ -290,6 +339,7 @@ func TestWithComplexitySessionCacheAwareHoldsWhenClassificationHasNoTier(t *test
 	assert.Equal(t, complexity.TierComplex, result.Tier)
 	assert.Equal(t, complexity.TierComplex, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityTier))
 	assert.Equal(t, complexity.MechanismSkipped, ctx.Value(schemas.BifrostContextKeyGovernanceComplexityMechanism))
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceHeld, schemas.Ptr(0))
 
 	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
@@ -317,6 +367,7 @@ func TestWithComplexitySessionCacheAwareFallsBackWhenUpdateFails(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, complexity.TierComplex, result.Tier)
 	assert.Equal(t, 1, broken.updates)
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceClassified, nil)
 
 	record, found, err := sessionStore.Get(context.Background(), state.Key, state.Config.TTL)
 	require.NoError(t, err)
@@ -342,12 +393,14 @@ func TestWithComplexitySessionDoesNotStoreAbsentTier(t *testing.T) {
 	require.Nil(t, p.withComplexitySession(ctx, state, failing)())
 	require.Nil(t, p.withComplexitySession(ctx, state, failing)())
 	assert.Equal(t, 2, classifyCalls, "a failed classification was pinned instead of retried")
+	assertComplexitySessionLogContext(t, ctx, state, "", nil)
 
 	// A later success still establishes the session.
 	result := p.withComplexitySession(ctx, state, func() *complexity.ComplexityResult {
 		return &complexity.ComplexityResult{Tier: "SIMPLE"}
 	})()
 	require.NotNil(t, result)
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceClassified, schemas.Ptr(0))
 	record, found, err := sessionStore.Get(context.Background(), state.Key, time.Hour)
 	require.NoError(t, err)
 	require.True(t, found)
@@ -373,6 +426,7 @@ func TestWithComplexitySessionFallsBackWhenStoreFails(t *testing.T) {
 	assert.Equal(t, "COMPLEX", result.Tier)
 	assert.Equal(t, 1, classifyCalls)
 	assert.Equal(t, 1, broken.creates, "a failed write should not stop the request")
+	assertComplexitySessionLogContext(t, ctx, state, complexitySessionTierSourceClassified, nil)
 }
 
 // The tier belongs to the conversation, not to whichever rule consulted it
