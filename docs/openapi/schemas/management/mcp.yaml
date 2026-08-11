@@ -16,25 +16,37 @@ MCPAuthType:
 
 MCPTokenExchangeConfig:
   type: object
-  required: [audience, client_id]
+  required: [audience]
   properties:
     audience:
       type: string
       minLength: 1
       description: Resource identifier this server is scoped to at the identity provider (e.g. "api://jira-mcp")
+    use_idp_credentials:
+      type: boolean
+      description: |
+        When true, performs the exchange as the SSO login application itself
+        instead of client_id/client_secret below, which are then ignored.
+        Some providers require this: Microsoft Entra ID's on-behalf-of grant
+        only accepts an assertion audienced to the exchanging application,
+        and the SSO login flow always requests a token self-audienced to the
+        SSO application, so a separate exchange application can never
+        receive a usable one.
     client_id:
       type: string
       minLength: 1
       description: |
         The identity-provider application authorized to perform exchanges for
-        this audience — a dedicated registration carrying the token-exchange
-        (or on-behalf-of) grant, not the SSO login application. Supports
+        this audience — typically a dedicated registration carrying the
+        token-exchange (or on-behalf-of) grant, separate from the SSO login
+        application. Required unless use_idp_credentials is true. Supports
         env.VAR_NAME and vault.path references. Redacted in API responses.
     client_secret:
       type: string
       description: |
-        Secret for the exchange application; omit for public clients. Supports
-        env.VAR_NAME and vault.path references. Redacted in API responses.
+        Secret for the exchange application; omit for public clients. Ignored
+        when use_idp_credentials is true. Supports env.VAR_NAME and
+        vault.path references. Redacted in API responses.
     scopes:
       type: array
       items:
@@ -53,6 +65,20 @@ MCPTokenExchangeConfig:
         per-resource Custom Authorization Servers). Leave unset to use the
         deployment's SSO login issuer, which is correct for providers with a
         single tenant-wide token endpoint (Entra, Auth0).
+  allOf:
+    - if:
+        not:
+          properties:
+            use_idp_credentials:
+              const: true
+          required: [use_idp_credentials]
+      then:
+        required: [client_id]
+        description: |
+          client_id is required unless use_idp_credentials is true, in which
+          case the exchange uses the SSO login application's own credentials
+          instead.
+  additionalProperties: false
   description: |
     Delegated token-exchange scoping and credentials for auth_type
     "token_exchange". The exchange endpoint and grant shape come from the
@@ -180,7 +206,8 @@ MCPClientCreateRequestBase:
         required: [token_exchange]
         description: |
           When `auth_type` is `token_exchange`, `token_exchange` must declare
-          at least `audience` and `client_id` — there is nothing to scope the
+          at least `audience`, plus either `client_id` or
+          `use_idp_credentials: true` — there is nothing to scope the
           exchange to, or exchange with, otherwise.
     - if:
         required: [auth_type]
