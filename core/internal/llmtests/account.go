@@ -178,6 +178,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.DeepSeek,
 		schemas.Gemini,
 		schemas.OpenRouter,
+		schemas.OrcaRouter,
 		schemas.HuggingFace,
 		schemas.Nebius,
 		schemas.XAI,
@@ -501,6 +502,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.OPENROUTER_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.OrcaRouter:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewSecretVar("env.ORCAROUTER_API_KEY"),
 				Models:         []string{"*"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -874,6 +884,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 300,
 				MaxRetries:                     10, // OpenRouter can be variable (proxy service)
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.OrcaRouter:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10, // OrcaRouter can be variable (proxy gateway)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
 			},
@@ -1533,6 +1556,36 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:       schemas.OrcaRouter,
+		ChatModel:      "openai/gpt-5.5",
+		VisionModel:    "google/gemini-3.5-flash",
+		TextModel:      "deepseek/deepseek-v4-pro",
+		EmbeddingModel: "openai/text-embedding-3-large",
+		ReasoningModel: "deepseek/deepseek-v4-pro",
+		Scenarios: TestScenarios{
+			TextCompletion:             true,
+			SimpleChat:                 true,
+			CompletionStream:           true,
+			MultiTurnConversation:      true,
+			ToolCalls:                  false, // OrcaRouter's /v1/responses returns 500 when tool_choice is an object (upstream gateway bug)
+			ToolCallsStreaming:         false, // OrcaRouter's responses API is in Beta
+			MultipleToolCalls:          false, // object tool_choice -> OrcaRouter 500 (upstream gateway bug)
+			MultipleToolCallsStreaming: false, // OrcaRouter's responses API is in Beta
+			End2EndToolCalling:         false, // object tool_choice -> OrcaRouter 500 (upstream gateway bug)
+			AutomaticFunctionCall:      false, // object tool_choice -> OrcaRouter 500 (upstream gateway bug)
+			ImageURL:                   false, // OrcaRouter's responses API is in Beta
+			ImageBase64:                false, // OrcaRouter's responses API is in Beta
+			MultipleImages:             false, // OrcaRouter's responses API is in Beta
+			FileBase64:                 true,
+			FileURL:                    true,
+			CompleteEnd2End:            false, // OrcaRouter's responses API is in Beta
+			Reasoning:                  true,
+			ListModels:                 true,
+			StructuredOutputs:          false, // json_schema tool_choice -> OrcaRouter 500 (upstream gateway bug)
+			Embedding:                  true,
 		},
 	},
 	{
