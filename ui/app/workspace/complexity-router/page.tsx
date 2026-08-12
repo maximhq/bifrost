@@ -465,11 +465,10 @@ export default function ComplexityRouterPage() {
 								}
 							/>
 
-							{/* Without this the phrase lists read as governing every request. Under
-							    session behavior they govern the first turn of each conversation and
-							    nothing after it, which is invisible from the lists themselves: an
-							    operator tuning phrases here would watch later turns ignore the
-							    tuning and have nothing on screen to explain why. */}
+							{/* Session mode changes when these phrases affect routing. Pinned mode
+							    consults them only on the first turn; cache-aware mode consults them
+							    on every relevant turn but may hold the existing tier. That distinction
+							    is otherwise invisible while an operator tunes the phrase lists. */}
 							{isSessionEnabled && (
 								<Alert variant="info" data-testid="complexity-router-session-scope-callout">
 									<Info className="h-4 w-4" />
@@ -478,11 +477,10 @@ export default function ComplexityRouterPage() {
 									    among the text broke it across three lines. */}
 									<AlertDescription>
 										<span>
-											Session behavior is set to <span className="font-medium">{SESSION_MODE_LABELS[sessionMode]}</span>, so these phrases
-											classify the first turn of a conversation
+											Session behavior is set to <span className="font-medium">{SESSION_MODE_LABELS[sessionMode]}</span>, so
 											{sessionMode === "pinned"
-												? ". Later turns keep that tier without being classified again."
-												: ", and later turns only when a classification is confident enough to move the session."}
+												? " these phrases classify the first turn. Later turns keep that tier without being classified again."
+												: " these phrases classify every complexity-routed turn, using one embedding each time. A new tier applies only when confidence and cache conditions allow it."}
 										</span>
 									</AlertDescription>
 								</Alert>

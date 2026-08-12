@@ -259,7 +259,8 @@ export const SESSION_MODE_OPTIONS: Array<{
 	{
 		value: "cache_aware",
 		label: "Cache aware",
-		description: "Like Pinned, but a confident enough classification can still move the session when little cache would be lost.",
+		description:
+			"Reclassifies every complexity-routed turn (one embedding each time), then moves the session only when confidence and cache conditions allow.",
 	},
 ];
 

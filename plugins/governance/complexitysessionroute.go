@@ -2,6 +2,7 @@ package governance
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -32,7 +33,10 @@ const (
 	sessionObservationChangeRatio = 0.1
 )
 
-var errSessionRouteObservationUnchanged = errors.New("complexity session route observation unchanged")
+var (
+	errSessionRouteObservationUnchanged = errors.New("complexity session route observation unchanged")
+	errSessionTierDecisionUnchanged     = errors.New("complexity session tier decision unchanged")
+)
 
 // complexitySessionState is the per-request session context, resolved once
 // before routing so both the routing engine and the classification closure work
@@ -44,10 +48,9 @@ type complexitySessionState struct {
 	Source string
 	// Key is the tenant-namespaced store key, empty when ID is empty.
 	Key string
-	// Mode is the normalized session mode captured at request start.
-	Mode string
-	// TTL is the sliding idle window from configuration.
-	TTL time.Duration
+	// Config is the normalized session-policy snapshot captured at request start.
+	// Keeping one value avoids mixing thresholds from a concurrent config reload.
+	Config configstore.ComplexitySessionConfig
 }
 
 // resolveComplexitySessionState resolves the conversation identity for this
@@ -92,7 +95,7 @@ func (p *GovernancePlugin) resolveComplexitySessionState(
 		return nil
 	}
 
-	state := &complexitySessionState{ID: sessionID, Source: source, Key: key, Mode: config.Mode, TTL: ttl}
+	state := &complexitySessionState{ID: sessionID, Source: source, Key: key, Config: *config}
 	// Carried on the context because the response path cannot redo this: identity
 	// resolution reads the request body, which is gone by then.
 	ctx.SetValue(complexitySessionContextKey, state)
@@ -117,7 +120,7 @@ func (p *GovernancePlugin) recordSessionRouteObservation(
 		return
 	}
 	state, _ := ctx.Value(complexitySessionContextKey).(*complexitySessionState)
-	if state == nil || state.Mode != configstore.ComplexitySessionModeCacheAware {
+	if state == nil || state.Config.Mode != configstore.ComplexitySessionModeCacheAware {
 		return
 	}
 	stored := p.complexitySessionStore.Load()
@@ -141,8 +144,8 @@ func (p *GovernancePlugin) recordSessionRouteObservation(
 	// make its decision from a stale record and let an older response overwrite a
 	// newer observation. Returning the private sentinel aborts both the write and
 	// its replication event when this turn adds no information.
-	_, _, err := store.Update(ctx, state.Key, state.TTL, func(current *SessionComplexityRecord) error {
-		if !applySessionRouteObservation(current, routeID, observation, state.TTL) {
+	_, _, err := store.Update(ctx, state.Key, state.Config.TTL, func(current *SessionComplexityRecord) error {
+		if !applySessionRouteObservation(current, routeID, observation, state.Config.TTL) {
 			return errSessionRouteObservationUnchanged
 		}
 		return nil
@@ -319,14 +322,14 @@ func (p *GovernancePlugin) publishSessionKeyAffinity(ctx *schemas.BifrostContext
 	// that had already rotated. An explicit per-request ttl still wins: the
 	// caller asked for it by name.
 	if existing, ok := ctx.Value(schemas.BifrostContextKeySessionTTL).(time.Duration); !ok || existing <= 0 {
-		ctx.SetValue(schemas.BifrostContextKeySessionTTL, state.TTL)
+		ctx.SetValue(schemas.BifrostContextKeySessionTTL, state.Config.TTL)
 	}
 }
 
-// withComplexitySession wraps the lazy classification closure so an established
-// session reuses its tier instead of classifying again. That reuse is the point
-// of the feature: it keeps the provider's prompt cache warm and skips the
-// per-turn embedding call.
+// withComplexitySession wraps the lazy classification closure with the selected
+// session policy. Pinned mode reuses an established tier without classifying;
+// cache-aware mode classifies each relevant turn and decides atomically whether
+// the session may move.
 //
 // It deliberately wraps rather than running ahead of classification. The inner
 // closure is only invoked when a routing rule references complexity_tier, so
@@ -346,53 +349,127 @@ func (p *GovernancePlugin) withComplexitySession(
 	}
 	store := *stored
 
-	return func() *complexity.ComplexityResult {
-		// A store that cannot be read is not a reason to fail the request: fall
-		// through and classify, which is exactly the pre-session behaviour.
-		record, found, err := store.Get(ctx, state.Key, state.TTL)
-		if err != nil {
-			if p.logger != nil {
-				p.logger.Warn("[Governance] Complexity session lookup failed, classifying this turn: %v", err)
-			}
-		} else if found && record != nil && record.Tier != "" {
-			p.publishSessionTier(ctx, state, record)
-			return &complexity.ComplexityResult{Tier: record.Tier}
+	switch state.Config.Mode {
+	case configstore.ComplexitySessionModePinned:
+		return func() *complexity.ComplexityResult {
+			return p.classifyWithPinnedSession(ctx, store, state, classify)
 		}
-
-		result := classify()
-		// Only a real tier is worth remembering. Persisting a failed or rejected
-		// classification would pin the session to "no tier" for the whole ttl,
-		// turning one bad turn into a session-long outage of complexity routing.
-		if result == nil || result.Tier == "" {
-			return result
+	case configstore.ComplexitySessionModeCacheAware:
+		return func() *complexity.ComplexityResult {
+			return p.classifyWithCacheAwareSession(ctx, store, state, classify)
 		}
-
-		// RuleID is deliberately left unset. The tier is classifier memory about
-		// the conversation, not state owned by whichever rule happened to consult
-		// it first — binding them would let an unrelated rule edit drop every
-		// live session's tier.
-		created, err := store.Create(ctx, state.Key, &SessionComplexityRecord{
-			Tier:      result.Tier,
-			DecidedAt: time.Now(),
-		}, state.TTL)
-		if err != nil && p.logger != nil {
-			p.logger.Warn("[Governance] Failed to persist complexity session tier, the next turn will classify again: %v", err)
-		}
-		if created {
-			ctx.AppendRoutingEngineLog(
-				schemas.RoutingEngineRoutingRule,
-				schemas.LogLevelInfo,
-				"Complexity session established: tier="+result.Tier+" identity="+state.Source,
-			)
-		}
-		return result
+	default:
+		return classify
 	}
 }
 
-// publishSessionTier records a held tier the same way a fresh classification is
-// recorded, so downstream logging sees a tier rather than a gap — with a
-// mechanism that says it was reused, not embedded.
-func (p *GovernancePlugin) publishSessionTier(
+func (p *GovernancePlugin) classifyWithPinnedSession(
+	ctx *schemas.BifrostContext,
+	store SessionStore,
+	state *complexitySessionState,
+	classify func() *complexity.ComplexityResult,
+) *complexity.ComplexityResult {
+	// A store that cannot be read is not a reason to fail the request: fall
+	// through and classify, which is exactly the pre-session behaviour.
+	record, found, err := store.Get(ctx, state.Key, state.Config.TTL)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("[Governance] Complexity session lookup failed, classifying this turn: %v", err)
+		}
+	} else if found && record != nil && record.Tier != "" {
+		p.publishPinnedSessionTier(ctx, state, record)
+		return &complexity.ComplexityResult{Tier: record.Tier}
+	}
+
+	result := classify()
+	p.persistInitialSessionTier(ctx, store, state, result)
+	return result
+}
+
+func (p *GovernancePlugin) classifyWithCacheAwareSession(
+	ctx *schemas.BifrostContext,
+	store SessionStore,
+	state *complexitySessionState,
+	classify func() *complexity.ComplexityResult,
+) *complexity.ComplexityResult {
+	proposed := classify()
+	var decision sessionTierDecision
+	decisionTime := time.Now()
+	_, found, err := store.Update(ctx, state.Key, state.Config.TTL, func(current *SessionComplexityRecord) error {
+		decision = updateSessionTierRecord(current, proposed, &state.Config, decisionTime)
+		if decision.Reason == sessionTierReasonInvalidState {
+			return errInvalidComplexitySession
+		}
+		if !decision.RecordChanged {
+			return errSessionTierDecisionUnchanged
+		}
+		return nil
+	})
+	if errors.Is(err, errSessionTierDecisionUnchanged) {
+		// Aborting Update avoids a replicated write, but also leaves the expiry
+		// untouched. Get performs the store's coarse sliding-TTL refresh without
+		// changing the decision, which was already made from the locked record.
+		if _, _, refreshErr := store.Get(ctx, state.Key, state.Config.TTL); refreshErr != nil && p.logger != nil {
+			p.logger.Debug("[Governance] Could not refresh held complexity session: %v", refreshErr)
+		}
+		err = nil
+	}
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("[Governance] Complexity session update failed, using this turn's classification: %v", err)
+		}
+		return proposed
+	}
+	if !found {
+		// Update found no live record. Treat this request as a new session rather
+		// than trying to apply switching policy without a held tier.
+		p.persistInitialSessionTier(ctx, store, state, proposed)
+		return proposed
+	}
+
+	p.publishCacheAwareSessionTier(ctx, state, proposed, decision)
+	return complexityResultForSessionDecision(proposed, decision)
+}
+
+// persistInitialSessionTier records the first accepted tier for either session
+// mode. A failed or rejected classification is never persisted: pinning "no
+// tier" would turn one bad turn into a session-long routing outage.
+func (p *GovernancePlugin) persistInitialSessionTier(
+	ctx *schemas.BifrostContext,
+	store SessionStore,
+	state *complexitySessionState,
+	result *complexity.ComplexityResult,
+) {
+	if result == nil || result.Tier == "" {
+		return
+	}
+
+	// RuleID is deliberately left unset. The tier is classifier memory about
+	// the conversation, not state owned by whichever rule happened to consult
+	// it first — binding them would let an unrelated rule edit drop every live
+	// session's tier.
+	created, err := store.Create(ctx, state.Key, &SessionComplexityRecord{
+		Tier:      result.Tier,
+		DecidedAt: time.Now(),
+	}, state.Config.TTL)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("[Governance] Failed to persist complexity session tier; session policy will retry later: %v", err)
+		}
+		return
+	}
+	if created {
+		ctx.AppendRoutingEngineLog(
+			schemas.RoutingEngineRoutingRule,
+			schemas.LogLevelInfo,
+			"Complexity session established: tier="+result.Tier+" identity="+state.Source,
+		)
+	}
+}
+
+// publishPinnedSessionTier records a reused tier with a mechanism that makes it
+// explicit that no classifier or embedding ran for this turn.
+func (p *GovernancePlugin) publishPinnedSessionTier(
 	ctx *schemas.BifrostContext,
 	state *complexitySessionState,
 	record *SessionComplexityRecord,
@@ -408,4 +485,47 @@ func (p *GovernancePlugin) publishSessionTier(
 		"Complexity tier held from session: tier="+record.Tier+" identity="+state.Source+
 			" (no classification ran for this turn)",
 	)
+}
+
+// publishCacheAwareSessionTier publishes the policy's final tier while leaving
+// the classifier mechanism intact: semantic means an embedding produced a
+// proposal, and skipped means it produced no tier. A held tier must not retain
+// a score calculated for a different proposed tier.
+func (p *GovernancePlugin) publishCacheAwareSessionTier(
+	ctx *schemas.BifrostContext,
+	state *complexitySessionState,
+	proposed *complexity.ComplexityResult,
+	decision sessionTierDecision,
+) {
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityTier, decision.Tier)
+	if proposed == nil || proposed.Tier != decision.Tier {
+		ctx.ClearValue(schemas.BifrostContextKeyGovernanceComplexityScore)
+	}
+
+	proposedTier := "none"
+	if proposed != nil && proposed.Tier != "" {
+		proposedTier = proposed.Tier
+	}
+	message := fmt.Sprintf(
+		"Cache-aware complexity session: tier=%s proposed=%s switched=%t reason=%s identity=%s",
+		decision.Tier,
+		proposedTier,
+		decision.Switched,
+		decision.Reason,
+		state.Source,
+	)
+	if p.logger != nil {
+		p.logger.Debug("[Governance] %s", message)
+	}
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, message)
+}
+
+func complexityResultForSessionDecision(
+	proposed *complexity.ComplexityResult,
+	decision sessionTierDecision,
+) *complexity.ComplexityResult {
+	if proposed != nil && proposed.Tier == decision.Tier {
+		return proposed
+	}
+	return &complexity.ComplexityResult{Tier: decision.Tier}
 }

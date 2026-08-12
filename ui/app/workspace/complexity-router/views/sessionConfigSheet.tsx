@@ -93,7 +93,7 @@ export default function SessionConfigSheet({
 				<SheetHeader className="flex flex-col items-start gap-1 px-6 py-4" headerClassName="bg-card z-10 mb-0 border-b">
 					<SheetTitle>Session behavior</SheetTitle>
 					<SheetDescription className="text-xs">
-						Whether a conversation is classified once and held at that tier, or reclassified on every turn.
+						Whether a conversation keeps its first tier or reclassifies each turn and gates changes to protect its prompt cache.
 					</SheetDescription>
 				</SheetHeader>
 
@@ -154,7 +154,7 @@ export default function SessionConfigSheet({
 						<div className="space-y-2">
 							<FieldLabel
 								htmlFor="session-ttl"
-								tooltip="Measured from the last turn, not from the start of the conversation: the window slides on every request, so an active session never expires."
+								tooltip="Measured from the last turn, not from the start of the conversation. Activity keeps the session alive, so it expires only after an idle period."
 							>
 								Session timeout (minutes)
 							</FieldLabel>
