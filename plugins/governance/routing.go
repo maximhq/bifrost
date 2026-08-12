@@ -56,6 +56,13 @@ type RoutingContext struct {
 	// weighted target selection. Populated from x-bf-session-id or a verified
 	// harness-native conversation ID.
 	SessionID string
+	// SessionComplexityEnabled reports whether session complexity behaviour is
+	// switched on in the analyzer config. It gates sticky target selection,
+	// which must not engage off the mere presence of a session ID: the header
+	// predates this feature and is already used for unrelated purposes such as
+	// API-key stickiness, so keying off it alone would silently convert those
+	// deployments from random to deterministic weighted routing.
+	SessionComplexityEnabled bool
 }
 
 type RoutingEngine struct {
@@ -139,6 +146,16 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	var complexityResult *complexity.ComplexityResult
 	computeComplexity := routingCtx.computeComplexity
 
+	// Latches once any evaluated rule consults complexity_tier, and stays set for
+	// the rest of the chain. Sticky target selection is a complexity-routing
+	// behaviour, so it must not reach a request whose rules never asked about
+	// complexity at all. It latches rather than being re-derived per rule because
+	// the tier is resolved by one rule and the target is often chosen by a later
+	// one in the same chain: scoping stickiness to the rule that happens to name
+	// complexity_tier would leave the terminal rule re-rolling every turn, which
+	// discards the very prompt cache the pinned tier exists to protect.
+	complexityRelevant := false
+
 	for chainStep := 0; ; chainStep++ {
 		// TERMINATION 4: Chain exceeded configured max depth.
 		maxDepth := *re.chainMaxDepth
@@ -200,6 +217,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
 				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
+				complexityRelevant = complexityRelevant || referencesComplexity
 
 				// Lazy complexity: compute only when a rule references complexity and it hasn't been computed yet
 				if complexityResult == nil && computeComplexity != nil && referencesComplexity {
@@ -242,7 +260,17 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					continue
 				}
 
-				target, ok := selectWeightedTarget(rule.Targets, routingCtx.SessionID, rule.ID)
+				// Both conditions are required. Session mode being on is the
+				// operator's opt-in; complexity actually being consulted is what
+				// keeps stickiness inside the feature's scope rather than
+				// silently changing weighted routing everywhere a session ID
+				// happens to be present.
+				stickySessionID := ""
+				if routingCtx.SessionComplexityEnabled && complexityRelevant {
+					stickySessionID = routingCtx.SessionID
+				}
+
+				target, ok := selectWeightedTarget(rule.Targets, stickySessionID, rule.ID)
 				if !ok {
 					re.logger.Debug("[RoutingEngine] Rule %s matched but has no valid targets (empty list or all-negative weights), skipping — note: all-zero weights use uniform selection and would not reach here", rule.Name)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' [%s] → matched but no valid targets (empty or all-negative weights), skipping", rule.Name, rule.CelExpression))
@@ -328,6 +356,11 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 // every turn and discard the provider-side prompt cache anyway, one layer below
 // the tier. The hash is stateless, so it agrees across nodes and survives
 // restarts without storage, and it stays proportional as weights change.
+//
+// Callers decide when stickiness applies and pass "" to opt out; this function
+// does not read the session ID off the request itself. The caller's gate is what
+// keeps a bare x-bf-session-id header, which long predates this feature, from
+// converting existing weighted routing to deterministic selection.
 func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget, sessionID, ruleID string) (configstoreTables.TableRoutingTarget, bool) {
 	if len(targets) == 0 {
 		return configstoreTables.TableRoutingTarget{}, false

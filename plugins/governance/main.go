@@ -97,6 +97,10 @@ type GovernancePlugin struct {
 
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 	semanticClassifier *complexity.SemanticClassifier
+	// complexitySessionEnabled mirrors the analyzer config's session mode so the
+	// request path can gate session behaviour without holding the config. Kept in
+	// step by storeComplexityAnalyzerConfig, so it follows live reloads.
+	complexitySessionEnabled atomic.Bool
 
 	// embeddingRequestExecutor is wired by the HTTP server after the bifrost
 	// client exists (post-Init) via SetEmbeddingRequestExecutor; nil until
@@ -405,6 +409,7 @@ func (p *GovernancePlugin) storeComplexityAnalyzerConfig(config *complexity.Anal
 		resolved = &defaults
 	}
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
+	p.complexitySessionEnabled.Store(resolved.Session.Enabled())
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.Configure(resolved)
 	}
@@ -862,6 +867,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
 		computeComplexity:        computeComplexity,
 		SessionID:                bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID),
+		SessionComplexityEnabled: p.complexitySessionEnabled.Load(),
 	}
 
 	p.logger.Debug("[PreRequestHook] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",
