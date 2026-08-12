@@ -4,18 +4,33 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/kvstore"
 )
 
 const (
-	claudeCodeSessionIDHeader          = "x-claude-code-session-id"
-	complexitySessionFingerprintDomain = "complexity-session-fingerprint:v1"
-	complexitySessionKeyPrefix         = "complexity-session:v1:"
+	claudeCodeSessionIDHeader       = "x-claude-code-session-id"
+	complexitySessionKeyPrefix      = "complexity-session:v1:"
+	complexitySessionStoreBackendKV = "kvstore"
+	maxComplexitySessionIDBytes     = 255
+)
+
+var (
+	errNilComplexitySessionStore   = errors.New("complexity session kvstore cannot be nil")
+	errNilComplexitySessionContext = errors.New("complexity session context cannot be nil")
+	errNilComplexitySessionRecord  = errors.New("complexity session record cannot be nil")
+	errNilComplexitySessionUpdater = errors.New("complexity session updater cannot be nil")
+	errInvalidComplexitySessionTTL = errors.New("complexity session ttl must be positive")
+	errInvalidComplexitySession    = errors.New("invalid complexity session record")
 )
 
 // SessionRouteObservation records provider facts for one effective route in a
@@ -82,8 +97,8 @@ type SessionStoreStatus struct {
 
 // SessionRecordUpdater mutates a caller-owned copy of the current session
 // record. A store backed by compare-and-swap may invoke it more than once, so an
-// updater must be deterministic and free of side effects. Returning an error
-// aborts the write.
+// updater must be deterministic, free of side effects, and complete promptly.
+// It must not call back into the same store. Returning an error aborts the write.
 type SessionRecordUpdater func(*SessionComplexityRecord) error
 
 // SessionStore persists typed complexity-session state behind a backend-neutral
@@ -109,6 +124,180 @@ type SessionStore interface {
 	// Status reports the backend's current replication and atomicity guarantees.
 	// An error means readiness could not be determined.
 	Status(ctx context.Context) (SessionStoreStatus, error)
+}
+
+// kvSessionStore persists complexity-session records in framework/kvstore. Its
+// atomicity is process-local: a configured gossip delegate shares committed
+// values across replicas but does not turn updates into distributed transactions.
+type kvSessionStore struct {
+	store *kvstore.Store
+}
+
+var _ SessionStore = (*kvSessionStore)(nil)
+
+// newKVSessionStore creates a typed complexity-session view over store. The
+// registered decoder ensures remotely replicated records retain their concrete
+// type instead of falling back to raw JSON bytes.
+func newKVSessionStore(store *kvstore.Store) (*kvSessionStore, error) {
+	if store == nil {
+		return nil, errNilComplexitySessionStore
+	}
+	store.RegisterDecoder(complexitySessionKeyPrefix, func(data []byte) (any, error) {
+		var record SessionComplexityRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			return nil, fmt.Errorf("decode complexity session record: %w", err)
+		}
+		return &record, nil
+	})
+	return &kvSessionStore{store: store}, nil
+}
+
+// Get reads a caller-owned record and refreshes its sliding TTL atomically. A
+// successful read is also a write, so a configured sync delegate receives one
+// replication event for each refresh.
+func (s *kvSessionStore) Get(ctx context.Context, key string, ttl time.Duration) (*SessionComplexityRecord, bool, error) {
+	if err := validateComplexitySessionStoreRequest(ctx, ttl); err != nil {
+		return nil, false, err
+	}
+
+	value, found, err := s.store.UpdateWithTTL(key, ttl, func(current any) (any, error) {
+		return complexitySessionRecordFromValue(current)
+	})
+	if err != nil {
+		return nil, found, fmt.Errorf("refresh complexity session %q: %w", key, err)
+	}
+	if !found {
+		return nil, false, nil
+	}
+
+	record, err := complexitySessionRecordFromValue(value)
+	if err != nil {
+		return nil, true, fmt.Errorf("read complexity session %q: %w", key, err)
+	}
+	return record, true, nil
+}
+
+// Create stores a detached record snapshot when key is currently absent or
+// expired.
+func (s *kvSessionStore) Create(ctx context.Context, key string, record *SessionComplexityRecord, ttl time.Duration) (bool, error) {
+	if err := validateComplexitySessionStoreRequest(ctx, ttl); err != nil {
+		return false, err
+	}
+	if record == nil {
+		return false, errNilComplexitySessionRecord
+	}
+
+	created, err := s.store.SetNXWithTTL(key, cloneSessionComplexityRecord(record), ttl)
+	if err != nil {
+		return false, fmt.Errorf("create complexity session %q: %w", key, err)
+	}
+	return created, nil
+}
+
+// Update applies update to a detached copy and atomically commits another copy,
+// preventing caller-owned RouteObservations maps from aliasing stored state.
+func (s *kvSessionStore) Update(ctx context.Context, key string, ttl time.Duration, update SessionRecordUpdater) (*SessionComplexityRecord, bool, error) {
+	if err := validateComplexitySessionStoreRequest(ctx, ttl); err != nil {
+		return nil, false, err
+	}
+	if update == nil {
+		return nil, false, errNilComplexitySessionUpdater
+	}
+
+	value, found, err := s.store.UpdateWithTTL(key, ttl, func(current any) (any, error) {
+		record, err := complexitySessionRecordFromValue(current)
+		if err != nil {
+			return nil, err
+		}
+		if err := update(record); err != nil {
+			return nil, err
+		}
+		return cloneSessionComplexityRecord(record), nil
+	})
+	if err != nil {
+		return nil, found, fmt.Errorf("update complexity session %q: %w", key, err)
+	}
+	if !found {
+		return nil, false, nil
+	}
+
+	record, err := complexitySessionRecordFromValue(value)
+	if err != nil {
+		return nil, true, fmt.Errorf("read updated complexity session %q: %w", key, err)
+	}
+	return record, true, nil
+}
+
+// Delete removes a live session record. Expired records are treated as absent.
+func (s *kvSessionStore) Delete(ctx context.Context, key string) (bool, error) {
+	if err := validateComplexitySessionStoreContext(ctx); err != nil {
+		return false, err
+	}
+
+	_, err := s.store.GetAndDelete(key)
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("delete complexity session %q: %w", key, err)
+	}
+	return true, nil
+}
+
+// Status reports the guarantees relevant to session routing. Gossip makes
+// records visible across replicas, but updates remain atomic only within one
+// process.
+func (s *kvSessionStore) Status(ctx context.Context) (SessionStoreStatus, error) {
+	if err := validateComplexitySessionStoreContext(ctx); err != nil {
+		return SessionStoreStatus{}, err
+	}
+
+	sharedAcrossReplicas := s.store.HasSyncDelegate()
+	return SessionStoreStatus{
+		Backend:              complexitySessionStoreBackendKV,
+		SharedAcrossReplicas: sharedAcrossReplicas,
+		AtomicUpdates:        !sharedAcrossReplicas,
+	}, nil
+}
+
+func validateComplexitySessionStoreRequest(ctx context.Context, ttl time.Duration) error {
+	if err := validateComplexitySessionStoreContext(ctx); err != nil {
+		return err
+	}
+	if ttl <= 0 {
+		return errInvalidComplexitySessionTTL
+	}
+	return nil
+}
+
+func validateComplexitySessionStoreContext(ctx context.Context) error {
+	if ctx == nil {
+		return errNilComplexitySessionContext
+	}
+	return ctx.Err()
+}
+
+func complexitySessionRecordFromValue(value any) (*SessionComplexityRecord, error) {
+	switch record := value.(type) {
+	case *SessionComplexityRecord:
+		if record == nil {
+			return nil, fmt.Errorf("%w: nil pointer", errInvalidComplexitySession)
+		}
+		return cloneSessionComplexityRecord(record), nil
+	case SessionComplexityRecord:
+		return cloneSessionComplexityRecord(&record), nil
+	default:
+		return nil, fmt.Errorf("%w: got %T", errInvalidComplexitySession, value)
+	}
+}
+
+func cloneSessionComplexityRecord(record *SessionComplexityRecord) *SessionComplexityRecord {
+	if record == nil {
+		return nil
+	}
+	cloned := *record
+	cloned.RouteObservations = maps.Clone(record.RouteObservations)
+	return &cloned
 }
 
 // resolveSessionID walks the enabled identity sources in their fixed precedence
