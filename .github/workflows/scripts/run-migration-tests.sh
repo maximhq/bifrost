@@ -5443,19 +5443,32 @@ EOF
   generate_faker_sql "postgres" "$faker_sql"
 
   # Build current version ONCE before testing
-  log_info "Building current version from Go workspace..."
   local current_binary="$TEMP_DIR/bifrost-http-current"
   cd "$REPO_ROOT"
-  # Ensure the embedded ui directory exists (it's gitignored, so it won't be present in CI)
-  if [ ! -d "$REPO_ROOT/transports/bifrost-http/ui" ]; then
-    mkdir -p "$REPO_ROOT/transports/bifrost-http/ui"
-    echo "placeholder" > "$REPO_ROOT/transports/bifrost-http/ui/.gitkeep"
+  # CI's build-gateway job already built this exact commit and handed it over as
+  # an artifact at tmp/bifrost-http; copy it rather than paying for the build
+  # again. Only the CURRENT version comes from there - the previous versions
+  # this test migrates from are still fetched per release below.
+  if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+    if [ ! -x "$REPO_ROOT/tmp/bifrost-http" ]; then
+      log_error "SKIP_GATEWAY_BUILD=1 but no executable binary at $REPO_ROOT/tmp/bifrost-http"
+      return 1
+    fi
+    log_info "Using prebuilt current version from $REPO_ROOT/tmp/bifrost-http"
+    cp "$REPO_ROOT/tmp/bifrost-http" "$current_binary"
+  else
+    log_info "Building current version from Go workspace..."
+    # Ensure the embedded ui directory exists (it's gitignored, so it won't be present in CI)
+    if [ ! -d "$REPO_ROOT/transports/bifrost-http/ui" ]; then
+      mkdir -p "$REPO_ROOT/transports/bifrost-http/ui"
+      echo "placeholder" > "$REPO_ROOT/transports/bifrost-http/ui/.gitkeep"
+    fi
+    if ! go build -o "$current_binary" ./transports/bifrost-http; then
+      log_error "Failed to build current version"
+      return 1
+    fi
   fi
-  if ! go build -o "$current_binary" ./transports/bifrost-http; then
-    log_error "Failed to build current version"
-    return 1
-  fi
-  log_info "Current version built successfully: $current_binary"
+  log_info "Current version ready: $current_binary"
 
   # Get previous versions
   local versions
@@ -5648,19 +5661,32 @@ EOF
   generate_faker_sql "sqlite" "$faker_sql"
 
   # Build current version ONCE before testing
-  log_info "Building current version from Go workspace..."
   local current_binary="$TEMP_DIR/bifrost-http-current"
   cd "$REPO_ROOT"
-  # Ensure the embedded ui directory exists (it's gitignored, so it won't be present in CI)
-  if [ ! -d "$REPO_ROOT/transports/bifrost-http/ui" ]; then
-    mkdir -p "$REPO_ROOT/transports/bifrost-http/ui"
-    echo "placeholder" > "$REPO_ROOT/transports/bifrost-http/ui/.gitkeep"
+  # CI's build-gateway job already built this exact commit and handed it over as
+  # an artifact at tmp/bifrost-http; copy it rather than paying for the build
+  # again. Only the CURRENT version comes from there - the previous versions
+  # this test migrates from are still fetched per release below.
+  if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+    if [ ! -x "$REPO_ROOT/tmp/bifrost-http" ]; then
+      log_error "SKIP_GATEWAY_BUILD=1 but no executable binary at $REPO_ROOT/tmp/bifrost-http"
+      return 1
+    fi
+    log_info "Using prebuilt current version from $REPO_ROOT/tmp/bifrost-http"
+    cp "$REPO_ROOT/tmp/bifrost-http" "$current_binary"
+  else
+    log_info "Building current version from Go workspace..."
+    # Ensure the embedded ui directory exists (it's gitignored, so it won't be present in CI)
+    if [ ! -d "$REPO_ROOT/transports/bifrost-http/ui" ]; then
+      mkdir -p "$REPO_ROOT/transports/bifrost-http/ui"
+      echo "placeholder" > "$REPO_ROOT/transports/bifrost-http/ui/.gitkeep"
+    fi
+    if ! go build -o "$current_binary" ./transports/bifrost-http; then
+      log_error "Failed to build current version"
+      return 1
+    fi
   fi
-  if ! go build -o "$current_binary" ./transports/bifrost-http; then
-    log_error "Failed to build current version"
-    return 1
-  fi
-  log_info "Current version built successfully: $current_binary"
+  log_info "Current version ready: $current_binary"
 
   # Get previous versions
   local versions

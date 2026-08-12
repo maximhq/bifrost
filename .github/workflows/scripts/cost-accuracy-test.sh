@@ -146,8 +146,18 @@ build_binaries() {
   mkdir -p "${ROOT_DIR}/tmp" "${ROOT_DIR}/transports/bifrost-http/ui"
   touch "${ROOT_DIR}/transports/bifrost-http/ui/.gitkeep"
 
-  log "building bifrost-http"
-  (cd "${ROOT_DIR}/transports/bifrost-http" && go build -o "${BIFROST_BIN}" .)
+  # CI's build-gateway job supplies bifrost-http as an artifact. The mocker and
+  # hitter below are still built here - they live in a separate repo.
+  if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+    if [ ! -x "${BIFROST_BIN}" ]; then
+      log "SKIP_GATEWAY_BUILD=1 but no executable binary at ${BIFROST_BIN}"
+      exit 1
+    fi
+    log "using prebuilt bifrost-http at ${BIFROST_BIN}"
+  else
+    log "building bifrost-http"
+    (cd "${ROOT_DIR}/transports/bifrost-http" && go build -o "${BIFROST_BIN}" .)
+  fi
 
   # GOWORK=off: bifrost-benchmarking is its own module and in CI is checked out
   # inside the repo root (${github.workspace}/bifrost-benchmarking), so `go build`

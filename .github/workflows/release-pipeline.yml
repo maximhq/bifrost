@@ -140,6 +140,104 @@ jobs:
           chmod +x .github/workflows/scripts/validate-schema-sync.sh
           .github/workflows/scripts/validate-schema-sync.sh
 
+  # Builds the UI and the bifrost-http binary ONCE, and publishes the binary as
+  # an artifact for every test job that just needs a runnable gateway.
+  #
+  # Before this job existed, nine jobs each built it themselves. Measured on a
+  # cli-harness leg: `make build-ui` ~54s, `go build` on bifrost-http ~2m30s -
+  # so ~3.5 minutes x 9 jobs, ~30 runner-minutes of duplicated work per run.
+  # Consumers now download this artifact and pass SKIP_GATEWAY_BUILD=1, which
+  # every build helper honours (harness-gateway.sh, test-api-integrations.sh,
+  # cost-accuracy-test.sh, run-migration-tests.sh; load-test.sh already skips
+  # when tmp/bifrost-http is present).
+  #
+  # test-core deliberately does NOT depend on this job. It is the pipeline's
+  # longest job (~54m) and therefore its critical path, so making it wait for a
+  # build it can do concurrently would push the whole run out by ~4 minutes.
+  # It keeps its inline harness_build_gateway call.
+  #
+  # Gating is the union of the consumers' own conditions - if it were narrower,
+  # a consumer could run with no artifact to download and fail at the download
+  # step rather than falling back to building.
+  build-gateway:
+    needs: [check-skip, detect-changes]
+    if: |
+      needs.check-skip.outputs.should-skip != 'true' &&
+      needs.check-skip.outputs.skip-tests != 'true' &&
+      (
+        needs.detect-changes.outputs.core-needs-release == 'true' ||
+        needs.detect-changes.outputs.framework-needs-release == 'true' ||
+        needs.detect-changes.outputs.plugins-need-release == 'true' ||
+        needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
+        needs.detect-changes.outputs.docker-needs-release == 'true'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          # Build-only: the Go module proxy, the npm registry and the Node/Go
+          # toolchain downloads. No provider hosts - nothing is executed here.
+          allowed-endpoints: >
+            api.github.com:443
+            azure.archive.ubuntu.com:80
+            esm.ubuntu.com:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            iojs.org:443
+            nodejs.org:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.26.5"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      - name: Build UI and bifrost-http binary
+        run: |
+          # The workspace must exist before the build so the transport resolves
+          # core/framework/plugins from the checkout rather than the proxy.
+          source ./.github/workflows/scripts/setup-go-workspace.sh
+          echo "🎨 Building UI..."
+          make build-ui
+          echo "🔨 Building bifrost-http binary..."
+          mkdir -p tmp
+          (cd transports/bifrost-http && go build -o ../../tmp/bifrost-http .)
+          ls -lh tmp/bifrost-http
+
+      - name: Upload bifrost-http binary
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp/bifrost-http
+          # Consumed within the same run only; no reason to keep it around.
+          retention-days: 1
+          if-no-files-found: error
+          # A ~100MB Go binary compresses poorly, and the CPU spent on level 6
+          # costs more than the bytes it saves on the intra-run round trip.
+          compression-level: 1
+
   # Run all tests in parallel before any releases
   #
   # test-core no longer runs the core module's `go test` suite. It validates the
@@ -634,7 +732,7 @@ jobs:
   # total/done/pass/fail); each suite's verbose output is redirected to
   # tmp/cli-harness-<cli>.log and uploaded with the reports below.
   test-cli-harness:
-    needs: [check-skip, detect-changes, resolve-cli-versions]
+    needs: [check-skip, detect-changes, resolve-cli-versions, build-gateway]
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
@@ -727,8 +825,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
+      # Built once by build-gateway. All three legs share the same binary, so a
+      # regression can never be blamed on one leg having linked a different one.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      # upload-artifact does not preserve the executable bit.
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run CLI harness
         env:
+          # Tells harness_build_gateway to use tmp/bifrost-http as-is.
+          SKIP_GATEWAY_BUILD: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Azure serves both the GPT and the Claude legs of the matrix from one
@@ -1006,7 +1118,7 @@ jobs:
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
   test-bifrost-http:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -1082,8 +1194,22 @@ jobs:
             docker compose version
           fi
 
+      # This job still compiles the transports module itself (`go build ./...`
+      # and `go test --race`) - those are real gates, not duplicated work. The
+      # artifact only replaces the final integration binary, and lets the script
+      # stub the embedded ui/ directory instead of running a full npm build.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run bifrost-http tests
         env:
+          SKIP_GATEWAY_BUILD: "1"
           MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -1092,7 +1218,7 @@ jobs:
 
   # Migration tests - validates database migrations from previous versions
   test-migrations:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -1161,7 +1287,20 @@ jobs:
             docker compose version
           fi
 
+      # Only the "current version" binary comes from here; the previous-version
+      # binaries this job migrates from are still downloaded per release.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run migration tests
+        env:
+          SKIP_GATEWAY_BUILD: "1"
         run: |
           chmod +x ./.github/workflows/scripts/run-migration-tests.sh
           ./.github/workflows/scripts/run-migration-tests.sh postgres
@@ -1169,7 +1308,7 @@ jobs:
   # API integrations tests - compiles bifrost-http, runs against Postgres with
   # tests/config.json, executes the api-management newman collection.
   test-api-integrations:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -1270,9 +1409,19 @@ jobs:
             docker compose version
           fi
 
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run API integrations test
         env:
           CI: "1"
+          SKIP_GATEWAY_BUILD: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -1316,7 +1465,7 @@ jobs:
 
   # Cost accuracy test - validates logged LLM costs against provider usage
   test-cost-accuracy:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
@@ -1374,8 +1523,20 @@ jobs:
         with:
           go-version: "1.26.5"
 
+      # This job still builds the mocker/hitter binaries from
+      # bifrost-benchmarking itself - only bifrost-http comes prebuilt.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run cost accuracy test
         env:
+          SKIP_GATEWAY_BUILD: "1"
           BENCHMARK_DIR: ${{ github.workspace }}/bifrost-benchmarking
         run: |
           chmod +x ./.github/workflows/scripts/cost-accuracy-test.sh
@@ -1391,7 +1552,7 @@ jobs:
 
   # Non-blocking load performance test - runs streaming and non-streaming load flows
   test-load-performance:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
@@ -1446,6 +1607,17 @@ jobs:
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.26.5"
+
+      # load-test.sh's build_bifrost_http already no-ops when tmp/bifrost-http
+      # is present, so this download is all that is needed here.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
 
       - name: Run load performance test
         env:

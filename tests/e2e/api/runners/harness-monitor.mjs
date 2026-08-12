@@ -51,6 +51,7 @@ import {
   readSync,
   closeSync,
   appendFileSync,
+  readdirSync,
 } from "node:fs";
 import { join } from "node:path";
 import { resolveCiIntervalMs } from "./lib/ci-interval.mjs";
@@ -145,9 +146,6 @@ const state = {
         doneRequests: 0,
         pass: 0,
         fail: 0,
-        currentRequest: null,
-        currentRequestDone: false,
-        currentRequestHadFail: false,
       },
     ])
   ),
@@ -270,7 +268,7 @@ function endPass(id) {
     // Only close a tail no still-open pass is reading.
     const stillUsed = passes.some((p) => !p.ended && p.tailPaths.includes(path));
     if (h && !stillUsed) {
-      if (h.seqProvider) finalizeRequest(state.providers[h.seqProvider]);
+      if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
       tails.delete(path);
     }
   }
@@ -314,7 +312,47 @@ function ensureTail(path, { provider, mode }) {
     seqProvider: null,
     seqPendingName: null,
     seqFolder: null,
+    // Deferred per-request commit state, per stream. See finalizeRequest.
+    currentRequest: null,
+    currentRequestDone: false,
+    currentRequestHadFail: false,
   });
+}
+
+// Every log a provider's forks write this run: the unsharded newman-cli-<p>.log plus one
+// newman-cli-<p>--<class>.log per class shard. Matched with an explicit "--" separator so
+// provider names that prefix one another cannot cross-claim (there are none today, but the
+// roster is a Makefile variable and "gemini" / "gemini_v2" is one edit away). Returns the
+// unsharded path even when nothing exists yet, so a tail is registered before the fork's
+// first byte lands and the "log has not appeared" case stays identical to before.
+function shardLogsFor(provider) {
+  const plain = `newman-cli-${provider}.log`;
+  const found = new Set([plain]);
+  try {
+    for (const name of readdirSync(TMP_DIR)) {
+      if (name.startsWith(`newman-cli-${provider}--`) && name.endsWith(".log")) found.add(name);
+    }
+  } catch {
+    // tmp/ not created yet - the unsharded fallback below is enough to start with.
+  }
+  return [...found].map((name) => join(TMP_DIR, name));
+}
+
+// Shards are launched over time, not all at once: HARNESS_JOBS caps concurrency, so a shard's
+// log file can appear minutes after its pass started. Re-scanning each tick is what keeps those
+// late shards counted; ensureTail is idempotent, so re-registering an existing tail is a no-op
+// and offsets are never rewound.
+function refreshParallelTails() {
+  for (const pass of passes) {
+    if (pass.ended || pass.mode !== "parallel") continue;
+    for (const p of PROVIDERS) {
+      for (const path of shardLogsFor(p)) {
+        if (tails.has(path)) continue;
+        ensureTail(path, { provider: p, mode: "parallel" });
+        pass.tailPaths.push(path);
+      }
+    }
+  }
 }
 
 // A parallel pass writes one prefixed log per provider fork; a sequential pass
@@ -322,9 +360,16 @@ function ensureTail(path, { provider, mode }) {
 function setupTailsForPass(pass) {
   if (pass.mode === "parallel") {
     for (const p of PROVIDERS) {
-      const path = join(TMP_DIR, `newman-cli-${p}.log`);
-      ensureTail(path, { provider: p, mode: "parallel" });
-      pass.tailPaths.push(path);
+      // A provider fork is sharded again by modality class, so its output is spread over
+      // newman-cli-<provider>--<class>.log rather than a single newman-cli-<provider>.log.
+      // Every shard is tailed under the SAME provider label, which is what keeps the status
+      // table provider-keyed: the class axis is a scheduling detail, not something the run
+      // summary should grow a dimension for. The unsharded name is still matched, so
+      // CLASS_SHARDS=0 and any older tmp/ layout keep working unchanged.
+      for (const path of shardLogsFor(p)) {
+        ensureTail(path, { provider: p, mode: "parallel" });
+        pass.tailPaths.push(path);
+      }
     }
     return;
   }
@@ -403,19 +448,32 @@ function inferProviderFromLine(line, h) {
 // summary, then ✓ pass-assertions, then numbered fail lines. So we can't commit
 // pass/fail at the summary line - we'd miss subsequent fail lines. Instead we
 // defer commit until the next ↳ / ❏ / finalizeAll().
-function finalizeRequest(ps) {
-  if (!ps.currentRequest) return;
-  if (ps.currentRequestDone) {
-    if (ps.currentRequestHadFail) ps.fail += 1;
+//
+// The in-flight cursor lives on the TAIL (h), not on the provider: a provider is now covered by
+// several concurrent newman shards, all feeding one provider row, so a "↳" from the tools shard
+// would otherwise commit the vision shard's half-read request and the pass/fail counts would
+// drift. Counters stay on the provider (ps) because the table is per provider; only the
+// "which request am I mid-way through" state is per stream, which is where it was always
+// conceptually anchored - the sequential path already kept its own per-tail attribution state
+// for exactly this reason.
+function finalizeRequest(h, ps) {
+  if (!h || !ps || !h.currentRequest) return;
+  if (h.currentRequestDone) {
+    if (h.currentRequestHadFail) ps.fail += 1;
     else ps.pass += 1;
   }
-  ps.currentRequest = null;
-  ps.currentRequestDone = false;
-  ps.currentRequestHadFail = false;
+  h.currentRequest = null;
+  h.currentRequestDone = false;
+  h.currentRequestHadFail = false;
 }
 
+// Drains every open stream rather than every provider: with N shards per provider there can be N
+// in-flight requests for one provider row, and a provider-keyed loop would commit only one.
 function finalizeAll() {
-  for (const p of PROVIDERS) finalizeRequest(state.providers[p]);
+  for (const h of tails.values()) {
+    const p = h.mode === "parallel" ? h.provider : h.seqProvider;
+    if (p) finalizeRequest(h, state.providers[p]);
+  }
 }
 
 function handleLine(line, h) {
@@ -435,7 +493,7 @@ function handleLine(line, h) {
     let m;
     if ((m = t.match(RE_FOLDER))) {
       h.seqFolder = m[1].trim();
-      if (h.seqProvider) finalizeRequest(state.providers[h.seqProvider]);
+      if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
       // A heading that names a provider re-points attribution immediately,
       // so the first row under it is attributed even before its URL line.
       const fromFolder = providerOfLogLine("", h.seqFolder, matchProvider);
@@ -448,7 +506,7 @@ function handleLine(line, h) {
     // on, so deferring attribution until that line is what keeps pass+fail from
     // exceeding a provider's own total.
     if ((m = t.match(RE_REQUEST))) {
-      if (h.seqProvider) finalizeRequest(state.providers[h.seqProvider]);
+      if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
       h.seqPendingName = m[1].trim();
       return;
     }
@@ -458,14 +516,13 @@ function handleLine(line, h) {
         (h.seqPendingName ? inferProviderFromLine(h.seqPendingName, h) : null);
       if (inferred && inferred !== h.seqProvider) {
         // Commit the outgoing provider's deferred request before handing over.
-        if (h.seqProvider) finalizeRequest(state.providers[h.seqProvider]);
+        if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
         h.seqProvider = inferred;
       }
-      const target = state.providers[h.seqProvider];
-      if (target && h.seqPendingName) {
-        target.currentRequest = h.seqPendingName;
-        target.currentRequestDone = false;
-        target.currentRequestHadFail = false;
+      if (state.providers[h.seqProvider] && h.seqPendingName) {
+        h.currentRequest = h.seqPendingName;
+        h.currentRequestDone = false;
+        h.currentRequestHadFail = false;
         h.seqPendingName = null;
       }
     }
@@ -481,28 +538,28 @@ function handleLine(line, h) {
 
   let m;
   if (RE_FOLDER.test(trimmed)) {
-    finalizeRequest(ps);
+    finalizeRequest(h, ps);
     return;
   }
   if (h.mode === "parallel" && (m = trimmed.match(RE_REQUEST))) {
-    finalizeRequest(ps);
-    ps.currentRequest = m[1].trim();
-    ps.currentRequestDone = false;
-    ps.currentRequestHadFail = false;
+    finalizeRequest(h, ps);
+    h.currentRequest = m[1].trim();
+    h.currentRequestDone = false;
+    h.currentRequestHadFail = false;
     return;
   }
   // Disambiguate request-done summary from assertion-fail; check done first.
   if (RE_REQUEST_DONE.test(trimmed)) {
-    if (ps.currentRequest && !ps.currentRequestDone) {
-      ps.currentRequestDone = true;
+    if (h.currentRequest && !h.currentRequestDone) {
+      h.currentRequestDone = true;
       ps.doneRequests += 1;
     }
     return;
   }
   if (RE_REQUEST_ERRORED.test(trimmed)) {
-    if (ps.currentRequest && !ps.currentRequestDone) {
-      ps.currentRequestDone = true;
-      ps.currentRequestHadFail = true;
+    if (h.currentRequest && !h.currentRequestDone) {
+      h.currentRequestDone = true;
+      h.currentRequestHadFail = true;
       ps.doneRequests += 1;
     }
     return;
@@ -510,8 +567,8 @@ function handleLine(line, h) {
   // Failure text is not rendered anywhere - it belongs to tmp/harness-failures.md
   // (analyze-failures.mjs) and the per-provider CLI logs. All the table needs is
   // that this request failed.
-  if (RE_ASSERT_FAIL.test(trimmed) && ps.currentRequest) {
-    ps.currentRequestHadFail = true;
+  if (RE_ASSERT_FAIL.test(trimmed) && h.currentRequest) {
+    h.currentRequestHadFail = true;
     return;
   }
 }
@@ -531,25 +588,32 @@ function readStatusFiles() {
     const lines = content.trim().split("\n").filter(Boolean);
     seen += lines.length;
     for (const ln of lines) {
-      const [p, v] = ln.split(":");
+      const [shard, v] = ln.split(":");
+      // Lines are keyed by shard ("openai--tools"), but the table is keyed by provider. Fold the
+      // class axis away here so a provider is green only when every one of its shards finished
+      // clean: "fail" is sticky via failedAnyPass, and the guard below stops a later passing
+      // shard from repainting a provider that already had one fail.
+      const p = shard.split("--")[0];
       const ps = state.providers[p];
       if (!ps) continue;
-      const prev = ps.status;
-      if (v === "pass") ps.status = "pass";
-      else if (v === "fail") {
+      if (v === "pass") {
+        if (!ps.failedAnyPass) ps.status = "pass";
+      } else if (v === "fail") {
         ps.status = "fail";
         // Remembered separately because a later pass will flip status back to
         // "running" the moment that provider emits its first line, and the
         // final table must still show the fork that failed as failed.
         ps.failedAnyPass = true;
       }
-      // A status-file line is only written after that provider's newman process
-      // exited, so its log is complete - commit the trailing deferred request
-      // now, otherwise a finished provider sits one request short of its total
-      // in every subsequent frame.
-      if (ps.status !== prev && (ps.status === "pass" || ps.status === "fail")) {
-        finalizeRequest(ps);
-      }
+      // A status-file line is only written after THAT SHARD's newman process exited, so its log
+      // is complete - commit its trailing deferred request now, otherwise a finished shard sits
+      // one request short of its total in every subsequent frame. Scoped to the shard's own tail
+      // rather than the provider: the provider's other shards are very likely still running, and
+      // draining their in-flight requests here would commit them before their verdict lines
+      // arrive, turning failures into passes.
+      // Idempotent: finalizeRequest returns immediately once the cursor is null, and this line is
+      // re-read every tick because the status file is append-only.
+      finalizeRequest(tails.get(join(TMP_DIR, `newman-cli-${shard}.log`)), ps);
     }
   }
   return { lines: seen };
@@ -868,6 +932,7 @@ setInterval(loadDenominators, 1000);
 
 setInterval(() => {
   pollManifest();
+  refreshParallelTails();
   readNewBytes();
   readStatusFiles();
 }, TAIL_INTERVAL_MS);

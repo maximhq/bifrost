@@ -1892,6 +1892,18 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # one place rather than being restated per newman invocation.
 HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough openrouter
 
+# Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
+# bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its
+# largest class is ~268. filter-collection.mjs --class assigns every item to exactly one of these
+# (first match wins, "other" is the catch-all), so the shards partition the fork rather than
+# overlapping it. Order here is only the launch order; the priority order lives in CLASS_ORDER.
+HARNESS_CLASSES := streaming tools chat reasoning json vision other audio embeddings image-gen
+
+# Cap on concurrently running newman shards. The provider x class grid is up to 80 cells, and
+# launching all of them at once against a single API key turns into 429s that the failure analyzer
+# cannot tell apart from real defects. Raise it if the keys have headroom.
+HARNESS_JOBS ?= 12
+
 # Echoes are suppressed under CI so run-provider-harness-test, which takes this
 # as a prerequisite, really does emit nothing but its status table. Install
 # failures still surface: npm's own stderr is untouched and the recipe still fails.
@@ -1937,6 +1949,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  Forces the deferred cache-parity pass ON: a third of the smoke set is cache parity, and the default"; \
 		printf '  %-18s %s\n' ""                "  deferral only fires on an unfiltered run. Composes with PROVIDER; RERUN_FAILED wins and skips the defer."; \
 		printf '  %-18s %s\n' "PARALLEL=0"       "Disable per-provider parallelism (default: ON). When ON, forks one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure) concurrently; reports merged into tmp/newman-report.json. The htmlextra report is only emitted in sequential mode (PARALLEL=0)."; \
+		printf '  %-18s %s\n' "CLASS_SHARDS=0"  "Collapse the second parallelism axis. By default each provider fork is sharded again by modality"; \
+		printf '  %-18s %s\n' ""                "  class (streaming, tools, chat, reasoning, json, vision, other, audio, embeddings, image-gen) so the"; \
+		printf '  %-18s %s\n' ""                "  run is not bound by one provider's whole sequential list - openai alone is ~1264 requests and its"; \
+		printf '  %-18s %s\n' ""                "  largest class is ~268. filter-collection.mjs --class puts every request in exactly one class, so the"; \
+		printf '  %-18s %s\n' ""                "  shards partition the fork instead of overlapping it. Shard artifacts are named <provider>--<class>."; \
+		printf '  %-18s %s\n' "HARNESS_JOBS=N"  "Cap on concurrently running newman shards (default 12). The provider x class grid is up to 80 cells;"; \
+		printf '  %-18s %s\n' ""                "  launching all of them at once against one API key produces 429s the failure analyzer cannot tell"; \
+		printf '  %-18s %s\n' ""                "  apart from real defects. Raise it if the keys have headroom."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
 		printf '  %-18s %s\n' "USE_INFISICAL=1" "Source secrets from Infisical CLI ('infisical export --path /local --format dotenv') instead of .env."; \
@@ -1988,7 +2008,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
-		printf '  %-30s %s\n' "tmp/newman-report-<p>.json" "Per-provider newman report (parallel mode only)."; \
+		printf '  %-30s %s\n' "tmp/newman-report-<shard>.json" "Per-shard newman report (parallel mode only). <shard> is \"<provider>--<class>\", or plain \"<provider>\" under CLASS_SHARDS=0."; \
+		printf '  %-30s %s\n' "tmp/parallel-exit-<shard>"  "Exit code of each shard's newman process. Read instead of 'wait <pid>' because the HARNESS_JOBS cap reaps pids as slots free up."; \
 		printf '  %-30s %s\n' "tmp/newman-cli-<p>.log"     "Per-provider newman stdout/stderr (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/parallel-status"        "Per-provider pass/fail summary (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/newman-report.html"     "htmlextra report (sequential mode only — PARALLEL=0)."; \
@@ -2280,31 +2301,44 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: > tmp/newman-cli.log; \
 		NEWMAN_EXIT=0; \
 	elif [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
-		say "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter). Set PARALLEL=0 to disable.$(NC)"; \
-		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status; \
+		say "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter) x modality class. Set PARALLEL=0 to disable, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
+		rm -f tmp/newman-report-*.json tmp/newman-cli-*.log tmp/parallel-pids tmp/parallel-status tmp/parallel-exit-*; \
 		: > tmp/parallel-pids; \
 		: > tmp/parallel-status; \
 		PROVIDERS="$(HARNESS_PROVIDERS)"; \
 		if [ -n "$(PROVIDER)" ]; then PROVIDERS="$(PROVIDER)"; fi; \
+		: "CLASS_SHARDS=0 collapses the class axis back to a single fork per provider. The empty"; \
+		: "string is the sentinel for 'do not pass --class', so the loop body stays one code path."; \
+		CLASSES="$(HARNESS_CLASSES)"; \
+		if [ "$(CLASS_SHARDS)" = "0" ]; then CLASSES="-"; fi; \
+		JOBS_CAP="$(or $(HARNESS_JOBS),12)"; \
+		say "$(CYAN)Shard concurrency cap: $$JOBS_CAP (HARNESS_JOBS).$(NC)"; \
 		LAUNCHED=0; \
 		for p in $$PROVIDERS; do \
+		for c in $$CLASSES; do \
+			if [ "$$c" = "-" ]; then SHARD="$$p"; CLASS_FLAG=""; else SHARD="$$p--$$c"; CLASS_FLAG="--class $$c"; fi; \
 			if ! node tests/e2e/api/runners/filter-collection.mjs \
 				--source "$$COLLECTION_FILE" \
-				--out "tmp/harness-filtered-$$p.json" \
+				--out "tmp/harness-filtered-$$SHARD.json" \
 				--provider "$$p" \
+				$$CLASS_FLAG \
 				$(if $(FEATURE),--feature "$(FEATURE)",) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) > /dev/null 2>&1; then \
-				say "$(YELLOW)[$$p] filter step failed - skipping$(NC)"; \
+				say "$(YELLOW)[$$SHARD] filter step failed - skipping$(NC)"; \
 				continue; \
 			fi; \
-			P_ITEM_COUNT=$$(grep -c '"request":' "tmp/harness-filtered-$$p.json" 2>/dev/null); \
+			P_ITEM_COUNT=$$(grep -c '"request":' "tmp/harness-filtered-$$SHARD.json" 2>/dev/null); \
 			P_ITEM_COUNT=$${P_ITEM_COUNT:-0}; \
 			if [ "$$P_ITEM_COUNT" -eq 0 ]; then \
-				say "$(YELLOW)[$$p] filter produced no items - skipping$(NC)"; \
+				rm -f "tmp/harness-filtered-$$SHARD.json"; \
 				continue; \
 			fi; \
+			: "Block until a slot frees. 'wait -n' reaps one arbitrary child, which is why shard"; \
+			: "exit codes are recorded by the subshell into tmp/parallel-exit-<shard> instead of"; \
+			: "being collected later with 'wait <pid>' - that pid may already have been reaped here."; \
+			while [ "$$(jobs -pr | wc -l | tr -d ' ')" -ge "$$JOBS_CAP" ]; do wait -n 2>/dev/null || true; done; \
 			( \
-				newman run "tmp/harness-filtered-$$p.json" \
+				newman run "tmp/harness-filtered-$$SHARD.json" \
 					--env-var "baseUrl=$$BASE_URL_VAL" \
 					$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
 					$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
@@ -2325,24 +2359,30 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					$(if $(ENV_FILE),--environment $(ENV_FILE),) \
 					$(if $(FOLDER),--folder "$(FOLDER)",) \
 					--reporters cli,json$$DBVERIFY_REPORTER$$TOKEN_PARITY_REPORTER $$DBVERIFY_ARGS \
-					$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-$$p.json"} \
-					--reporter-json-export "tmp/newman-report-$$p.json" 2>&1 | sed "s/^/[$$p] /" \
-			) > "tmp/newman-cli-$$p.log" 2>&1 & \
+					$${TOKEN_PARITY_REPORTER:+--reporter-token-parity-out "tmp/harness-token-parity-$$SHARD.json"} \
+					--reporter-json-export "tmp/newman-report-$$SHARD.json" 2>&1 | sed "s/^/[$$p] /"; \
+				echo "$$?" > "tmp/parallel-exit-$$SHARD"; \
+			) > "tmp/newman-cli-$$SHARD.log" 2>&1 & \
 			BG_PID=$$!; \
 			LAUNCHED=$$((LAUNCHED+1)); \
-			echo "$$BG_PID:$$p" >> tmp/parallel-pids; \
-			say "$(GREEN)[$$p] launched (pid $$BG_PID)$(NC)"; \
+			echo "$$BG_PID:$$SHARD" >> tmp/parallel-pids; \
+			say "$(GREEN)[$$SHARD] launched (pid $$BG_PID, $$P_ITEM_COUNT requests)$(NC)"; \
+		done; \
 		done; \
 		if [ "$$LAUNCHED" -eq 0 ]; then \
 			say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
 			exit 1; \
 		fi; \
 		add_pass "$$(printf '{"t":"pass","id":"main","mode":"parallel","statusFile":"tmp/parallel-status","launched":%s}' "$$LAUNCHED")"; \
+		: "Drain every remaining shard first, then read verdicts from the exit files. The cap loop"; \
+		: "above already reaped an unknown subset with 'wait -n', so 'wait <pid>' per shard would"; \
+		: "report 127 for those and mark passing shards failed."; \
+		wait; \
 		PFAILED=0; \
 		while read pidp; do \
-			pid="$${pidp%%:*}"; \
 			p="$${pidp#*:}"; \
-			if wait "$$pid"; then \
+			SHARD_RC="$$(cat "tmp/parallel-exit-$$p" 2>/dev/null || echo 1)"; \
+			if [ "$$SHARD_RC" = "0" ]; then \
 				echo "$$p:pass" >> tmp/parallel-status; \
 				PVERDICT="$(GREEN)[$$p] passed$(NC)"; \
 			else \
