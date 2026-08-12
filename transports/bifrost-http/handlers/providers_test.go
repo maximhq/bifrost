@@ -899,6 +899,307 @@ func TestListModelDetails_IncludesPricing(t *testing.T) {
 	}
 }
 
+// gpt4oPricingJSON is the base catalog fixture shared by the override tests.
+const gpt4oPricingJSON = `{
+	"gpt-4o": {
+		"provider": "openai",
+		"mode": "chat",
+		"input_cost_per_token": 0.0000025,
+		"output_cost_per_token": 0.00001
+	},
+	"gpt-4o-mini": {
+		"provider": "openai",
+		"mode": "chat",
+		"input_cost_per_token": 0.0000001,
+		"output_cost_per_token": 0.0000004
+	}
+}`
+
+// listModelDetailsForTest issues the details request and decodes the response,
+// also returning the raw body so tests can assert on omitted JSON keys.
+func listModelDetailsForTest(t *testing.T, h *ProviderHandler, uri string) (ListModelDetailsResponse, string) {
+	t.Helper()
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI(uri)
+
+	h.listModelDetails(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	body := string(ctx.Response.Body())
+	var resp ListModelDetailsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	return resp, body
+}
+
+func TestListModelDetails_AppliesGlobalOverrideWithoutMutatingBase(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "global-1",
+		Name:             "Negotiated rate",
+		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
+		MatchType:        string(modelcatalog.MatchTypeExact),
+		Pattern:          "gpt-4o",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001}`,
+	}}); err != nil {
+		t.Fatalf("seed overrides: %v", err)
+	}
+
+	resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider=openai&limit=100")
+
+	if len(resp.Models) != 1 {
+		t.Fatalf("expected one model, got %#v", resp.Models)
+	}
+	m := resp.Models[0]
+	if m.InputCostPerToken == nil || *m.InputCostPerToken != 0.0000025 {
+		t.Fatalf("base input cost must stay unchanged, got %#v", m.InputCostPerToken)
+	}
+	if m.OverriddenPricing == nil || m.OverriddenPricing.InputCostPerToken == nil ||
+		*m.OverriddenPricing.InputCostPerToken != 0.000001 {
+		t.Fatalf("expected overridden input cost 0.000001, got %#v", m.OverriddenPricing)
+	}
+	if m.OverriddenPricing.OutputCostPerToken != nil {
+		t.Fatalf("output cost was not patched, expected nil, got %#v", m.OverriddenPricing.OutputCostPerToken)
+	}
+	if m.AppliedOverrideID != "global-1" {
+		t.Fatalf("expected applied override global-1, got %q", m.AppliedOverrideID)
+	}
+	if len(m.PricingOverrideIDs) != 1 || m.PricingOverrideIDs[0] != "global-1" {
+		t.Fatalf("expected one referenced override, got %#v", m.PricingOverrideIDs)
+	}
+	summary, ok := resp.PricingOverrides["global-1"]
+	if !ok {
+		t.Fatalf("override index missing global-1: %#v", resp.PricingOverrides)
+	}
+	if summary.Name != "Negotiated rate" || summary.Pattern != "gpt-4o" {
+		t.Fatalf("unexpected override summary %#v", summary)
+	}
+	if summary.Patch.InputCostPerToken == nil || *summary.Patch.InputCostPerToken != 0.000001 {
+		t.Fatalf("expected patch in summary, got %#v", summary.Patch)
+	}
+}
+
+func TestListModelDetails_OverrideIndexIsDeduplicated(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+		[]string{"gpt-4o", "gpt-4o-mini"},
+	)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "wildcard-1",
+		Name:             "All GPT models",
+		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
+		MatchType:        string(modelcatalog.MatchTypeWildcard),
+		Pattern:          "gpt-*",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000002}`,
+	}}); err != nil {
+		t.Fatalf("seed overrides: %v", err)
+	}
+
+	resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider=openai&limit=100")
+
+	if len(resp.Models) != 2 {
+		t.Fatalf("expected two models, got %#v", resp.Models)
+	}
+	if len(resp.PricingOverrides) != 1 {
+		t.Fatalf("expected the shared override serialized once, got %#v", resp.PricingOverrides)
+	}
+	for _, m := range resp.Models {
+		if m.AppliedOverrideID != "wildcard-1" {
+			t.Fatalf("model %s missing applied override, got %q", m.Name, m.AppliedOverrideID)
+		}
+	}
+}
+
+func TestListModelDetails_NoOverridesOmitsNewFields(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+
+	_, body := listModelDetailsForTest(t, h, "/api/models/details?provider=openai&limit=100")
+
+	for _, key := range []string{"overridden_pricing", "applied_override_id", "pricing_override_ids", "pricing_overrides"} {
+		if strings.Contains(body, key) {
+			t.Fatalf("expected %q to be omitted when no overrides exist: %s", key, body)
+		}
+	}
+}
+
+func TestListModelDetails_PatchToSameValueIsNotMarkedOverridden(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "noop-1",
+		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
+		MatchType:        string(modelcatalog.MatchTypeExact),
+		Pattern:          "gpt-4o",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.0000025}`,
+	}}); err != nil {
+		t.Fatalf("seed overrides: %v", err)
+	}
+
+	resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider=openai&limit=100")
+
+	m := resp.Models[0]
+	if m.OverriddenPricing != nil {
+		t.Fatalf("a patch matching the base value must not render as overridden, got %#v", m.OverriddenPricing)
+	}
+	if m.AppliedOverrideID != "" {
+		t.Fatalf("expected no applied override id, got %q", m.AppliedOverrideID)
+	}
+	// The override still matched the model, so it stays listed for the sheet.
+	if len(m.PricingOverrideIDs) != 1 {
+		t.Fatalf("expected the override to remain listed, got %#v", m.PricingOverrideIDs)
+	}
+}
+
+func TestListModelDetails_OverrideWithoutBaseCatalogRow(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"custom-model"},
+		[]string{"custom-model"},
+	)
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "custom-1",
+		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
+		MatchType:        string(modelcatalog.MatchTypeExact),
+		Pattern:          "custom-model",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000009}`,
+	}}); err != nil {
+		t.Fatalf("seed overrides: %v", err)
+	}
+
+	resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider=openai&limit=100")
+
+	m := resp.Models[0]
+	if m.InputCostPerToken != nil {
+		t.Fatalf("expected no base pricing, got %#v", m.InputCostPerToken)
+	}
+	if m.OverriddenPricing == nil || m.OverriddenPricing.InputCostPerToken == nil ||
+		*m.OverriddenPricing.InputCostPerToken != 0.000009 {
+		t.Fatalf("expected override-only pricing, got %#v", m.OverriddenPricing)
+	}
+}
+
+func TestListModelDetails_VirtualKeyScopedOverrideIsInformationalOnly(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	vkID := "vk-1"
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+		ID:               "vk-scoped",
+		ScopeKind:        string(modelcatalog.ScopeKindVirtualKey),
+		VirtualKeyID:     &vkID,
+		MatchType:        string(modelcatalog.MatchTypeExact),
+		Pattern:          "gpt-4o",
+		RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+		PricingPatchJSON: `{"input_cost_per_token":0.000001}`,
+	}}); err != nil {
+		t.Fatalf("seed overrides: %v", err)
+	}
+
+	resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider=openai&limit=100")
+
+	m := resp.Models[0]
+	if m.OverriddenPricing != nil || m.AppliedOverrideID != "" {
+		t.Fatalf("virtual-key scoped overrides must not change the displayed price, got %#v", m.OverriddenPricing)
+	}
+	if len(m.PricingOverrideIDs) != 1 || m.PricingOverrideIDs[0] != "vk-scoped" {
+		t.Fatalf("expected the override listed informationally, got %#v", m.PricingOverrideIDs)
+	}
+}
+
+// Provider scope is the only non-global scope that changes the displayed price,
+// so it is the only case that pins the provider argument threaded into
+// GetCatalogPricingOverrides. The global-scope tests above would pass even if
+// that argument were wrong. The mismatched anthropic override must not surface
+// at all — not even informationally.
+func TestListModelDetails_AppliesProviderScopedOverride(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	openaiID := "openai"
+	anthropicID := "anthropic"
+	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{
+		{
+			ID:               "provider-openai",
+			Name:             "OpenAI rate",
+			ScopeKind:        string(modelcatalog.ScopeKindProvider),
+			ProviderID:       &openaiID,
+			MatchType:        string(modelcatalog.MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":0.000002}`,
+		},
+		{
+			ID:               "provider-anthropic",
+			Name:             "Anthropic rate",
+			ScopeKind:        string(modelcatalog.ScopeKindProvider),
+			ProviderID:       &anthropicID,
+			MatchType:        string(modelcatalog.MatchTypeExact),
+			Pattern:          "gpt-4o",
+			RequestTypes:     []schemas.RequestType{schemas.ChatCompletionRequest},
+			PricingPatchJSON: `{"input_cost_per_token":0.000009}`,
+		},
+	}); err != nil {
+		t.Fatalf("seed overrides: %v", err)
+	}
+
+	resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider=openai&limit=100")
+
+	if len(resp.Models) != 1 {
+		t.Fatalf("expected one model, got %#v", resp.Models)
+	}
+	m := resp.Models[0]
+	if m.InputCostPerToken == nil || *m.InputCostPerToken != 0.0000025 {
+		t.Fatalf("base input cost must stay unchanged, got %#v", m.InputCostPerToken)
+	}
+	if m.OverriddenPricing == nil || m.OverriddenPricing.InputCostPerToken == nil ||
+		*m.OverriddenPricing.InputCostPerToken != 0.000002 {
+		t.Fatalf("expected provider-scoped override to set input cost 0.000002, got %#v", m.OverriddenPricing)
+	}
+	if m.AppliedOverrideID != "provider-openai" {
+		t.Fatalf("expected applied override provider-openai, got %q", m.AppliedOverrideID)
+	}
+	if len(m.PricingOverrideIDs) != 1 || m.PricingOverrideIDs[0] != "provider-openai" {
+		t.Fatalf("anthropic-scoped override must not surface for an openai model, got %#v", m.PricingOverrideIDs)
+	}
+	if _, ok := resp.PricingOverrides["provider-anthropic"]; ok {
+		t.Fatalf("override index must not carry the mismatched provider: %#v", resp.PricingOverrides)
+	}
+	summary, ok := resp.PricingOverrides["provider-openai"]
+	if !ok {
+		t.Fatalf("override index missing provider-openai: %#v", resp.PricingOverrides)
+	}
+	if summary.Name != "OpenAI rate" {
+		t.Fatalf("unexpected override summary %#v", summary)
+	}
+}
+
 // --- VK-based filtering tests ---
 
 // TestParseVKValueFromRequest verifies that the VK value is extracted from each
