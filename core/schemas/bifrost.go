@@ -62,6 +62,7 @@ const (
 	DeepSeek      ModelProvider = "deepseek"
 	Gemini        ModelProvider = "gemini"
 	OpenRouter    ModelProvider = "openrouter"
+	OrcaRouter    ModelProvider = "orcarouter"
 	Elevenlabs    ModelProvider = "elevenlabs"
 	HuggingFace   ModelProvider = "huggingface"
 	Nebius        ModelProvider = "nebius"
@@ -107,6 +108,7 @@ var StandardProviders = []ModelProvider{
 	SGL,
 	Vertex,
 	OpenRouter,
+	OrcaRouter,
 	Elevenlabs,
 	HuggingFace,
 	Nebius,

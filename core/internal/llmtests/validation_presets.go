@@ -495,6 +495,11 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
 
+	case schemas.OrcaRouter:
+		// OrcaRouter proxies to multiple providers; returns OpenAI-compatible fields
+		expectations.ShouldHaveUsageStats = true
+		expectations.ShouldHaveLatency = true
+
 	case schemas.XAI:
 		expectations.ShouldHaveUsageStats = true
 		expectations.ShouldHaveLatency = true
