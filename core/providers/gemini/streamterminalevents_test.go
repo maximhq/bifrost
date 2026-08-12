@@ -406,8 +406,10 @@ func TestGeminiResponsesStreamCompletedCarriesFileData(t *testing.T) {
 // pooled state starts with empty output bookkeeping, so a later stream's
 // response.completed only carries its own items.
 func TestGeminiResponsesStreamStateRecycleTerminalClean(t *testing.T) {
-	state := &GeminiResponsesStreamState{}
-	state.flush()
+	state := acquireGeminiResponsesStreamState()
+	t.Cleanup(func() {
+		releaseGeminiResponsesStreamState(state)
+	})
 
 	first := driveResponsesStream(t, state, thinkingStreamChunks([]byte("sig-run-1")))
 	firstCompleted := findCompletedEvent(t, first)
@@ -416,7 +418,8 @@ func TestGeminiResponsesStreamStateRecycleTerminalClean(t *testing.T) {
 	// Between two streaming requests the pool recycles the state through
 	// releaseGeminiResponsesStreamState and acquireGeminiResponsesStreamState,
 	// and flush is the only reset either of them runs.
-	state.flush()
+	releaseGeminiResponsesStreamState(state)
+	state = acquireGeminiResponsesStreamState()
 
 	second := driveResponsesStream(t, state, functionCallStreamChunks())
 	secondCompleted := findCompletedEvent(t, second)
