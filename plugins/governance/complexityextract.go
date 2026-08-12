@@ -68,6 +68,11 @@ var (
 
 const codexTurnMetadataHeader = "x-codex-turn-metadata"
 
+type codexTurnMetadata struct {
+	RequestKind string
+	SessionID   string
+}
+
 // buildComplexityInput extracts text from normalized BifrostRequest values for
 // complexity_tier routing. It intentionally runs after the transport converters
 // have produced Bifrost's typed request shape, so governance does not duplicate
@@ -338,19 +343,8 @@ func detectComplexityHarness(ctx *schemas.BifrostContext) complexityHarness {
 }
 
 func isCodexBackgroundRequest(ctx *schemas.BifrostContext) bool {
-	if ctx == nil {
-		return false
-	}
-	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	rawMetadata := strings.TrimSpace(headers[codexTurnMetadataHeader])
-	if rawMetadata == "" {
-		return false
-	}
-
-	var metadata struct {
-		RequestKind string `json:"request_kind"`
-	}
-	if err := json.Unmarshal([]byte(rawMetadata), &metadata); err != nil {
+	metadata, ok := parseCodexTurnMetadata(ctx)
+	if !ok {
 		return false
 	}
 
@@ -360,6 +354,40 @@ func isCodexBackgroundRequest(ctx *schemas.BifrostContext) bool {
 	default:
 		return false
 	}
+}
+
+// parseCodexTurnMetadata decodes the structured metadata emitted by Codex.
+// Missing or structurally malformed metadata is unavailable rather than an
+// error so callers can preserve the existing fail-open request behavior.
+func parseCodexTurnMetadata(ctx *schemas.BifrostContext) (codexTurnMetadata, bool) {
+	if ctx == nil {
+		return codexTurnMetadata{}, false
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	rawMetadata := strings.TrimSpace(headers[codexTurnMetadataHeader])
+	if rawMetadata == "" {
+		return codexTurnMetadata{}, false
+	}
+
+	var fields struct {
+		RequestKind json.RawMessage `json:"request_kind"`
+		SessionID   json.RawMessage `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(rawMetadata), &fields); err != nil {
+		return codexTurnMetadata{}, false
+	}
+
+	// Decode fields independently so an invalid new field cannot change the
+	// established behavior of another one. In particular, a malformed session_id
+	// must not stop a valid background request_kind from being recognized.
+	var metadata codexTurnMetadata
+	if len(fields.RequestKind) > 0 {
+		_ = json.Unmarshal(fields.RequestKind, &metadata.RequestKind)
+	}
+	if len(fields.SessionID) > 0 {
+		_ = json.Unmarshal(fields.SessionID, &metadata.SessionID)
+	}
+	return metadata, true
 }
 
 func sanitizeUserText(text string, harness complexityHarness) (string, complexityTextKind) {
