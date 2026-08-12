@@ -511,6 +511,28 @@ export const PRICING_FIELDS = [
 	},
 ] as const;
 
+/** What a pricing field's number means, which decides how it is rendered. */
+export type PricingFieldUnit = "token" | "character" | "currency" | "multiplier";
+
+/**
+ * Classifies a pricing field key by unit.
+ *
+ * Note the `_above_NNNk_tokens` strip: those suffixes name the *context tier* a
+ * rate applies above, not the unit being priced. Without removing them first,
+ * fields like `input_cost_per_audio_per_second_above_128k_tokens` and
+ * `input_cost_per_image_above_128k_tokens` look token-priced when they are
+ * priced per second and per image.
+ */
+export function pricingFieldUnit(key: string): PricingFieldUnit {
+	if (key.endsWith("_multiplier")) return "multiplier";
+	const withoutContextTier = key.replace(/_above_\d+k_tokens/g, "");
+	// Before the token check: character-priced fields are scaled per 1M like
+	// token pricing, but naming their unit "tokens" contradicts their label.
+	if (withoutContextTier.includes("_per_character")) return "character";
+	if (withoutContextTier.includes("token")) return "token";
+	return "currency";
+}
+
 export type PricingFieldKey = (typeof PRICING_FIELDS)[number]["key"];
 
 export const fieldLabelByKey = Object.fromEntries(PRICING_FIELDS.map((field) => [field.key, field.label])) as Record<
