@@ -476,7 +476,6 @@ func TestComplexitySessionConfigNormalizedDefaults(t *testing.T) {
 
 	assert.Equal(t, DefaultComplexitySessionTTL, normalized.TTL)
 	assert.Equal(t, DefaultComplexitySessionIdentitySources(), normalized.IdentitySources)
-	assert.Equal(t, DefaultComplexitySessionReleaseAfterFailures, normalized.ReleaseAfterFailures)
 	assert.Equal(t, DefaultComplexitySessionDowngradeAfterNTurns, normalized.DowngradeAfterNTurns)
 	assert.Equal(t, DefaultComplexitySessionMinCachedTokensToHold, normalized.MinCachedTokensToHold)
 	// Ships unset: no sensible absolute default exists until the exemplar set's

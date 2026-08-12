@@ -1073,6 +1073,24 @@ func (s *BifrostHTTPServer) GetComplexitySemanticStatus(ctx context.Context) (co
 	return provider.ComplexitySemanticStatus(), nil
 }
 
+// GetComplexitySessionStoreStatus returns what the session-state backend can
+// guarantee, or nil when no store is attached. A nil result is not an error: it
+// means session state has no backing store, which is normal when session
+// routing is off.
+func (s *BifrostHTTPServer) GetComplexitySessionStoreStatus(ctx context.Context) (*governance.SessionStoreStatus, error) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil, fmt.Errorf("governance plugin not found: %w", err)
+	}
+	provider, ok := governancePlugin.(interface {
+		ComplexitySessionStoreStatus(ctx context.Context) (*governance.SessionStoreStatus, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("governance plugin does not expose session store status")
+	}
+	return provider.ComplexitySessionStoreStatus(ctx)
+}
+
 // ReloadRoutingRule reloads a routing rule from the database into the governance store
 func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) error {
 	governancePluginName := governance.PluginName

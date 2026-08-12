@@ -106,8 +106,12 @@ export default function ComplexityRouterPage() {
 	// that had already recovered. It polls slowly because it is waiting on a
 	// human, where warming is polled fast to keep the progress bar moving.
 	const [statusPollInterval, setStatusPollInterval] = useState(0);
+	// Also fetched when only session behavior is configured: the same endpoint now
+	// carries the session store's guarantees, and skipping on the classifier alone
+	// left the session sheet with nothing to report on a deployment that had
+	// enabled sessions without configuring embeddings.
 	const { data: semanticStatus, isLoading: statusLoading } = useGetComplexitySemanticStatusQuery(undefined, {
-		skip: !data?.semantic,
+		skip: !data?.semantic && !data?.session,
 		pollingInterval: statusPollInterval,
 	});
 	useEffect(() => {
@@ -621,6 +625,8 @@ export default function ComplexityRouterPage() {
 				session={liveSession}
 				canUpdate={canUpdate}
 				isClassifierConfigured={isClassifierConfigured}
+				storeStatus={semanticStatus?.session_store}
+				storeStatusLoading={statusLoading}
 				canSave={canSave}
 				isSaving={isSaving}
 				onSave={() => void submit()}

@@ -281,14 +281,13 @@ func TestKVSessionStoreRoundTripAndOwnership(t *testing.T) {
 	decidedAt := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
 	lastSeenAt := decidedAt.Add(time.Minute)
 	record := &SessionComplexityRecord{
-		Tier:                "complex",
-		DecidedAt:           decidedAt,
-		RuleID:              "rule-1",
-		SwitchCount:         2,
-		PendingTier:         "medium",
-		PendingTurns:        1,
-		PendingMinScore:     0.91,
-		ConsecutiveFailures: 1,
+		Tier:            "complex",
+		DecidedAt:       decidedAt,
+		RuleID:          "rule-1",
+		SwitchCount:     2,
+		PendingTier:     "medium",
+		PendingTurns:    1,
+		PendingMinScore: 0.91,
 		RouteObservations: map[string]SessionRouteObservation{
 			"route-1": {
 				CachedReadTokens: 4096,
@@ -310,6 +309,10 @@ func TestKVSessionStoreRoundTripAndOwnership(t *testing.T) {
 	got, found, err := sessionStore.Get(context.Background(), key, time.Hour)
 	require.NoError(t, err)
 	require.True(t, found)
+	// The store stamps RefreshedAt itself, so it is asserted separately and
+	// cleared before the structural comparison.
+	assert.False(t, got.RefreshedAt.IsZero(), "Create should stamp the refresh clock")
+	got.RefreshedAt = time.Time{}
 	assert.Equal(t, want, got)
 
 	// Mutating a returned record must not mutate stored state either.
@@ -319,6 +322,7 @@ func TestKVSessionStoreRoundTripAndOwnership(t *testing.T) {
 	gotAgain, found, err := sessionStore.Get(context.Background(), key, time.Hour)
 	require.NoError(t, err)
 	require.True(t, found)
+	gotAgain.RefreshedAt = time.Time{}
 	assert.Equal(t, want, gotAgain)
 }
 
@@ -448,10 +452,59 @@ func TestKVSessionStoreSlidingTTL(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found, "successful Get should extend the deadline")
 
-	time.Sleep(300 * time.Millisecond)
+	// Expiry is ttl plus one refresh interval of headroom, so an abandoned
+	// session lingers a little past the configured window rather than expiring
+	// early — the direction that matters, since expiring early would drop a live
+	// conversation's tier mid-way.
+	time.Sleep(ttl + complexitySessionRefreshInterval(ttl) + 100*time.Millisecond)
 	_, found, err = sessionStore.Get(context.Background(), key, ttl)
 	require.NoError(t, err)
-	assert.False(t, found, "record should expire when its TTL is no longer refreshed")
+	assert.False(t, found, "record should expire once its TTL is no longer refreshed")
+}
+
+// The refresh is coarse on purpose: sliding the expiry on every read makes each
+// read a write, and on a replicated backend each write is a cluster broadcast.
+// A chatty conversation must not cost one broadcast per turn.
+func TestKVSessionStoreGetDoesNotWriteOnEveryRead(t *testing.T) {
+	sessionStore, store := newTestKVSessionStore(t)
+	_, targetKV := newTestKVSessionStore(t)
+	delegate := &forwardingKVDelegate{target: targetKV}
+
+	key := testComplexitySessionKey(t, "tenant", "read-amplification")
+	_, err := sessionStore.Create(context.Background(), key, &SessionComplexityRecord{Tier: "complex"}, time.Hour)
+	require.NoError(t, err)
+
+	// Attached after Create so only the reads below are counted.
+	store.SetDelegate(delegate)
+	for i := 0; i < 50; i++ {
+		_, found, err := sessionStore.Get(context.Background(), key, time.Hour)
+		require.NoError(t, err)
+		require.True(t, found)
+	}
+
+	assert.Zero(t, delegate.Sets(), "reads inside the refresh interval must not replicate")
+}
+
+// The window must still slide for a long-lived conversation, or a session that
+// stays busy past its ttl would expire underneath itself.
+func TestKVSessionStoreGetRefreshesOnceTheIntervalElapses(t *testing.T) {
+	sessionStore, _ := newTestKVSessionStore(t)
+	key := testComplexitySessionKey(t, "tenant", "interval-elapsed")
+	const ttl = 400 * time.Millisecond
+
+	_, err := sessionStore.Create(context.Background(), key, &SessionComplexityRecord{Tier: "complex"}, ttl)
+	require.NoError(t, err)
+
+	before, found, err := sessionStore.Get(context.Background(), key, ttl)
+	require.NoError(t, err)
+	require.True(t, found)
+
+	// Past one refresh interval (ttl/4 = 100ms), so the next read slides it.
+	time.Sleep(complexitySessionRefreshInterval(ttl) + 50*time.Millisecond)
+	after, found, err := sessionStore.Get(context.Background(), key, ttl)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.True(t, after.RefreshedAt.After(before.RefreshedAt), "the window never slid")
 }
 
 func TestKVSessionStoreRegistersReplicationDecoder(t *testing.T) {
@@ -480,6 +533,8 @@ func TestKVSessionStoreRegistersReplicationDecoder(t *testing.T) {
 	got, found, err := target.Get(context.Background(), key, time.Hour)
 	require.NoError(t, err)
 	require.True(t, found)
+	assert.False(t, got.RefreshedAt.IsZero(), "the replicated record should carry the refresh clock")
+	got.RefreshedAt = time.Time{}
 	assert.Equal(t, want, got)
 }
 
@@ -529,9 +584,9 @@ func TestKVSessionStoreStatus(t *testing.T) {
 	status, err := sessionStore.Status(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, SessionStoreStatus{
-		Backend:              complexitySessionStoreBackendKV,
-		SharedAcrossReplicas: false,
-		AtomicUpdates:        true,
+		Backend:               complexitySessionStoreBackendKV,
+		ReplicationConfigured: false,
+		AtomicAcrossReplicas:  true,
 	}, status)
 
 	_, targetKV := newTestKVSessionStore(t)
@@ -539,9 +594,9 @@ func TestKVSessionStoreStatus(t *testing.T) {
 	status, err = sessionStore.Status(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, SessionStoreStatus{
-		Backend:              complexitySessionStoreBackendKV,
-		SharedAcrossReplicas: true,
-		AtomicUpdates:        false,
+		Backend:               complexitySessionStoreBackendKV,
+		ReplicationConfigured: true,
+		AtomicAcrossReplicas:  false,
 	}, status)
 }
 
@@ -568,10 +623,22 @@ type forwardingKVDelegate struct {
 	target *kvstore.Store
 	mu     sync.Mutex
 	err    error
+	sets   int
 }
 
 func (d *forwardingKVDelegate) OnSet(key string, valueJSON []byte, writtenAt int64, expiresAt int64) {
+	d.mu.Lock()
+	d.sets++
+	d.mu.Unlock()
 	d.recordError(d.target.SetRemote(key, valueJSON, writtenAt, expiresAt))
+}
+
+// Sets reports how many replication messages this delegate has been asked to
+// send, which is the cost a read path must not incur per request.
+func (d *forwardingKVDelegate) Sets() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.sets
 }
 
 func (d *forwardingKVDelegate) OnDelete(key string, deletedAt int64) {

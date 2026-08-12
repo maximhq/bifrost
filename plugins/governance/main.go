@@ -97,10 +97,14 @@ type GovernancePlugin struct {
 
 	complexityAnalyzer atomic.Pointer[complexity.ComplexityAnalyzer]
 	semanticClassifier *complexity.SemanticClassifier
-	// complexitySessionEnabled mirrors the analyzer config's session mode so the
-	// request path can gate session behaviour without holding the config. Kept in
-	// step by storeComplexityAnalyzerConfig, so it follows live reloads.
-	complexitySessionEnabled atomic.Bool
+	// complexitySessionConfig mirrors the analyzer config's session block so the
+	// request path can read mode, ttl, and identity sources without holding the
+	// whole config. Kept in step by storeComplexityAnalyzerConfig, so it follows
+	// live reloads. Nil means session behaviour is off.
+	complexitySessionConfig atomic.Pointer[configstore.ComplexitySessionConfig]
+	// complexitySessionStore is attached after construction and may stay nil when
+	// no kv store is available. Atomic because status reads can race attachment.
+	complexitySessionStore atomic.Pointer[SessionStore]
 
 	// embeddingRequestExecutor is wired by the HTTP server after the bifrost
 	// client exists (post-Init) via SetEmbeddingRequestExecutor; nil until
@@ -399,6 +403,39 @@ func (p *GovernancePlugin) ComplexitySemanticStatus() complexity.SemanticStatusI
 	return p.semanticClassifier.Status()
 }
 
+// SetComplexitySessionKVStore installs the backing store for session state.
+//
+// It is a setter rather than an Init parameter so the store can be attached
+// after the plugin exists, matching how the cluster controller and node id are
+// already wired. Attachment time does not affect what Status reports: the
+// backend's guarantees are read at call time, so a replication delegate
+// installed later is picked up without re-registering anything here.
+func (p *GovernancePlugin) SetComplexitySessionKVStore(store *kvstore.Store) error {
+	sessionStore, err := newKVSessionStore(store)
+	if err != nil {
+		return err
+	}
+	var asInterface SessionStore = sessionStore
+	p.complexitySessionStore.Store(&asInterface)
+	return nil
+}
+
+// ComplexitySessionStoreStatus reports what the session-state backend can
+// guarantee, or nil when no store is attached. Callers must not read a nil
+// result as "unsafe": it means session state has no backing store at all, which
+// is the normal case while session routing is switched off.
+func (p *GovernancePlugin) ComplexitySessionStoreStatus(ctx context.Context) (*SessionStoreStatus, error) {
+	stored := p.complexitySessionStore.Load()
+	if stored == nil {
+		return nil, nil
+	}
+	status, err := (*stored).Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
 func (p *GovernancePlugin) storeComplexityAnalyzerConfig(config *complexity.AnalyzerConfig) {
 	resolved, err := complexity.ValidateAndNormalize(config)
 	if err != nil {
@@ -409,7 +446,14 @@ func (p *GovernancePlugin) storeComplexityAnalyzerConfig(config *complexity.Anal
 		resolved = &defaults
 	}
 	p.complexityAnalyzer.Store(complexity.NewComplexityAnalyzerWithConfig(resolved))
-	p.complexitySessionEnabled.Store(resolved.Session.Enabled())
+	// Only a session block that is actually switched on is published: the request
+	// path then treats "no config" and "mode off" identically without repeating
+	// the mode check at every read.
+	if resolved.Session.Enabled() {
+		p.complexitySessionConfig.Store(resolved.Session)
+	} else {
+		p.complexitySessionConfig.Store(nil)
+	}
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.Configure(resolved)
 	}
@@ -744,6 +788,15 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	queryParams, _ := ctx.Value(schemas.BifrostContextKeyRequestQuery).(map[string]string)
 
+	// Resolved before the routing context is built because target stickiness
+	// needs the same identity the tier is stored under. Nil means classify
+	// normally, which is the behaviour that predates session state.
+	sessionState := p.resolveComplexitySessionState(ctx, virtualKey)
+	// Published before key selection runs so the conversation keeps one API key
+	// as well as one tier; a rotating key would discard the provider cache the
+	// pinned tier exists to protect.
+	p.publishSessionKeyAffinity(ctx, sessionState)
+
 	// Set up lazy complexity computation; only runs if a rule references complexity_tier.
 	var computeComplexity func() *complexity.ComplexityResult
 	if p.complexityAnalyzer.Load() != nil {
@@ -856,6 +909,20 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
+	// Session state short-circuits classification for an established conversation.
+	// Wrapping keeps that inside the lazy closure, so a request whose rules never
+	// mention complexity_tier still performs no session work.
+	computeComplexity = p.withComplexitySession(ctx, sessionState, computeComplexity)
+
+	// Target stickiness keys on the resolved identity, not the raw header, so a
+	// harness-native id pins targets the same way an explicit header does. With
+	// session behaviour off, sessionState is nil and this falls back to the header
+	// read that predates it — which the stickiness gate ignores anyway.
+	sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID)
+	if sessionState != nil {
+		sessionID = sessionState.ID
+	}
+
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
 		UserID:                   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID),
@@ -866,8 +933,8 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		QueryParams:              queryParams,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
 		computeComplexity:        computeComplexity,
-		SessionID:                bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID),
-		SessionComplexityEnabled: p.complexitySessionEnabled.Load(),
+		SessionID:                sessionID,
+		SessionComplexityEnabled: sessionState != nil,
 	}
 
 	p.logger.Debug("[PreRequestHook] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v",

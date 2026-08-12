@@ -25,6 +25,17 @@ export interface SemanticConfig {
 	vector_store?: SemanticVectorStore;
 }
 
+// What the session-state backend can prove about itself. Absent when no store is
+// attached, which is the normal case with session routing off.
+export interface SessionStoreStatus {
+	backend: string;
+	// Named for the configuration, not the outcome: replication is
+	// fire-and-forget, so this says a delegate is installed, not that peers are
+	// connected or converged.
+	replication_configured: boolean;
+	atomic_across_replicas: boolean;
+}
+
 export interface SemanticStatusInfo {
 	state: "disabled" | "warming" | "ready" | "failed";
 	loaded: number;
@@ -37,6 +48,19 @@ export interface SemanticStatusInfo {
 	// unchanged. Reuse cannot be inferred from the persisted config alone; zero
 	// means the next save re-embeds every phrase regardless of what changed.
 	cached_phrases?: number;
+	session_store?: SessionStoreStatus;
+}
+
+// The three states an operator can actually be in. Derived from the two
+// booleans rather than reported directly, because the storage layer can only
+// describe itself — it cannot see how many replicas are running, so it can never
+// say "safe" on its own.
+export type SessionStoreReadiness = "node-local" | "replicated-not-atomic" | "shared-atomic";
+
+export function sessionStoreReadiness(status: SessionStoreStatus | undefined): SessionStoreReadiness | undefined {
+	if (!status) return undefined;
+	if (!status.replication_configured) return "node-local";
+	return status.atomic_across_replicas ? "shared-atomic" : "replicated-not-atomic";
 }
 
 // Mirrors ComplexitySessionMode* in framework/configstore. "off" is a real
@@ -53,7 +77,6 @@ export interface SessionConfig {
 	mode: SessionMode;
 	ttl?: string;
 	identity_sources?: SessionIdentitySource[];
-	release_after_failures?: number;
 	// cache_aware only, from here down.
 	switch_min_similarity?: number;
 	downgrade_after_n_turns?: number;
@@ -83,7 +106,10 @@ export const LEGACY_COMPLEXITY_TIER_VALUES = ["REASONING"] as const;
 // LEGACY_COMPLEXITY_TIER_VALUES): the complexity_mechanism column ships with the
 // semantic classifier, so no row was ever written with the retired "lexical"
 // mechanism and filtering on it could only ever return nothing.
-export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "skipped"] as const;
+// "session" means the tier was reused from session state and no classifier ran
+// for that turn, which is the difference between a held conversation and a
+// freshly embedded one.
+export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "session", "skipped"] as const;
 
 // Labels cover "lexical" even though nothing filters on it. Rows predating the
 // structured columns record their decision only in the prose routing log, and
@@ -92,6 +118,7 @@ export const COMPLEXITY_MECHANISM_VALUES = ["semantic", "skipped"] as const;
 export const COMPLEXITY_MECHANISM_LABELS: Record<string, string> = {
 	lexical: "Lexical",
 	semantic: "Semantic",
+	session: "Session",
 	skipped: "Skipped",
 };
 
@@ -193,7 +220,6 @@ export function formatSemanticTimeout(milliseconds: number): string {
 
 // Mirrors DefaultComplexitySession* in framework/configstore.
 export const DEFAULT_SESSION_TTL_MINUTES = 60;
-export const DEFAULT_SESSION_RELEASE_AFTER_FAILURES = 3;
 export const DEFAULT_SESSION_DOWNGRADE_AFTER_N_TURNS = 2;
 export const DEFAULT_SESSION_MIN_CACHED_TOKENS_TO_HOLD = 1024;
 
@@ -206,7 +232,6 @@ export const DEFAULT_SESSION_CONFIG: SessionConfig = {
 	mode: "off",
 	ttl: `${DEFAULT_SESSION_TTL_MINUTES}m`,
 	identity_sources: DEFAULT_SESSION_IDENTITY_SOURCES,
-	release_after_failures: DEFAULT_SESSION_RELEASE_AFTER_FAILURES,
 	switch_min_similarity: 0,
 	downgrade_after_n_turns: DEFAULT_SESSION_DOWNGRADE_AFTER_N_TURNS,
 	min_cached_tokens_to_hold: DEFAULT_SESSION_MIN_CACHED_TOKENS_TO_HOLD,

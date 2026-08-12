@@ -94,9 +94,20 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
 		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
-		return governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
+		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
 			bifrostConfig.MCPCatalog, inMemoryStore)
+		if err != nil {
+			return nil, err
+		}
+		// Session state is optional: without a kv store the plugin simply reports
+		// no session backend, which is the honest answer rather than a failure.
+		if kvStore := bifrostConfig.GetKVStore(); kvStore != nil {
+			if err := governancePlugin.SetComplexitySessionKVStore(kvStore); err != nil {
+				logger.Warn("failed to attach complexity session store, session routing will be unavailable: %v", err)
+			}
+		}
+		return governancePlugin, nil
 
 	case maxim.PluginName:
 		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)

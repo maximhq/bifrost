@@ -3742,11 +3742,6 @@
           "minItems": 1,
           "uniqueItems": true
         },
-        "release_after_failures": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Release the pin after this many consecutive upstream failures, on the assumption that the pinned tier is implicated (default: 3)"
-        },
         "switch_min_similarity": {
           "type": "number",
           "minimum": 0,
