@@ -37,12 +37,20 @@ type EmbeddingRequestExecutor func(ctx *schemas.BifrostContext, req *schemas.Bif
 // semantic cache's per-request state handoff between its pre and post hooks.
 const routingEmbedUsageContextKey schemas.BifrostContextKey = "bf-governance-routing-embed-usage"
 
-// routingEmbedUsage is the recorded usage of one semantic classification
-// embedding call made on behalf of a request.
+// routingEmbedUsage is the recorded usage of one routing classification call
+// made on behalf of a request — a semantic classification embed, or an llm
+// classification completion when Chat is set.
 type routingEmbedUsage struct {
-	Provider           string
-	Model              string
-	InputTokens        int
+	Provider    string
+	Model       string
+	InputTokens int
+	// OutputTokens is only meaningful when Chat is set: an embedding call has
+	// no completion side.
+	OutputTokens int
+	// Chat marks the usage as a chat completion so the RoutingDebug stamp can
+	// tell cost calculation to price it at chat rates instead of embedding
+	// rates.
+	Chat               bool
 	CountTowardBudgets bool
 }
 
@@ -194,6 +202,34 @@ func recordRoutingEmbedUsage(ctx context.Context, semantic *complexity.SemanticC
 	})
 }
 
+// recordRoutingLLMUsage stashes one llm classification completion's usage on
+// the triggering request's context, following recordRoutingEmbedUsage's
+// accumulation rule: same provider/model sums across a request's fallback
+// attempts, a different pairing starts a fresh count. The llm classifier has
+// no warmup, so unlike the embedding path there is no background-context case
+// to exclude — a plain context simply records nothing.
+func recordRoutingLLMUsage(ctx context.Context, llm *complexity.LLMConfig, inputTokens, outputTokens int) {
+	bfCtx, ok := ctx.(*schemas.BifrostContext)
+	if !ok || llm == nil {
+		return
+	}
+	provider := string(llm.Provider)
+	model := llm.Model
+	if previous, ok := bfCtx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage); ok &&
+		previous != nil && previous.Chat && previous.Provider == provider && previous.Model == model {
+		inputTokens += previous.InputTokens
+		outputTokens += previous.OutputTokens
+	}
+	bfCtx.SetValue(routingEmbedUsageContextKey, &routingEmbedUsage{
+		Provider:           provider,
+		Model:              model,
+		InputTokens:        inputTokens,
+		OutputTokens:       outputTokens,
+		Chat:               true,
+		CountTowardBudgets: llm.CountTowardBudgets,
+	})
+}
+
 // stampRoutingDebug attaches routing-classification telemetry to the response
 // when this request ran a semantic routing embed. Stamped on every such
 // response for visibility, independent of count_toward_budgets — the flag rides
@@ -230,6 +266,16 @@ func stampRoutingDebug(ctx *schemas.BifrostContext, result *schemas.BifrostRespo
 		ModelUsed:          bifrost.Ptr(usage.Model),
 		InputTokens:        &inputTokens,
 		CountTowardBudgets: usage.CountTowardBudgets,
+	}
+	// A chat classification stamps its completion side too — the presence of
+	// OutputTokens is what tells cost calculation to price the call at chat
+	// rates. Same non-negative invariant as InputTokens above.
+	if usage.Chat {
+		outputTokens := usage.OutputTokens
+		if outputTokens < 0 {
+			outputTokens = 0
+		}
+		extraFields.RoutingDebug.OutputTokens = &outputTokens
 	}
 }
 

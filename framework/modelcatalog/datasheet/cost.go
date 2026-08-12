@@ -50,11 +50,13 @@ func (s *Store) CalculateCost(result *schemas.BifrostResponse, scopes *LookupSco
 	return cost
 }
 
-// RoutingEmbeddingCost calculates the embedding cost of a semantic routing
-// classification from its RoutingDebug stamp. Exported so telemetry can price
-// routing overhead unconditionally, while CalculateCost folds it into the
-// request cost only when RoutingDebug.CountTowardBudgets is set. If scopes is
-// nil, an empty LookupScopes is used.
+// RoutingEmbeddingCost calculates the cost of a routing classification from
+// its RoutingDebug stamp — a semantic classification embed, or an llm
+// classification completion when the stamp carries OutputTokens. Exported
+// (unlike the cache equivalent) so telemetry can price routing overhead
+// unconditionally, while CalculateCost folds it into the request's cost only
+// when RoutingDebug.CountTowardBudgets is set. If scopes is nil, an empty
+// LookupScopes is used.
 func (s *Store) RoutingEmbeddingCost(routingDebug *schemas.BifrostRoutingDebug, scopes *LookupScopes) float64 {
 	if routingDebug == nil || routingDebug.ProviderUsed == nil || routingDebug.ModelUsed == nil || routingDebug.InputTokens == nil {
 		return 0
@@ -64,22 +66,40 @@ func (s *Store) RoutingEmbeddingCost(routingDebug *schemas.BifrostRoutingDebug, 
 	if *routingDebug.InputTokens < 0 {
 		return 0
 	}
-
+	if routingDebug.OutputTokens != nil && *routingDebug.OutputTokens < 0 {
+		return 0
+	}
 	var lookupScopes LookupScopes
 	if scopes != nil {
 		lookupScopes = *scopes
 	}
+	// Caller scopes carry the main request's provider; the classification ran
+	// against ProviderUsed, so provider-scoped overrides must key on it.
 	// The embedding can use a different provider from the main request, so its
 	// provider-scoped overrides must be resolved against the embedding provider.
 	lookupScopes.Provider = *routingDebug.ProviderUsed
+	// A present OutputTokens marks the stamp as a chat completion (the llm
+	// classifier); an embedding stamp never carries one. The two price on
+	// different rate tables, so the request type must follow the stamp shape.
+	requestType := schemas.EmbeddingRequest
+	if routingDebug.OutputTokens != nil {
+		requestType = schemas.ChatCompletionRequest
+	}
+	// Mirrors computeCacheEmbeddingCost: a single model identifier maps to
+	// RoutingInfo.Model — no alias resolution context exists for the internal
+	// classification call.
 	pricing := s.resolvePricing(schemas.RoutingInfo{
 		Provider: schemas.ModelProvider(*routingDebug.ProviderUsed),
 		Model:    *routingDebug.ModelUsed,
-	}, schemas.EmbeddingRequest, lookupScopes)
+	}, requestType, lookupScopes)
 	if pricing == nil {
 		return 0
 	}
-	return float64(*routingDebug.InputTokens) * tieredInputRate(pricing, *routingDebug.InputTokens, serviceTier{})
+	cost := float64(*routingDebug.InputTokens) * tieredInputRate(pricing, *routingDebug.InputTokens, serviceTier{})
+	if routingDebug.OutputTokens != nil {
+		cost += float64(*routingDebug.OutputTokens) * tieredOutputRate(pricing, *routingDebug.InputTokens, serviceTier{})
+	}
+	return cost
 }
 
 // CalculateCostForUsage computes the dollar cost from a bare usage object plus

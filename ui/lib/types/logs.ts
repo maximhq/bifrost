@@ -569,7 +569,7 @@ export interface LogEntry {
 	routing_rule_id?: string;
 	routing_rule_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
-	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "skipped"); absent when no routing rule referenced complexity_tier
+	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
 	complexity_session_id?: string; // Raw opaque session ID used for exact log lookup
 	complexity_session_mode?: Exclude<SessionMode, "off">;
@@ -651,7 +651,8 @@ export interface LogFilters {
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
-	complexity_mechanisms?: string[]; // For filtering by complexity classification mechanism (semantic, skipped)
+	complexity_mechanisms?: string[]; // For filtering by complexity classification mechanism (semantic, llm, session, skipped)
+	complexity_session_id?: string;
 	complexity_session_modes?: string[];
 	complexity_session_tier_sources?: string[];
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)

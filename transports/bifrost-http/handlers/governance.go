@@ -115,10 +115,23 @@ type complexitySessionStoreStatusProvider interface {
 
 // complexityStatusResponse is the analyzer status payload. SemanticStatusInfo is
 // embedded rather than nested so every field clients already read stays at the
-// top level; session_store is additive and omitted when no store is attached.
+// top level; session_store and llm are additive and omitted when absent.
 type complexityStatusResponse struct {
 	complexity.SemanticStatusInfo
 	SessionStore *governance.SessionStoreStatus `json:"session_store,omitempty"`
+	LLM          *complexity.LLMStatusInfo      `json:"llm,omitempty"`
+	// LLMDefaultPrompt is the shipped classification guidance, served so the
+	// UI can seed its prompt editor and offer a reset without holding a copy
+	// that drifts from the gateway's. It is the editable half only; the fixed
+	// tier-name reinforcement is appended server-side and never exposed.
+	LLMDefaultPrompt string `json:"llm_default_prompt,omitempty"`
+}
+
+// complexityLLMStatusProvider is split from complexitySemanticStatusProvider
+// for the same reason the session-store provider is: a build that exposes one
+// but not the other still serves what it has.
+type complexityLLMStatusProvider interface {
+	GetComplexityLLMStatus(ctx context.Context) (complexity.LLMStatusInfo, error)
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -1497,6 +1510,17 @@ func (h *GovernanceHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx
 			logger.Warn("failed to get complexity session store status: %v", sessionErr)
 		} else {
 			response.SessionStore = sessionStatus
+		}
+	}
+	// The llm classifier state rides the same endpoint and, like the session
+	// store, must not be able to fail the whole response.
+	if llmProvider, ok := h.governanceManager.(complexityLLMStatusProvider); ok {
+		llmStatus, llmErr := llmProvider.GetComplexityLLMStatus(ctx)
+		if llmErr != nil {
+			logger.Warn("failed to get llm complexity status: %v", llmErr)
+		} else {
+			response.LLM = &llmStatus
+			response.LLMDefaultPrompt = complexity.DefaultLLMClassifierGuidance()
 		}
 	}
 	SendJSON(ctx, response)

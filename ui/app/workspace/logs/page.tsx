@@ -78,6 +78,7 @@ export default function LogsPage() {
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			parent_request_id: parseAsString.withDefault(""),
+			complexity_session_id: parseAsString.withDefault(""),
 			providers: parseAsSafeArrayOf.withDefault([]),
 			models: parseAsSafeArrayOf.withDefault([]),
 			aliases: parseAsSafeArrayOf.withDefault([]),
@@ -131,6 +132,7 @@ export default function LogsPage() {
 	const filters: LogFilters = useMemo(
 		() => ({
 			parent_request_id: urlState.parent_request_id,
+			complexity_session_id: urlState.complexity_session_id,
 			providers: urlState.providers,
 			models: urlState.models,
 			aliases: urlState.aliases,
@@ -189,6 +191,7 @@ export default function LogsPage() {
 			urlState.complexity_mechanisms,
 			urlState.complexity_session_modes,
 			urlState.complexity_session_tier_sources,
+			urlState.complexity_session_id,
 			urlState.user_ids,
 			urlState.team_ids,
 			urlState.customer_ids,
@@ -236,6 +239,7 @@ export default function LogsPage() {
 					end_time: dateUtils.toUnixTimestamp(new Date(newFilters.end_time!)),
 				}),
 				parent_request_id: newFilters.parent_request_id || "",
+				complexity_session_id: newFilters.complexity_session_id || "",
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],
 				aliases: newFilters.aliases || [],
@@ -382,7 +386,20 @@ export default function LogsPage() {
 				parent_request_id: parentRequestId,
 			});
 		},
-		[filters, setFilters],
+		[filters, setFilters, setUrlState],
+	);
+
+	const handleFilterByComplexitySessionId = useCallback(
+		(sessionId: string) => {
+			setSelectedSessionId(null);
+			setSessionHighlightedLogId(null);
+			setUrlState({ selected_log: "" }, { history: "replace" });
+			setFilters({
+				...filters,
+				complexity_session_id: sessionId,
+			});
+		},
+		[filters, setFilters, setUrlState],
 	);
 
 	// --- Grouped view: chain expansion state -------------------------------
@@ -884,6 +901,7 @@ export default function LogsPage() {
 						hasPrev={selectedLogIndex > 0 || (selectedLogIndex !== -1 && pagination.offset > 0)}
 						hasNext={selectedLogIndex !== -1 && (selectedLogIndex < logs.length - 1 || pagination.offset + pagination.limit < totalItems)}
 						onFilterByParentRequestId={handleFilterByParentRequestId}
+						onFilterByComplexitySessionId={handleFilterByComplexitySessionId}
 						onViewSession={(sessionId, logId) => {
 							setUrlState({ selected_log: "" }, { history: "replace" });
 							setSessionHighlightedLogId(logId);
