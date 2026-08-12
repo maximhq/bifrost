@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
 import { buildHaystack } from "./lib/haystack.mjs";
 import { walkRequests, buildProducerIndex, bodyDependencies } from "./lib/chained-vars.mjs";
+import { rateLimitedNames } from "./lib/rate-limit-retry.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -51,7 +52,16 @@ const EXCLUDE_FEATURE_ANY_PARTS = (args["exclude-feature-any"] || "")
 // the run-provider-harness-test Makefile target) instead of being forked and only then failing
 // with newman's "Unable to find a folder or request" once it tries to apply --folder itself.
 const FOLDER = (args.folder || "").toLowerCase();
+// --class assigns every item to exactly ONE modality class (see CLASS_ORDER) and keeps only the
+// requested one. It exists so a provider fork can be sharded further without any item running
+// twice: --feature-any cannot do this job because the classes overlap heavily (a streaming vision
+// tool call matches three of them), so an OR-based shard set would re-run that item once per shard
+// while the rows matching no modality keyword at all would be dropped entirely. First-match-wins
+// over a fixed priority order plus the "other" catch-all makes the shards a true partition, i.e.
+// the union of every --class shard is exactly the unsharded set.
+const CLASS = (args.class || "").toLowerCase();
 const RERUN_FAILED = args["rerun-failed"] === "true";
+const RERUN_RATE_LIMITED = args["rerun-rate-limited"] === "true";
 const REPORT = args.report || "tmp/newman-report.json";
 // --smoke is a curated selection: a manifest of request names that make up the
 // smoke set. It exists because the rows a smoke run most needs - the generated
@@ -65,9 +75,9 @@ if (!SOURCE || !OUT) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !RERUN_FAILED && !SMOKE) {
+if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE) {
   console.error(
-    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --rerun-failed, --smoke"
+    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --rerun-failed, --rerun-rate-limited, --smoke"
   );
   process.exit(2);
 }
@@ -140,6 +150,50 @@ const FEATURE_ALIASES = {
     "cachepoint",
     "cached_tokens",
   ],
+};
+
+// Priority order for --class. First match wins, so the order decides where an overlapping item
+// lands: the narrow modalities come first (an audio or image-gen row is that row's whole point),
+// then the content modalities, and the broad "chat" alias last because nearly every request in the
+// collection contains "messages" or "responses" somewhere and would otherwise swallow the grid.
+// Anything matching none of them falls to "other" - 108 rows today (management APIs, auth matrix,
+// governance), which must still run somewhere or a sharded sweep would quietly test less than an
+// unsharded one. Deliberately excludes the token-parity / cache-parity aliases: those are folder-
+// name matchers for comparison matrices, not modalities, and cache-parity is already carved out
+// into its own deferred sequential pass by --exclude-feature-any.
+const CLASS_ORDER = [
+  "audio",
+  "image-gen",
+  "embeddings",
+  "vision",
+  "reasoning",
+  "json",
+  "tools",
+  "streaming",
+  "chat",
+];
+const CLASS_OTHER = "other";
+const ALL_CLASSES = [...CLASS_ORDER, CLASS_OTHER];
+
+if (CLASS && !ALL_CLASSES.includes(CLASS)) {
+  console.error(`[filter-collection] unknown --class "${CLASS}". Expected one of: ${ALL_CLASSES.join(", ")}`);
+  process.exit(2);
+}
+
+// Resolved against the same haystack every other predicate uses, so folder names count. Returns
+// exactly one class per item, which is what makes the shard set a partition rather than an overlap.
+const classifyItem = (item, ancestorNames) => {
+  const haystack = buildHaystack(item, ancestorNames);
+  for (const cls of CLASS_ORDER) {
+    const aliases = FEATURE_ALIASES[cls] || [cls];
+    if (aliases.some((alias) => haystack.includes(alias))) return cls;
+  }
+  return CLASS_OTHER;
+};
+
+const itemMatchesClass = (item, ancestorNames) => {
+  if (!CLASS) return true;
+  return classifyItem(item, ancestorNames) === CLASS;
 };
 
 const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
@@ -222,6 +276,26 @@ const itemMatchesSmoke = (item, ancestorNames) => {
   return smokeKeys.has(smokeKey(ancestorNames[ancestorNames.length - 1], item.name));
 };
 
+// --rerun-rate-limited selects ONLY the items whose prior execution came back 429. It is the
+// retry pass's selector, and is deliberately narrower than --rerun-failed: replaying a shard's
+// assertion failures would burn quota re-confirming a real defect and would turn a deterministic
+// failure into a flaky-looking one. Pairs with rate-limit-backoff.mjs, which decides the wait.
+let rateLimitedNameSet = null;
+const itemMatchesRateLimited = (item) => {
+  if (!RERUN_RATE_LIMITED) return true;
+  if (rateLimitedNameSet === null) {
+    if (!existsSync(REPORT)) {
+      console.error(`[filter-collection] --rerun-rate-limited requires ${REPORT}`);
+      process.exit(2);
+    }
+    rateLimitedNameSet = rateLimitedNames(readReport(REPORT));
+    console.error(
+      `[filter-collection] rerun-rate-limited: ${rateLimitedNameSet.size} rate-limited item(s) from ${REPORT}`
+    );
+  }
+  return rateLimitedNameSet.has(item.name);
+};
+
 let failedNames = null;
 const itemMatchesRerunFailed = (item) => {
   if (!RERUN_FAILED) return true;
@@ -255,7 +329,9 @@ const passes = (item, ancestorNames) => {
     itemMatchesFeature(item, ancestorNames) &&
     itemMatchesFeatureAny(item, ancestorNames) &&
     itemMatchesFolder(item, ancestorNames) &&
+    itemMatchesClass(item, ancestorNames) &&
     itemMatchesSmoke(item, ancestorNames) &&
+    itemMatchesRateLimited(item) &&
     itemMatchesRerunFailed(item);
 };
 
@@ -314,4 +390,4 @@ const keep = expandWithProducers(selected, entries);
 const filtered = { ...collection, item: filterTree(collection.item || [], keep) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;
 writeFileSync(OUT, JSON.stringify(filtered, null, 2));
-console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED})`);
+console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, class=${CLASS || "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED})`);

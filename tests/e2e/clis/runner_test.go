@@ -604,12 +604,20 @@ func appendJSONText(v any, out *strings.Builder) {
 	}
 }
 
-// ---- Codex: chained `exec` + `resume --last` ----
+// ---- Codex: chained `exec` + `exec resume --last` ----
 //
 // Codex doesn't expose a bidirectional stream-json mode, so we drive multi-
 // turn by spawning one process per turn: the first turn uses `codex exec`,
-// subsequent turns use `codex resume --last`. To isolate "last" from the
+// subsequent turns use `codex exec resume --last`. To isolate "last" from the
 // user's actual codex history we redirect CODEX_HOME to a per-cell temp dir.
+//
+// `exec resume`, not the top-level `codex resume`: the latter is the
+// interactive TUI ("Resume a previous interactive session (picker by default
+// ...)" per `codex resume --help`), which aborts with "Error: stdin is not a
+// terminal" when its stdin is a pipe rather than a tty - as it always is here.
+// The resume path takes the same --json/--model/--skip-git-repo-check flags as
+// `exec` itself (confirmed via `codex exec resume --help`, codex-cli 0.147.0),
+// so every turn emits the same JSONL the turn-1 parser already expects.
 
 type codexResume struct {
 	cli       CLI
@@ -667,7 +675,11 @@ func (d *codexResume) Send(t *testing.T, prompt string, timeout time.Duration) (
 		}
 		args = append(args, prompt)
 	} else {
-		args = []string{"resume", "--last", prompt}
+		args = []string{"exec", "resume", "--last", "--json", "--skip-git-repo-check"}
+		if d.model != "" {
+			args = append(args, "--model", d.model)
+		}
+		args = append(args, prompt)
 	}
 	d.turnIndex++
 
