@@ -38,10 +38,25 @@ const FIX_HINTS = {
   unknown: "Open a bug; attach the bifrost-dev.log excerpt below. Check the response body for a more specific error string.",
 };
 
+// Head length newman-merge.jq keeps when it caps a stream (see its `trimstream`). Everything after
+// this point in a truncatedMiddle buffer is the TAIL, spliced directly onto the head.
+const STREAM_HEAD_ELEMENTS = 12000;
+
 const bufToString = (b) => {
   if (!b) return "";
   if (typeof b === "string") return b;
-  if (b.type === "Buffer" && Array.isArray(b.data)) return Buffer.from(b.data).toString("utf8");
+  if (b.type === "Buffer" && Array.isArray(b.data)) {
+    // A capped stream is head+tail with the middle removed, so decoding it as one string yields a
+    // payload that READS as a continuous SSE stream: a half-frame at the seam parses as though it
+    // followed the frame before it. Mark the boundary so anything scanning this text - and anyone
+    // reading it in a failure dump - sees that the two halves are not adjacent.
+    if (b.truncatedMiddle && b.data.length > STREAM_HEAD_ELEMENTS) {
+      const head = Buffer.from(b.data.slice(0, STREAM_HEAD_ELEMENTS)).toString("utf8");
+      const tail = Buffer.from(b.data.slice(STREAM_HEAD_ELEMENTS)).toString("utf8");
+      return `${head}\n...[middle of stream dropped by newman-merge.jq]...\n${tail}`;
+    }
+    return Buffer.from(b.data).toString("utf8");
+  }
   return String(b);
 };
 

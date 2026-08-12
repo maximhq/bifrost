@@ -860,7 +860,13 @@ func HandleOpenAIChatCompletionRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToOpenAIChatRequest(ctx, request), nil
+			reqBody := ToOpenAIChatRequest(ctx, request)
+			// Resolved here rather than inside the converter, so a failed document fetch surfaces
+			// as itself instead of as a provider 400 about a missing file_id.
+			if err := ResolveChatFileURLs(ctx, request.Provider, reqBody); err != nil {
+				return nil, err
+			}
+			return reqBody, nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1041,6 +1047,11 @@ func HandleOpenAIChatCompletionStreaming(
 				return customRequestConverter(request)
 			}
 			reqBody := ToOpenAIChatRequest(ctx, request)
+			// Same resolution the non-streaming path does: streaming rejects file_url just as
+			// hard, so a URL-sourced document has to be inlined here too.
+			if err := ResolveChatFileURLs(ctx, request.Provider, reqBody); err != nil {
+				return nil, err
+			}
 			if reqBody != nil {
 				reqBody.Stream = new(true)
 				reqBody.StreamOptions = &schemas.ChatStreamOptions{
