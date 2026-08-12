@@ -29,6 +29,7 @@ func TestValidateBedrockKeyEndpoints(t *testing.T) {
 		{"private host blocked", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("10.0.0.1")}), false, "endpoints.runtime", false},
 		{"private host allowed", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("10.0.0.1")}), true, "", false},
 		{"scheme and path normalized", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("https://127.0.0.1/path")}), false, "", false},
+		{"query in host rejected", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("host.example?x=1")}), false, "query or fragment", false},
 		{"localhost suffix rejected", key(&schemas.BedrockEndpoints{DNSSuffix: " svc.localhost "}), true, "endpoints.dns_suffix", false},
 		{"invalid suffix rejected", key(&schemas.BedrockEndpoints{DNSSuffix: "bad suffix"}), true, "endpoints.dns_suffix", false},
 		{"commercial suffix accepted", key(&schemas.BedrockEndpoints{DNSSuffix: ".amazonaws.com."}), false, "", true},
@@ -39,6 +40,10 @@ func TestValidateBedrockKeyEndpoints(t *testing.T) {
 			AgentRuntime: schemas.NewSecretVar("127.0.0.1"),
 			S3:           schemas.NewSecretVar("127.0.0.1"),
 		}), false, "", false},
+		{"mantle private host blocked", schemas.Key{BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+			Region:    schemas.NewSecretVar("us-east-1"),
+			Endpoints: &schemas.BedrockEndpoints{Mantle: schemas.NewSecretVar("10.0.0.1")},
+		}}, false, "bedrock_mantle_key_config.endpoints.mantle", false},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

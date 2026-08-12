@@ -79,9 +79,9 @@ func resolveBedrockRegion(ctx *schemas.BifrostContext, key schemas.Key, model st
 }
 
 // resolveBedrockHost returns the host to dial for an AWS endpoint service: the configured VPC
-// endpoint override when set, otherwise the public regional host built from the region. The
-// returned value is a bare host, so callers keep ownership of the scheme and path — including
-// the bucket prefix S3's virtual-hosted URLs carry.
+// endpoint override when set, otherwise the public regional host built from the region (honoring
+// dns_suffix for non-mantle defaults). The returned value is a bare host; callers that need a
+// full URL should use endpointBase / s3BucketBase, which also apply BaseURL and env overrides.
 func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
 	if endpoints != nil {
 		var override *schemas.SecretVar

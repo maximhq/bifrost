@@ -640,10 +640,28 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 var bedrockDNSSuffixRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$`)
 
 func validateBedrockKeyEndpoints(key schemas.Key, allowPrivateNetwork bool) error {
-	if key.BedrockKeyConfig == nil || key.BedrockKeyConfig.Endpoints == nil {
-		return nil
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Endpoints != nil {
+		region := "us-east-1"
+		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
+			region = key.BedrockKeyConfig.Region.GetValue()
+		}
+		if err := validateBedrockEndpointsFields("bedrock_key_config", key.BedrockKeyConfig.Endpoints, region, allowPrivateNetwork); err != nil {
+			return err
+		}
 	}
-	endpoints := key.BedrockKeyConfig.Endpoints
+	if key.BedrockMantleKeyConfig != nil && key.BedrockMantleKeyConfig.Endpoints != nil {
+		region := "us-east-1"
+		if key.BedrockMantleKeyConfig.Region != nil && key.BedrockMantleKeyConfig.Region.GetValue() != "" {
+			region = key.BedrockMantleKeyConfig.Region.GetValue()
+		}
+		if err := validateBedrockEndpointsFields("bedrock_mantle_key_config", key.BedrockMantleKeyConfig.Endpoints, region, allowPrivateNetwork); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateBedrockEndpointsFields(configPath string, endpoints *schemas.BedrockEndpoints, region string, allowPrivateNetwork bool) error {
 	for _, field := range []struct {
 		name  string
 		value *schemas.SecretVar
@@ -658,8 +676,11 @@ func validateBedrockKeyEndpoints(key schemas.Key, allowPrivateNetwork bool) erro
 		if host == "" {
 			continue
 		}
+		if strings.ContainsAny(host, "?#") {
+			return fmt.Errorf("invalid %s.endpoints.%s: host must not contain a query or fragment", configPath, field.name)
+		}
 		if err := bifrost.ValidateExternalURL("https://"+host, allowPrivateNetwork); err != nil {
-			return fmt.Errorf("invalid bedrock_key_config.endpoints.%s: %v", field.name, err)
+			return fmt.Errorf("invalid %s.endpoints.%s: %v", configPath, field.name, err)
 		}
 	}
 
@@ -668,16 +689,12 @@ func validateBedrockKeyEndpoints(key schemas.Key, allowPrivateNetwork bool) erro
 	}
 	suffix := strings.Trim(strings.TrimSpace(endpoints.DNSSuffix), ".")
 	if suffix == "" || !bedrockDNSSuffixRegex.MatchString(suffix) {
-		return fmt.Errorf("invalid bedrock_key_config.endpoints.dns_suffix: %q is not a valid DNS suffix", endpoints.DNSSuffix)
+		return fmt.Errorf("invalid %s.endpoints.dns_suffix: %q is not a valid DNS suffix", configPath, endpoints.DNSSuffix)
 	}
 	if suffix == "localhost" || strings.HasSuffix(suffix, ".localhost") {
-		return fmt.Errorf("invalid bedrock_key_config.endpoints.dns_suffix: %q is loopback-reserved", endpoints.DNSSuffix)
+		return fmt.Errorf("invalid %s.endpoints.dns_suffix: %q is loopback-reserved", configPath, endpoints.DNSSuffix)
 	}
 
-	region := "us-east-1"
-	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
-		region = key.BedrockKeyConfig.Region.GetValue()
-	}
 	for _, service := range []struct {
 		label    string
 		override *schemas.SecretVar
@@ -692,7 +709,7 @@ func validateBedrockKeyEndpoints(key schemas.Key, allowPrivateNetwork bool) erro
 		}
 		host := fmt.Sprintf("https://%s.%s.%s", service.label, region, suffix)
 		if err := bifrost.ValidateExternalURL(host, allowPrivateNetwork); err != nil {
-			return fmt.Errorf("invalid bedrock_key_config.endpoints.dns_suffix: %v", err)
+			return fmt.Errorf("invalid %s.endpoints.dns_suffix: %v", configPath, err)
 		}
 	}
 	return nil

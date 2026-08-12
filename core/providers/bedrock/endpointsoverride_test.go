@@ -186,3 +186,28 @@ func TestDialGuardBlocksPrivateEndpointOverride(t *testing.T) {
 	require.NotNil(t, bifrostErr.Error.Error)
 	assert.Contains(t, bifrostErr.Error.Error.Error(), "private IP")
 }
+
+func TestBatchCreateInlineUploadBlocksPrivateS3Override(t *testing.T) {
+	clearEndpointEnv(t)
+	provider := newTestProviderWithBaseURL(t, "")
+	key := testBedrockKey()
+	key.Value = schemas.SecretVar{}
+	key.BedrockKeyConfig.AccessKey = *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE")
+	key.BedrockKeyConfig.SecretKey = *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	key.BedrockKeyConfig.Endpoints = &schemas.BedrockEndpoints{S3: schemas.NewSecretVar("http://10.255.255.1:9")}
+
+	_, bifrostErr := provider.BatchCreate(testBedrockCtx(), key, &schemas.BifrostBatchCreateRequest{
+		Model: schemas.Ptr("anthropic.claude-3-haiku-20240307-v1:0"),
+		Requests: []schemas.BatchRequestItem{
+			{CustomID: "request-1", Body: map[string]interface{}{"messages": []interface{}{}}},
+		},
+		ExtraParams: map[string]interface{}{
+			"role_arn":      "arn:aws:iam::123456789012:role/batch",
+			"output_s3_uri": "s3://test-bucket/output/",
+		},
+	})
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
+	require.NotNil(t, bifrostErr.Error.Error)
+	assert.Contains(t, bifrostErr.Error.Error.Error(), "private IP")
+}
