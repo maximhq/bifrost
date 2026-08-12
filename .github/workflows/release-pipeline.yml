@@ -190,6 +190,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -286,6 +287,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -886,6 +888,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -918,6 +921,7 @@ jobs:
             production.cloudfront.docker.com:443
             dl.google.com:443
             api.github.com:443
+            api.getnadir.com:443
             api.openai.com:443
             auth.docker.io:443
             azure.archive.ubuntu.com:80
@@ -994,6 +998,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1117,6 +1122,7 @@ jobs:
             172.38.0.12:8301
             api.anthropic.com:443
             api.github.com:443
+            api.getnadir.com:443
             api.openai.com:443
             auth.docker.io:443
             downloads.getmaxim.ai:443
@@ -1204,6 +1210,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -1288,6 +1295,7 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -1502,6 +1510,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -1574,6 +1583,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -1630,6 +1640,7 @@ jobs:
             api.github.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.getnadir.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -1702,6 +1713,7 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
@@ -1817,6 +1829,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -1935,6 +1948,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -2069,6 +2083,7 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          NADIR_API_KEY: ${{ secrets.NADIR_API_KEY }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}

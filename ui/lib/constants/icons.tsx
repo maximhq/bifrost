@@ -340,6 +340,27 @@ export const ProviderIcons = {
 		);
 	},
 
+	nadir: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Nadir</title>
+				{/* Descent to the lowest point: the request steps down the model ladder until it reaches the nadir. */}
+				<path d="M3 5.5L8 12L13 8.5L21 5.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+				<path d="M8 12L12 18.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+				<circle cx="12" cy="18.5" r="2.2" fill="currentColor" />
+			</svg>
+		);
+	},
+
 	ollama: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 		return theme === "light" ? (

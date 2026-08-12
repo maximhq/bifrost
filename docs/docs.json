@@ -147,6 +147,7 @@
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
                   "providers/supported-providers/mistral",
+                  "providers/supported-providers/nadir",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
                   "providers/supported-providers/opencode",

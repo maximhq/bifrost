@@ -1,0 +1,187 @@
+---
+title: "Nadir"
+description: "Nadir API conversion guide - OpenAI-compatible intelligent router, model=auto complexity routing, and streaming"
+icon: "n"
+---
+
+## Overview
+
+Nadir is an **OpenAI-compatible provider** that acts as an intelligent router rather than a single model endpoint. Send a request with the model set to `auto` and Nadir classifies the prompt's complexity, then dispatches it to the cheapest model in its pool that clears the quality bar. Bifrost delegates to the OpenAI implementation with standard parameter handling. Key characteristics:
+
+- **OpenAI API compatibility** - Identical request/response format
+- **`model: "auto"` routing** - Nadir selects the model per request instead of the caller pinning one
+- **Routed model reported back** - The `model` field on the response carries the model that actually served the request, not `auto`
+- **Full streaming support** - Server-Sent Events with usage tracking
+- **No function calling** - `tools` and `tool_choice` are not part of the router's request schema today
+- **Responses API** - Converted to Chat Completions
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not exposed by the upstream Nadir API. These return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure Nadir as a provider. Get an API key at [getnadir.com](https://getnadir.com).
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **Nadir** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **Nadir**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.NADIR_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "nadir": {
+      "keys": [
+        {
+          "name": "nadir-key-1",
+          "value": "env.NADIR_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Nadir:
+    return []schemas.Key{{
+        Name:   "nadir-key-1",
+        Value:  *schemas.NewSecretVar("env.NADIR_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+The default base URL is `https://api.getnadir.com`. Override it with `network_config.base_url` if you run Nadir self-hosted.
+
+Set the origin only, with no `/v1` suffix: Bifrost appends `/v1/chat/completions` itself, the same way the OpenAI provider does. Nadir's own documentation quotes `https://api.getnadir.com/v1` as the API base for direct OpenAI-SDK use, so pasting that value here would produce a doubled `/v1` and 404.
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Nadir supports the standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Routing with `auto`
+
+Sending `auto` hands model selection to Nadir:
+
+```json
+{
+  "model": "auto",
+  "messages": [
+    { "role": "user", "content": "Summarize this changelog in one line." }
+  ]
+}
+```
+
+The response reports the model that served the request:
+
+```json
+{
+  "object": "chat.completion",
+  "model": "claude-haiku-4-5",
+  "choices": [...]
+}
+```
+
+Bifrost surfaces that value as the response model, so logs, cost tracking, and analytics attribute the request to the model that actually ran, not to `auto`. Pin a concrete model id instead of `auto` when you want to bypass routing for a given request.
+
+Nadir supports the standard OpenAI message types, responses, and streaming formats. Function calling is not supported: `tools` and `tool_choice` are outside the router's request schema and are dropped rather than forwarded. For details on message handling, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+# 2. Responses API
+
+Converted internally to Chat Completions:
+
+```
+ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
+```
+
+Parameters are those Chat Completions accepts, minus anything Nadir's request schema
+drops. Notably `tools` and `tool_choice` are not supported, so function calling is
+unavailable through the Responses path as well.
+
+# 3. List Models
+
+Lists the models available to your key. Nadir requires authentication on `/v1/models`, so a key must be configured before listing.
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not offered by Nadir API |
+| Embedding | Not offered by Nadir API |
+| Image Generation | Not offered by Nadir API |
+| Speech/TTS | Not offered by Nadir API |
+| Transcription/STT | Not offered by Nadir API |
+| Batch Operations | Not offered by Nadir API |
+| File Management | Not offered by Nadir API |
+
+## Caveats
+
+<Accordion title="Model Selection Is Server-Side">
+
+**Severity**: Low
+
+**Behavior**: With `model: "auto"`, the model that serves a request is chosen by Nadir per request, so two identical requests can land on different models.
+
+**Impact**: Latency, cost, and output style can vary request to request. Pin a concrete model id when a workload needs a fixed model.
+
+</Accordion>
+<Accordion title="Routed Model Differs From Requested Model">
+
+**Severity**: Low
+
+**Behavior**: The response `model` field is the routed model, not the requested `auto`.
+
+**Impact**: Anything keying off request/response model equality needs to tolerate the difference. This is intended: it is what makes per-request cost attribution correct.
+
+</Accordion>
+<Accordion title="Fallbacks Run On Top Of Routing">
+
+**Severity**: Low
+
+**Behavior**: Nadir applies its own failover across upstream providers before returning an error to Bifrost.
+
+**Impact**: A Bifrost fallback chain configured behind Nadir only engages after Nadir's internal retries are exhausted.
+
+</Accordion>
