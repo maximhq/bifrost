@@ -68,6 +68,22 @@ export function sessionStoreReadiness(status: SessionStoreStatus | undefined): S
 // behavior off keeps the settings they tuned instead of losing them.
 export type SessionMode = "off" | "pinned" | "cache_aware";
 
+// Session log rows exist only when policy ran, so "off" can never be emitted.
+export const COMPLEXITY_SESSION_LOG_MODE_VALUES: Array<Exclude<SessionMode, "off">> = ["pinned", "cache_aware"];
+
+// Mirrors the tier-source values published by the governance plugin. This is
+// deliberately separate from complexity_mechanism: cache-aware held turns keep
+// the semantic mechanism even though the proposal did not supply the final tier.
+export type ComplexitySessionTierSource = "classified" | "memoised" | "held";
+
+export const COMPLEXITY_SESSION_TIER_SOURCE_VALUES: ComplexitySessionTierSource[] = ["classified", "memoised", "held"];
+
+export const COMPLEXITY_SESSION_TIER_SOURCE_LABELS: Record<ComplexitySessionTierSource, string> = {
+	classified: "Classified this turn",
+	memoised: "Reused pinned tier",
+	held: "Held session tier",
+};
+
 // Mirrors ComplexitySessionIdentity* in framework/configstore. The gateway
 // always tries these in the order header → harness regardless of how they are
 // listed in persisted configuration.

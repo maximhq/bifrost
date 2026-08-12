@@ -49,6 +49,32 @@ func TestMigrationAddMCPPluginLogsColumn(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestMigrationAddComplexitySessionColumns verifies that session observability
+// is additive, idempotent, and leaves existing request logs untouched.
+func TestMigrationAddComplexitySessionColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "migrations.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO logs (id) VALUES (?)", "existing-log").Error)
+
+	ctx := context.Background()
+	require.NoError(t, migrationAddComplexitySessionColumns(ctx, db, testLogger{}))
+	for _, field := range []string{
+		"ComplexitySessionID",
+		"ComplexitySessionMode",
+		"ComplexitySessionTierSource",
+		"ComplexitySessionSwitchCount",
+	} {
+		assert.True(t, db.Migrator().HasColumn(&Log{}, field), "missing migrated field %s", field)
+	}
+	require.True(t, db.Migrator().HasIndex(&Log{}, "idx_logs_complexity_session_id"))
+	require.NoError(t, migrationAddComplexitySessionColumns(ctx, db, testLogger{}))
+
+	var count int64
+	require.NoError(t, db.Table("logs").Where("id = ?", "existing-log").Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
 // pgTestSchema is this package's dedicated Postgres schema. Test packages
 // (configstore, configstore/tables, logstore) run in parallel against the same
 // database, so each one works in its own schema to avoid clobbering the

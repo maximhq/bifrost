@@ -561,6 +561,34 @@ func applyResolvedAliasInfo(entry *logstore.Log, resolvedAlias *schemas.Resolved
 	}
 }
 
+// applyComplexityContextToEntry copies the structured complexity-routing and
+// session observability fields from request context. Keeping this in one helper
+// ensures the normal completion path and the no-pending minimal-error path
+// cannot drift apart as new fields are added.
+func applyComplexityContextToEntry(ctx *schemas.BifrostContext, entry *logstore.Log) {
+	if ctx == nil || entry == nil {
+		return
+	}
+	setString := func(key schemas.BifrostContextKey, destination **string) {
+		value, _ := ctx.Value(key).(string)
+		if value != "" {
+			*destination = &value
+		}
+	}
+
+	setString(schemas.BifrostContextKeyGovernanceComplexityTier, &entry.ComplexityTier)
+	setString(schemas.BifrostContextKeyGovernanceComplexityMechanism, &entry.ComplexityMechanism)
+	setString(schemas.BifrostContextKeyGovernanceComplexitySessionID, &entry.ComplexitySessionID)
+	setString(schemas.BifrostContextKeyGovernanceComplexitySessionMode, &entry.ComplexitySessionMode)
+	setString(schemas.BifrostContextKeyGovernanceComplexitySessionTierSource, &entry.ComplexitySessionTierSource)
+	if score, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexityScore).(float64); ok {
+		entry.ComplexityScore = &score
+	}
+	if switchCount, ok := ctx.Value(schemas.BifrostContextKeyGovernanceComplexitySessionSwitchCount).(int); ok {
+		entry.ComplexitySessionSwitchCount = &switchCount
+	}
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,
