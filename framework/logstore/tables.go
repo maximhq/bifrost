@@ -1940,11 +1940,16 @@ type DimensionRankingResult struct {
 	Rankings  []DimensionRankingWithTrend `json:"rankings"`
 	Dimension RankingDimension            `json:"dimension"`
 	// TotalActualRequests / TotalAttributedRequests are set for every rollup
-	// dimension (team / business unit / customer / user / virtual key). These use
-	// single-owner attribution (one request → one owner, with owner-less traffic
-	// in an "Unassigned" bucket), so the rollup is additive and the two counts
-	// are equal — both report the real total request count over the window,
-	// including Unassigned.
+	// dimension (team / business unit / customer / user / virtual key), and both
+	// include the "Unassigned" bucket that owner-less traffic falls into.
+	//
+	// TotalActualRequests is the real number of requests in the window.
+	// TotalAttributedRequests is the sum of every ranking row. For team /
+	// customer / business unit a request is credited to every entity it carries
+	// (the enterprise user/AP path records the full hierarchy), so attributed
+	// can exceed actual and the rankings are NOT an additive split of org
+	// traffic. User and virtual key have a single owner per request, so for them
+	// the two counts are equal.
 	TotalActualRequests     int64 `json:"total_actual_requests,omitempty"`
 	TotalAttributedRequests int64 `json:"total_attributed_requests,omitempty"`
 }
