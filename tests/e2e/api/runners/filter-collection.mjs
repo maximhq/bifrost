@@ -53,14 +53,21 @@ const EXCLUDE_FEATURE_ANY_PARTS = (args["exclude-feature-any"] || "")
 const FOLDER = (args.folder || "").toLowerCase();
 const RERUN_FAILED = args["rerun-failed"] === "true";
 const REPORT = args.report || "tmp/newman-report.json";
+// --smoke is a curated selection: a manifest of request names that make up the
+// smoke set. It exists because the rows a smoke run most needs - the generated
+// cache-parity matrices - are emitted by augment-provider-harness.mjs and never
+// appear in provider-harness.json, so they cannot be tagged in place the way
+// [PREVIEW] / [SKIP] rows are. Matching by name against the augmented collection
+// is the only mechanism that can reach them.
+const SMOKE = args.smoke && args.smoke !== "true" ? args.smoke : "";
 
 if (!SOURCE || !OUT) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !RERUN_FAILED) {
+if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !RERUN_FAILED && !SMOKE) {
   console.error(
-    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --rerun-failed"
+    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --rerun-failed, --smoke"
   );
   process.exit(2);
 }
@@ -192,6 +199,29 @@ const itemMatchesFolder = (item, ancestorNames) => {
 	return ancestorNames.some((name) => name.toLowerCase().includes(FOLDER));
 };
 
+// Keyed on "<immediate parent folder> <request name>", never on the name
+// alone: the criss-cross rows are named after their model, so bare
+// "gemini/gemini-2.5-flash" appears 25 times across the collection and a
+// name-only match would drag in two dozen unintended requests per pick.
+let smokeKeys = null;
+const smokeKey = (folder, name) => `${folder || ""} ${name}`;
+const itemMatchesSmoke = (item, ancestorNames) => {
+  if (!SMOKE) return true;
+  if (smokeKeys === null) {
+    if (!existsSync(SMOKE)) {
+      console.error(`[filter-collection] --smoke manifest not found: ${SMOKE}`);
+      process.exit(2);
+    }
+    const manifest = JSON.parse(readFileSync(SMOKE, "utf8"));
+    smokeKeys = new Set();
+    for (const pillar of manifest.pillars || []) {
+      for (const req of pillar.requests || []) smokeKeys.add(smokeKey(req.folder, req.name));
+    }
+    console.error(`[filter-collection] smoke: ${smokeKeys.size} folder+name key(s) from ${SMOKE}`);
+  }
+  return smokeKeys.has(smokeKey(ancestorNames[ancestorNames.length - 1], item.name));
+};
+
 let failedNames = null;
 const itemMatchesRerunFailed = (item) => {
   if (!RERUN_FAILED) return true;
@@ -225,6 +255,7 @@ const passes = (item, ancestorNames) => {
     itemMatchesFeature(item, ancestorNames) &&
     itemMatchesFeatureAny(item, ancestorNames) &&
     itemMatchesFolder(item, ancestorNames) &&
+    itemMatchesSmoke(item, ancestorNames) &&
     itemMatchesRerunFailed(item);
 };
 
@@ -283,4 +314,4 @@ const keep = expandWithProducers(selected, entries);
 const filtered = { ...collection, item: filterTree(collection.item || [], keep) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;
 writeFileSync(OUT, JSON.stringify(filtered, null, 2));
-console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, rerun-failed=${RERUN_FAILED})`);
+console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED})`);

@@ -119,7 +119,7 @@ const CASES = [
     tail: "system",
     legs: ["direct", "bifrost_messages", "bifrost_responses"],
     expectHit: true,
-    note: "Claude Code's shape. The direct leg sends the hand-inlined equivalent WITH its cachePoint and should match the control; the two Bifrost legs drop the breakpoint in convertBifrostSystemReminderToBedrockUserMessage and should land near half.",
+    note: "Claude Code's shape. The direct leg sends the hand-inlined equivalent WITH its cachePoint; all three legs should now match the control, since convertBifrostSystemReminderToBedrockUserMessage carries the breakpoint through the inlining. A leg landing near half the control's hit rate is a regression to the dropped-breakpoint state; a leg reading 0 while writing the whole prompt is not that defect at all - see the failure message on the read round.",
   },
   {
     key: "midconv_developer",
@@ -394,12 +394,28 @@ function readRoundScript(kase, leg, cellId) {
   const cellLabel = `${kase.key} / ${LEG_LABEL[leg]}`;
   // The failure message has to carry the whole argument, because whoever reads it is looking at
   // one red line in a newman log, not at this file.
+  // Two distinct failure shapes live here, and conflating them costs an afternoon. Read the
+  // NUMBERS before opening any converter:
+  //
+  //   read ~= half the prompt (the system floor), write 0  -> the breakpoint really was dropped.
+  //       The conversation body is being re-read uncached behind a prefix pinned at `system`.
+  //   read 0, write ~= the whole prompt              -> the breakpoint SURVIVED. A write that
+  //       size proves cachePoint elements were emitted and Bedrock cached a prefix; round 2
+  //       simply failed to match round 1's. That is cache-key divergence between two rounds
+  //       that were built from one body template, NOT a lost anchor, and no amount of reading
+  //       the cachePoint converters will explain it.
+  //
+  // The converter path is already pinned without credentials, both from the Responses shape and
+  // from the Anthropic wire shape this leg sends: core/providers/bedrock/midconvcachepoint_test.go.
+  // Run that first. If it is green, the breakpoint is not the problem and the answer is in what
+  // differs between the two rounds on the wire.
   const failMsg =
     kase.key === "midconv" || kase.key === "midconv_developer" || kase.key === "midconv_last"
       ? `' - the third cache_control rode a mid-conversation role:${kase.tail.startsWith("developer") ? "developer" : "system"} turn. ` +
-        `Compare the control cell (same content, breakpoint on a role:user block) and the direct leg (same content, cachePoint placed by hand): ` +
-        `if those read the whole prefix and this one reads only the system floor, the breakpoint was dropped in ` +
-        `convertBifrostSystemReminderToBedrockUserMessage (core/providers/bedrock/responses.go), which builds Text blocks and never reads block.CacheControl.'`
+        `If read is ~half the prompt and write is 0, the breakpoint was dropped during inlining - compare the control cell ` +
+        `(same content, breakpoint on a role:user block) and the direct leg (same content, cachePoint placed by hand). ` +
+        `If instead read is 0 and write is the whole prompt, the breakpoint survived and the two rounds diverged on the wire; ` +
+        `run core/providers/bedrock/midconvcachepoint_test.go to rule the converters out before reading them.'`
       : `' - identical bytes were sent in round 1, so the warm prefix should have been read back.'`;
 
   return `
