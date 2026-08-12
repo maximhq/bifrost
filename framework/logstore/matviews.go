@@ -179,8 +179,10 @@ type filterMatViewDef struct {
 // dimension is single-valued on the scalar column (old / pre-migration rows and
 // the VK-team path) and multi-valued on the JSON-array column (the enterprise
 // user/AP path). It reuses teamOrBUFanoutFrom — the same fan-out the ranking /
-// histogram readers use — so a team / business unit that only ever appears in
-// the JSON array still surfaces in the filter dropdown. The fanned-out
+// histogram readers reach through dimensionFanoutFrom — so a team / business
+// unit that only ever appears in the JSON array still surfaces in the filter
+// dropdown. The emitted body text is pinned: repairMatViewShapes treats a
+// change as drift and drops the views on boot. The fanned-out
 // dim_id/dim_name become the dropdown id/name; the visibility columns
 // (scopeProjection) come from the original log row (exposed via l.* by the
 // fan-out subquery) so DAC scope still applies — including the scalar
