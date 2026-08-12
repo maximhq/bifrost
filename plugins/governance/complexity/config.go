@@ -74,10 +74,11 @@ func DefaultTierBoundaries() TierBoundaries {
 
 // DefaultEditableKeywordConfig returns the user-visible default keyword lists.
 func DefaultEditableKeywordConfig() EditableKeywordConfig {
+	exemplars := configstore.DefaultComplexityExemplars()
 	return EditableKeywordConfig{
-		SimpleKeywords:  sharedTierDefaults(simpleKeywords, defaultSimpleExemplars),
-		MediumKeywords:  sharedTierDefaults(mediumKeywords, defaultMediumExemplars),
-		ComplexKeywords: sharedTierDefaults(complexKeywords, defaultComplexExemplars),
+		SimpleKeywords:  sharedTierDefaults(simpleKeywords, exemplars.SimpleKeywords),
+		MediumKeywords:  sharedTierDefaults(mediumKeywords, exemplars.MediumKeywords),
+		ComplexKeywords: sharedTierDefaults(complexKeywords, exemplars.ComplexKeywords),
 	}
 }
 
@@ -117,12 +118,19 @@ func mergeEditableKeywordsOntoDefaults(editable EditableKeywordConfig) KeywordCo
 }
 
 func defaultFullKeywordConfig() KeywordConfig {
+	exemplars := configstore.DefaultComplexityExemplars()
 	return KeywordConfig{
-		MediumKeywords:      sharedTierDefaults(mediumKeywords, defaultMediumExemplars),
-		ComplexKeywords:     sharedTierDefaults(complexKeywords, defaultComplexExemplars),
-		SimpleKeywords:      sharedTierDefaults(simpleKeywords, defaultSimpleExemplars),
+		MediumKeywords:      sharedTierDefaults(mediumKeywords, exemplars.MediumKeywords),
+		ComplexKeywords:     sharedTierDefaults(complexKeywords, exemplars.ComplexKeywords),
+		SimpleKeywords:      sharedTierDefaults(simpleKeywords, exemplars.SimpleKeywords),
 		ContinuationPhrases: cloneStringSlice(continuationPhrases),
 	}
+}
+
+func sharedTierDefaults(keywords, exemplars []string) []string {
+	combined := make([]string, 0, len(keywords)+len(exemplars))
+	combined = append(combined, keywords...)
+	return append(combined, exemplars...)
 }
 
 func cloneStringSlice(values []string) []string {
