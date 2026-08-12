@@ -2251,6 +2251,10 @@ func createTempDir(t *testing.T) string {
 	t.Cleanup(func() {
 		os.RemoveAll(dir)
 	})
+	// Hand the directory a database that has already been through a first boot,
+	// so LoadConfig opens it instead of building it - see
+	// configstoretemplate_test.go for why that matters.
+	seedMigratedConfigDB(t, dir)
 	return dir
 }
 
