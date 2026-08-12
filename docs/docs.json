@@ -959,6 +959,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.10",
               "changelogs/ent-v1.5.9",
               "changelogs/ent-v1.5.8",
               {
