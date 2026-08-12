@@ -646,6 +646,7 @@ echo ""
 echo "  Checking miscellaneous properties (Gap 8)..."
 check_property_exists "telemetry.custom_labels" ".properties.bifrost.properties.plugins.properties.telemetry.properties.config.properties.custom_labels" "$HELM_SCHEMA"
 check_property_exists "semanticCache.default_cache_key" ".properties.bifrost.properties.plugins.properties.semanticCache.properties.config.properties.default_cache_key" "$HELM_SCHEMA"
+check_property_exists "semanticCache.direct_key_cache_secret_env" ".properties.bifrost.properties.plugins.properties.semanticCache.properties.config.properties.direct_key_cache_secret_env" "$HELM_SCHEMA"
 
 # Also verify these exist in config.schema.json
 echo ""

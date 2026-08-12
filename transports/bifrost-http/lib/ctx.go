@@ -446,6 +446,14 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		// Cache bypass header: skip both lookup and write.
+		if keyStr == "x-bf-cache-bypass" {
+			valueStr := strings.TrimSpace(string(value))
+			if valueStr == "1" || strings.EqualFold(valueStr, "true") {
+				bifrostCtx.SetValue(semanticcache.CacheBypassKey, true)
+			}
+			return true
+		}
 		// Session stickiness: session ID for key binding
 		if keyStr == "x-bf-session-id" {
 			if valueStr := strings.TrimSpace(string(value)); valueStr != "" {

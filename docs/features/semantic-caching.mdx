@@ -43,7 +43,7 @@ graph LR
 
 A few things that trip up first-time users — read these before configuring:
 
-1. **A cache key is mandatory.** Caching only engages when a request carries a cache key (the `x-bf-cache-key` header, or the `CacheKey` context value in the Go SDK). Without one — and without a configured `default_cache_key` — the request bypasses the cache entirely. This is the single most common reason "nothing is being cached."
+1. **A cache key is mandatory for stored-key requests.** Caching only engages when a request carries a cache key (the `x-bf-cache-key` header, or the `CacheKey` context value in the Go SDK). Without one — and without a configured `default_cache_key` — the request bypasses the cache entirely. [Direct API Key](/providers/request-options#direct-api-key) requests are different: Bifrost derives their partition from the raw provider key when `direct_key_cache_secret_env` is configured.
 2. **Direct runs before semantic.** When both paths are enabled, a direct hash hit is served first; the semantic search only runs on a direct miss. You can narrow a request to one path with the `x-bf-cache-type` header.
 3. **Writes are asynchronous.** On a cache miss, Bifrost returns the provider's response immediately and stores it in the background, so the *first* request never blocks on a cache write.
 4. **Entries persist across restarts.** Cache entries live in your vector store with a per-entry expiry (`expires_at`). They are **not** purged when Bifrost shuts down — a restart keeps serving warm cache (see [Cache lifecycle](#lifecycle--cleanup)).
@@ -293,6 +293,7 @@ bifrostConfig := schemas.BifrostConfig{
 | `cache_by_provider` | boolean | `true` | Include the provider name in the cache key (different providers won't share entries). |
 | `vector_store_namespace` | string | `BifrostSemanticCachePlugin` | Bucket/index where entries live. Changing it points the plugin at a different (possibly empty) bucket; old entries aren't deleted, just no longer queried. |
 | `default_cache_key` | string | `""` (empty) | Fallback cache key used when a request doesn't send `x-bf-cache-key`. **Left empty, caching is disabled for any request without the header.** |
+| `direct_key_cache_secret_env` | string | `""` (empty) | Environment variable that contains the server-side HMAC secret used to isolate [Direct API Key](/providers/request-options#direct-api-key) cache partitions. The secret must be at least 32 bytes. |
 
 ---
 
@@ -377,6 +378,23 @@ bifrost:
 
 In direct-only mode, all requests use hash matching regardless of the `x-bf-cache-type` header — no embeddings are generated and no embedding credentials are needed.
 
+### Direct Key cache isolation
+
+Direct Key callers must not choose their own cache partition. In either cache mode, set `direct_key_cache_secret_env` to the name of a server-side environment variable containing at least 32 bytes of secret material. Bifrost derives a stable `direct-key-hmac-v1:<sha256>` namespace from the raw provider key and the secret; the raw key and secret are never stored in cache metadata. This derived namespace takes precedence over `x-bf-cache-key` and `default_cache_key`.
+
+```json
+{
+  "name": "semantic_cache",
+  "enabled": true,
+  "config": {
+    "dimension": 1,
+    "direct_key_cache_secret_env": "BIFROST_CACHE_NAMESPACE_SECRET"
+  }
+}
+```
+
+Set `BIFROST_CACHE_NAMESPACE_SECRET` in the Bifrost process environment. If the setting is absent, the environment variable is missing, the secret is shorter than 32 bytes, or the Direct Key is empty, Bifrost fails closed by skipping cache lookup and write for that request. Rotating the secret creates new namespaces, so existing Direct Key entries stop matching and expire normally.
+
 ### Recommended vector store for direct-only mode
 
 **Redis/Valkey-compatible stores** are recommended for direct-only mode. They don't require a vector for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups.
@@ -390,7 +408,7 @@ In direct-only mode, all requests use hash matching regardless of the `x-bf-cach
 ## Triggering the cache
 
 <Warning>
-**A cache key is mandatory.** Caching only activates when a request carries a cache key. Without one (and without a configured `default_cache_key`), the request bypasses caching entirely.
+**A cache key is mandatory for stored-key requests.** Caching only activates when a request carries a cache key. Without one (and without a configured `default_cache_key`), the request bypasses caching entirely. Direct Key requests use the server-derived namespace described above instead.
 </Warning>
 
 The cache key is the **partition** every lookup and write is scoped to — it's part of the cache entry's identity alongside the model and provider. It exists for two reasons:
@@ -446,6 +464,7 @@ Every plugin default can be overridden per request via headers (HTTP) or context
 | `x-bf-cache-threshold` | `CacheThresholdKey` | float (0–1) | Override the semantic similarity threshold. Clamped to `[0,1]`. |
 | `x-bf-cache-type` | `CacheTypeKey` | `direct` or `semantic` | Limit lookup to a single path. |
 | `x-bf-cache-no-store` | `CacheNoStoreKey` | `true` | Skip writing the response (still serves cached hits). |
+| `x-bf-cache-bypass` | `CacheBypassKey` | `true` or `1` | Skip both cache lookup and cache write. |
 
 <Tabs group="per-request-overrides">
 
@@ -464,6 +483,10 @@ curl -H "x-bf-cache-key: session-123" \
 # Read from cache but don't store the response
 curl -H "x-bf-cache-key: session-123" \
      -H "x-bf-cache-no-store: true" ...
+
+# Force a live provider request and don't store its response
+curl -H "x-bf-cache-key: session-123" \
+     -H "x-bf-cache-bypass: true" ...
 ```
 
 </Tab>
@@ -481,11 +504,16 @@ ctx = context.WithValue(ctx, semanticcache.CacheTypeKey, semanticcache.CacheType
 
 // Read-only: serve from cache but don't write this response
 ctx = context.WithValue(ctx, semanticcache.CacheNoStoreKey, true)
+
+// Force a live provider request and don't write its response
+ctx = context.WithValue(ctx, semanticcache.CacheBypassKey, true)
 ```
 
 </Tab>
 
 </Tabs>
+
+Bifrost also applies full bypass automatically when the request can depend on external or stateful execution, including tool, MCP, web-search, stored/background, continuation/conversation, audio, and non-text input modes. This prevents replaying responses whose result is not determined by the cache key alone.
 
 <Note>
 In direct-only mode (no embedding provider), `x-bf-cache-type` and `x-bf-cache-threshold` have no effect — every request uses direct matching.

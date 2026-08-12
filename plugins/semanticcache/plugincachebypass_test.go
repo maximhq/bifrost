@@ -6,8 +6,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const testCacheBypassKey schemas.BifrostContextKey = "semantic_cache-bypass"
-
 func boolPointer(value bool) *bool {
 	return &value
 }
@@ -35,11 +33,9 @@ func TestPreRequestHook_MarksUnsafeRequestsForFullBypass(t *testing.T) {
 		prepare func(*schemas.BifrostContext) *schemas.BifrostRequest
 	}{
 		{
-			name: "trusted bypass header",
+			name: "cache bypass context",
 			prepare: func(ctx *schemas.BifrostContext) *schemas.BifrostRequest {
-				ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{
-					"x-edgeai-cache-bypass": "true",
-				})
+				ctx.SetValue(CacheBypassKey, true)
 				return basicCacheableChatRequest()
 			},
 		},
@@ -121,7 +117,7 @@ func TestPreRequestHook_MarksUnsafeRequestsForFullBypass(t *testing.T) {
 			if err := plugin.PreRequestHook(ctx, req); err != nil {
 				t.Fatalf("PreRequestHook failed: %v", err)
 			}
-			if bypass, _ := ctx.Value(testCacheBypassKey).(bool); !bypass {
+			if bypass, _ := ctx.Value(CacheBypassKey).(bool); !bypass {
 				t.Fatal("unsafe request was not marked for cache lookup bypass")
 			}
 			if noStore, _ := ctx.Value(CacheNoStoreKey).(bool); !noStore {
@@ -141,7 +137,7 @@ func TestPreRequestHook_LeavesPlainTextInferenceCacheable(t *testing.T) {
 		if err := plugin.PreRequestHook(ctx, req); err != nil {
 			t.Fatalf("PreRequestHook failed: %v", err)
 		}
-		if bypass, _ := ctx.Value(testCacheBypassKey).(bool); bypass {
+		if bypass, _ := ctx.Value(CacheBypassKey).(bool); bypass {
 			t.Fatal("plain text inference was marked for cache bypass")
 		}
 	}
@@ -151,7 +147,7 @@ func TestPreLLMHook_BypassSkipsLookupState(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	plugin.config.DefaultCacheKey = "shared-default"
 	ctx := newBaseTestContext()
-	ctx.SetValue(testCacheBypassKey, true)
+	ctx.SetValue(CacheBypassKey, true)
 
 	if _, shortCircuit, err := plugin.PreLLMHook(ctx, basicCacheableChatRequest()); err != nil {
 		t.Fatalf("PreLLMHook failed: %v", err)

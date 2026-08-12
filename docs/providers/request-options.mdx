@@ -31,6 +31,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 | `semanticcache.CacheThresholdKey`          | `x-bf-cache-threshold`                               | `float64`             | Similarity threshold (0.0-1.0)                                                                                                        |
 | `semanticcache.CacheTypeKey`               | `x-bf-cache-type`                                    | `string`              | Cache type                                                                                                                            |
 | `semanticcache.CacheNoStoreKey`            | `x-bf-cache-no-store`                                | `bool`                | Prevent caching                                                                                                                       |
+| `semanticcache.CacheBypassKey`             | `x-bf-cache-bypass`                                  | `bool`                | Skip cache lookup and cache write                                                                                                     |
 | `mcp-include-clients`                      | `x-bf-mcp-include-clients`                           | `[]string`            | Filter MCP clients (comma-separated).                                                                                                 |
 | `mcp-include-tools`                        | `x-bf-mcp-include-tools`                             | `[]string`            | Filter MCP tools (`clientName-toolName` format, comma-separated)                                                                      |
 | `BifrostContextKeyMCPExtraHeaders`         | _(any header in a client's `allowed_extra_headers`)_ | `map[string][]string` | Headers forwarded to MCP servers at tool execution time, filtered per-client against `allowed_extra_headers`                          |
@@ -987,6 +988,43 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ```go
 ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheNoStoreKey, true)
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+Provider: schemas.OpenAI,
+Model: "gpt-4o-mini",
+Input: messages,
+})
+
+````
+</Tab>
+</Tabs>
+
+### Cache Bypass
+
+**Context Key:** `semanticcache.CacheBypassKey`
+**Header:** `x-bf-cache-bypass`
+**Type:** `bool` (header value: `"true"` or `"1"`)
+**Required:** No
+
+Skip both cache lookup and cache write. Unlike `CacheNoStoreKey`, this always sends the request to the provider and does not store the response.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-cache-bypass: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+````
+
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, semanticcache.CacheBypassKey, true)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
 Provider: schemas.OpenAI,

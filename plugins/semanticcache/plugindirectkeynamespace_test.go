@@ -72,6 +72,23 @@ func TestResolveCacheKey_DirectKeySeparatesKeys(t *testing.T) {
 	}
 }
 
+func TestResolveCacheKey_DirectKeySeparatesSecrets(t *testing.T) {
+	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET_A", "namespace-secret-a-at-least-32-bytes")
+	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET_B", "namespace-secret-b-at-least-32-bytes")
+
+	keyA, ok := (&Plugin{config: directKeyNamespaceConfig(t, "TEST_DIRECT_KEY_CACHE_SECRET_A")}).resolveCacheKey(directKeyNamespaceContext("sk-user-a"))
+	if !ok {
+		t.Fatal("expected namespace using secret A")
+	}
+	keyB, ok := (&Plugin{config: directKeyNamespaceConfig(t, "TEST_DIRECT_KEY_CACHE_SECRET_B")}).resolveCacheKey(directKeyNamespaceContext("sk-user-a"))
+	if !ok {
+		t.Fatal("expected namespace using secret B")
+	}
+	if keyA == keyB {
+		t.Fatal("different HMAC secrets resolved to the same cache namespace")
+	}
+}
+
 func TestResolveCacheKey_DirectKeyOverridesClientAndDefaultKeys(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET", "namespace-secret-at-least-32-bytes")
 	plugin := &Plugin{config: directKeyNamespaceConfig(t, "TEST_DIRECT_KEY_CACHE_SECRET")}
@@ -122,6 +139,30 @@ func TestResolveCacheKey_DirectKeyWithoutConfigFailsClosed(t *testing.T) {
 	cacheKey, ok := plugin.resolveCacheKey(ctx)
 	if ok || cacheKey != "" {
 		t.Fatalf("expected missing HMAC config to disable caching, got key=%q ok=%v", cacheKey, ok)
+	}
+}
+
+func TestResolveCacheKey_DirectKeyWithShortSecretFailsClosed(t *testing.T) {
+	t.Setenv("TEST_SHORT_DIRECT_KEY_CACHE_SECRET", "too-short")
+	plugin := &Plugin{config: directKeyNamespaceConfig(t, "TEST_SHORT_DIRECT_KEY_CACHE_SECRET")}
+	ctx := directKeyNamespaceContext("sk-user-a")
+	ctx.SetValue(CacheKey, "attacker-selected")
+
+	cacheKey, ok := plugin.resolveCacheKey(ctx)
+	if ok || cacheKey != "" {
+		t.Fatalf("expected short secret to disable caching, got key=%q ok=%v", cacheKey, ok)
+	}
+}
+
+func TestResolveCacheKey_EmptyDirectKeyFailsClosed(t *testing.T) {
+	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET", "namespace-secret-at-least-32-bytes")
+	plugin := &Plugin{config: directKeyNamespaceConfig(t, "TEST_DIRECT_KEY_CACHE_SECRET")}
+	ctx := directKeyNamespaceContext("")
+	ctx.SetValue(CacheKey, "attacker-selected")
+
+	cacheKey, ok := plugin.resolveCacheKey(ctx)
+	if ok || cacheKey != "" {
+		t.Fatalf("expected empty direct key to disable caching, got key=%q ok=%v", cacheKey, ok)
 	}
 }
 

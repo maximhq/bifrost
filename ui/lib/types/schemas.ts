@@ -776,6 +776,7 @@ const baseCacheConfigSchema = z.object({
 	cache_by_provider: z.boolean().default(false),
 	vector_store_namespace: z.string().min(1).optional(),
 	default_cache_key: z.string().min(1).optional(),
+	direct_key_cache_secret_env: z.string().min(1).optional(),
 	created_at: z.string().optional(),
 	updated_at: z.string().optional(),
 });

@@ -7,6 +7,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/plugins/semanticcache"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -95,6 +96,34 @@ func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T
 	}
 	if first != second {
 		t.Fatal("expected ConvertToBifrostContext to reuse the shared context on repeated calls")
+	}
+}
+
+func TestConvertToBifrostContext_CacheBypassHeader(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "true", value: "true", want: true},
+		{name: "case insensitive", value: "TRUE", want: true},
+		{name: "numeric true", value: "1", want: true},
+		{name: "false", value: "false", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-cache-bypass", tt.value)
+
+			converted, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+
+			got, _ := converted.Value(semanticcache.CacheBypassKey).(bool)
+			if got != tt.want {
+				t.Fatalf("CacheBypassKey = %v, want %v for header value %q", got, tt.want, tt.value)
+			}
+		})
 	}
 }
 

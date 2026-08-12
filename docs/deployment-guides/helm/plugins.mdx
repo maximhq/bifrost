@@ -178,6 +178,7 @@ Two modes:
 | `bifrost.plugins.semanticCache.config.cache_by_model` | Include model name in cache key | `true` |
 | `bifrost.plugins.semanticCache.config.cache_by_provider` | Include provider name in cache key | `true` |
 | `bifrost.plugins.semanticCache.config.exclude_system_prompt` | Exclude system prompt from cache key | `false` |
+| `bifrost.plugins.semanticCache.config.direct_key_cache_secret_env` | Environment variable containing the Direct Key namespace HMAC secret | `""` |
 
 **Semantic mode (with OpenAI embeddings + Weaviate):**
 
@@ -227,7 +228,12 @@ bifrost:
 helm install bifrost bifrost/bifrost -f semantic-cache-values.yaml
 ```
 
-**Direct / hash mode** (no embedding provider needed):
+**Direct / hash mode with Direct Key isolation** (no embedding provider needed):
+
+```bash
+kubectl create secret generic bifrost-cache-namespace \
+  --from-literal=BIFROST_CACHE_NAMESPACE_SECRET='replace-with-at-least-32-random-bytes'
+```
 
 ```yaml
 bifrost:
@@ -239,7 +245,14 @@ bifrost:
         ttl: "30m"
         cache_by_model: true
         cache_by_provider: true
+        direct_key_cache_secret_env: "BIFROST_CACHE_NAMESPACE_SECRET"
+
+envFrom:
+  - secretRef:
+      name: bifrost-cache-namespace
 ```
+
+The Secret key must match the environment variable named by `direct_key_cache_secret_env`, or be mapped to it through your preferred pod environment configuration.
 
 <Note>
 The vector store (`vectorStore.*`) must be configured and enabled for semantic mode. Direct/hash mode works without a vector store but still requires a storage backend.

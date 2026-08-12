@@ -611,6 +611,9 @@ bifrost:
         cache_by_provider: true
         exclude_system_prompt: false
         vector_store_namespace: ""
+        # Name of an environment variable containing at least 32 bytes of HMAC secret material.
+        # Required to cache Direct Key requests. Inject the value with extraEnv or envFrom.
+        direct_key_cache_secret_env: ""
 
     otel:
       enabled: false

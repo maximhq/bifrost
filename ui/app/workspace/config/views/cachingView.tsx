@@ -83,6 +83,7 @@ const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig =
 		cache_by_provider: config.cache_by_provider,
 		vector_store_namespace: config.vector_store_namespace?.trim() || undefined,
 		default_cache_key: config.default_cache_key?.trim() || undefined,
+		direct_key_cache_secret_env: config.direct_key_cache_secret_env?.trim() || undefined,
 	};
 	if (mode === "direct") {
 		return { ...base, dimension: 1 } as CacheConfig;
@@ -184,6 +185,7 @@ export default function CachingView() {
 			"cache_by_provider",
 			"vector_store_namespace",
 			"default_cache_key",
+			"direct_key_cache_secret_env",
 		];
 		const changed = fields.some((k) => (cacheConfig[k] ?? "") !== (serverCacheConfig[k] ?? ""));
 		const modeChanged = inferMode(serverCacheConfig) !== mode;

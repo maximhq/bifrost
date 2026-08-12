@@ -685,6 +685,7 @@ interface BaseCacheConfig {
 	cache_by_provider: boolean;
 	vector_store_namespace?: string;
 	default_cache_key?: string;
+	direct_key_cache_secret_env?: string;
 	created_at?: string;
 	updated_at?: string;
 }

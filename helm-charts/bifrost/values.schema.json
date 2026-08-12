@@ -994,6 +994,18 @@
                     "default_cache_key": {
                       "type": "string",
                       "description": "Default cache key for semantic cache lookups"
+                    },
+                    "direct_key_cache_secret_env": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "const": ""
+                        }
+                      ],
+                      "description": "Name of an environment variable containing an HMAC secret of at least 32 bytes for Direct Key cache namespace isolation"
                     }
                   }
                 }

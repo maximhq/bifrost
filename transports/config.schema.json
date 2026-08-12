@@ -2579,6 +2579,11 @@
                       "type": "string",
                       "description": "Default cache key used when no per-request key is provided. When set, all requests without an explicit x-bf-cache-key header will use this value and be cached automatically."
                     },
+                    "direct_key_cache_secret_env": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Name of an environment variable containing an HMAC secret of at least 32 bytes for Direct Key cache namespace isolation."
+                    },
                     "conversation_history_threshold": {
                       "type": "integer",
                       "description": "Skip caching for requests with more than this number of messages in conversation history (default: 3)",

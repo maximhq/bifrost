@@ -72,6 +72,7 @@ Requires a [vector store](/deployment-guides/config-json/storage#vector_store) t
 | `config.exclude_system_prompt` | No | `false` | Exclude system prompt from cache key |
 | `config.conversation_history_threshold` | No | `3` | Skip caching for requests with more messages than this |
 | `config.default_cache_key` | No | - | Default cache key when no `x-bf-cache-key` header is sent |
+| `config.direct_key_cache_secret_env` | No | - | Environment variable containing a server-side HMAC secret (at least 32 bytes) for Direct Key cache partition isolation |
 
 **Semantic mode** (embedding-based similarity search):
 

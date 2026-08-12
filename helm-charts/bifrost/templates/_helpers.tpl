@@ -1344,6 +1344,9 @@ false
 {{- if $inputConfig.default_cache_key }}
 {{- $_ := set $scConfig "default_cache_key" $inputConfig.default_cache_key }}
 {{- end }}
+{{- if $inputConfig.direct_key_cache_secret_env }}
+{{- $_ := set $scConfig "direct_key_cache_secret_env" $inputConfig.direct_key_cache_secret_env }}
+{{- end }}
 {{- if hasKey $inputConfig "conversation_history_threshold" }}
 {{- $_ := set $scConfig "conversation_history_threshold" $inputConfig.conversation_history_threshold }}
 {{- end }}

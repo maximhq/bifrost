@@ -232,7 +232,7 @@ const (
 	CacheThresholdKey schemas.BifrostContextKey = "semantic_cache-threshold"  // float64. Per-request override of the semantic similarity threshold.
 	CacheTypeKey      schemas.BifrostContextKey = "semantic_cache-cache_type" // CacheType. Narrow lookup to a single path (direct or semantic).
 	CacheNoStoreKey   schemas.BifrostContextKey = "semantic_cache-no_store"   // bool. Skip writing the response to cache (still served from cache on hit).
-	cacheBypassKey    schemas.BifrostContextKey = "semantic_cache-bypass"     // bool. Skip both cache lookup and cache write for unsafe requests.
+	CacheBypassKey    schemas.BifrostContextKey = "semantic_cache-bypass"     // bool. Skip both cache lookup and cache write.
 )
 
 const directKeyCacheNamespacePrefix = "direct-key-hmac-v1:"
@@ -342,7 +342,7 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 // PreRequestHook marks requests that must skip both cache lookup and cache writes.
 func (plugin *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	if plugin.shouldBypassCache(ctx, req) {
-		ctx.SetValue(cacheBypassKey, true)
+		ctx.SetValue(CacheBypassKey, true)
 		ctx.SetValue(CacheNoStoreKey, true)
 	}
 	return nil
@@ -355,7 +355,7 @@ func (plugin *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.B
 // state on the plugin keyed by request ID for PostLLMHook to consume when
 // the upstream response arrives.
 func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	if bypass, _ := ctx.Value(cacheBypassKey).(bool); bypass {
+	if bypass, _ := ctx.Value(CacheBypassKey).(bool); bypass {
 		if requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); ok {
 			plugin.clearCacheState(requestID)
 		}
@@ -507,12 +507,8 @@ func (plugin *Plugin) resolveDirectKeyCacheKey(ctx *schemas.BifrostContext) (str
 }
 
 func (plugin *Plugin) shouldBypassCache(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
-	if headers, ok := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string); ok {
-		for name, value := range headers {
-			if strings.EqualFold(name, "x-edgeai-cache-bypass") && isCacheBypassValue(value) {
-				return true
-			}
-		}
+	if bypass, _ := ctx.Value(CacheBypassKey).(bool); bypass {
+		return true
 	}
 	if req == nil {
 		return false
@@ -525,16 +521,6 @@ func (plugin *Plugin) shouldBypassCache(ctx *schemas.BifrostContext, req *schema
 	}
 	return false
 }
-
-func isCacheBypassValue(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true":
-		return true
-	default:
-		return false
-	}
-}
-
 func shouldBypassChatCache(req *schemas.BifrostChatRequest) bool {
 	if req.Params != nil {
 		params := req.Params

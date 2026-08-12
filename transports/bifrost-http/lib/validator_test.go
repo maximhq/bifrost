@@ -1222,6 +1222,26 @@ func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) 
 	}
 }
 
+func TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithDirectKeySecretEnvValid(t *testing.T) {
+	validConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "semantic_cache",
+				"config": {
+					"dimension": 1,
+					"direct_key_cache_secret_env": "BIFROST_CACHE_NAMESPACE_SECRET"
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected direct-only semantic cache config with Direct Key namespace secret to pass validation, got error: %v", err)
+	}
+}
+
 func TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithEmbeddingModelInvalid(t *testing.T) {
 	invalidConfig := `{
 		"plugins": [
