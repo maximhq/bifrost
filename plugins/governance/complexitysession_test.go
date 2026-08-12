@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
 func TestResolveSessionIDPrecedence(t *testing.T) {
@@ -598,6 +599,380 @@ func TestKVSessionStoreStatus(t *testing.T) {
 		ReplicationConfigured: true,
 		AtomicAcrossReplicas:  false,
 	}, status)
+}
+
+func TestSessionTierRank(t *testing.T) {
+	tests := []struct {
+		name     string
+		tier     string
+		wantRank int
+		wantOK   bool
+	}{
+		{name: "simple", tier: complexity.TierSimple, wantRank: 0, wantOK: true},
+		{name: "medium", tier: complexity.TierMedium, wantRank: 1, wantOK: true},
+		{name: "complex", tier: complexity.TierComplex, wantRank: 2, wantOK: true},
+		{name: "unknown", tier: "UNKNOWN", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rank, ok := sessionTierRank(tt.tier)
+			assert.Equal(t, tt.wantRank, rank)
+			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
+}
+
+func TestUpdateSessionTierRecordClearsInterruptedDowngrade(t *testing.T) {
+	now := time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		proposed   *complexity.ComplexityResult
+		configure  func(*configstore.ComplexitySessionConfig)
+		wantReason sessionTierDecisionReason
+	}{
+		{name: "no proposal", wantReason: sessionTierReasonNoProposal},
+		{
+			name:       "empty proposed tier",
+			proposed:   sessionTierProposal("", 0.95),
+			wantReason: sessionTierReasonNoProposal,
+		},
+		{
+			name:       "invalid proposed tier",
+			proposed:   sessionTierProposal("UNKNOWN", 0.95),
+			wantReason: sessionTierReasonInvalidProposal,
+		},
+		{
+			name:       "same tier",
+			proposed:   sessionTierProposal(complexity.TierComplex, 0.95),
+			wantReason: sessionTierReasonSameTier,
+		},
+		{
+			name:       "weak downgrade",
+			proposed:   sessionTierProposal(complexity.TierMedium, 0.5),
+			wantReason: sessionTierReasonBelowSwitchSimilarity,
+		},
+		{
+			name:       "switch limit",
+			proposed:   sessionTierProposal(complexity.TierMedium, 0.95),
+			configure:  func(config *configstore.ComplexitySessionConfig) { config.MaxSwitchesPerSession = 1 },
+			wantReason: sessionTierReasonSwitchLimitReached,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := sessionTierTestConfig()
+			if tt.configure != nil {
+				tt.configure(config)
+			}
+			record := sessionTierTestRecord(now)
+			record.SwitchCount = 1
+			record.PendingTier = complexity.TierMedium
+			record.PendingTurns = 1
+			record.PendingMinScore = 0.91
+
+			decision := updateSessionTierRecord(record, tt.proposed, config, now)
+
+			assert.Equal(t, complexity.TierComplex, decision.Tier)
+			assert.Equal(t, tt.wantReason, decision.Reason)
+			assert.True(t, decision.RecordChanged)
+			assert.False(t, decision.Switched)
+			assert.Empty(t, record.PendingTier)
+			assert.Zero(t, record.PendingTurns)
+			assert.Zero(t, record.PendingMinScore)
+			assert.Equal(t, 1, record.SwitchCount)
+		})
+	}
+
+	record := sessionTierTestRecord(now)
+	decision := updateSessionTierRecord(record, nil, sessionTierTestConfig(), now)
+	assert.False(t, decision.RecordChanged, "a repeated hold must not create a store write")
+}
+
+func TestUpdateSessionTierRecordEscalation(t *testing.T) {
+	now := time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		score      float64
+		configure  func(*configstore.ComplexitySessionConfig)
+		wantReason sessionTierDecisionReason
+		wantSwitch bool
+	}{
+		{
+			name:       "strong proposal switches immediately",
+			score:      0.91,
+			wantReason: sessionTierReasonEscalated,
+			wantSwitch: true,
+		},
+		{
+			name:       "weak proposal is held",
+			score:      0.7,
+			wantReason: sessionTierReasonBelowSwitchSimilarity,
+		},
+		{
+			name:       "zero threshold disables similarity gate",
+			score:      0,
+			configure:  func(config *configstore.ComplexitySessionConfig) { config.SwitchMinSimilarity = 0 },
+			wantReason: sessionTierReasonEscalated,
+			wantSwitch: true,
+		},
+		{
+			name:       "always allow bypasses similarity",
+			score:      0.7,
+			configure:  func(config *configstore.ComplexitySessionConfig) { config.AlwaysAllowEscalation = true },
+			wantReason: sessionTierReasonEscalated,
+			wantSwitch: true,
+		},
+		{
+			name:  "switch cap remains absolute",
+			score: 0.91,
+			configure: func(config *configstore.ComplexitySessionConfig) {
+				config.AlwaysAllowEscalation = true
+				config.MaxSwitchesPerSession = 1
+			},
+			wantReason: sessionTierReasonSwitchLimitReached,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := sessionTierTestConfig()
+			if tt.configure != nil {
+				tt.configure(config)
+			}
+			record := sessionTierTestRecord(now)
+			record.Tier = complexity.TierMedium
+			if config.MaxSwitchesPerSession > 0 {
+				record.SwitchCount = config.MaxSwitchesPerSession
+			}
+
+			decision := updateSessionTierRecord(record, sessionTierProposal(complexity.TierComplex, tt.score), config, now)
+
+			assert.Equal(t, tt.wantReason, decision.Reason)
+			assert.Equal(t, tt.wantSwitch, decision.Switched)
+			assert.Equal(t, tt.wantSwitch, decision.RecordChanged)
+			if tt.wantSwitch {
+				assert.Equal(t, complexity.TierComplex, record.Tier)
+				assert.Equal(t, now, record.DecidedAt)
+				assert.Equal(t, 1, record.SwitchCount)
+			} else {
+				assert.Equal(t, complexity.TierMedium, record.Tier)
+			}
+		})
+	}
+}
+
+func TestUpdateSessionTierRecordRequiresSustainedDowngrade(t *testing.T) {
+	now := time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
+	config := sessionTierTestConfig()
+	record := sessionTierTestRecord(now)
+	record.RouteObservations["current-route"] = SessionRouteObservation{
+		CachedReadTokens: 128,
+		CacheObserved:    true,
+		LastSeenAt:       now.Add(-time.Minute),
+	}
+
+	first := updateSessionTierRecord(record, sessionTierProposal(complexity.TierMedium, 0.93), config, now)
+	assert.Equal(t, sessionTierReasonDowngradePending, first.Reason)
+	assert.False(t, first.Switched)
+	assert.True(t, first.RecordChanged)
+	assert.Equal(t, complexity.TierMedium, record.PendingTier)
+	assert.Equal(t, 1, record.PendingTurns)
+	assert.Equal(t, 0.93, record.PendingMinScore)
+
+	restarted := updateSessionTierRecord(record, sessionTierProposal(complexity.TierSimple, 0.92), config, now.Add(time.Minute))
+	assert.Equal(t, sessionTierReasonDowngradePending, restarted.Reason)
+	assert.False(t, restarted.Switched)
+	assert.True(t, restarted.RecordChanged)
+	assert.Equal(t, complexity.TierSimple, record.PendingTier)
+	assert.Equal(t, 1, record.PendingTurns, "a different lower tier starts a new consecutive sequence")
+	assert.Equal(t, 0.92, record.PendingMinScore)
+
+	second := updateSessionTierRecord(record, sessionTierProposal(complexity.TierSimple, 0.9), config, now.Add(2*time.Minute))
+	assert.Equal(t, sessionTierReasonDowngraded, second.Reason)
+	assert.True(t, second.Switched)
+	assert.True(t, second.RecordChanged)
+	assert.Equal(t, complexity.TierSimple, record.Tier)
+	assert.Equal(t, now.Add(2*time.Minute), record.DecidedAt)
+	assert.Equal(t, 1, record.SwitchCount)
+	assert.Empty(t, record.PendingTier)
+	assert.Zero(t, record.PendingTurns)
+	assert.Zero(t, record.PendingMinScore)
+}
+
+func TestUpdateSessionTierRecordDowngradeCacheGate(t *testing.T) {
+	now := time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		observed   map[string]SessionRouteObservation
+		wantReason sessionTierDecisionReason
+		wantSwitch bool
+	}{
+		{name: "missing telemetry is unknown", wantReason: sessionTierReasonCacheStateUnknown},
+		{
+			name: "unreported cache is unknown",
+			observed: map[string]SessionRouteObservation{"route": {
+				LastSeenAt: now.Add(-time.Minute),
+			}},
+			wantReason: sessionTierReasonCacheStateUnknown,
+		},
+		{
+			name: "ambiguous zero is unknown",
+			observed: map[string]SessionRouteObservation{"route": {
+				CacheObserved: true,
+				LastSeenAt:    now.Add(-time.Minute),
+			}},
+			wantReason: sessionTierReasonCacheStateUnknown,
+		},
+		{
+			name: "stale observation is unknown without provider cache ttl",
+			observed: map[string]SessionRouteObservation{"route": {
+				CachedReadTokens: 128,
+				CacheObserved:    true,
+				LastSeenAt:       now.Add(-2 * time.Hour),
+			}},
+			wantReason: sessionTierReasonCacheStateUnknown,
+		},
+		{
+			name: "future observation is unknown",
+			observed: map[string]SessionRouteObservation{"route": {
+				CachedReadTokens: 128,
+				CacheObserved:    true,
+				LastSeenAt:       now.Add(time.Minute),
+			}},
+			wantReason: sessionTierReasonCacheStateUnknown,
+		},
+		{
+			name: "large cache holds tier",
+			observed: map[string]SessionRouteObservation{"route": {
+				CachedReadTokens: 4096,
+				CacheObserved:    true,
+				LastSeenAt:       now.Add(-time.Minute),
+			}},
+			wantReason: sessionTierReasonCacheWorthHolding,
+		},
+		{
+			name: "small positive cache permits downgrade",
+			observed: map[string]SessionRouteObservation{"route": {
+				CachedReadTokens: 128,
+				CacheObserved:    true,
+				LastSeenAt:       now.Add(-time.Minute),
+			}},
+			wantReason: sessionTierReasonDowngraded,
+			wantSwitch: true,
+		},
+		{
+			name: "freshest route observation wins",
+			observed: map[string]SessionRouteObservation{
+				"older-warm": {
+					CachedReadTokens: 4096,
+					CacheObserved:    true,
+					LastSeenAt:       now.Add(-2 * time.Minute),
+				},
+				"newer-small": {
+					CachedReadTokens: 128,
+					CacheObserved:    true,
+					LastSeenAt:       now.Add(-time.Minute),
+				},
+			},
+			wantReason: sessionTierReasonDowngraded,
+			wantSwitch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record := sessionTierTestRecord(now)
+			record.PendingTier = complexity.TierMedium
+			record.PendingTurns = 1
+			record.PendingMinScore = 0.95
+			record.RouteObservations = tt.observed
+
+			decision := updateSessionTierRecord(record, sessionTierProposal(complexity.TierMedium, 0.9), sessionTierTestConfig(), now)
+
+			assert.Equal(t, tt.wantReason, decision.Reason)
+			assert.Equal(t, tt.wantSwitch, decision.Switched)
+			assert.True(t, decision.RecordChanged)
+			if tt.wantSwitch {
+				assert.Equal(t, complexity.TierMedium, record.Tier)
+			} else {
+				assert.Equal(t, complexity.TierComplex, record.Tier)
+				assert.Equal(t, 2, record.PendingTurns)
+			}
+		})
+	}
+}
+
+func TestUpdateSessionTierRecordAvoidsRepeatedCacheHoldWrites(t *testing.T) {
+	now := time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
+	record := sessionTierTestRecord(now)
+	record.PendingTier = complexity.TierMedium
+	record.PendingTurns = 2
+	record.PendingMinScore = 0.9
+	record.RouteObservations["route"] = SessionRouteObservation{
+		CachedReadTokens: 4096,
+		CacheObserved:    true,
+		LastSeenAt:       now.Add(-time.Minute),
+	}
+
+	decision := updateSessionTierRecord(record, sessionTierProposal(complexity.TierMedium, 0.91), sessionTierTestConfig(), now)
+
+	assert.Equal(t, sessionTierReasonCacheWorthHolding, decision.Reason)
+	assert.False(t, decision.Switched)
+	assert.False(t, decision.RecordChanged)
+	assert.Equal(t, 2, record.PendingTurns)
+}
+
+func TestUpdateSessionTierRecordRejectsInvalidState(t *testing.T) {
+	now := time.Date(2026, time.August, 11, 10, 0, 0, 0, time.UTC)
+	proposal := sessionTierProposal(complexity.TierComplex, 0.95)
+
+	decision := updateSessionTierRecord(nil, proposal, sessionTierTestConfig(), now)
+	assert.Equal(t, sessionTierReasonInvalidState, decision.Reason)
+	assert.False(t, decision.RecordChanged)
+
+	record := sessionTierTestRecord(now)
+	original := cloneSessionComplexityRecord(record)
+	decision = updateSessionTierRecord(record, proposal, nil, now)
+	assert.Equal(t, sessionTierReasonInvalidState, decision.Reason)
+	assert.Equal(t, original, record)
+
+	config := sessionTierTestConfig()
+	config.Mode = configstore.ComplexitySessionModePinned
+	decision = updateSessionTierRecord(record, proposal, config, now)
+	assert.Equal(t, sessionTierReasonInvalidState, decision.Reason)
+	assert.Equal(t, original, record)
+
+	record.Tier = "UNKNOWN"
+	original = cloneSessionComplexityRecord(record)
+	decision = updateSessionTierRecord(record, proposal, sessionTierTestConfig(), now)
+	assert.Equal(t, sessionTierReasonInvalidState, decision.Reason)
+	assert.Equal(t, "UNKNOWN", decision.Tier)
+	assert.Equal(t, original, record)
+}
+
+func sessionTierTestConfig() *configstore.ComplexitySessionConfig {
+	return &configstore.ComplexitySessionConfig{
+		Mode:                  configstore.ComplexitySessionModeCacheAware,
+		TTL:                   time.Hour,
+		SwitchMinSimilarity:   0.8,
+		DowngradeAfterNTurns:  2,
+		MinCachedTokensToHold: 1024,
+	}
+}
+
+func sessionTierProposal(tier string, score float64) *complexity.ComplexityResult {
+	return &complexity.ComplexityResult{Tier: tier, Score: score}
+}
+
+func sessionTierTestRecord(now time.Time) *SessionComplexityRecord {
+	return &SessionComplexityRecord{
+		Tier:              complexity.TierComplex,
+		DecidedAt:         now.Add(-time.Hour),
+		RuleID:            "rule-1",
+		RouteObservations: make(map[string]SessionRouteObservation),
+	}
 }
 
 func newTestKVSessionStore(t *testing.T) (*kvSessionStore, *kvstore.Store) {
