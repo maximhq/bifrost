@@ -394,14 +394,14 @@
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/integrations/python/config.db"
+      "path": "tests/integrations/python/config.db"
     }
   },
   "logs_store": {
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/integrations/python/logs.db"
+      "path": "tests/integrations/python/logs.db"
     },
     "writer": {
       "max_batch_size": 100,

@@ -11,11 +11,12 @@
 // with a provider/model body), not just by name substring. Lets the AND filter find
 // every cross-cut row without renaming 100+ items to add a literal "Cross-cut:" prefix.
 //   node filter-collection.mjs --source path.json --out /tmp/x.json --rerun-failed --report tmp/newman-report.json
+//   node filter-collection.mjs --source path.json --out /tmp/x.json --provider openai --class reasoning --shard 2/4
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
 import { buildHaystack } from "./lib/haystack.mjs";
-import { walkRequests, buildProducerIndex, bodyDependencies } from "./lib/chained-vars.mjs";
+import { walkRequests, buildProducerIndex, chainedDependencies } from "./lib/chained-vars.mjs";
 import { rateLimitedNames } from "./lib/rate-limit-retry.mjs";
 
 const args = Object.fromEntries(
@@ -60,6 +61,30 @@ const FOLDER = (args.folder || "").toLowerCase();
 // over a fixed priority order plus the "other" catch-all makes the shards a true partition, i.e.
 // the union of every --class shard is exactly the unsharded set.
 const CLASS = (args.class || "").toLowerCase();
+// --shard <k>/<n> splits whatever the other predicates selected into n equal slices and keeps the
+// k-th (1-based). It exists because --class alone cannot flatten the sweep's tail: the class
+// partition is fixed at ten buckets, and the slow ones are slow per REQUEST (a reasoning row costs
+// ~8s against a chat row's ~1s), so "reasoning" stays a ~20 minute serial run however many jobs are
+// free beside it. Splitting is by position in the selected list rather than by name hash: position
+// is stable for a given source collection and set of filters, which keeps the slices a partition,
+// and the round-robin below spreads a contiguous block of expensive rows (the criss-cross grids are
+// emitted in provider order) across every slice instead of dropping it whole into one.
+const SHARD = (args.shard || "").trim();
+let SHARD_INDEX = 0;
+let SHARD_COUNT = 0;
+if (SHARD && SHARD !== "true") {
+  const m = SHARD.match(/^(\d+)\s*\/\s*(\d+)$/);
+  if (!m) {
+    console.error(`[filter-collection] --shard must look like "2/4", got "${SHARD}"`);
+    process.exit(2);
+  }
+  SHARD_INDEX = Number(m[1]);
+  SHARD_COUNT = Number(m[2]);
+  if (SHARD_COUNT < 1 || SHARD_INDEX < 1 || SHARD_INDEX > SHARD_COUNT) {
+    console.error(`[filter-collection] --shard "${SHARD}" is out of range: need 1 <= k <= n and n >= 1`);
+    process.exit(2);
+  }
+}
 const RERUN_FAILED = args["rerun-failed"] === "true";
 const RERUN_RATE_LIMITED = args["rerun-rate-limited"] === "true";
 const REPORT = args.report || "tmp/newman-report.json";
@@ -75,9 +100,9 @@ if (!SOURCE || !OUT) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE) {
+if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE) {
   console.error(
-    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --rerun-failed, --rerun-rate-limited, --smoke"
+    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --shard, --rerun-failed, --rerun-rate-limited, --smoke"
   );
   process.exit(2);
 }
@@ -369,7 +394,7 @@ const expandWithProducers = (selected, entries) => {
     // request that sets nothing while the actual producer is never pulled in -
     // leaving the consumer to fail on an unsubstituted {{var}}, which is the
     // failure this whole function exists to prevent.
-    for (const { producer, producerItem: dep, variable } of bodyDependencies(item, producerIndex)) {
+    for (const { producer, producerItem: dep, variable } of chainedDependencies(item, producerIndex)) {
       if (!dep || keep.has(dep)) continue;
       keep.add(dep);
       queue.push(dep);
@@ -377,7 +402,7 @@ const expandWithProducers = (selected, entries) => {
     }
   }
   if (pulled.length) {
-    console.error(`[filter-collection] pulled in ${pulled.length} prerequisite request(s) for chained bodies:`);
+    console.error(`[filter-collection] pulled in ${pulled.length} prerequisite request(s) for chained variables:`);
     for (const line of pulled) console.error(`  ${line}`);
   }
   return keep;
@@ -385,9 +410,17 @@ const expandWithProducers = (selected, entries) => {
 
 const collection = JSON.parse(readFileSync(SOURCE, "utf8"));
 const entries = walkRequests(collection.item || []);
-const selected = entries.filter(({ item, ancestors }) => passes(item, ancestors)).map(({ item }) => item);
+const matched = entries.filter(({ item, ancestors }) => passes(item, ancestors)).map(({ item }) => item);
+// Sliced BEFORE expandWithProducers, never after: a chained consumer that lands in slice 3 still
+// needs its producer to run inside slice 3's newman process, because collection variables do not
+// survive across invocations. Slicing afterwards would cut producers away from the consumers that
+// were just given them. The cost is that a producer shared by consumers in two slices runs in
+// both, which is the same duplication --class sharding already accepts for the same reason.
+const selected = SHARD_COUNT
+  ? matched.filter((_, i) => i % SHARD_COUNT === SHARD_INDEX - 1)
+  : matched;
 const keep = expandWithProducers(selected, entries);
 const filtered = { ...collection, item: filterTree(collection.item || [], keep) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;
 writeFileSync(OUT, JSON.stringify(filtered, null, 2));
-console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, class=${CLASS || "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED})`);
+console.error(`[filter-collection] wrote ${OUT} with ${totalAfter} requests after filter (provider=${PROVIDER || "-"}, feature=${FEATURE_PARTS.join("+") || "-"}, feature-any=${FEATURE_ANY_PARTS.join("|") || "-"}, class=${CLASS || "-"}, shard=${SHARD_COUNT ? `${SHARD_INDEX}/${SHARD_COUNT} of ${matched.length}` : "-"}, smoke=${SMOKE || "-"}, rerun-failed=${RERUN_FAILED})`);

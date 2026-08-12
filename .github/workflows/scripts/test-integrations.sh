@@ -152,6 +152,16 @@ BIFROST_PID=$!
 echo "   Started with PID: $BIFROST_PID"
 
 
+# The gateway's own stdout/stderr goes to $LOG_FILE, which cleanup() deletes on exit. A
+# bootstrap failure (bad config path, unopenable store, port in use) is therefore invisible
+# in CI - the job reports only "process died unexpectedly". Dump the tail before exiting.
+dump_server_log() {
+  echo ""
+  echo "----- last 50 lines of bifrost server log ($LOG_FILE) -----"
+  tail -n 50 "$LOG_FILE" 2>/dev/null || echo "   (log file unreadable)"
+  echo "-----------------------------------------------------------"
+}
+
 # Wait for server to be ready
 echo "⏳ Waiting for Bifrost to be ready..."
 MAX_WAIT=30
@@ -168,6 +178,7 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   # Check if server process is still running
   if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
     echo "❌ Bifrost process died unexpectedly"
+    dump_server_log
     exit 1
   fi
   
@@ -177,6 +188,7 @@ done
 
 if [ "$SERVER_READY" = false ]; then
   echo "❌ Bifrost failed to start within ${MAX_WAIT}s"
+  dump_server_log
   exit 1
 fi
 

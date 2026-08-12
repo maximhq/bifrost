@@ -1906,13 +1906,31 @@ HARNESS_PROVIDERS := openai anthropic bedrock gemini vertex azure passthrough op
 # largest class is ~268. filter-collection.mjs --class assigns every item to exactly one of these
 # (first match wins, "other" is the catch-all), so the shards partition the fork rather than
 # overlapping it. Order here is only the launch order; the priority order lives in CLASS_ORDER.
-HARNESS_CLASSES := streaming tools chat reasoning json vision other audio embeddings image-gen
+#
+# Listed SLOWEST-FIRST, measured rather than guessed: in a full sweep the last six shards to finish
+# were reasoning (x4 providers), tools and chat, with reasoning trailing the median shard by ~20
+# minutes. Launch order only matters once HARNESS_JOBS actually binds, which it now does - the
+# sub-shard axis below pushes the grid past the cap - and when it binds, a slow shard that starts
+# last sets the wall clock all by itself.
+HARNESS_CLASSES := reasoning tools chat streaming json vision other audio embeddings image-gen
 
-# Cap on concurrently running newman shards. Set high on purpose: the provider x class grid tops
-# out around 80 live cells, so 100 means the launcher never actually blocks and every shard starts
-# immediately. The cap is kept as a backstop rather than removed, because the grid grows with both
-# HARNESS_PROVIDERS and HARNESS_CLASSES and an unbounded loop would fork whatever their product
-# becomes. Lower it if a provider starts returning 429s - analyze-failures.mjs does file those as
+# Third parallelism axis: how many sub-shards each modality class is split into, via
+# filter-collection.mjs --shard <k>/<n>. The class axis alone cannot flatten the tail, because the
+# expensive classes are expensive PER REQUEST rather than per row count: a reasoning row costs ~8s
+# against a chat row's ~1s, so "openai reasoning" is a ~21 minute serial run at 161 rows while
+# "anthropic tools" clears 226 rows in a fraction of that. Splitting the slow classes cuts their
+# serial length by n while the fast ones stay single shards, so the grid grows only where it buys
+# wall clock. Counts are set from that same measured finish order. A class not listed here is 1.
+# Set SUBSHARDS=0 to collapse this axis and get the previous one-shard-per-class behaviour.
+HARNESS_SUBSHARDS := reasoning=4 tools=3 chat=3 streaming=3 json=2 vision=2
+
+# Cap on concurrently running newman shards. The provider x class x sub-shard grid is ~168 cells
+# now that HARNESS_SUBSHARDS splits the slow classes, so unlike before the cap genuinely binds and
+# the launcher blocks - which is exactly why HARNESS_CLASSES is ordered slowest-first, so the long
+# shards hold slots from the start instead of queueing behind a hundred cheap ones. The cap is kept
+# rather than removed because the grid grows with HARNESS_PROVIDERS, HARNESS_CLASSES and
+# HARNESS_SUBSHARDS together, and an unbounded loop would fork whatever their product becomes.
+# Lower it if a provider starts returning 429s - analyze-failures.mjs does file those as
 # rate_limit rather than as defects, but they still fail the run.
 HARNESS_JOBS ?= 100
 
@@ -1966,9 +1984,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  run is not bound by one provider's whole sequential list - openai alone is ~1264 requests and its"; \
 		printf '  %-18s %s\n' ""                "  largest class is ~268. filter-collection.mjs --class puts every request in exactly one class, so the"; \
 		printf '  %-18s %s\n' ""                "  shards partition the fork instead of overlapping it. Shard artifacts are named <provider>--<class>."; \
-		printf '  %-18s %s\n' "HARNESS_JOBS=N"  "Cap on concurrently running newman shards (default 100). The grid tops out near 80 live cells, so the"; \
-		printf '  %-18s %s\n' ""                "  default never blocks - every shard starts immediately. The cap stays as a backstop because the grid"; \
-		printf '  %-18s %s\n' ""                "  grows with HARNESS_PROVIDERS x HARNESS_CLASSES. Lower it if a provider starts returning 429s."; \
+		printf '  %-18s %s\n' "SUBSHARDS=0"    "Collapse the third parallelism axis. By default the slow classes are split again (HARNESS_SUBSHARDS:"; \
+		printf '  %-18s %s\n' ""                "  reasoning x4, tools/chat/streaming x3, json/vision x2) via filter-collection.mjs --shard <k>/<n>,"; \
+		printf '  %-18s %s\n' ""                "  because those classes are slow PER REQUEST (~8s for a reasoning row vs ~1s for chat), so the class"; \
+		printf '  %-18s %s\n' ""                "  axis alone leaves a ~20 minute tail. Sub-shard artifacts are named <provider>--<class>-s<k>."; \
+		printf '  %-18s %s\n' "HARNESS_JOBS=N"  "Cap on concurrently running newman shards (default 100). The grid is ~168 live cells with sub-shards"; \
+		printf '  %-18s %s\n' ""                "  on, so the cap does block - which is why HARNESS_CLASSES is ordered slowest-first, to keep the long"; \
+		printf '  %-18s %s\n' ""                "  shards holding slots from the start. Lower it if a provider starts returning 429s."; \
 		printf '  %-18s %s\n' "RETRY_429=N"     "Max 429 retry attempts per shard (default 3; 0 disables). After the main pass, any shard that"; \
 		printf '  %-18s %s\n' ""                "  failed with a 429 replays ONLY its rate-limited rows, after waiting max(retry-after) across them"; \
 		printf '  %-18s %s\n' ""                "  or an exponential 5/10/20s when the provider sent no header (capped at 120s). A shard with any"; \
@@ -2026,7 +2048,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
-		printf '  %-30s %s\n' "tmp/newman-report-<shard>.json" "Per-shard newman report (parallel mode only). <shard> is \"<provider>--<class>\", or plain \"<provider>\" under CLASS_SHARDS=0."; \
+		printf '  %-30s %s\n' "tmp/newman-report-<shard>.json" "Per-shard newman report (parallel mode only). <shard> is \"<provider>--<class>\", \"<provider>--<class>-s<k>\" for a sub-sharded class, or plain \"<provider>\" under CLASS_SHARDS=0."; \
 		printf '  %-30s %s\n' "tmp/parallel-exit-<shard>"  "Exit code of each shard's newman process. Read instead of 'wait <pid>' because the HARNESS_JOBS cap reaps pids as slots free up."; \
 		printf '  %-30s %s\n' "tmp/newman-cli-<p>.log"     "Per-provider newman stdout/stderr (parallel mode only)."; \
 		printf '  %-30s %s\n' "tmp/parallel-status"        "Per-provider pass/fail summary (parallel mode only)."; \
@@ -2327,7 +2349,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: > tmp/newman-cli.log; \
 		NEWMAN_EXIT=0; \
 	elif [ "$$PARALLEL_VAL" != "0" ] && [ -n "$$PARALLEL_VAL" ]; then \
-		say "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter) x modality class. Set PARALLEL=0 to disable, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
+		say "$(CYAN)Parallel mode (default): forking one newman per provider (openai, anthropic, bedrock, gemini, vertex, azure, passthrough, openrouter) x modality class x sub-shard, slowest class first. Set PARALLEL=0 to disable, SUBSHARDS=0 to drop the sub-shard axis, CLASS_SHARDS=0 for one fork per provider.$(NC)"; \
 		: "harness-filtered-*.json is cleaned here too, not just the reports. The monitor derives"; \
 		: "each provider's denominator by summing the leaves of every shard collection it finds in"; \
 		: "tmp/, so a previous run with a wider FEATURE/FOLDER scope leaves shard files this run"; \
@@ -2345,6 +2367,18 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: "string is the sentinel for 'do not pass --class', so the loop body stays one code path."; \
 		CLASSES="$(HARNESS_CLASSES)"; \
 		if [ "$(CLASS_SHARDS)" = "0" ]; then CLASSES="-"; fi; \
+		: "Sub-shard count for a class, from the HARNESS_SUBSHARDS 'class=n' list; 1 when unlisted."; \
+		: "Reads the make variable rather than an env lookup so the roster stays in one place, and"; \
+		: "returns 1 for the '-' class too - CLASS_SHARDS=0 collapses both axes, not just the first."; \
+		subshards_for() { \
+			SS_C="$$1"; SS_N=1; \
+			if [ "$(SUBSHARDS)" != "0" ] && [ "$$SS_C" != "-" ]; then \
+				for kv in $(HARNESS_SUBSHARDS); do \
+					case "$$kv" in "$$SS_C="*) SS_N="$${kv#*=}" ;; esac; \
+				done; \
+			fi; \
+			printf '%s' "$$SS_N"; \
+		}; \
 		JOBS_CAP="$(or $(HARNESS_JOBS),100)"; \
 		say "$(CYAN)Shard concurrency cap: $$JOBS_CAP (HARNESS_JOBS).$(NC)"; \
 		: "One newman invocation, called from two places: the main launch loop and the 429 retry"; \
@@ -2394,12 +2428,27 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		FILTER_FAILED=0; \
 		for p in $$PROVIDERS; do \
 		for c in $$CLASSES; do \
+		SUB_N="$$(subshards_for "$$c")"; \
+		SUB_K=0; \
+		: "SUB_K is bumped at the TOP of the body, not the bottom: the body below uses 'continue'"; \
+		: "for a failed filter and for an empty shard, and a bottom increment would be skipped by"; \
+		: "both - leaving SUB_K stuck and this while loop spinning on the same sub-shard forever."; \
+		while [ "$$SUB_K" -lt "$$SUB_N" ]; do \
+			SUB_K=$$((SUB_K+1)); \
 			if [ "$$c" = "-" ]; then SHARD="$$p"; CLASS_FLAG=""; else SHARD="$$p--$$c"; CLASS_FLAG="--class $$c"; fi; \
+			: "The -s<k> suffix stays inside the '<provider>--<rest>' shape every consumer parses:"; \
+			: "the retry pass takes the provider as $${rs%%--*}, and harness-monitor.mjs matches"; \
+			: "shard files by the 'harness-filtered-<provider>--' prefix and detects retry logs by a"; \
+			: "trailing -retry<n>. A single-sub-shard class keeps its old unsuffixed name, so the"; \
+			: "common case produces byte-identical filenames to before this axis existed."; \
+			SHARD_FLAG=""; \
+			if [ "$$SUB_N" -gt 1 ]; then SHARD="$$SHARD-s$$SUB_K"; SHARD_FLAG="--shard $$SUB_K/$$SUB_N"; fi; \
 			if ! node tests/e2e/api/runners/filter-collection.mjs \
 				--source "$$COLLECTION_FILE" \
 				--out "tmp/harness-filtered-$$SHARD.json" \
 				--provider "$$p" \
 				$$CLASS_FLAG \
+				$$SHARD_FLAG \
 				$(if $(FEATURE),--feature "$(FEATURE)",) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) >> "$$QUIET_LOG" 2>&1; then \
 				say "$(RED)[$$SHARD] filter step failed - skipping (see $$QUIET_LOG)$(NC)"; \
@@ -2424,6 +2473,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			LAUNCHED=$$((LAUNCHED+1)); \
 			echo "$$BG_PID:$$SHARD" >> tmp/parallel-pids; \
 			say "$(GREEN)[$$SHARD] launched (pid $$BG_PID, $$P_ITEM_COUNT requests)$(NC)"; \
+		done; \
 		done; \
 		done; \
 		if [ "$$LAUNCHED" -eq 0 ]; then \
