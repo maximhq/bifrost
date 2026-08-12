@@ -919,7 +919,7 @@ func TestUpdateBudgetOverrideAnchorsAtCalendarPeriodStart(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, updated.OverrideAnchorReset)
 
-	wantAnchor := tables.GetCalendarPeriodStart("1d", time.Now())
+	wantAnchor := tables.GetCalendarPeriodStart("1d", time.Now(), tables.QuarterStartNotApplicable)
 	assert.True(t, updated.OverrideAnchorReset.Equal(wantAnchor),
 		"calendar-aligned grant anchor should be midnight UTC today: got %s, want %s",
 		updated.OverrideAnchorReset.UTC(), wantAnchor.UTC())

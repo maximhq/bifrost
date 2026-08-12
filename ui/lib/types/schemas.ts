@@ -151,6 +151,15 @@ export const batchS3ConfigSchema = z.object({
 	buckets: z.array(s3BucketConfigSchema).optional(),
 });
 
+// Interface VPC endpoint hosts, one per AWS endpoint service Bifrost dials for Bedrock.
+export const bedrockEndpointsSchema = z.object({
+	runtime: secretVarSchema.optional(),
+	control_plane: secretVarSchema.optional(),
+	mantle: secretVarSchema.optional(),
+	agent_runtime: secretVarSchema.optional(),
+	s3: secretVarSchema.optional(),
+});
+
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
@@ -166,6 +175,7 @@ export const bedrockKeyConfigSchema = z
 		arn: secretVarSchema.optional(),
 		project_id: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
+		endpoints: bedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -207,6 +217,7 @@ export const bedrockMantleKeyConfigSchema = z
 		external_id: secretVarSchema.optional(),
 		session_name: secretVarSchema.optional(),
 		project_id: secretVarSchema.optional(),
+		endpoints: bedrockEndpointsSchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.region), {
 		message: "Region is required",
@@ -870,6 +881,8 @@ export const otelConfigSchema = z
 	.object({
 		// Per-profile enable toggle. A disabled profile exports nothing and is not validated.
 		enabled: z.boolean().default(true),
+		// Trace export toggle. When false the profile is metrics-only; collector_url isn't required.
+		traces_enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
 		collector_url: secretVarSchema.default({ value: "" }),
 		trace_type: z
@@ -877,7 +890,10 @@ export const otelConfigSchema = z
 				message: "Please select a trace type",
 			})
 			.default("genai_extension"),
+		// Common headers go to both endpoints; per-signal headers override on collision.
 		headers: z.record(z.string(), secretVarSchema).optional(),
+		trace_headers: z.record(z.string(), secretVarSchema).optional(),
+		metrics_headers: z.record(z.string(), secretVarSchema).optional(),
 		protocol: z
 			.enum(["http", "grpc"], {
 				message: "Please select a protocol",
@@ -952,21 +968,23 @@ export const otelConfigSchema = z
 			return true;
 		};
 
-		// Collector address is required for an enabled profile.
-		if (!isSecretVarSet(data.collector_url)) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["collector_url"],
-				message: "Collector address is required",
-			});
-		}
+		// collector_url is required and validated only when traces are enabled.
+		if (data.traces_enabled) {
+			if (!isSecretVarSet(data.collector_url)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["collector_url"],
+					message: "Collector address is required",
+				});
+			}
 
-		// Validate collector_url format — skip format check for env var references
-		const collectorUrl = (data.collector_url?.value || "").trim();
-		if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
-			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
-			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+			// Validate collector_url format — skip format check for env var references
+			const collectorUrl = (data.collector_url?.value || "").trim();
+			if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "http") {
+				validateHttpUrl(collectorUrl, ["collector_url"]);
+			} else if (collectorUrl && (data.collector_url?.type === "plain_text" || !data.collector_url?.type) && protocol === "grpc") {
+				validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+			}
 		}
 
 		// Validate metrics_endpoint when metrics_enabled is true
@@ -1201,6 +1219,7 @@ export const mcpClientUpdateSchema = z
 		token_exchange: z
 			.object({
 				audience: z.string().trim().min(1, "Audience is required"),
+				use_idp_credentials: z.boolean().optional(),
 				client_id: secretVarSchema.optional(),
 				client_secret: secretVarSchema.optional(),
 				authorization_server_url: z

@@ -822,22 +822,25 @@ func TestToBifrostChatResponse_MultipleTextBlocksWithThinking(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 
-	// With multiple text blocks, ToBifrostChatResponse preserves them as ContentBlocks
-	// (only a single text block collapses to ContentStr — see chat.go:812-815).
-	// Thinking flows through ReasoningDetails below, not ContentStr.
+	// Sibling text blocks fold into one ContentStr: choices[].message.content is
+	// typed string|null on the chat completions surface, so an array would break
+	// clients generated from that spec. Thinking is not part of that fold - it
+	// flows through ReasoningDetails below, checked separately.
 	choice := result.Choices[0]
 	msg := choice.ChatNonStreamResponseChoice.Message
-	if msg.Content.ContentStr != nil {
-		t.Errorf("expected ContentStr to be nil with multiple text blocks, got %q", *msg.Content.ContentStr)
+	if msg.Content.ContentStr == nil {
+		t.Fatalf("expected text blocks to collapse into ContentStr, got blocks %+v", msg.Content.ContentBlocks)
 	}
-	if len(msg.Content.ContentBlocks) != 2 {
-		t.Fatalf("expected 2 content blocks (one per text block), got %d", len(msg.Content.ContentBlocks))
+	if len(msg.Content.ContentBlocks) != 0 {
+		t.Errorf("expected no leftover content blocks, got %d", len(msg.Content.ContentBlocks))
 	}
-	if msg.Content.ContentBlocks[0].Text == nil || *msg.Content.ContentBlocks[0].Text != textBlock1 {
-		t.Errorf("block 0 text mismatch: got %v, want %q", msg.Content.ContentBlocks[0].Text, textBlock1)
+	if want := textBlock1 + textBlock2; *msg.Content.ContentStr != want {
+		t.Errorf("collapsed content = %q, want %q", *msg.Content.ContentStr, want)
 	}
-	if msg.Content.ContentBlocks[1].Text == nil || *msg.Content.ContentBlocks[1].Text != textBlock2 {
-		t.Errorf("block 1 text mismatch: got %v, want %q", msg.Content.ContentBlocks[1].Text, textBlock2)
+	// The thinking text must not leak into the content string - that was the
+	// design reverted in #2287, and ReasoningDetails is where it belongs.
+	if strings.Contains(*msg.Content.ContentStr, thinkingText) {
+		t.Errorf("thinking text leaked into content: %q", *msg.Content.ContentStr)
 	}
 
 	// Thinking is surfaced via ReasoningDetails with the signature preserved
@@ -2135,5 +2138,184 @@ func TestToBifrostChatCompletionStream_MixedToolBlocks(t *testing.T) {
 	}
 	if args[argIdx] != `{"y":2}` {
 		t.Errorf("args accumulated arguments = %q, want %q", args[argIdx], `{"y":2}`)
+	}
+}
+
+// TestToAnthropicChatRequest_PromotesThinkingFromExtraParams pins that Anthropic's
+// native top-level "thinking" object survives the unified /v1/chat/completions
+// route. The unified request schema has no "thinking" field, so it decodes into
+// ChatParameters.ExtraParams — and ExtraParams only reach the wire when the
+// BifrostContextKeyPassthroughExtraParams flag is set (see
+// providerUtils.CheckContextAndGetRequestBody), which the plain unified route does
+// not set. Without an explicit promotion the parameter is silently dropped: the
+// model never thinks, and the response carries no reasoning_details.
+//
+// Promotion routes through the same model-aware mapping as Params.Reasoning rather
+// than copying the caller's object verbatim, because budget_tokens was removed on
+// Opus 4.7+ — a verbatim copy would turn a valid request into an upstream 400.
+//
+// Promotion is deliberately skipped when the ExtraParams passthrough flag is set:
+// there the key already reaches the wire untouched, so rewriting it would silently
+// change bytes that existing passthrough callers depend on. See
+// TestToAnthropicChatRequest_ThinkingPassthroughUnchanged.
+func TestToAnthropicChatRequest_PromotesThinkingFromExtraParams(t *testing.T) {
+	baseRequest := func(model string, extra map[string]interface{}, reasoning *schemas.ChatReasoning) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    model,
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Solve 41*37 and explain your steps.")},
+			}},
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: schemas.Ptr(4096),
+				Reasoning:           reasoning,
+				ExtraParams:         extra,
+			},
+		}
+	}
+
+	enabled2048 := map[string]interface{}{
+		"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": float64(2048)},
+	}
+
+	tests := []struct {
+		name             string
+		model            string
+		extraParams      map[string]interface{}
+		reasoning        *schemas.ChatReasoning
+		wantType         string
+		wantBudgetTokens *int
+		wantDisplay      *string
+	}{
+		{
+			// budget_tokens is still the supported spelling on Sonnet 4.6, so it
+			// maps straight through to thinking.enabled.
+			name:             "enabled with budget_tokens on a budget-tokens model",
+			model:            "claude-sonnet-4-6",
+			extraParams:      enabled2048,
+			wantType:         "enabled",
+			wantBudgetTokens: schemas.Ptr(2048),
+		},
+		{
+			// Opus 4.7+ dropped budget_tokens; adaptive is the only thinking-on
+			// mode, and display defaults to summarized so the text stays visible.
+			name:        "enabled with budget_tokens on an adaptive-only model",
+			model:       "claude-opus-4-7",
+			extraParams: enabled2048,
+			wantType:    "adaptive",
+			wantDisplay: schemas.Ptr("summarized"),
+		},
+		{
+			name:        "explicitly disabled",
+			model:       "claude-sonnet-4-6",
+			extraParams: map[string]interface{}{"thinking": map[string]interface{}{"type": "disabled"}},
+			wantType:    "disabled",
+		},
+		{
+			name:  "adaptive passes through",
+			model: "claude-sonnet-4-6",
+			extraParams: map[string]interface{}{
+				"thinking": map[string]interface{}{"type": "adaptive", "display": "omitted"},
+			},
+			wantType:    "adaptive",
+			wantDisplay: schemas.Ptr("omitted"),
+		},
+		{
+			// An explicit neutral reasoning object is the documented spelling for
+			// this route, so it must win over the Anthropic-native alias.
+			name:             "explicit reasoning wins over thinking",
+			model:            "claude-sonnet-4-6",
+			extraParams:      enabled2048,
+			reasoning:        &schemas.ChatReasoning{MaxTokens: schemas.Ptr(4096)},
+			wantType:         "enabled",
+			wantBudgetTokens: schemas.Ptr(4096),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+
+			result, err := ToAnthropicChatRequest(ctx, baseRequest(tt.model, tt.extraParams, tt.reasoning))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Thinking == nil {
+				t.Fatalf("thinking was dropped: got nil, want type %q", tt.wantType)
+			}
+			if result.Thinking.Type != tt.wantType {
+				t.Errorf("thinking.type = %q, want %q", result.Thinking.Type, tt.wantType)
+			}
+			switch {
+			case tt.wantBudgetTokens == nil && result.Thinking.BudgetTokens != nil:
+				t.Errorf("thinking.budget_tokens = %d, want unset", *result.Thinking.BudgetTokens)
+			case tt.wantBudgetTokens != nil && result.Thinking.BudgetTokens == nil:
+				t.Errorf("thinking.budget_tokens unset, want %d", *tt.wantBudgetTokens)
+			case tt.wantBudgetTokens != nil && *result.Thinking.BudgetTokens != *tt.wantBudgetTokens:
+				t.Errorf("thinking.budget_tokens = %d, want %d", *result.Thinking.BudgetTokens, *tt.wantBudgetTokens)
+			}
+			switch {
+			case tt.wantDisplay == nil && result.Thinking.Display != nil:
+				t.Errorf("thinking.display = %q, want unset", *result.Thinking.Display)
+			case tt.wantDisplay != nil && result.Thinking.Display == nil:
+				t.Errorf("thinking.display unset, want %q", *tt.wantDisplay)
+			case tt.wantDisplay != nil && *result.Thinking.Display != *tt.wantDisplay:
+				t.Errorf("thinking.display = %q, want %q", *result.Thinking.Display, *tt.wantDisplay)
+			}
+			// ExtraParams must be left intact. anthropicReq.ExtraParams aliases the
+			// caller's map (chat.go assigns, it does not copy), so deleting the key
+			// here would strip it from the original request — and a cross-provider
+			// fallback re-converts that same request for the next provider.
+			if _, still := tt.extraParams["thinking"]; !still {
+				t.Error("promotion mutated the caller's ExtraParams; a fallback retry would lose the thinking directive")
+			}
+		})
+	}
+}
+
+// TestToAnthropicChatRequest_ThinkingPassthroughUnchanged pins the backward-compatible
+// half of the promotion above. With BifrostContextKeyPassthroughExtraParams set,
+// ExtraParams are merged onto the wire verbatim by
+// providerUtils.CheckContextAndGetRequestBody, so "thinking" already works and
+// already reaches Anthropic exactly as the caller wrote it. Promotion must not run
+// there: normalising budget_tokens to adaptive would rewrite bytes that existing
+// passthrough callers are relying on today.
+func TestToAnthropicChatRequest_ThinkingPassthroughUnchanged(t *testing.T) {
+	extraParams := map[string]interface{}{
+		"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": float64(2048)},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		// An adaptive-only model: promotion would rewrite budget_tokens here, so
+		// this is where a regression would be visible.
+		Model: "claude-opus-4-7",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: schemas.Ptr(4096),
+			ExtraParams:         extraParams,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Thinking != nil {
+		t.Errorf("thinking was promoted under passthrough (type=%q); the raw ExtraParams merge would then send a second, conflicting thinking object", result.Thinking.Type)
+	}
+	raw, ok := result.ExtraParams["thinking"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("thinking missing from ExtraParams under passthrough: %#v", result.ExtraParams["thinking"])
+	}
+	if raw["type"] != "enabled" || raw["budget_tokens"] != float64(2048) {
+		t.Errorf("passthrough thinking was rewritten: got %#v, want type=enabled budget_tokens=2048", raw)
 	}
 }

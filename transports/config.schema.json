@@ -489,7 +489,20 @@
               },
               "reset_duration": {
                 "type": "string",
-                "description": "Budget reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Y')"
+                "description": "Budget reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Q', '1Y')"
+              },
+              "reset_config": {
+                "type": "object",
+                "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly ('1Q').",
+                "properties": {
+                  "quarter_start_month": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 12,
+                    "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted or 0 means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates: January, April, July and October all reset on calendar quarters and differ only in which quarter is labelled Q1."
+                  }
+                },
+                "additionalProperties": false
               },
               "current_usage": {
                 "type": "number",
@@ -556,6 +569,13 @@
             "required": ["id", "max_limit", "reset_duration"],
             "additionalProperties": false,
             "allOf": [
+              {
+                "if": { "required": ["reset_config"] },
+                "then": {
+                  "required": ["reset_duration"],
+                  "properties": { "reset_duration": { "const": "1Q" } }
+                }
+              },
               {
                 "if": {
                   "not": {
@@ -2653,12 +2673,12 @@
                   "properties": {
                     "service_name": {
                       "type": "string",
-                      "description": "Name of the service to report to Datadog",
+                      "description": "Name of the service to report to Datadog (can use env. prefix)",
                       "default": "bifrost"
                     },
                     "ml_app": {
                       "type": "string",
-                      "description": "ML application name for LLM Observability grouping (defaults to service_name)"
+                      "description": "ML application name for LLM Observability grouping (defaults to service_name, can use env. prefix)"
                     },
                     "agent_addr": {
                       "type": "string",
@@ -2690,11 +2710,11 @@
                     },
                     "env": {
                       "type": "string",
-                      "description": "Environment tag (e.g., production, staging)"
+                      "description": "Environment tag (e.g., production, staging, can use env. prefix)"
                     },
                     "version": {
                       "type": "string",
-                      "description": "Service version tag"
+                      "description": "Service version tag (can use env. prefix)"
                     },
                     "custom_tags": {
                       "type": "object",
@@ -3148,6 +3168,11 @@
           "description": "Whether this profile exports traces and metrics",
           "default": true
         },
+        "traces_enabled": {
+          "type": "boolean",
+          "description": "Enable trace export for this profile. When false, no traces are sent and collector_url is not required, giving a metrics-only profile (pair with metrics_enabled).",
+          "default": true
+        },
         "service_name": {
           "type": "string",
           "description": "Service name to be used for tracing",
@@ -3217,7 +3242,21 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+          "description": "Custom headers sent to both the trace and metrics endpoints. Supports env.VAR_NAME prefix for environment variable substitution."
+        },
+        "trace_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the trace endpoint, overlaid on headers (same key wins). Supports env.VAR_NAME prefix."
+        },
+        "metrics_headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra headers sent only to the metrics endpoint, overlaid on headers (same key wins). Useful when a collector requires a per-signal header, e.g. a Databricks table name. Supports env.VAR_NAME prefix."
         },
         "tls_ca_cert": {
           "type": "string",
@@ -3235,14 +3274,28 @@
       "allOf": [
         {
           "if": {
-            "not": {
-              "properties": {
-                "enabled": {
-                  "const": false
+            "allOf": [
+              {
+                "not": {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["enabled"]
                 }
               },
-              "required": ["enabled"]
-            }
+              {
+                "not": {
+                  "properties": {
+                    "traces_enabled": {
+                      "const": false
+                    }
+                  },
+                  "required": ["traces_enabled"]
+                }
+              }
+            ]
           },
           "then": {
             "required": ["collector_url", "trace_type", "protocol"]
@@ -3258,7 +3311,7 @@
             "required": ["metrics_enabled"]
           },
           "then": {
-            "required": ["metrics_endpoint"]
+            "required": ["metrics_endpoint", "protocol"]
           }
         }
       ],
@@ -4083,6 +4136,38 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "endpoints": {
+                  "type": "object",
+                  "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+                  "properties": {
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-runtime service, which serves all inference (can use env. prefix)"
+                    },
+                    "control_plane": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock service, which serves model listing and batch jobs (can use env. prefix)"
+                    },
+                    "mantle": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-mantle service, which serves mantle-routed models (can use env. prefix)"
+                    },
+                    "agent_runtime": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-agent-runtime service, which serves rerank (can use env. prefix)"
+                    },
+                    "s3": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the s3 service, which serves batch file I/O. Must carry the literal \"bucket.\" prefix, since Bifrost prepends the bucket name to build the virtual-hosted URL. A Gateway endpoint needs no value here (can use env. prefix)"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": ["region"],
@@ -4134,6 +4219,18 @@
                 "project_id": {
                   "type": "string",
                   "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)."
+                },
+                "endpoints": {
+                  "type": "object",
+                  "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+                  "properties": {
+                    "mantle": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-mantle service (can use env. prefix)"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": ["region"],
@@ -4852,14 +4949,22 @@
               "minLength": 1,
               "description": "Resource identifier the exchanged token is scoped to at the identity provider (e.g. 'api://jira-mcp')"
             },
+            "use_idp_credentials": {
+              "type": "boolean",
+              "description": "When true, performs the exchange as the SSO login application itself instead of client_id/client_secret below, which are then ignored. Some providers require this: Microsoft Entra ID's on-behalf-of grant only accepts an assertion audienced to the exchanging application, and Bifrost's SSO login flow always requests a token self-audienced to the SSO application, so a separate exchange application can never receive a usable one."
+            },
             "client_id": {
               "type": "string",
               "minLength": 1,
-              "description": "Identity-provider application authorized to perform exchanges for this audience — a dedicated registration carrying the token-exchange (or on-behalf-of) grant, not the SSO login application. Can use env. or vault. prefix."
+              "description": "Identity-provider application authorized to perform exchanges for this audience — typically a dedicated registration carrying the token-exchange (or on-behalf-of) grant, separate from the SSO login application. Required unless use_idp_credentials is true. Can use env. or vault. prefix."
             },
             "client_secret": {
               "type": "string",
-              "description": "Secret for the exchange application; omit for public clients. Can use env. or vault. prefix."
+              "description": "Secret for the exchange application; omit for public clients. Ignored when use_idp_credentials is true. Can use env. or vault. prefix."
+            },
+            "authorization_server_url": {
+              "type": "string",
+              "description": "Overrides where the exchange request is sent, for identity providers that bind an audience to a specific authorization server distinct from the one used for SSO login (e.g. Okta's per-resource Custom Authorization Servers). Leave empty to use the deployment's SSO login issuer, which is correct for providers with one tenant-wide token endpoint (Entra, Auth0)."
             },
             "scopes": {
               "type": "array",
@@ -4869,7 +4974,25 @@
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' (where the identity provider supports it) so exchanges issue refresh tokens, keeping the retained admin discovery credential self-renewing."
             }
           },
-          "required": ["audience", "client_id"],
+          "required": ["audience"],
+          "allOf": [
+            {
+              "$comment": "client_id is required unless use_idp_credentials is true, in which case the exchange uses the SSO login application's own credentials instead.",
+              "if": {
+                "not": {
+                  "properties": {
+                    "use_idp_credentials": {
+                      "const": true
+                    }
+                  },
+                  "required": ["use_idp_credentials"]
+                }
+              },
+              "then": {
+                "required": ["client_id"]
+              }
+            }
+          ],
           "additionalProperties": false
         },
         "oauth_config": {
@@ -5908,6 +6031,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -5964,6 +6088,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6014,6 +6139,7 @@
           "default": "roles"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"}
@@ -6072,6 +6198,7 @@
           "items": { "type": "string" }
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6121,6 +6248,7 @@
           "default": "groups"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6179,6 +6307,7 @@
           "default": "groups"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6263,6 +6392,7 @@
           "description": "JWT claim field for team IDs"
         },
         "attributeRoleMappings": {"$ref": "#/$defs/scim_attribute_role_mappings"},
+        "roleResolutionStrategy": {"$ref": "#/$defs/scim_role_resolution_strategy"},
         "attributeTeamMappings": {"$ref": "#/$defs/scim_attribute_team_mappings"},
         "attributeBusinessUnitMappings": {"$ref": "#/$defs/scim_attribute_business_unit_mappings"},
         "authProxy": {"$ref": "#/$defs/scim_auth_proxy"},
@@ -6607,6 +6737,21 @@
     },
     "budget_line": {
       "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "required": ["reset_config"]
+          },
+          "then": {
+            "required": ["reset_duration"],
+            "properties": {
+              "reset_duration": {
+                "const": "1Q"
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "id": {
           "type": "string",
@@ -6618,7 +6763,20 @@
         },
         "reset_duration": {
           "type": "string",
-          "description": "Reset window, e.g. \"1M\", \"1h\""
+          "description": "Reset window, e.g. \"1M\", \"1h\", \"1Q\""
+        },
+        "reset_config": {
+          "type": "object",
+          "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+          "properties": {
+            "quarter_start_month": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 12,
+              "description": "First month of Q1 as 1-12, so a fiscal year opening in April (4) gives Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted or 0 means January. Quarter boundaries repeat every three months, so only the value modulo 3 changes the reset dates."
+            }
+          },
+          "additionalProperties": false
         },
         "calendar_aligned": {
           "type": "boolean",
@@ -7564,7 +7722,7 @@
     },
     "scim_attribute_role_mappings": {
       "type": "array",
-      "description": "Ordered list of attribute -> role mappings (first match wins).",
+      "description": "List of attribute -> role mappings. When a user resolves to more than one role (from these mappings, the native roles claim, or group/attribute channels), roleResolutionStrategy decides which single role is assigned: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates this mappings list top to bottom and the first matching rule wins.",
       "items": {
         "type": "object",
         "properties": {
@@ -7584,6 +7742,12 @@
         "required": ["attribute", "value", "role"],
         "additionalProperties": false
       }
+    },
+    "scim_role_resolution_strategy": {
+      "type": "string",
+      "enum": ["highestPermissionCount", "order"],
+      "default": "highestPermissionCount",
+      "description": "How a single role is chosen when a user resolves to more than one role: 'highestPermissionCount' (default) picks the role with the most permissions; 'order' evaluates the attribute-role mappings top to bottom and the first matching rule wins."
     },
     "scim_attribute_team_mappings": {
       "type": "array",

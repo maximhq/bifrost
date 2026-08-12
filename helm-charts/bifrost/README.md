@@ -4,9 +4,20 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.33
+**Latest Version:** 2.1.34
 
 ## Changelog
+
+### 2.1.35
+
+- Added `traces_enabled` to OTEL config (single-profile and `profiles[*]`). When `false`, no traces are exported and `collector_url` is not required, giving a metrics-only profile. Renders into `traces_enabled`; defaults to `true`.
+- Added `trace_headers` and `metrics_headers` to OTEL config (single-profile and `profiles[*]`). Common `headers` still go to both endpoints; these are overlaid on top for the trace / metrics endpoint respectively (same key wins), e.g. a Databricks table name required only on metrics. Render into `trace_headers` / `metrics_headers`.
+- - Documented `env.VAR_NAME` support for the Datadog plugin service-identity fields `bifrost.plugins.datadog.config.service_name`, `ml_app`, `env`, and `version` (render into `service_name`, `ml_app`, `env`, `version`). Values already passed through; this only adds the env-reference guidance to `values.yaml` comments and `values.schema.json` descriptions.
+
+
+### 2.1.34
+
+- Added `bifrost.scim.config.roleResolutionStrategy` (`highestPermissionCount` default, or `order`) to pick a single role when a user matches multiple `attributeRoleMappings` — most-permissioned role vs first match in the list. Passes through into `scim_config.config.roleResolutionStrategy`.
 
 ### 2.1.33
 

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -3266,10 +3267,12 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
 		msg := bifrostMessages[0]
 		msg.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
-		if bedrockMsg := convertBifrostMessageToBedrockMessage(ctx, &msg); bedrockMsg != nil {
-			if len(bedrockMsg.Content) > 0 {
-				return []BedrockMessage{*bedrockMsg}, nil, nil
-			}
+		bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, &msg)
+		if err != nil {
+			return nil, nil, err
+		}
+		if bedrockMsg != nil && len(bedrockMsg.Content) > 0 {
+			return []BedrockMessage{*bedrockMsg}, nil, nil
 		}
 	}
 
@@ -3660,7 +3663,10 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, bifrostMessage
 				}
 			} else {
 				// Convert user/assistant text message
-				bedrockMsg := convertBifrostMessageToBedrockMessage(ctx, &msg)
+				bedrockMsg, err := convertBifrostMessageToBedrockMessage(ctx, &msg)
+				if err != nil {
+					return nil, nil, err
+				}
 				if bedrockMsg != nil {
 					// Prepend buffered server-managed tool blocks (nova_grounding / nova_code_interpreter)
 					// to the assistant message they belong to — they're part of the same turn.
@@ -3982,11 +3988,13 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 }
 
 // convertBifrostMessageToBedrockMessage converts a regular Bifrost message to Bedrock message.
-// The ctx is propagated to URL fetches inside content blocks.
-func convertBifrostMessageToBedrockMessage(ctx context.Context, msg *schemas.ResponsesMessage) *BedrockMessage {
+// The ctx is propagated to URL fetches inside content blocks. A conversion failure
+// (e.g. an image or document URL that can't be fetched) is returned rather than
+// swallowed - dropping the message would send Bedrock a request missing the turn.
+func convertBifrostMessageToBedrockMessage(ctx context.Context, msg *schemas.ResponsesMessage) (*BedrockMessage, error) {
 	// Ensure Content is present
 	if msg.Content == nil {
-		return nil
+		return nil, nil
 	}
 
 	bedrockMsg := BedrockMessage{
@@ -3996,11 +4004,11 @@ func convertBifrostMessageToBedrockMessage(ctx context.Context, msg *schemas.Res
 	// Convert content
 	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx, *msg.Content)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	bedrockMsg.Content = contentBlocks
 
-	return &bedrockMsg
+	return &bedrockMsg, nil
 }
 
 // convertBedrockSystemMessageToBifrostMessages converts a Bedrock system message to Bifrost messages
@@ -4577,46 +4585,91 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 	return outputMessages
 }
 
-// convertBifrostReasoningToBedrockReasoning converts a Bifrost reasoning message to Bedrock reasoning blocks
+// convertBifrostReasoningToBedrockReasoning converts a Bifrost reasoning message to Bedrock reasoning blocks.
+//
+// Every block this emits MUST carry a non-nil Text. BedrockReasoningContentText.Text
+// is `*string json:"text,omitempty"`, so a nil pointer does not serialise as
+// `"text":null` -- the key disappears from the request entirely, and Bedrock Converse
+// answers:
+//
+//	N validation errors detected: Value at 'messages.2.member.content.1.member.
+//	reasoningContent.reasoningText.text' failed to satisfy constraint: Member must not be null
+//
+// once per replayed assistant turn. See reasoning_replay_test.go, which pins the
+// invariant at both the struct and the serialised-wire level.
 func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []BedrockContentBlock {
 	var reasoningBlocks []BedrockContentBlock
 
-	if msg.Content != nil && msg.Content.ContentBlocks != nil {
+	// Track whether the content blocks actually produced reasoning rather than
+	// branching on Content being non-nil. A non-nil but empty ContentBlocks -- or
+	// one holding only non-reasoning blocks -- must fall through to
+	// ResponsesReasoning instead of shadowing it, otherwise the replayed reasoning
+	// is silently dropped. Mirrors toBedrockInvokeAnthropicResponse in invoke.go,
+	// which already guards this on the invoke path.
+	emittedFromContentBlocks := false
+	if msg.Content != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
-				reasoningBlock := BedrockContentBlock{
+				reasoningBlocks = append(reasoningBlocks, BedrockContentBlock{
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
 							Text:      block.Text,
 							Signature: reasoningSignatureForBedrock(block.Signature),
 						},
 					},
-				}
-				reasoningBlocks = append(reasoningBlocks, reasoningBlock)
+				})
+				emittedFromContentBlocks = true
 			}
 		}
-	} else if msg.ResponsesReasoning != nil {
-		if len(msg.ResponsesReasoning.Summary) > 0 {
-			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
-				reasoningBlock := BedrockContentBlock{
-					ReasoningContent: &BedrockReasoningContent{
-						ReasoningText: &BedrockReasoningContentText{
-							Text: &reasoningContent.Text,
-						},
-					},
-				}
-				reasoningBlocks = append(reasoningBlocks, reasoningBlock)
-			}
-		} else if msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
-			reasoningBlock := BedrockContentBlock{
+	}
+	if emittedFromContentBlocks || msg.ResponsesReasoning == nil {
+		return reasoningBlocks
+	}
+
+	// Routed through the helper rather than read directly, so the empty-string
+	// guard matches every other signature site (see reasoningSignatureForBedrock).
+	signature := reasoningSignatureForBedrock(msg.ResponsesReasoning.EncryptedContent)
+
+	if len(msg.ResponsesReasoning.Summary) > 0 {
+		for i, reasoningContent := range msg.ResponsesReasoning.Summary {
+			text := reasoningContent.Text
+			block := BedrockContentBlock{
 				ReasoningContent: &BedrockReasoningContent{
-					ReasoningText: &BedrockReasoningContentText{
-						Signature: msg.ResponsesReasoning.EncryptedContent,
-					},
+					ReasoningText: &BedrockReasoningContentText{Text: &text},
 				},
 			}
-			reasoningBlocks = append(reasoningBlocks, reasoningBlock)
+			// The signature goes on the first block only. Bedrock verifies it
+			// against that block's text, so repeating one signature across several
+			// summary entries would present it as signing text it never signed --
+			// and dropping it entirely, as this branch used to, loses the replay
+			// token the next turn needs.
+			if i == 0 {
+				block.ReasoningContent.ReasoningText.Signature = signature
+			}
+			reasoningBlocks = append(reasoningBlocks, block)
 		}
+		return reasoningBlocks
+	}
+
+	if signature != nil {
+		// A signature with no accompanying thinking text. This is what the
+		// streaming ingress path emits (an empty summary plus the signature in
+		// encrypted_content), so it is what a client faithfully replaying a
+		// streamed turn sends back.
+		//
+		// An empty Text is the only text available here -- the client never
+		// received the prose to replay -- but an ABSENT one is not an option: it
+		// is the difference between a request Bedrock evaluates and one it
+		// rejects outright before reading a token.
+		emptyText := ""
+		reasoningBlocks = append(reasoningBlocks, BedrockContentBlock{
+			ReasoningContent: &BedrockReasoningContent{
+				ReasoningText: &BedrockReasoningContentText{
+					Text:      &emptyText,
+					Signature: signature,
+				},
+			},
+		})
 	}
 
 	return reasoningBlocks
@@ -4669,7 +4722,7 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				// (only from/to model names), so skip it entirely.
 				continue
 			case schemas.ResponsesInputMessageContentBlockTypeFile:
-				if block.ResponsesInputMessageContentBlockFile != nil {
+				if file := block.ResponsesInputMessageContentBlockFile; file != nil {
 					doc := &BedrockDocumentSource{
 						Name:   "document", // Default
 						Format: "pdf",      // Default
@@ -4677,53 +4730,75 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					}
 
 					// Set filename (normalized for Bedrock)
-					if block.ResponsesInputMessageContentBlockFile.Filename != nil {
-						doc.Name = normalizeBedrockFilename(*block.ResponsesInputMessageContentBlockFile.Filename)
+					if file.Filename != nil {
+						doc.Name = normalizeBedrockFilename(*file.Filename)
 					}
 
-					// Determine format: text or PDF based on FileType
-					isTextFile := false
-					if block.ResponsesInputMessageContentBlockFile.FileType != nil {
-						fileType := *block.ResponsesInputMessageContentBlockFile.FileType
-						// Check if it's a text type
-						if fileType == "text/markdown" || fileType == "md" {
-							doc.Format = "md"
-							isTextFile = true
-						} else if fileType == "text/html" || fileType == "html" {
-							doc.Format = "html"
-							isTextFile = true
-						} else if fileType == "text/csv" || fileType == "csv" {
-							doc.Format = "csv"
-							isTextFile = true
-						} else if strings.HasPrefix(fileType, "text/") || fileType == "txt" {
-							doc.Format = "txt"
-							isTextFile = true
-						} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
-							doc.Format = "pdf"
-						} else if strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx" {
-							doc.Format = "xlsx"
-						} else if fileType == "application/vnd.ms-excel" || fileType == "xls" {
-							doc.Format = "xls"
-						} else if strings.Contains(fileType, "wordprocessingml") || fileType == "docx" {
-							doc.Format = "docx"
-						} else if fileType == "application/msword" || fileType == "doc" {
-							doc.Format = "doc"
+					// Parse the data URL once; it carries both the payload and (for
+					// standard OpenAI clients, which have no file_type field) the
+					// document's MIME type.
+					dataURLMediaType, dataURLPayload := "", ""
+					dataURLIsBase64, isDataURL := false, false
+					if file.FileData != nil && strings.HasPrefix(*file.FileData, "data:") {
+						dataURLMediaType, dataURLIsBase64, dataURLPayload, isDataURL = schemas.ParseDataURL(*file.FileData)
+					}
+
+					// Resolve the document format, most authoritative hint first. Falls
+					// back to the "pdf" default only when nothing identifies the document.
+					format, isTextFile := "", false
+					if file.FileType != nil {
+						format, isTextFile, _ = bedrockDocumentFormat(*file.FileType)
+					}
+					if format == "" && isDataURL {
+						format, isTextFile, _ = bedrockDocumentFormat(dataURLMediaType)
+					}
+					if format == "" && file.Filename != nil {
+						if dot := strings.LastIndex(*file.Filename, "."); dot >= 0 {
+							format, isTextFile, _ = bedrockDocumentFormat((*file.Filename)[dot+1:])
 						}
+					}
+					if format != "" {
+						doc.Format = format
+					}
+
+					// URL-sourced document: fetch and inline the bytes (Bedrock Converse
+					// only accepts inline source bytes, not remote URLs).
+					if file.FileURL != nil && *file.FileURL != "" {
+						fetchedMediaType, fetchedB64, fetchErr := providerUtils.FetchAndEncodeURL(ctx, *file.FileURL)
+						if fetchErr != nil {
+							return nil, fetchErr
+						}
+						// Refine format from response Content-Type when present (more
+						// reliable than file extension or upstream-declared media type).
+						if fetchedFormat, _, ok := bedrockDocumentFormat(fetchedMediaType); ok {
+							doc.Format = fetchedFormat
+						}
+						doc.Source.Bytes = &fetchedB64
+						bedrockBlock.Document = doc
+						break
 					}
 
 					// Handle file data
-					if block.ResponsesInputMessageContentBlockFile.FileData != nil {
-						fileData := *block.ResponsesInputMessageContentBlockFile.FileData
+					if file.FileData != nil {
+						fileData := *file.FileData
 
 						// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
-						if strings.HasPrefix(fileData, "data:") {
-							urlInfo := schemas.ExtractURLTypeInfo(fileData)
-							if urlInfo.DataURLWithoutPrefix != nil {
-								// PDF or other binary - keep as base64
-								doc.Source.Bytes = urlInfo.DataURLWithoutPrefix
-								bedrockBlock.Document = doc
-								break
+						if isDataURL {
+							if dataURLIsBase64 {
+								doc.Source.Bytes = &dataURLPayload
+							} else {
+								// Inline percent-encoded payload (data:text/plain,Hello%20World)
+								if decoded, err := url.PathUnescape(dataURLPayload); err == nil {
+									dataURLPayload = decoded
+								}
+								if isTextFile {
+									doc.Source.Text = &dataURLPayload
+								}
+								encoded := base64.StdEncoding.EncodeToString([]byte(dataURLPayload))
+								doc.Source.Bytes = &encoded
 							}
+							bedrockBlock.Document = doc
+							break
 						}
 
 						// Not a data URL - use as-is

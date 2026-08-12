@@ -12,6 +12,8 @@ import { CopyableId } from "@/components/copyableId";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import BudgetUsageResetDialog from "@/components/ui/budgetUsageResetDialog";
+import { useBudgetUsageResetPrompt } from "@/hooks/useBudgetUsageResetPrompt";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -70,6 +72,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	const [nameError, setNameError] = useState<string | null>(null);
 
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
+	// Defers the save until the operator says whether to clear accumulated spend.
+	const resetPrompt = useBudgetUsageResetPrompt<boolean>();
 
 	const hasCreateAccess = useRbac(RbacResource.Customers, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Customers, RbacOperation.Update);
@@ -188,6 +192,19 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		setFormData((prev) => ({ ...prev, [field]: value }));
 	};
 
+	// A budget config change on an existing customer is when clearing accumulated
+	// spend becomes a meaningful choice; creating one has no usage to reset.
+	const budgetsChanged = () => {
+		if (!isEditing || !customer) return false;
+		const signature = (rows: { max_limit?: number | null; reset_duration?: string }[]) =>
+			[...rows]
+				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}`)
+				.sort()
+				.join("|");
+		const next = formData.budgets.filter((b) => b.max_limit !== undefined && b.max_limit !== null);
+		return signature(next) !== signature(customer.budgets ?? []);
+	};
+
 	const handleSubmit = async (e: React.FormEvent) => {
 		e.preventDefault();
 
@@ -196,6 +213,14 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 			return;
 		}
 
+		if (budgetsChanged()) {
+			resetPrompt.ask(true);
+			return;
+		}
+		await saveCustomer(false);
+	};
+
+	const saveCustomer = async (resetBudgetUsage: boolean) => {
 		const budgetRequests: CreateBudgetRequest[] = formData.budgets
 			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
 			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration }));
@@ -206,6 +231,8 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 					name: formData.name,
 					calendar_aligned: formData.calendarAligned,
 					budgets: budgetRequests,
+					// Only sent when the operator explicitly chose to clear spend.
+					reset_budget_usage: resetBudgetUsage || undefined,
 				};
 
 				const hadRateLimit = !!customer.rate_limit;
@@ -310,7 +337,6 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 								label="Budget Limits"
 								lines={formData.budgets}
 								onChange={(lines) => updateField("budgets", lines)}
-								options={resetDurationOptions}
 							/>
 
 							<NumberAndSelect
@@ -378,6 +404,13 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 									</AlertDialogFooter>
 								</AlertDialogContent>
 							</AlertDialog>
+							<BudgetUsageResetDialog
+								data-testid="customer-budget-reset-dialog"
+								ownerLabel="customer"
+								open={resetPrompt.isOpen}
+								onOpenChange={resetPrompt.setOpen}
+								onChoice={(resetUsage) => resetPrompt.resolve(() => saveCustomer(resetUsage))}
+							/>
 						</div>
 					</div>
 

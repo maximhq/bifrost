@@ -719,8 +719,27 @@ if (directRaw && directR1Raw && bifrostR1Raw) {
     pm.test(${J(`Token parity ${backendKey}/${modality.key}: prompt tokens within ${TOLERANCE_PCT}%`)}, function () {
       pm.expect(ptWithinPct(direct.prompt, bifrostReport.prompt, ${TOLERANCE_PCT}), "direct=" + direct.prompt + " bifrost=" + bifrostReport.prompt).to.equal(true);
     });
-    pm.test(${J(`Token parity ${backendKey}/${modality.key}: cached tokens within ${TOLERANCE_PCT}%`)}, function () {
-      pm.expect(ptWithinPct(direct.cached, bifrostReport.cached, ${TOLERANCE_PCT}), "direct=" + direct.cached + " bifrost=" + bifrostReport.cached).to.equal(true);
+    // cached is REPORTED, not asserted, and cannot be otherwise in this suite. No body here sets
+    // a cache_control breakpoint (see the Claude note at the top of this file), so a non-zero
+    // cached count can only come from automatic/implicit caching - and that is unusable as a
+    // parity signal for two independent reasons:
+    //
+    //   1. Implicit caching keys off an exact byte prefix, and the two legs deliberately send
+    //      different bytes. The direct leg posts each backend's native shape while Bifrost
+    //      normalizes every backend onto one payload, so the legs can never share an implicit
+    //      cache entry. Measured: vertex/tools reported direct cached=5764 against bifrost
+    //      cached=0 while the two prompt counts were within 28 tokens - the miss was the
+    //      differing bytes, not a gateway defect.
+    //   2. Implicit caching is best-effort even leg-to-leg. Google promises only to pass on
+    //      savings "if your request hits caches" (https://ai.google.dev/gemini-api/docs/caching),
+    //      and byte-identical repeats measured here alternate between a miss and a full hit.
+    //
+    // Assert what stays invariant regardless of whether a cache engaged - the counter is a real
+    // number and can never exceed the prompt it came from - so a nonsense value is still caught,
+    // and keep both numbers in the TOKEN_PARITY_REPORT below so the matrix still shows them.
+    pm.test(${J(`Token parity ${backendKey}/${modality.key}: cached tokens coherent (implicit cache, cross-leg parity not achievable)`)}, function () {
+      pm.expect(bifrostReport.cached, "bifrost cached=" + bifrostReport.cached).to.be.a("number").that.is.at.least(0);
+      pm.expect(bifrostReport.cached, "bifrost cached=" + bifrostReport.cached + " exceeds prompt=" + bifrostReport.prompt).to.be.at.most(bifrostReport.prompt);
     });
     // Hybrid tolerance on completion: independent short free-text answers naturally differ by a
     // handful of tokens regardless of round (see the completion-noise category in the report
@@ -1141,7 +1160,7 @@ export function buildTokenParityMatrix() {
     name: "Cross-Cut Round 33: Direct-Provider vs Bifrost Token Parity Matrix (generated)",
     description:
       "Generated at harness runtime. Runs the same fixed 3-round conversation against each provider's native API and against Bifrost's own drop-in integration route for that same provider (/openai, /anthropic, /genai, /bedrock) in that provider's native wire shape - not the OpenAI-normalized unified /v1/chat/completions endpoint - then asserts token usage lands in the same range " +
-      `(prompt/cached within ${TOLERANCE_PCT}% of round 1 - the only round with nothing accumulated from either leg's own prior replies; completion within ${TOLERANCE_PCT}% or ${COMPLETION_ABS_FLOOR} tokens of round 3's cumulative usage, whichever is looser). ` +
+      `(prompt within ${TOLERANCE_PCT}% of round 1 - the only round with nothing accumulated from either leg's own prior replies; completion within ${TOLERANCE_PCT}% or ${COMPLETION_ABS_FLOOR} tokens of round 3's cumulative usage, whichever is looser; cached reported but not asserted). ` +
       "reasoning_on/reasoning_on_streaming are reported but not asserted - a thinkingBudget caps how much a model CAN think, not how much it DOES on a given call, so completion swings there reflect real per-call stochasticity, not drift. " +
       "Covers text, tool-calling, streaming, and image/document/audio/video input across openai/anthropic/gemini/vertex/bedrock, plus a second model family each for the two multi-model-family providers (bedrock_openai: gpt-oss-on-Bedrock; vertex_claude: Claude-on-Vertex), minus provider-capability SKIPs (see SKIP matrix in token-parity-matrix.mjs). " +
       "Also covers reasoning explicitly on (fixed budget, not dynamic) and off for gemini/vertex, since Gemini 2.5 thinks by default with a non-deterministic dynamic budget that otherwise dominates completion-token noise. " +

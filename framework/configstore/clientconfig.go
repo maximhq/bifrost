@@ -609,6 +609,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
 			}
+			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
+			if key.BedrockKeyConfig.Endpoints != nil {
+				bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints
+			}
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
 
@@ -635,6 +639,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			// Project ID is an identifier, not a credential — surface it in plaintext.
 			if key.BedrockMantleKeyConfig.ProjectID != nil {
 				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID
+			}
+			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
+			if key.BedrockMantleKeyConfig.Endpoints != nil {
+				mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints
 			}
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
 		}
@@ -1055,6 +1063,19 @@ func GenerateBudgetHash(b tables.TableBudget) (string, error) {
 
 	// Hash ResetDuration
 	hash.Write([]byte(b.ResetDuration))
+
+	// Hash the quarter definition, without which a quarter-start edit in
+	// config.json is invisible to change detection and never reaches the database.
+	//
+	// Read the effective month rather than ResetConfigJSON: this function compares
+	// a budget parsed from config.json against one read from the database, and only
+	// the latter has the blob populated, since BeforeSave has not run on the former.
+	// Hashing the blob would make the two disagree on every comparison and resync
+	// forever. Gating on the duration keeps every non-quarterly budget's digest
+	// byte-identical, so upgrading does not look like a config change.
+	if tables.IsQuarterlyDuration(b.ResetDuration) {
+		hash.Write([]byte(strconv.Itoa(int(b.QuarterStartMonth()))))
+	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

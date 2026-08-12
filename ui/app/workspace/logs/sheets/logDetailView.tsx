@@ -687,7 +687,7 @@ export function LogDetailView({
 	const rawResponse = applyRedactionMapping(log.raw_response, activeOutputRevealMapping);
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
-	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output;
+	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
 	const videoListOutput = log.video_list_output;
 	const pluginLogCount = (() => {
 		if (!log.plugin_logs) return 0;
@@ -1626,6 +1626,66 @@ export function LogDetailView({
 									</div>
 								</>
 							)}
+						</>
+					)}
+					{!isContainer && !isPassthrough && log.guardrail_debug?.judge_calls && log.guardrail_debug.judge_calls.length > 0 && (
+						<>
+							<DottedSeparator />
+							<div className="space-y-4">
+								<BlockHeader title="Guardrail Details" />
+								<div className="space-y-4">
+									{log.guardrail_debug.judge_calls.map((call, index) => (
+										<div
+											key={`${call.rule_id ?? call.rule_name ?? "guardrail"}-${call.guardrail_name ?? "judge"}-${index}`}
+											className={cn("grid w-full grid-cols-1 gap-4 md:grid-cols-3", index > 0 && "border-border border-t pt-4")}
+										>
+											{call.rule_name && <LogEntryDetailsView className="w-full" label="Rule" value={call.rule_name} />}
+											{call.phase && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Phase"
+													value={
+														<Badge variant="secondary" className="uppercase">
+															{call.phase}
+														</Badge>
+													}
+												/>
+											)}
+											{call.action && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Action"
+													value={
+														<Badge variant={call.action === "GUARDRAIL_INTERVENED" ? "destructive" : "success"}>
+															{call.action === "GUARDRAIL_INTERVENED" ? "Blocked" : "Allowed"}
+														</Badge>
+													}
+												/>
+											)}
+											{call.guardrail_name && <LogEntryDetailsView className="w-full" label="Guardrail" value={call.guardrail_name} />}
+											{call.guardrail_provider && (
+												<LogEntryDetailsView className="w-full" label="Guardrail Provider" value={call.guardrail_provider} />
+											)}
+											{call.judge_provider && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Judge Provider"
+													value={
+														<Badge variant="secondary" className="uppercase">
+															{call.judge_provider}
+														</Badge>
+													}
+												/>
+											)}
+											{call.judge_model && <LogEntryDetailsView className="w-full" label="Judge Model" value={call.judge_model} />}
+											<LogEntryDetailsView className="w-full" label="Prompt Tokens" value={call.prompt_tokens ?? 0} />
+											<LogEntryDetailsView className="w-full" label="Completion Tokens" value={call.completion_tokens ?? 0} />
+											<LogEntryDetailsView className="w-full" label="Total Tokens" value={call.total_tokens ?? 0} />
+											{call.reason && <LogEntryDetailsView className="w-full md:col-span-3" label="Reason" value={call.reason} />}
+										</div>
+									))}
+								</div>
+							</div>
 						</>
 					)}
 					{!isContainer &&

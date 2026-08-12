@@ -52,6 +52,10 @@ docker pull maximhq/bifrost:v1.3.9-arm64
 docker run -p 8080:8080 -v $(pwd)/data:/app/data maximhq/bifrost
 ```
 
+<Warning>
+These unversioned commands are for local evaluation. For a hosted or production deployment, pin an image version, enable authentication and TLS, and choose durable storage using the [deployment support matrix](/deployment-guides/overview).
+</Warning>
+
 ### 2. Configuration Flags
 
 | Flag      | Default   | NPX               | Docker                          | Description                          |

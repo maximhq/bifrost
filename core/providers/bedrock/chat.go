@@ -209,9 +209,34 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		}
 	}
 
-	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
-		contentStr = contentBlocks[0].Text
-		contentBlocks = nil
+	// choices[].message.content is a string on the chat completions surface, so
+	// every text block has to fold into one. Converse splits assistant prose into
+	// sibling text blocks whenever a server-side tool interrupts the turn, and
+	// leaving those as an array breaks clients that type the field as a string.
+	//
+	// The all-text guard is load-bearing here: unlike the Anthropic converter,
+	// this one also emits file blocks for document content, which have no string
+	// representation and must keep the array shape.
+	//
+	// The join is empty on purpose: the streaming path forwards each text delta
+	// straight through without inserting a separator, so anything else would make
+	// a streamed response and a non-streamed response of the same turn disagree.
+	if len(contentBlocks) > 0 {
+		allText := true
+		for _, block := range contentBlocks {
+			if block.Type != schemas.ChatContentBlockTypeText || block.Text == nil {
+				allText = false
+				break
+			}
+		}
+		if allText {
+			var joined strings.Builder
+			for _, block := range contentBlocks {
+				joined.WriteString(*block.Text)
+			}
+			contentStr = schemas.Ptr(joined.String())
+			contentBlocks = nil
+		}
 	}
 
 	// Create the message content

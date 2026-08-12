@@ -92,7 +92,8 @@ lines.push("## Direct-Provider vs Bifrost Token Parity Report");
 lines.push("");
 lines.push(
   `Generated from ${fragmentFiles.length} newman process(es), ${merged.length} backend/modality cell(s). ` +
-    `Tolerance: prompt/cached within ${TOLERANCE_PCT}% of round 1; completion within ${TOLERANCE_PCT}% or ${COMPLETION_ABS_FLOOR} tokens of round 3 cumulative, whichever is looser. ` +
+    `Tolerance: prompt within ${TOLERANCE_PCT}% of round 1; completion within ${TOLERANCE_PCT}% or ${COMPLETION_ABS_FLOOR} tokens of round 3 cumulative, whichever is looser. ` +
+    `Cached is reported, not asserted: no body here sets a cache_control breakpoint, so a non-zero count can only come from implicit caching - which is best-effort, and which the two legs cannot share because they deliberately send different bytes (direct posts each backend's native shape, Bifrost normalizes onto one). ` +
     `reasoning_on/reasoning_on_streaming are reported as INFO, not asserted (see token-parity-matrix.mjs). Δ = bifrost - direct.`
 );
 lines.push("");
@@ -173,7 +174,7 @@ if (existsSync(HTML)) {
 </style>
 <div id="token-parity-report">
   <h2>Direct-Provider vs Bifrost Token Parity Report</h2>
-  <p>${fragmentFiles.length} newman process(es), ${merged.length} cell(s), ${totalFail} failing, ${totalInfo} info (not asserted). Tolerance: prompt/cached within ${TOLERANCE_PCT}% of round 1; completion within ${TOLERANCE_PCT}% or ${COMPLETION_ABS_FLOOR} tokens of round 3. Full breakdown: tmp/harness-token-parity.md</p>
+  <p>${fragmentFiles.length} newman process(es), ${merged.length} cell(s), ${totalFail} failing, ${totalInfo} info (not asserted). Tolerance: prompt within ${TOLERANCE_PCT}% of round 1; completion within ${TOLERANCE_PCT}% or ${COMPLETION_ABS_FLOOR} tokens of round 3. Cached is reported, not asserted (implicit caching; the legs send different bytes by design). Full breakdown: tmp/harness-token-parity.md</p>
   <table>
     <thead><tr>
       <th>Backend</th><th>Modality</th>

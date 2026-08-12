@@ -1,6 +1,20 @@
 # Schemas for Access Profile management.
 
-ResetDuration:
+# Budgets and rate limits no longer share a reset-duration enum: quarterly
+# windows exist only for budgets, because the governance store has no notion of
+# a quarterly token or request limit.
+BudgetResetDuration:
+  type: string
+  enum:
+    - 1h
+    - 1d
+    - 1w
+    - 1M
+    - 1Q
+    - 1Y
+  description: Reset duration for a budget.
+
+RateLimitResetDuration:
   type: string
   enum:
     - 1h
@@ -8,7 +22,25 @@ ResetDuration:
     - 1w
     - 1M
     - 1Y
-  description: Reset duration for a budget or rate limit.
+  description: Reset duration for a rate limit.
+
+BudgetResetConfig:
+  type: object
+  description: >-
+    Window settings the reset duration cannot express. Only valid when
+    reset_duration is quarterly (`1Q`); the API rejects it on any other window.
+  properties:
+    quarter_start_month:
+      type: integer
+      minimum: 1
+      maximum: 12
+      description: >-
+        First month of Q1 as 1-12, so a fiscal year opening in April (4) gives
+        Apr-Jun / Jul-Sep / Oct-Dec / Jan-Mar. Omitted means January. Quarter
+        boundaries repeat every three months, so only the value modulo 3 changes
+        the reset dates: January, April, July and October all reset on calendar
+        quarters and differ only in which quarter is labelled Q1.
+  additionalProperties: false
 
 Budget:
   type: object
@@ -23,7 +55,9 @@ Budget:
       type: number
       description: Cap in dollars (or tokens, depending on configured pricing).
     reset_duration:
-      $ref: '#/ResetDuration'
+      $ref: '#/BudgetResetDuration'
+    reset_config:
+      $ref: '#/BudgetResetConfig'
     scope:
       type: string
       description: Set server-side. `total` for global budgets, `provider:<name>` for per-provider budgets.
@@ -45,12 +79,12 @@ RateLimit:
       type: number
       nullable: true
     token_reset_duration:
-      $ref: '#/ResetDuration'
+      $ref: '#/RateLimitResetDuration'
     request_max_limit:
       type: number
       nullable: true
     request_reset_duration:
-      $ref: '#/ResetDuration'
+      $ref: '#/RateLimitResetDuration'
     token_current_usage:
       type: number
       readOnly: true

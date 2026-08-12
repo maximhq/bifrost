@@ -1,5 +1,7 @@
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
+import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
+import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
 	AlertDialog,
@@ -11,12 +13,10 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
-import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
-import { TeamSelector } from "@/components/entitySelectors/teamSelector";
 import { Button } from "@/components/ui/button";
-import { DateTimePicker } from "@/components/ui/datePickerWithRange";
 import { ComboboxSelect } from "@/components/ui/combobox";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
+import { DateTimePicker } from "@/components/ui/datePickerWithRange";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,6 +35,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
+import { getUserPicker } from "@/lib/registries/userPicker";
 import {
 	getErrorMessage,
 	useCreateVirtualKeyMutation,
@@ -42,21 +43,33 @@ import {
 	useGetMCPClientsQuery,
 	useGetProvidersQuery,
 	useGetTeamQuery,
-	useRotateVirtualKeyMutation,
 	useRemoveVirtualKeyBudgetOverrideMutation,
+	useRotateVirtualKeyMutation,
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
-import { formatCurrency, getEffectiveBudgetLimit, hasActiveBudgetOverride, parseResetPeriod } from "@/lib/utils/governance";
+import {
+	type BudgetComparisonEntry,
+	budgetSignature,
+	formatCurrency,
+	getEffectiveBudgetLimit,
+	hasActiveBudgetOverride,
+	parseResetPeriod,
+	quarterStartOf,
+} from "@/lib/utils/governance";
 import ManagedVirtualKeyActions from "@enterprise/components/access-profiles/managedVirtualKeyActions";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useAttachVirtualKeyUsersMutation, useDetachVirtualKeyUserMutation } from "@enterprise/lib/store/apis/virtualKeyUsersApi";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
 import { Info, Lock, RotateCcw, Trash2, Users } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+// Side-effect import: registers the enterprise user picker so "Assign to User"
+// becomes available. Resolves to an empty module on OSS builds.
+import "@enterprise/lib/registrations/userPicker";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -85,6 +98,9 @@ const providerConfigSchema = z.object({
 				id: z.string().optional(),
 				max_limit: z.number().nonnegative().optional(),
 				reset_duration: z.string().optional(),
+				// Zod strips unknown keys, so the fiscal quarter has to be declared
+				// here or it is erased from form state on every parse.
+				reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 			}),
 		)
 		.optional(),
@@ -112,9 +128,12 @@ const formSchema = z
 		description: z.string().optional(),
 		providerConfigs: z.array(providerConfigSchema).optional(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
-		entityType: z.enum(["team", "customer", "none"]),
+		entityType: z.enum(["team", "customer", "user", "none"]),
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
+		// Enterprise-only: a VK can be attached to at most one user, via the
+		// separate /virtual-keys/{id}/users endpoint rather than the VK payload.
+		userId: z.string().optional(),
 		isActive: z.boolean(),
 		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
 		// Budget
@@ -125,6 +144,7 @@ const formSchema = z
 					id: z.string().optional(),
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string(),
+					reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 				}),
 			)
 			.optional(),
@@ -145,20 +165,31 @@ const formSchema = z
 			if (data.entityType === "customer") {
 				return data.customerId && data.customerId.trim() !== "";
 			}
+			// If entityType is "user", userId must be provided and not empty
+			if (data.entityType === "user") {
+				return data.userId && data.userId.trim() !== "";
+			}
 			return true;
 		},
 		{
-			message: "Please select a valid team or customer when assignment type is chosen",
+			message: "Please select a valid team, customer, or user when assignment type is chosen",
 			path: ["entityType"], // This will show the error on the entityType field
 		},
 	);
 
 type FormData = z.infer<typeof formSchema>;
-type BudgetComparisonEntry = {
-	id?: string;
-	max_limit?: number;
-	reset_duration?: string;
-	current_usage?: number;
+
+/**
+ * Why the save dialog is asking about existing usage.
+ *
+ * The two cases need different copy: "over-limit" means the recorded spend already
+ * meets or exceeds the new cap, while "quarter-shift" only means the reset boundary
+ * moved under a live budget - which fires at any usage above zero, so labelling it
+ * as over-limit would misdescribe a budget that is nowhere near its cap.
+ */
+type BudgetUsageWarning = {
+	kind: "over-limit" | "quarter-shift";
+	message: string;
 };
 
 const pad2 = (n: number) => n.toString().padStart(2, "0");
@@ -246,6 +277,11 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	// of assignees — directly-attached users don't imply an access-profile relation.
 	const { assignedUsers, isManagedByProfile: isManagedByProfileHook, managingProfile } = useVirtualKeyUsage(virtualKey);
 	const isManagedByProfile = isEditing && isManagedByProfileHook;
+	// User assignment is enterprise-only: OSS registers no picker, so the option stays hidden.
+	const UserPicker = getUserPicker();
+	// A VK can have at most one user (enforced by a unique index server-side).
+	const assignedUserId = assignedUsers[0]?.id ?? "";
+	const assignedUserLabel = assignedUsers[0]?.name || assignedUsers[0]?.email || assignedUserId;
 	// Team attachment: when creating from a team context (defaultTeamId provided), the entity
 	// assignment is pre-set and locked. When editing an existing VK the assignment can be changed.
 	const attachedTeamId = isEditing ? virtualKey?.team_id || "" : defaultTeamId || "";
@@ -270,11 +306,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
 	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
+	const [attachVirtualKeyUsers, { isLoading: isAttachingUser }] = useAttachVirtualKeyUsersMutation();
+	const [detachVirtualKeyUser, { isLoading: isDetachingUser }] = useDetachVirtualKeyUserMutation();
 	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
 	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
 	const { data: mcpClientsResponse, error: mcpClientsError } = useGetMCPClientsQuery();
 	const mcpClientsData = mcpClientsResponse?.clients || [];
-	const isLoading = isCreating || isUpdating || isRotating;
+	const isLoading = isCreating || isUpdating || isRotating || isAttachingUser || isDetachingUser;
 	const persistedOverrideBudgets = [
 		...(virtualKey?.budgets ?? []).map((budget) => ({
 			budget,
@@ -317,14 +355,15 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						id: b.id,
 						max_limit: b.max_limit,
 						reset_duration: b.reset_duration,
+						reset_config: b.reset_config,
 					})),
 					rate_limit: config.rate_limit
 						? {
-								token_max_limit: config.rate_limit.token_max_limit ?? undefined,
-								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit: config.rate_limit.request_max_limit ?? undefined,
-								request_reset_duration: config.rate_limit.request_reset_duration,
-							}
+							token_max_limit: config.rate_limit.token_max_limit ?? undefined,
+							token_reset_duration: config.rate_limit.token_reset_duration,
+							request_max_limit: config.rate_limit.request_max_limit ?? undefined,
+							request_reset_duration: config.rate_limit.request_reset_duration,
+						}
 						: undefined,
 				})) || [],
 			mcpConfigs:
@@ -336,20 +375,23 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			entityType: virtualKey?.team_id ? "team" : virtualKey?.customer_id ? "customer" : !isEditing && defaultTeamId ? "team" : "none",
 			teamId: virtualKey?.team_id || (!isEditing ? defaultTeamId || "" : ""),
 			customerId: virtualKey?.customer_id || "",
+			// The attached user arrives from a separate request; synced in below once it loads.
+			userId: "",
 			isActive: virtualKey?.is_active ?? true,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
-						const d = new Date(virtualKey.expires_at);
-						return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-					})()
+					const d = new Date(virtualKey.expires_at);
+					return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+				})()
 				: null,
 			budgets:
 				virtualKey?.budgets && virtualKey.budgets.length > 0
 					? virtualKey.budgets.map((b) => ({
-							id: b.id,
-							max_limit: b.max_limit,
-							reset_duration: b.reset_duration ?? "1M",
-						}))
+						id: b.id,
+						max_limit: b.max_limit,
+						reset_duration: b.reset_duration ?? "1M",
+						reset_config: b.reset_config,
+					}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ?? undefined,
@@ -380,18 +422,36 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		}
 	}, [mcpClientsError]);
 
-	// Clear team/customer IDs when entityType changes to "none"
+	// Clear the ids that don't belong to the selected entity type
 	useEffect(() => {
 		const entityType = form.watch("entityType");
 		if (entityType === "none") {
 			form.setValue("teamId", "", { shouldDirty: true });
 			form.setValue("customerId", "", { shouldDirty: true });
+			form.setValue("userId", "", { shouldDirty: true });
 		} else if (entityType === "team") {
 			form.setValue("customerId", "", { shouldDirty: true });
+			form.setValue("userId", "", { shouldDirty: true });
 		} else if (entityType === "customer") {
 			form.setValue("teamId", "", { shouldDirty: true });
+			form.setValue("userId", "", { shouldDirty: true });
+		} else if (entityType === "user") {
+			form.setValue("teamId", "", { shouldDirty: true });
+			form.setValue("customerId", "", { shouldDirty: true });
 		}
 	}, [form.watch("entityType"), form]);
+
+	// The VK-user association is fetched separately from the VK itself, so it can't be part of
+	// defaultValues. Seed it once when it arrives, and only if the user hasn't already touched the
+	// assignment (their in-progress edit must win over a late-arriving response).
+	const didSyncAssignedUser = useRef(false);
+	useEffect(() => {
+		if (didSyncAssignedUser.current || !isEditing || !assignedUserId) return;
+		didSyncAssignedUser.current = true;
+		if (form.formState.dirtyFields.entityType || form.getValues("entityType") !== "none") return;
+		form.setValue("entityType", "user");
+		form.setValue("userId", assignedUserId);
+	}, [assignedUserId, isEditing, form]);
 
 	// Provider configuration state
 	const [selectedProvider, setSelectedProvider] = useState<string>("");
@@ -490,7 +550,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 	const [showRotateWarning, setShowRotateWarning] = useState(false);
 	const [showBudgetResetPrompt, setShowBudgetResetPrompt] = useState(false);
 	const [pendingBudgetResetData, setPendingBudgetResetData] = useState<FormData | null>(null);
-	const [pendingBudgetUsageWarning, setPendingBudgetUsageWarning] = useState<string | null>(null);
+	const [pendingBudgetUsageWarning, setPendingBudgetUsageWarning] = useState<BudgetUsageWarning | null>(null);
 
 	const handleCalendarAlignedChange = (checked: boolean) => {
 		if (checked && isEditing) {
@@ -540,16 +600,9 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 		}));
 	};
 
-	const budgetSignature = (budgets?: BudgetComparisonEntry[]) =>
-		(budgets || [])
-			.filter((budget) => budget.max_limit !== undefined)
-			.map((budget) => `${budget.id ?? ""}:${budget.max_limit}:${budget.reset_duration ?? ""}`)
-			.sort()
-			.join("|");
-
 	const parseResetDurationMs = (duration?: string) => {
 		if (!duration) return null;
-		const match = duration.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d|w|M|Y)$/);
+		const match = duration.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d|w|M|Q|Y)$/);
 		if (!match) return null;
 		const amount = Number(match[1]);
 		const unit = match[2];
@@ -561,6 +614,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			d: 24 * 60 * 60 * 1000,
 			w: 7 * 24 * 60 * 60 * 1000,
 			M: 30 * 24 * 60 * 60 * 1000,
+			Q: 90 * 24 * 60 * 60 * 1000,
 			Y: 365 * 24 * 60 * 60 * 1000,
 		};
 		return amount * multipliers[unit];
@@ -600,7 +654,20 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 				const configChanged = existing.max_limit !== budget.max_limit || existing.reset_duration !== budget.reset_duration;
 				const usage = existing.current_usage ?? 0;
 				if (configChanged && usage >= budget.max_limit) {
-					return `${scopeLabel} ${budget.reset_duration} budget has ${formatBudgetAmount(usage)} usage, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`;
+					return {
+						kind: "over-limit" as const,
+						message: `${scopeLabel} ${budget.reset_duration} budget has ${formatBudgetAmount(usage)} usage, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`,
+					};
+				}
+				// Moving the fiscal quarter moves the reset boundary under a live budget.
+				// Spend is deliberately carried into the new quarter rather than forgiven,
+				// so surface it before saving instead of letting the number reappear
+				// unexplained against a window the operator did not think they had started.
+				if (budget.reset_duration.endsWith("Q") && quarterStartOf(existing) !== quarterStartOf(budget) && usage > 0) {
+					return {
+						kind: "quarter-shift" as const,
+						message: `${scopeLabel} quarterly budget has ${formatBudgetAmount(usage)} of usage. Changing the fiscal quarter moves the reset date and carries that spend into the new quarter.`,
+					};
 				}
 				reconciled.push({ ...budget, current_usage: usage });
 				continue;
@@ -620,7 +687,10 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			}, null);
 			const inheritedUsage = closestShorter?.current_usage ?? 0;
 			if (inheritedUsage >= budget.max_limit) {
-				return `${scopeLabel} ${budget.reset_duration} budget will inherit ${formatBudgetAmount(inheritedUsage)} from the ${closestShorter?.reset_duration} budget, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`;
+				return {
+					kind: "over-limit" as const,
+					message: `${scopeLabel} ${budget.reset_duration} budget will inherit ${formatBudgetAmount(inheritedUsage)} from the ${closestShorter?.reset_duration} budget, which meets or exceeds the new ${formatBudgetAmount(budget.max_limit)} limit.`,
+				};
 			}
 			reconciled.push({ ...budget, current_usage: inheritedUsage });
 		}
@@ -739,6 +809,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 			const normalizedProviderConfigs = data.providerConfigs
 				? normalizeProviderConfigs(data.providerConfigs, virtualKey?.provider_configs)
 				: [];
+
+			// User assignment lives on its own endpoint (POST/DELETE /virtual-keys/{id}/users) —
+			// the same one the user detail sheet uses — so it is applied alongside the VK payload,
+			// never inside it. Team/customer are mutually exclusive with it and get cleared.
+			const targetUserId = data.entityType === "user" ? (data.userId || "").trim() : "";
+			const clearsEntity = data.entityType === "none" || data.entityType === "user";
+
 			if (isEditing && virtualKey) {
 				// Update existing virtual key
 				// Only include expires_at when the user actually changed the expiry field
@@ -759,22 +836,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					description: data.description,
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
-					team_id:
-						assignedUsers.length > 0
-							? undefined
-							: data.entityType === "team" && data.teamId && data.teamId.trim() !== ""
-								? data.teamId
-								: data.entityType === "none"
-									? null
-									: undefined,
+					team_id: data.entityType === "team" && data.teamId && data.teamId.trim() !== "" ? data.teamId : clearsEntity ? null : undefined,
 					customer_id:
-						assignedUsers.length > 0
-							? undefined
-							: data.entityType === "customer" && data.customerId && data.customerId.trim() !== ""
-								? data.customerId
-								: data.entityType === "none"
-									? null
-									: undefined,
+						data.entityType === "customer" && data.customerId && data.customerId.trim() !== ""
+							? data.customerId
+							: clearsEntity
+								? null
+								: undefined,
 					is_active: data.isActive,
 					calendar_aligned: data.budgetCalendarAligned,
 					reset_budget_usage: resetBudgetUsage,
@@ -783,7 +851,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+					(b): b is { id?: string; max_limit: number; reset_duration: string; reset_config?: { quarter_start_month?: number } } =>
+						b.max_limit !== undefined,
 				);
 				const hadBudget = virtualKey.budgets && virtualKey.budgets.length > 0;
 				if (validBudgets.length > 0) {
@@ -812,6 +881,20 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					vkId: virtualKey.id,
 					data: updateData,
 				}).unwrap();
+
+				// Apply the user assignment after the VK payload, so a key moving from a team to a
+				// user has its team cleared before the attach lands.
+				if (targetUserId !== assignedUserId) {
+					if (assignedUserId) {
+						await detachVirtualKeyUser({ vkId: virtualKey.id, userId: assignedUserId }).unwrap();
+					}
+					if (targetUserId) {
+						await attachVirtualKeyUsers({
+							vkId: virtualKey.id,
+							data: { user_ids: [targetUserId], preserve_usage: false },
+						}).unwrap();
+					}
+				}
 				toast.success("Virtual key updated successfully");
 			} else {
 				// Create new virtual key
@@ -831,7 +914,8 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { id?: string; max_limit: number; reset_duration: string } => b.max_limit !== undefined,
+					(b): b is { id?: string; max_limit: number; reset_duration: string; reset_config?: { quarter_start_month?: number } } =>
+						b.max_limit !== undefined,
 				);
 				if (validBudgets.length > 0) {
 					createData.budgets = validBudgets;
@@ -849,7 +933,23 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 					};
 				}
 
-				await createVirtualKey(createData).unwrap();
+				const created = await createVirtualKey(createData).unwrap();
+				if (targetUserId) {
+					// The key exists at this point; surface the assignment failure separately so the
+					// user knows the key was created but is unassigned.
+					try {
+						await attachVirtualKeyUsers({
+							vkId: created.virtual_key.id,
+							data: { user_ids: [targetUserId], preserve_usage: false },
+						}).unwrap();
+					} catch (error) {
+						toast.error("Virtual key created, but assigning it to the user failed", {
+							description: getErrorMessage(error),
+						});
+						onSave();
+						return;
+					}
+				}
 				toast.success("Virtual key created successfully");
 			}
 
@@ -925,17 +1025,6 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 										assignment is pre-set; all other fields are editable.
 									</AlertDescription>
 								</Alert>
-							)}
-
-							{/* Assigned User */}
-							{assignedUsers.length > 0 && (
-								<div className="space-y-1">
-									<Label className="text-sm font-medium">Assigned To</Label>
-									<div className="flex items-center gap-2">
-										<Users className="text-muted-foreground h-4 w-4" />
-										<span className="text-sm">{assignedUsers.map((u) => u.name || u.email).join(", ")}</span>
-									</div>
-								</div>
 							)}
 
 							{/* Basic Information */}
@@ -1126,6 +1215,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																	id: l.id,
 																	max_limit: l.max_limit,
 																	reset_duration: l.reset_duration,
+																	reset_config: l.reset_config,
 																})),
 																rate_limit: next.rateLimit ?? undefined,
 															};
@@ -1566,31 +1656,29 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 																value: "customer",
 																label: "Assign to Customer",
 															},
+															// Enterprise-only; also kept visible when the VK is already
+															// user-assigned so the current state is never mislabelled.
+															...(UserPicker || field.value === "user" ? [{ value: "user", label: "Assign to User" }] : []),
 														]}
 														value={field.value}
 														onValueChange={(value) => {
 															const val = value ?? "none";
 															field.onChange(val);
-															// Switching type clears both ids and lets the user pick;
+															// Switching type clears the other ids and lets the user pick;
 															// there is no entity list loaded to default from.
 															// Defer validation until submit or until an entity is chosen —
 															// eager trigger left a stuck refine error on entityType.
 															form.setValue("teamId", "", { shouldDirty: true });
 															form.setValue("customerId", "", { shouldDirty: true });
-															form.clearErrors(["entityType", "teamId", "customerId"]);
+															form.setValue("userId", "", { shouldDirty: true });
+															form.clearErrors(["entityType", "teamId", "customerId", "userId"]);
 														}}
-														disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
+														disabled={isTeamLocked}
 														disableSearch
 														hideClear
 														className="h-9"
 													/>
-													{isEditing && assignedUsers.length > 0 ? (
-														<p className="text-muted-foreground text-xs">
-															This key is assigned to a user. Detach the user first to change the assignment type.
-														</p>
-													) : (
-														<FormMessage />
-													)}
+													<FormMessage />
 												</FormItem>
 											)}
 										/>
@@ -1620,12 +1708,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															fallbackOption={
 																field.value
 																	? {
-																			value: field.value,
-																			label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
-																		}
+																		value: field.value,
+																		label: field.value === virtualKey?.team_id ? (virtualKey?.team?.name ?? field.value) : field.value,
+																	}
 																	: null
 															}
-															disabled={isTeamLocked || (isEditing && assignedUsers.length > 0)}
+															disabled={isTeamLocked}
 															triggerClassName="h-9"
 														/>
 														<FormMessage />
@@ -1650,13 +1738,43 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 															fallbackOption={
 																field.value
 																	? {
-																			value: field.value,
-																			label:
-																				field.value === virtualKey?.customer_id ? (virtualKey?.customer?.name ?? field.value) : field.value,
-																		}
+																		value: field.value,
+																		label:
+																			field.value === virtualKey?.customer_id ? (virtualKey?.customer?.name ?? field.value) : field.value,
+																	}
 																	: null
 															}
-															disabled={isEditing && assignedUsers.length > 0}
+															triggerClassName="h-9"
+														/>
+														<FormMessage />
+													</FormItem>
+												)}
+											/>
+										)}
+
+										{form.watch("entityType") === "user" && UserPicker && (
+											<FormField
+												control={form.control}
+												name="userId"
+												render={({ field }) => (
+													<FormItem>
+														<FormLabel className="font-normal">Select User</FormLabel>
+														<UserPicker
+															value={field.value || ""}
+															onChange={(val) => {
+																field.onChange(val);
+																void form.trigger("entityType");
+															}}
+															// The attached user may fall outside the picker's first
+															// page; seed the label resolved from the association.
+															fallbackOption={
+																field.value
+																	? {
+																		value: field.value,
+																		label: field.value === assignedUserId ? assignedUserLabel : field.value,
+																	}
+																	: null
+															}
 															triggerClassName="h-9"
 														/>
 														<FormMessage />
@@ -1665,6 +1783,12 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											/>
 										)}
 									</div>
+									{form.watch("entityType") === "user" && (
+										<p className="text-muted-foreground text-xs">
+											A virtual key can be assigned to only one user. If that user has an access profile, the key is adopted into it and
+											becomes profile-managed.
+										</p>
+									)}
 								</div>
 							</fieldset>
 						</div>
@@ -1689,10 +1813,16 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 						<AlertDialog open={showBudgetResetPrompt} onOpenChange={setShowBudgetResetPrompt}>
 							<AlertDialogContent data-testid="vk-budget-reset-dialog">
 								<AlertDialogHeader>
-									<AlertDialogTitle>{pendingBudgetUsageWarning ? "Preserve over-limit usage?" : "Reset budget usage?"}</AlertDialogTitle>
+									<AlertDialogTitle>
+										{pendingBudgetUsageWarning?.kind === "over-limit"
+											? "Preserve over-limit usage?"
+											: pendingBudgetUsageWarning?.kind === "quarter-shift"
+												? "Carry usage into the new quarter?"
+												: "Reset budget usage?"}
+									</AlertDialogTitle>
 									<AlertDialogDescription>
 										{pendingBudgetUsageWarning
-											? `${pendingBudgetUsageWarning} You can preserve usage anyway, or reset usage to 0.`
+											? `${pendingBudgetUsageWarning.message} You can preserve usage anyway, or reset usage to 0.`
 											: "You changed a budget amount, reset frequency, or calendar alignment. Reset current budget usage to 0, or preserve the existing usage counters."}
 									</AlertDialogDescription>
 								</AlertDialogHeader>

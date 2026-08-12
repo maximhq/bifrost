@@ -9,23 +9,23 @@ require (
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/go-git/go-billy/v5 v5.9.0
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.7.5
-	github.com/maximhq/bifrost/framework v1.5.5
-	github.com/maximhq/bifrost/plugins/compat v0.1.31
-	github.com/maximhq/bifrost/plugins/governance v1.6.9
-	github.com/maximhq/bifrost/plugins/logging v1.6.5
-	github.com/maximhq/bifrost/plugins/maxim v1.6.32
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.13
-	github.com/maximhq/bifrost/plugins/otel v1.4.4
-	github.com/maximhq/bifrost/plugins/prompts v1.0.32
-	github.com/maximhq/bifrost/plugins/semanticcache v1.5.32
-	github.com/maximhq/bifrost/plugins/telemetry v1.5.32
+	github.com/maximhq/bifrost/core v1.7.7
+	github.com/maximhq/bifrost/framework v1.5.7
+	github.com/maximhq/bifrost/plugins/compat v0.1.33
+	github.com/maximhq/bifrost/plugins/governance v1.6.11
+	github.com/maximhq/bifrost/plugins/logging v1.6.7
+	github.com/maximhq/bifrost/plugins/maxim v1.6.34
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.0.15
+	github.com/maximhq/bifrost/plugins/otel v1.4.6
+	github.com/maximhq/bifrost/plugins/prompts v1.0.34
+	github.com/maximhq/bifrost/plugins/semanticcache v1.5.34
+	github.com/maximhq/bifrost/plugins/telemetry v1.5.34
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/prometheus/client_golang v1.23.2
@@ -35,8 +35,8 @@ require (
 	github.com/tidwall/gjson v1.18.0
 	github.com/valyala/fasthttp v1.71.0
 	go.uber.org/automaxprocs v1.6.0
-	golang.org/x/sync v0.20.0
-	golang.org/x/text v0.37.0
+	golang.org/x/sync v0.21.0
+	golang.org/x/text v0.39.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
 )
@@ -152,7 +152,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.5.32 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.5.34 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
@@ -221,11 +221,11 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/api v0.282.0 // indirect
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect

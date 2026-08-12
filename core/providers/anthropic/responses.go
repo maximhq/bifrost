@@ -6212,7 +6212,13 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 	var thinkingBlocks []AnthropicContentBlock
 	embedID := providerUtils.ShouldEmbedReasoningItemID(ctx, sourceProvider, model)
 
-	if msg.Content != nil && msg.Content.ContentBlocks != nil {
+	// Track whether the content blocks actually yielded reasoning rather than
+	// branching on Content being non-nil. `ContentBlocks != nil` is true for an
+	// EMPTY but non-nil slice -- and for one holding only non-reasoning blocks --
+	// so an else-if here shadowed the carefully hardened fallback below and
+	// dropped the replayed reasoning without a word.
+	emittedFromContentBlocks := false
+	if msg.Content != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
 				// signature is required by the Agent SDK; converted (non-Anthropic) reasoning
@@ -6231,9 +6237,11 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 					Signature: signature,
 				}
 				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
+				emittedFromContentBlocks = true
 			}
 		}
-	} else if msg.ResponsesReasoning != nil {
+	}
+	if !emittedFromContentBlocks && msg.ResponsesReasoning != nil {
 		// Redacted-only reasoning items carry an EMPTY (non-nil) summary list next
 		// to encrypted_content, in both the streaming and non-streaming converters,
 		// so gate on the list having entries rather than on nil: a nil-check sends
