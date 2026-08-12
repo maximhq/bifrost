@@ -541,6 +541,7 @@
               "features/observability/kafka",
               "features/observability/bigquery",
               "features/observability/pubsub",
+              "features/observability/splunk",
               "features/observability/content-logging"
             ]
           },
