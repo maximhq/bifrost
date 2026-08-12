@@ -233,18 +233,23 @@ export function HeadersTable<T extends HeaderValue>({
 							const isHighlighted = highlightedRow === index;
 							const isEmptyTrailingRow = index === rows.length - 1 && key === "" && isValueEmpty(headerValue);
 
-							// Offer the Bearer/Basic prefix helper only for the
-							// Authorization row, and only when we're rendering the
-							// default SecretVar value input (a caller-supplied
-							// renderValueInput owns its own UI instead).
-							const showAuthSchemeSelector = !renderValueInput && isHeaderSecretVar && key.trim().toLowerCase() === "authorization";
+							// Offer the Bearer/Basic prefix helper for the Authorization
+							// row regardless of whether this table stores SecretVars or
+							// plain strings, and only when we're rendering the default
+							// value input (a caller-supplied renderValueInput owns its
+							// own UI instead).
+							const showAuthSchemeSelector = !renderValueInput && key.trim().toLowerCase() === "authorization";
 							const isRefValue = isHeaderSecretVar && !!(headerValue as SecretVar).ref;
 							const authScheme = showAuthSchemeSelector ? detectAuthScheme(getDisplayValue(headerValue)) : "none";
 
 							const handleAuthSchemeChange = (newScheme: string) => {
 								const stripped = stripAuthScheme(getDisplayValue(headerValue));
 								const nextValue = newScheme === "none" ? stripped : `${newScheme} ${stripped}`;
-								handleValueChange(key, { ...(headerValue as SecretVar), value: nextValue, ref: "" }, index);
+								if (isHeaderSecretVar) {
+									handleValueChange(key, { ...(headerValue as SecretVar), value: nextValue, ref: "" }, index);
+								} else {
+									handleValueChange(key, nextValue, index);
+								}
 							};
 
 							return (
@@ -338,6 +343,38 @@ export function HeadersTable<T extends HeaderValue>({
 																: secretVar,
 															index,
 														)
+													}
+													onKeyDown={(e) => handleKeyDown(e, index, "value")}
+													className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+													disabled={disabled}
+												/>
+											</div>
+										) : showAuthSchemeSelector ? (
+											<div className="flex items-center gap-1">
+												<Select value={authScheme} onValueChange={handleAuthSchemeChange} disabled={disabled}>
+													<SelectTrigger
+														size="sm"
+														className="w-[92px] shrink-0 border-0 text-xs focus-visible:ring-0 focus-visible:ring-offset-0"
+														data-testid={`header-auth-scheme-${index}`}
+													>
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="none">Raw</SelectItem>
+														{AUTH_SCHEMES.map((scheme) => (
+															<SelectItem key={scheme} value={scheme}>
+																{scheme}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+												<Input
+													placeholder={authScheme !== "none" ? "Token" : valuePlaceholder}
+													value={authScheme !== "none" ? stripAuthScheme(getDisplayValue(headerValue)) : getDisplayValue(headerValue)}
+													data-row={index}
+													data-column="value"
+													onChange={(e) =>
+														handleValueChange(key, authScheme !== "none" ? `${authScheme} ${e.target.value}` : e.target.value, index)
 													}
 													onKeyDown={(e) => handleKeyDown(e, index, "value")}
 													className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"

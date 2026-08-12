@@ -91,7 +91,7 @@ export default function HeadersForm({
 	const previouslySubmittedSet = useMemo(() => new Set(previouslySubmittedKeys ?? []), [previouslySubmittedKeys]);
 
 	const canSubmit = useMemo(
-		() => requiredKeys.every((k) => previouslySubmittedSet.has(k) || (values[k] ?? "").trim() !== ""),
+		() => requiredKeys.every((k) => previouslySubmittedSet.has(k) || !isEffectivelyBlank(k, values[k] ?? "")),
 		[previouslySubmittedSet, requiredKeys, values],
 	);
 
@@ -246,6 +246,14 @@ export default function HeadersForm({
 	);
 }
 
+// Treats a scheme-only Authorization value (e.g. "Bearer " with no token) as
+// blank, so the scheme can be picked before typing a token without letting it
+// count as "filled" and overwrite a stored credential.
+function isEffectivelyBlank(key: string, value: string): boolean {
+	const relevant = key.trim().toLowerCase() === "authorization" ? stripAuthScheme(value) : value;
+	return relevant.trim() === "";
+}
+
 function buildSubmissionValues(
 	keys: string[],
 	values: Record<string, string>,
@@ -254,7 +262,7 @@ function buildSubmissionValues(
 	const out: Record<string, string> = {};
 	for (const k of keys) {
 		const value = values[k] ?? "";
-		if (value.trim() !== "" || !previouslySubmittedSet.has(k)) {
+		if (!isEffectivelyBlank(k, value) || !previouslySubmittedSet.has(k)) {
 			out[k] = value;
 		}
 	}
