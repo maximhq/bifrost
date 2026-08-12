@@ -1,5 +1,0 @@
-- feat: quarterly budget cycles honouring the configured fiscal start month (#5997)
-- feat: extend the reset budget usage flow to teams, customers, model limits and provider governance (#6002, #6004)
-- fix: calendar alignment applies from the next period rather than the current one (#6003)
-- fix: enabling calendar alignment preserves the open window (#6013)
-- chore: upgraded core to v1.7.9 and framework to v1.5.8

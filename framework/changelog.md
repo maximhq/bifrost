@@ -1,5 +1,0 @@
-- feat: quarterly budget windows with a configurable fiscal start month (#5996, #5997)
-- feat: per-model budgets and rate limits on virtual key provider configs (#5703)
-- feat: add the add_budget_reset_config_column migration, storing a budget's fiscal-quarter definition in a new nullable reset_config_json column on governance_budgets (#5997)
-- fix: fixed the Together pricing provider lookup so model costs resolve correctly (thanks [@dani29](https://github.com/dani29)!) (#6037)
-- fix: enabling calendar alignment preserves the currently open window instead of truncating it in flight (#6013)

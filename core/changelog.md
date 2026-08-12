@@ -1,1 +1,0 @@
-- fix: patch encrypted reasoning content that providers rejected as unverifiable (#6041)
