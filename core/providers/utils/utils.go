@@ -561,16 +561,8 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 			}
 			var lastErr error
 			for _, ip := range ips {
-				// Unspecified (0.0.0.0, ::) and link-local (169.254.x.x, fe80::) are always blocked
-				if ip.IsUnspecified() {
-					return nil, fmt.Errorf("connection to unspecified IP %s is not allowed", ip)
-				}
-				if network.IsLinkLocal(ip) {
-					return nil, fmt.Errorf("connection to link-local IP %s is not allowed", ip)
-				}
-				// RFC 1918 blocked unless operator explicitly opted in; loopback always allowed
-				if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
-					return nil, fmt.Errorf("connection to private IP %s is not allowed", ip)
+				if policyErr := ipPolicyErr(ip, allowPrivateNetwork); policyErr != nil {
+					return nil, policyErr
 				}
 				conn, err = dialer.Dial("tcp", net.JoinHostPort(ip.String(), port))
 				if err == nil {
@@ -597,6 +589,88 @@ func ConfigureDialer(client *fasthttp.Client, allowPrivateNetwork bool) *fasthtt
 	}
 
 	return client
+}
+
+type ipResolver interface {
+	LookupIP(ctx context.Context, network, host string) ([]net.IP, error)
+}
+
+// DialPolicyError marks deterministic SSRF policy rejections as non-retryable.
+type DialPolicyError struct {
+	message string
+}
+
+func (e *DialPolicyError) Error() string {
+	return e.message
+}
+
+func (*DialPolicyError) RetryableError() bool {
+	return false
+}
+
+func ipPolicyErr(ip net.IP, allowPrivateNetwork bool) error {
+	if ip.IsUnspecified() {
+		return &DialPolicyError{message: fmt.Sprintf("connection to unspecified IP %s is not allowed", ip)}
+	}
+	if network.IsLinkLocal(ip) {
+		return &DialPolicyError{message: fmt.Sprintf("connection to link-local IP %s is not allowed", ip)}
+	}
+	if !ip.IsLoopback() && !allowPrivateNetwork && network.IsPrivateIP(ip) {
+		return &DialPolicyError{message: fmt.Sprintf("connection to private IP %s is not allowed", ip)}
+	}
+	return nil
+}
+
+// ConfigureHTTPTransportDialer applies the provider SSRF policy at dial time.
+func ConfigureHTTPTransportDialer(transport *http.Transport, dialTimeout time.Duration, allowPrivateNetwork bool) *http.Transport {
+	transport.DialContext = httpPolicyDialContext(net.DefaultResolver, nil, dialTimeout, allowPrivateNetwork)
+	return transport
+}
+
+func httpPolicyDialContext(resolver ipResolver, dial func(context.Context, string, string) (net.Conn, error), dialTimeout time.Duration, allowPrivateNetwork bool) func(context.Context, string, string) (net.Conn, error) {
+	if dial == nil {
+		dialer := &net.Dialer{
+			Timeout: dialTimeout,
+			KeepAliveConfig: net.KeepAliveConfig{
+				Enable:   true,
+				Idle:     10 * time.Second,
+				Interval: 5 * time.Second,
+				Count:    3,
+			},
+		}
+		dial = dialer.DialContext
+	}
+	return func(ctx context.Context, networkName, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		resolveCtx := ctx
+		if dialTimeout > 0 {
+			var cancel context.CancelFunc
+			resolveCtx, cancel = context.WithTimeout(ctx, dialTimeout)
+			defer cancel()
+		}
+		ips, err := resolver.LookupIP(resolveCtx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		var lastErr error
+		for _, ip := range ips {
+			if policyErr := ipPolicyErr(ip, allowPrivateNetwork); policyErr != nil {
+				return nil, policyErr
+			}
+			conn, dialErr := dial(ctx, networkName, net.JoinHostPort(ip.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("no usable address resolved for %s", host)
+	}
 }
 
 // ConfigureProxy sets up a proxy for the fasthttp client based on the provided configuration.

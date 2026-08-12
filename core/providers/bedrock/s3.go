@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,36 +22,39 @@ func uploadToS3(
 	sessionToken *string,
 	region string,
 	bucket, key string,
+	endpoint string,
+	httpClient *http.Client,
 	content []byte,
 ) *schemas.BifrostError {
-	// Create AWS config with credentials
 	var cfg aws.Config
 	var err error
 
+	loadOpts := []func(*config.LoadOptions) error{config.WithRegion(region)}
+	if httpClient != nil {
+		loadOpts = append(loadOpts, config.WithHTTPClient(httpClient))
+	}
+
 	if accessKey != "" && secretKey != "" {
-		// Use provided credentials
 		var creds aws.CredentialsProvider
 		if sessionToken != nil && *sessionToken != "" {
 			creds = credentials.NewStaticCredentialsProvider(accessKey, secretKey, *sessionToken)
 		} else {
 			creds = credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")
 		}
-
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-			config.WithCredentialsProvider(creds),
-		)
-	} else {
-		// Use default credentials chain (IAM role, env vars, etc.)
-		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(region))
+		loadOpts = append(loadOpts, config.WithCredentialsProvider(creds))
 	}
 
+	cfg, err = config.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return providerUtils.NewBifrostOperationError("failed to load aws config for s3", err)
 	}
 
-	// Create S3 client
-	client := s3.NewFromConfig(cfg)
+	client := s3.NewFromConfig(cfg, func(options *s3.Options) {
+		if endpoint != "" {
+			options.BaseEndpoint = aws.String(endpoint)
+			options.UsePathStyle = true
+		}
+	})
 
 	// Upload the content
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{

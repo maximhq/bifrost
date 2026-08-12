@@ -101,11 +101,17 @@ func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockServ
 			return host
 		}
 	}
-	// Mantle is the odd one out: its public host lives under api.aws, not amazonaws.com.
+	// Mantle is the odd one out: its public host lives under api.aws.
 	if service == bedrockServiceMantle {
 		return fmt.Sprintf("%s.%s.api.aws", service, region)
 	}
-	return fmt.Sprintf("%s.%s.amazonaws.com", service, region)
+	suffix := defaultBedrockDNSSuffix
+	if endpoints != nil {
+		if configured := strings.Trim(strings.TrimSpace(endpoints.DNSSuffix), "."); configured != "" {
+			suffix = configured
+		}
+	}
+	return fmt.Sprintf("%s.%s.%s", service, region, suffix)
 }
 
 // bedrockEndpoints returns the endpoint overrides on a key config, tolerating a nil config so

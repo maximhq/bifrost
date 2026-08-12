@@ -36,6 +36,16 @@ func TestResolveBedrockHostDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveBedrockHostUsesDNSSuffixForDefaults(t *testing.T) {
+	endpoints := &schemas.BedrockEndpoints{DNSSuffix: " .c2s.ic.gov. "}
+	assert.Equal(t, "bedrock-runtime.us-iso-east-1.c2s.ic.gov",
+		resolveBedrockHost(endpoints, bedrockServiceRuntime, "us-iso-east-1"))
+	assert.Equal(t, "s3.us-iso-east-1.c2s.ic.gov",
+		resolveBedrockHost(endpoints, bedrockServiceS3, "us-iso-east-1"))
+	assert.Equal(t, "bedrock-mantle.us-iso-east-1.api.aws",
+		resolveBedrockHost(endpoints, bedrockServiceMantle, "us-iso-east-1"))
+}
+
 func TestResolveBedrockHostOverridePerService(t *testing.T) {
 	endpoints := &schemas.BedrockEndpoints{
 		Runtime: secret("vpce-0abc123-x1y2z3.bedrock-runtime.eu-west-2.vpce.amazonaws.com"),
@@ -87,10 +97,10 @@ func TestMantleOpenAIURLHonoursEndpointOverride(t *testing.T) {
 	}
 	assert.Equal(t,
 		"https://vpce-0abc123-x1y2z3.bedrock-mantle.eu-west-2.vpce.amazonaws.com/v1/chat/completions",
-		mantleOpenAIURL(endpoints, "eu-west-2", "gpt-oss-120b", "chat/completions"))
+		mantleOpenAIURL("https://"+schemas.NormalizeEndpointHost(endpoints.Mantle), "gpt-oss-120b", "chat/completions"))
 	assert.Equal(t,
 		"https://vpce-0abc123-x1y2z3.bedrock-mantle.eu-west-2.vpce.amazonaws.com/openai/v1/responses",
-		mantleOpenAIURL(endpoints, "eu-west-2", "gpt-5", "responses"))
+		mantleOpenAIURL("https://"+schemas.NormalizeEndpointHost(endpoints.Mantle), "gpt-5", "responses"))
 }
 
 // A VPC endpoint host must sign correctly: SigV4 takes the host from the request URI but the

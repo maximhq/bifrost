@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,6 +15,76 @@ import (
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/valyala/fasthttp"
 )
+
+type fakeHTTPIPResolver struct {
+	ips map[string][]net.IP
+}
+
+func (resolver *fakeHTTPIPResolver) LookupIP(_ context.Context, _, host string) ([]net.IP, error) {
+	if ips, ok := resolver.ips[host]; ok {
+		return ips, nil
+	}
+	return nil, fmt.Errorf("no such host: %s", host)
+}
+
+func stubHTTPDial(dialed *[]string) func(context.Context, string, string) (net.Conn, error) {
+	return func(_ context.Context, _, addr string) (net.Conn, error) {
+		*dialed = append(*dialed, addr)
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}
+}
+
+func TestHTTPPolicyDialContext_PrivatePolicy(t *testing.T) {
+	resolver := &fakeHTTPIPResolver{ips: map[string][]net.IP{
+		"internal.corp": {net.ParseIP("10.0.0.5")},
+	}}
+
+	var dialed []string
+	dialContext := httpPolicyDialContext(resolver, stubHTTPDial(&dialed), time.Second, false)
+	_, err := dialContext(context.Background(), "tcp", "internal.corp:443")
+	var policyErr *DialPolicyError
+	if !errors.As(err, &policyErr) || policyErr.RetryableError() {
+		t.Fatalf("expected typed non-retryable policy error, got %v", err)
+	}
+	if len(dialed) != 0 {
+		t.Fatalf("blocked target was dialed: %v", dialed)
+	}
+
+	dialContext = httpPolicyDialContext(resolver, stubHTTPDial(&dialed), time.Second, true)
+	conn, err := dialContext(context.Background(), "tcp", "internal.corp:443")
+	if err != nil {
+		t.Fatalf("expected private target with opt-in to dial: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestConfigureHTTPTransportDialer_EndToEnd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	transport := ConfigureHTTPTransportDialer(&http.Transport{}, time.Second, false)
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	streamingClient := BuildStreamingHTTPClient(client)
+	if streamingClient.Transport != transport {
+		t.Fatal("streaming client must share the guarded transport")
+	}
+
+	for name, currentClient := range map[string]*http.Client{"unary": client, "streaming": streamingClient} {
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+		if err != nil {
+			t.Fatalf("%s client request: %v", name, err)
+		}
+		response, err := currentClient.Do(request)
+		if err != nil {
+			t.Fatalf("%s client: %v", name, err)
+		}
+		_ = response.Body.Close()
+	}
+}
 
 // TestConfigureDialer_SetsRetryIfErr verifies that ConfigureDialer installs
 // the StaleConnectionRetryIfErr callback on the client.
