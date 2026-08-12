@@ -72,7 +72,7 @@ type SemanticResult struct {
 	MinSimilarity float64
 	// Accepted reports whether Score cleared MinSimilarity. A rejected result
 	// still carries its tier and score for logging, but callers must not route
-	// on it — they fall back to lexical scoring instead.
+	// on it — they publish no tier and record the request as "skipped".
 	Accepted bool
 	// MatchedExemplar is the tier phrase this request landed on. Tier and Score
 	// report what the classifier decided and how confidently; without the phrase
@@ -188,25 +188,45 @@ func (c *SemanticClassifier) SetEmbeddingFunctions(embed EmbeddingFunc, embedBat
 	c.mu.Unlock()
 }
 
-// ValidateConfig rejects semantic modes that cannot be satisfied by the current
-// process dependencies before a handler persists the configuration.
-func (c *SemanticClassifier) ValidateConfig(config *AnalyzerConfig) error {
-	resolved, err := ValidateAndNormalize(config)
-	if err != nil {
-		return err
-	}
-	if resolved == nil || resolved.Semantic == nil {
-		return nil
-	}
-	if resolved.Semantic.VectorStore != configstore.ComplexitySemanticVectorStoreExternal {
-		return nil
-	}
+// RearmForProvider restarts preparation after the embedding provider's own
+// configuration changed — a key re-enabled, added, or its model allow-list
+// widened. Warmup is otherwise only ever started by a write to the complexity
+// configuration, so a classifier that failed because its provider could not
+// serve stayed failed even once the operator fixed the provider, with no way
+// back short of re-saving a configuration that had not changed.
+//
+// Two guards keep this from becoming an expensive reflex. Warmup re-embeds
+// every reference phrase, which costs real tokens:
+//
+//   - only the provider this classifier actually embeds through counts; edits
+//     to any other provider are irrelevant to it.
+//   - only a failed classifier re-arms. A ready one is serving correctly and
+//     has nothing to gain, and a warming one is already doing this work.
+func (c *SemanticClassifier) RearmForProvider(provider schemas.ModelProvider) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.configuredStore == nil {
-		return fmt.Errorf("semantic vector_store %q requires a configured Bifrost VectorStore", configstore.ComplexitySemanticVectorStoreExternal)
+	if c.config == nil || c.config.Semantic == nil {
+		return
 	}
-	return nil
+	if !strings.EqualFold(string(c.config.Semantic.Provider), string(provider)) {
+		return
+	}
+	if c.status.State != SemanticStatusFailed {
+		return
+	}
+	c.revision++
+	c.resetForCurrentConfigLocked()
+	c.requestWarmupLocked()
+}
+
+// ValidateConfig is the seam for checks that depend on live process state
+// rather than the payload alone, run before a handler persists a configuration.
+// No semantic setting needs one today: neither vector_store mode can fail, since
+// "vector_store" degrades to the embedded store when none is configured. Kept so
+// a future runtime-dependent setting has somewhere to go.
+func (c *SemanticClassifier) ValidateConfig(config *AnalyzerConfig) error {
+	_, err := ValidateAndNormalize(config)
+	return err
 }
 
 // Status returns a stable snapshot of the current semantic readiness state.
@@ -542,16 +562,14 @@ func (c *SemanticClassifier) resolveStoreLocked(semantic *SemanticConfig) (vecto
 	switch semantic.VectorStore {
 	case configstore.ComplexitySemanticVectorStoreEmbedded:
 		return c.embeddedStoreLocked()
-	case configstore.ComplexitySemanticVectorStoreAuto:
+	case configstore.ComplexitySemanticVectorStoreConfigured:
+		// A missing vector store degrades to the embedded store rather than
+		// failing: storage choice should never be able to take semantic
+		// classification offline.
 		if c.configuredStore != nil {
 			return c.configuredStore, nil
 		}
 		return c.embeddedStoreLocked()
-	case configstore.ComplexitySemanticVectorStoreExternal:
-		if c.configuredStore == nil {
-			return nil, fmt.Errorf("semantic vector_store %q requires a configured Bifrost VectorStore", semantic.VectorStore)
-		}
-		return c.configuredStore, nil
 	default:
 		return nil, fmt.Errorf("unsupported semantic vector_store %q", semantic.VectorStore)
 	}

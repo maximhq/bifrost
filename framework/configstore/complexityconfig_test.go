@@ -152,6 +152,18 @@ func TestComplexityAnalyzerConfigNormalizedPreservesLexicalCrossTierDuplicates(t
 	require.NoError(t, normalized.Validate())
 }
 
+// TestComplexityAnalyzerConfigNormalizedDefaultsOmittedLegacyBoundaries keeps
+// the deprecated boundary block optional without leaving the dormant analyzer
+// in an invalid zero-value state.
+func TestComplexityAnalyzerConfigNormalizedDefaultsOmittedLegacyBoundaries(t *testing.T) {
+	cfg := testComplexityAnalyzerConfig()
+	cfg.TierBoundaries = ComplexityTierBoundaries{}
+
+	normalized := cfg.Normalized()
+	assert.Equal(t, DefaultComplexityTierBoundaries(), normalized.TierBoundaries)
+	require.NoError(t, normalized.Validate())
+}
+
 func TestComplexityAnalyzerConfigRejectsSemanticCrossTierDuplicates(t *testing.T) {
 	cfg := testSemanticAnalyzerConfig()
 	cfg.Keywords.SimpleKeywords = []string{"Shared   phrase", "simple-only"}

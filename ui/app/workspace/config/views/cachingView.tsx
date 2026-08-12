@@ -30,10 +30,13 @@ type CacheMode = "direct" | "semantic";
 
 // Embedding-capable providers gate the semantic mode. Built-in providers
 // are listed in EmbeddingSupportedProviders; custom providers expose
-// support via custom_provider_config.allowed_requests.embedding.
+// support via custom_provider_config.allowed_requests.embedding. A custom
+// provider with no allowed_requests block at all is unrestricted, which is how
+// the Go side reads a nil AllowedRequests.
 const supportsEmbedding = (provider: ModelProvider): boolean => {
 	if (provider.custom_provider_config) {
-		return provider.custom_provider_config.allowed_requests?.embedding === true;
+		const allowed = provider.custom_provider_config.allowed_requests;
+		return !allowed || allowed.embedding === true;
 	}
 	return (EmbeddingSupportedProviders as readonly string[]).includes(provider.name);
 };

@@ -577,6 +577,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			logger.Warn("Model discovery failed for provider %s: %v", provider, err)
 		}
 	}
+	// A base URL, proxy, or credential fixed here is just as likely to be what
+	// broke the complexity classifier's warmup as a disabled key was.
+	h.rearmComplexitySemanticClassifier(provider)
 
 	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)

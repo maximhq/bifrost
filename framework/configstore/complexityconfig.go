@@ -11,10 +11,28 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// ComplexityTierBoundaries defines score thresholds for complexity tier classification.
+// Default legacy complexity tier boundaries keep omitted pre-semantic config
+// compatible with the dormant lexical analyzer.
+const (
+	DefaultComplexitySimpleMediumBoundary  = 0.20
+	DefaultComplexityMediumComplexBoundary = 0.40
+)
+
+// ComplexityTierBoundaries contains deprecated lexical score thresholds.
+// Semantic classification ignores these values, but they remain accepted for
+// compatibility with existing persisted and file-backed configurations.
 type ComplexityTierBoundaries struct {
 	SimpleMedium  float64 `json:"simple_medium"`
 	MediumComplex float64 `json:"medium_complex"`
+}
+
+// DefaultComplexityTierBoundaries returns the legacy lexical thresholds used
+// when an older config omits the now-optional boundary block.
+func DefaultComplexityTierBoundaries() ComplexityTierBoundaries {
+	return ComplexityTierBoundaries{
+		SimpleMedium:  DefaultComplexitySimpleMediumBoundary,
+		MediumComplex: DefaultComplexityMediumComplexBoundary,
+	}
 }
 
 // Validate checks that tier boundaries are ordered and inside the analyzer score range.
@@ -34,8 +52,10 @@ func (b *ComplexityTierBoundaries) Validate() error {
 }
 
 // ComplexityEditableKeywordConfig contains the user-editable per-tier lists.
-// The same lists feed both classifiers: the lexical matcher treats entries as
-// keywords, the semantic classifier embeds them as exemplars.
+// Entries are reference phrases for the semantic classifier, which embeds them
+// as exemplars. The lexical matcher also reads them as keywords, but it no
+// longer publishes a tier, so nothing an operator writes here reaches routing
+// by that path.
 type ComplexityEditableKeywordConfig struct {
 	SimpleKeywords  []string `json:"simple_keywords"`
 	MediumKeywords  []string `json:"medium_keywords"`
@@ -109,13 +129,12 @@ func hasAnyComplexityField(fields map[string]json.RawMessage, names ...string) b
 }
 
 // Vector store selection modes for exemplar embeddings. "embedded" (the
-// default) uses the built-in chromem store; "auto" opts into the configured
-// external store when present, falling back to embedded otherwise;
-// "external" makes a missing external store a startup error.
+// default) uses the built-in chromem store; "vector_store" uses the vector
+// store configured for Bifrost, falling back to the embedded store when none
+// is configured.
 const (
-	ComplexitySemanticVectorStoreAuto     = "auto"
-	ComplexitySemanticVectorStoreEmbedded = "embedded"
-	ComplexitySemanticVectorStoreExternal = "external"
+	ComplexitySemanticVectorStoreEmbedded   = "embedded"
+	ComplexitySemanticVectorStoreConfigured = "vector_store"
 )
 
 // MaxComplexitySemanticPhraseCharacters bounds one exemplar's input size.
@@ -123,8 +142,8 @@ const (
 const MaxComplexitySemanticPhraseCharacters = 2000
 
 // Semantic message-history bounds. The ceiling keeps one classification
-// embedding cheap and bounded; the analyzer's lexical conversation window uses
-// the same depth.
+// embedding cheap and bounded. The dormant lexical analyzer happens to scan a
+// conversation window of the same depth; the two are not wired together.
 const (
 	DefaultComplexitySemanticMessageHistoryCount = 1
 	MaxComplexitySemanticMessageHistoryCount     = 10
@@ -143,10 +162,10 @@ type ComplexitySemanticConfig struct {
 	Timeout        time.Duration         `json:"timeout,omitempty"`
 	// MinSimilarity is the floor a nearest-exemplar match must clear before its
 	// tier is used. Without it the nearest exemplar always wins, however
-	// unrelated the request is — semantic classification would never abstain,
-	// unlike the lexical analyzer, which returns no tier when it sees no signal.
-	// A match below the floor is treated exactly like an unavailable classifier
-	// and falls back to lexical scoring. Zero (the default) disables the floor
+	// unrelated the request is, and semantic classification could never abstain.
+	// This is the only way it abstains. A match below the floor is treated
+	// exactly like an unavailable classifier: no tier is published and the
+	// request is recorded as "skipped". Zero (the default) disables the floor
 	// and restores "nearest exemplar always wins".
 	//
 	// The value is compared against the VectorStore backend's own similarity
@@ -297,10 +316,10 @@ func (c *ComplexitySemanticConfig) Validate() error {
 		)
 	}
 	switch c.VectorStore {
-	case ComplexitySemanticVectorStoreAuto, ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreExternal:
+	case ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreConfigured:
 	default:
-		return fmt.Errorf("semantic vector_store must be %q, %q, or %q, got %q",
-			ComplexitySemanticVectorStoreAuto, ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreExternal, c.VectorStore)
+		return fmt.Errorf("semantic vector_store must be %q or %q, got %q",
+			ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreConfigured, c.VectorStore)
 	}
 	return nil
 }
@@ -435,8 +454,12 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 	if c == nil {
 		return ComplexityAnalyzerConfig{}
 	}
+	tierBoundaries := c.TierBoundaries
+	if tierBoundaries == (ComplexityTierBoundaries{}) {
+		tierBoundaries = DefaultComplexityTierBoundaries()
+	}
 	return ComplexityAnalyzerConfig{
-		TierBoundaries: c.TierBoundaries,
+		TierBoundaries: tierBoundaries,
 		Keywords: ComplexityEditableKeywordConfig{
 			SimpleKeywords:  normalizeComplexityKeywordList(c.Keywords.SimpleKeywords),
 			MediumKeywords:  normalizeComplexityKeywordList(c.Keywords.MediumKeywords),
@@ -449,7 +472,7 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 }
 
 // validateComplexitySemanticPhrases bounds individual inputs and rejects
-// ambiguous labels without changing lexical-only semantics.
+// phrases labelled with more than one tier.
 func validateComplexitySemanticPhrases(keywords ComplexityEditableKeywordConfig) error {
 	type tierPhrases struct {
 		name   string
