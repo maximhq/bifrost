@@ -115,8 +115,11 @@ func Ptr[T any](v T) *T {
 
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
 func providerRequiresKey(customConfig *schemas.CustomProviderConfig) bool {
-	// Keyless custom providers are not allowed for Bedrock.
-	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
+	// Keyless custom providers are not allowed for Bedrock or Vertex: both require a
+	// Key/{Bedrock,Vertex}KeyConfig object to exist (for credentials/project/region
+	// resolution) even when using ambient auth (IAM role, ADC) — there is no mode where
+	// Bifrost can skip requiring a Key object entirely for these providers.
+	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock && customConfig.BaseProviderType != schemas.Vertex {
 		return false
 	}
 	return true
@@ -129,8 +132,12 @@ func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.BedrockMantle || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
-func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.BedrockMantle && providerKey != schemas.Vertex
+// isKeySkippingAllowed takes the resolved base provider type, not the (possibly
+// custom) provider instance key - Azure/Bedrock/BedrockMantle/Vertex always need
+// their per-key config (VertexKeyConfig etc.) regardless of what a custom
+// instance happens to be named.
+func isKeySkippingAllowed(baseProviderType schemas.ModelProvider) bool {
+	return baseProviderType != schemas.Azure && baseProviderType != schemas.Bedrock && baseProviderType != schemas.BedrockMantle && baseProviderType != schemas.Vertex
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.

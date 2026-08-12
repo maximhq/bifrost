@@ -457,6 +457,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 									<div data-testid="apikey-deployments-table">
 										<DeploymentsTable
 											providerName={providerName}
+											baseProviderType={baseProviderType}
 											value={field.value}
 											onChange={(next) => {
 												form.clearErrors("key.aliases");
