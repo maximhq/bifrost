@@ -1557,6 +1557,11 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// CalculateCost call (and every later post-hook, e.g. telemetry) sees it.
 	stampRoutingDebug(ctx, result, requestType, isFinalChunk)
 
+	// Record what this turn revealed about the served route's cache. Only
+	// cache-aware switching reads it, but it has to be gathered while the
+	// response is in hand.
+	p.recordSessionRouteObservation(ctx, result, provider, requestedModel, isFinalChunk)
+
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
 
