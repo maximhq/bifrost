@@ -1,5 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { aliasConfigSchema, secretVarSchema } from "@/lib/types/schemas";
+import { aliasConfigSchema, bedrockDNSSuffixSchema, secretVarSchema } from "@/lib/types/schemas";
 import { isValidAliases, isValidVertexAuthCredentials } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -119,7 +119,7 @@ const BedrockEndpointsSchema = z.object({
 	mantle: VPCEndpointHostSchema,
 	agent_runtime: VPCEndpointHostSchema,
 	s3: VPCEndpointHostSchema,
-	dns_suffix: z.string().optional(),
+	dns_suffix: bedrockDNSSuffixSchema,
 });
 
 const BedrockKeyConfigSchema = z

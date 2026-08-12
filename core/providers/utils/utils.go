@@ -621,13 +621,87 @@ func ipPolicyErr(ip net.IP, allowPrivateNetwork bool) error {
 	return nil
 }
 
+// proxyProbeURL is a NO_PROXY-safe dummy target used only to ask a Proxy func
+// for its proxy hop. .invalid never matches a real destination.
+var proxyProbeURL = &url.URL{Scheme: "https", Host: "bifrost-proxy-probe.invalid"}
+
+func checkHostIPPolicy(ctx context.Context, resolver ipResolver, host string, allowPrivateNetwork bool) error {
+	ips, err := resolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return err
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("no usable address resolved for %s", host)
+	}
+	for _, ip := range ips {
+		if err := ipPolicyErr(ip, allowPrivateNetwork); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func proxyCanonicalAddr(proxyURL *url.URL) string {
+	if proxyURL == nil {
+		return ""
+	}
+	port := proxyURL.Port()
+	if port == "" {
+		switch proxyURL.Scheme {
+		case "https":
+			port = "443"
+		case "socks5", "socks5h":
+			port = "1080"
+		default:
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(proxyURL.Hostname(), port)
+}
+
+func isProxyDialAddr(addr string, proxy func(*http.Request) (*url.URL, error)) bool {
+	if proxy == nil {
+		return false
+	}
+	proxyURL, err := proxy(&http.Request{URL: proxyProbeURL})
+	if err != nil || proxyURL == nil {
+		return false
+	}
+	return proxyCanonicalAddr(proxyURL) == addr
+}
+
+func destinationPolicyProxy(inner func(*http.Request) (*url.URL, error), resolver ipResolver, allowPrivateNetwork bool) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		if req != nil && req.URL != nil {
+			if host := req.URL.Hostname(); host != "" {
+				if err := checkHostIPPolicy(req.Context(), resolver, host, allowPrivateNetwork); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if inner == nil {
+			return nil, nil
+		}
+		return inner(req)
+	}
+}
+
 // ConfigureHTTPTransportDialer applies the provider SSRF policy at dial time.
+// Destination IPs are checked with ipPolicyErr; when Transport.Proxy is set
+// (Bedrock uses http.ProxyFromEnvironment), that policy is not applied to the
+// proxy hop itself so a private corporate proxy can still be dialed.
 func ConfigureHTTPTransportDialer(transport *http.Transport, dialTimeout time.Duration, allowPrivateNetwork bool) *http.Transport {
-	transport.DialContext = httpPolicyDialContext(net.DefaultResolver, nil, dialTimeout, allowPrivateNetwork)
+	resolver := net.DefaultResolver
+	var innerProxy func(*http.Request) (*url.URL, error)
+	if transport.Proxy != nil {
+		innerProxy = transport.Proxy
+		transport.Proxy = destinationPolicyProxy(innerProxy, resolver, allowPrivateNetwork)
+	}
+	transport.DialContext = httpPolicyDialContext(resolver, nil, dialTimeout, allowPrivateNetwork, innerProxy)
 	return transport
 }
 
-func httpPolicyDialContext(resolver ipResolver, dial func(context.Context, string, string) (net.Conn, error), dialTimeout time.Duration, allowPrivateNetwork bool) func(context.Context, string, string) (net.Conn, error) {
+func httpPolicyDialContext(resolver ipResolver, dial func(context.Context, string, string) (net.Conn, error), dialTimeout time.Duration, allowPrivateNetwork bool, proxy func(*http.Request) (*url.URL, error)) func(context.Context, string, string) (net.Conn, error) {
 	if dial == nil {
 		dialer := &net.Dialer{
 			Timeout: dialTimeout,
@@ -655,10 +729,13 @@ func httpPolicyDialContext(resolver ipResolver, dial func(context.Context, strin
 		if err != nil {
 			return nil, err
 		}
+		skipDialPolicy := isProxyDialAddr(addr, proxy)
 		var lastErr error
 		for _, ip := range ips {
-			if policyErr := ipPolicyErr(ip, allowPrivateNetwork); policyErr != nil {
-				return nil, policyErr
+			if !skipDialPolicy {
+				if policyErr := ipPolicyErr(ip, allowPrivateNetwork); policyErr != nil {
+					return nil, policyErr
+				}
 			}
 			conn, dialErr := dial(ctx, networkName, net.JoinHostPort(ip.String(), port))
 			if dialErr == nil {

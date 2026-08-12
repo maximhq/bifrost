@@ -29,10 +29,9 @@ func uploadToS3(
 	var cfg aws.Config
 	var err error
 
+	// Do not pass httpClient to LoadDefaultConfig. The SDK copies aws.Config.HTTPClient
+	// into IMDS (imds.NewFromConfig), which would block 169.254.0.0/16 credential fetches.
 	loadOpts := []func(*config.LoadOptions) error{config.WithRegion(region)}
-	if httpClient != nil {
-		loadOpts = append(loadOpts, config.WithHTTPClient(httpClient))
-	}
 
 	if accessKey != "" && secretKey != "" {
 		var creds aws.CredentialsProvider
@@ -50,6 +49,9 @@ func uploadToS3(
 	}
 
 	client := s3.NewFromConfig(cfg, func(options *s3.Options) {
+		if httpClient != nil {
+			options.HTTPClient = httpClient
+		}
 		if endpoint != "" {
 			options.BaseEndpoint = aws.String(endpoint)
 			options.UsePathStyle = true

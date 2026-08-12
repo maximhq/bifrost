@@ -695,6 +695,7 @@ func validateBedrockEndpointsFields(configPath string, endpoints *schemas.Bedroc
 		return fmt.Errorf("invalid %s.endpoints.dns_suffix: %q is loopback-reserved", configPath, endpoints.DNSSuffix)
 	}
 
+	// Syntax-check unused synthesized hosts only; live DNS/SSRF runs at dial time.
 	for _, service := range []struct {
 		label    string
 		override *schemas.SecretVar
@@ -707,9 +708,9 @@ func validateBedrockEndpointsFields(configPath string, endpoints *schemas.Bedroc
 		if schemas.NormalizeEndpointHost(service.override) != "" {
 			continue
 		}
-		host := fmt.Sprintf("https://%s.%s.%s", service.label, region, suffix)
-		if err := bifrost.ValidateExternalURL(host, allowPrivateNetwork); err != nil {
-			return fmt.Errorf("invalid %s.endpoints.dns_suffix: %v", configPath, err)
+		host := fmt.Sprintf("%s.%s.%s", service.label, region, suffix)
+		if strings.ContainsAny(host, "?#") || !bedrockDNSSuffixRegex.MatchString(host) {
+			return fmt.Errorf("invalid %s.endpoints.dns_suffix: synthesized host %q is not a valid hostname", configPath, host)
 		}
 	}
 	return nil
