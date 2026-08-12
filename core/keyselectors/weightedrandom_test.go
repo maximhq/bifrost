@@ -122,6 +122,39 @@ func TestWeightedRandomExtremeWeightsDoNotOverflow(t *testing.T) {
 	}
 }
 
+// TestWeightedRandomNegativeWeightExcludedFromFallback ensures the uniform
+// fallback for "no positive weights" samples zero-weight keys only: a
+// negative weight means "exclude this key" and must not regain traffic there.
+func TestWeightedRandomNegativeWeightExcludedFromFallback(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "excluded", Weight: -1},
+		{ID: "idle", Weight: 0},
+	}
+
+	const draws = 10000
+	counts := selectionCounts(t, keys, draws)
+
+	if counts["excluded"] != 0 {
+		t.Errorf("negative-weight key selected %d times in %d draws", counts["excluded"], draws)
+	}
+	if counts["idle"] != draws {
+		t.Errorf("zero-weight key selected %d times, want %d", counts["idle"], draws)
+	}
+}
+
+// TestWeightedRandomAllNegativeWeightsError ensures selection fails instead of
+// silently routing traffic to keys that were all explicitly excluded.
+func TestWeightedRandomAllNegativeWeightsError(t *testing.T) {
+	keys := []schemas.Key{
+		{ID: "a", Weight: -1},
+		{ID: "b", Weight: -2},
+	}
+
+	if _, err := WeightedRandom(nil, keys, schemas.OpenAI, "gpt-4o"); err == nil {
+		t.Fatal("expected error when every key weight is negative, got nil")
+	}
+}
+
 // TestWeightedRandomZeroWeightKeyGetsNoTraffic ensures an explicitly
 // zero-weighted key is never selected while a positive-weight key exists.
 func TestWeightedRandomZeroWeightKeyGetsNoTraffic(t *testing.T) {

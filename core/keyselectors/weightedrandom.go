@@ -1,6 +1,7 @@
 package keyselectors
 
 import (
+	"fmt"
 	"math/rand"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -19,9 +20,20 @@ func WeightedRandom(ctx *schemas.BifrostContext, keys []schemas.Key, providerKey
 		}
 	}
 
-	// If all keys have zero weight, fall back to uniform random selection
+	// If no key has a positive weight, fall back to uniform random selection
+	// over zero-weight keys only: negative weights mean "exclude this key" and
+	// must not receive traffic through the fallback either.
 	if maxWeight == 0 {
-		return keys[rand.Intn(len(keys))], nil
+		eligible := make([]schemas.Key, 0, len(keys))
+		for _, key := range keys {
+			if key.Weight == 0 {
+				eligible = append(eligible, key)
+			}
+		}
+		if len(eligible) == 0 {
+			return schemas.Key{}, fmt.Errorf("no eligible keys for provider: %v: all key weights are negative", providerKey)
+		}
+		return eligible[rand.Intn(len(eligible))], nil
 	}
 
 	totalWeight := 0.0
