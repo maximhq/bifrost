@@ -403,6 +403,8 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
           BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/test-core.sh
 
       - name: Upload provider harness reports
@@ -450,7 +452,7 @@ jobs:
             tmp/provider-harness-report
 
   test-core-integrations:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -527,8 +529,24 @@ jobs:
         with:
           node-version: "25"
 
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
+      # Backs config.json's sse_mcp client, which test-integrations.sh starts on
+      # localhost:3012. Replaces the decommissioned hosted endpoint that config
+      # used to reference through MCP_SSE_URL.
+      - name: Build MCP test servers
+        run: make setup-mcp-tests
+
       - name: Run core integration tests
         env:
+          SKIP_GATEWAY_BUILD: "1"
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
@@ -564,6 +582,8 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/test-integrations.sh
 
   test-core-unit:
@@ -587,6 +607,26 @@ jobs:
         with:
           go-version: "1.26.5"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      # core/internal/mcptests drives real STDIO MCP servers as child processes.
+      # fixtures.go's InitMCPServerPaths only computes their paths
+      # (examples/mcps/<name>/bin/<name>, .../dist/index.js) - nothing builds
+      # them. Without this step every STDIO-backed case fails with "MCP client
+      # ... is disconnected", and the agent permission tests fail one step
+      # removed, counting an un-executed tool as still pending approval.
+      - name: Build MCP test servers
+        run: make setup-mcp-tests
+
+      # No MCP_HTTP_URL / MCP_SSE_URL here on purpose. The remote-transport
+      # cases boot examples/mcps/remote-test-server in-process (TestMain in
+      # core/internal/mcptests/remoteserver_test.go) and point themselves at
+      # localhost, so this job needs no secret and no extra egress entry.
+      # Setting those vars here would do nothing - the local server wins unless
+      # MCP_USE_REMOTE=1 is also set.
       - name: Run core unit tests
         working-directory: core
         run: |
@@ -864,6 +904,24 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           # Resolved fresh by resolve-cli-versions on every run; the constants
           # in test-cli-harness.sh only apply if that job had to fall back.
           CLAUDE_CODE_VERSION: ${{ matrix.claude }}
@@ -1007,6 +1065,13 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-framework.sh
 
   test-plugins:
@@ -1115,6 +1180,13 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
   test-bifrost-http:
@@ -1451,6 +1523,8 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-api-integrations.sh
           ./.github/workflows/scripts/test-api-integrations.sh
@@ -1760,6 +1834,9 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/amd64
@@ -1888,6 +1965,9 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/arm64

@@ -66,6 +66,9 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(capModel)
+		// Chat Completions accepts file_id or file_data, never file_url, and MarshalJSON strips
+		// FileURL on the way out - so a URL-sourced document must be inlined here or it is lost.
+		inlineChatFileURLs(ctx, openaiReq.Messages)
 		return openaiReq
 	case schemas.Cerebras, schemas.Wafer:
 		openaiReq.filterOpenAISpecificParameters(capModel)

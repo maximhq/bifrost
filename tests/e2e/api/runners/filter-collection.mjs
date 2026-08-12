@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
 import { buildHaystack } from "./lib/haystack.mjs";
 import { walkRequests, buildProducerIndex, bodyDependencies } from "./lib/chained-vars.mjs";
+import { rateLimitedNames } from "./lib/rate-limit-retry.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -60,6 +61,7 @@ const FOLDER = (args.folder || "").toLowerCase();
 // the union of every --class shard is exactly the unsharded set.
 const CLASS = (args.class || "").toLowerCase();
 const RERUN_FAILED = args["rerun-failed"] === "true";
+const RERUN_RATE_LIMITED = args["rerun-rate-limited"] === "true";
 const REPORT = args.report || "tmp/newman-report.json";
 // --smoke is a curated selection: a manifest of request names that make up the
 // smoke set. It exists because the rows a smoke run most needs - the generated
@@ -73,9 +75,9 @@ if (!SOURCE || !OUT) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !RERUN_FAILED && !SMOKE) {
+if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE) {
   console.error(
-    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --rerun-failed, --smoke"
+    "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --rerun-failed, --rerun-rate-limited, --smoke"
   );
   process.exit(2);
 }
@@ -274,6 +276,26 @@ const itemMatchesSmoke = (item, ancestorNames) => {
   return smokeKeys.has(smokeKey(ancestorNames[ancestorNames.length - 1], item.name));
 };
 
+// --rerun-rate-limited selects ONLY the items whose prior execution came back 429. It is the
+// retry pass's selector, and is deliberately narrower than --rerun-failed: replaying a shard's
+// assertion failures would burn quota re-confirming a real defect and would turn a deterministic
+// failure into a flaky-looking one. Pairs with rate-limit-backoff.mjs, which decides the wait.
+let rateLimitedNameSet = null;
+const itemMatchesRateLimited = (item) => {
+  if (!RERUN_RATE_LIMITED) return true;
+  if (rateLimitedNameSet === null) {
+    if (!existsSync(REPORT)) {
+      console.error(`[filter-collection] --rerun-rate-limited requires ${REPORT}`);
+      process.exit(2);
+    }
+    rateLimitedNameSet = rateLimitedNames(readReport(REPORT));
+    console.error(
+      `[filter-collection] rerun-rate-limited: ${rateLimitedNameSet.size} rate-limited item(s) from ${REPORT}`
+    );
+  }
+  return rateLimitedNameSet.has(item.name);
+};
+
 let failedNames = null;
 const itemMatchesRerunFailed = (item) => {
   if (!RERUN_FAILED) return true;
@@ -309,6 +331,7 @@ const passes = (item, ancestorNames) => {
     itemMatchesFolder(item, ancestorNames) &&
     itemMatchesClass(item, ancestorNames) &&
     itemMatchesSmoke(item, ancestorNames) &&
+    itemMatchesRateLimited(item) &&
     itemMatchesRerunFailed(item);
 };
 

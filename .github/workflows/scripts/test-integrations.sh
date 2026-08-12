@@ -41,20 +41,45 @@ cleanup() {
     wait "$BIFROST_PID" 2>/dev/null || true
   fi
 
+  if [ -n "${MCP_SERVER_PID:-}" ]; then
+    echo "   Stopping MCP test server (PID: $MCP_SERVER_PID)..."
+    kill "$MCP_SERVER_PID" 2>/dev/null || true
+    wait "$MCP_SERVER_PID" 2>/dev/null || true
+  fi
+
   rm -f "${LOG_FILE:-}" 2>/dev/null || true
 
   exit $exit_code
 }
 trap cleanup EXIT
 
-# Step 1: Build bifrost-http from source
+# Step 1: Obtain the bifrost-http binary
 echo ""
-echo "🔨 Building bifrost-http from source..."
 cd "$REPO_ROOT"
 
-# Build the UI first, then the binary
-make build-ui
-make build
+# CI's build-gateway job supplies the binary as an artifact; only build it here
+# when running locally (or if CI ever drops that job).
+#
+# The local build calls `go build` directly rather than `make build`: the
+# Makefile passes GOWORK=off unless LOCAL is set, which discards the workspace
+# setup-go-workspace.sh just wrote and sends the transport to the module proxy
+# for core/framework/plugins. That resolves published versions, so any change
+# spanning transports and an unreleased framework fails to compile here while
+# building fine on a developer machine.
+if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+  if [ ! -x "$REPO_ROOT/tmp/bifrost-http" ]; then
+    echo "❌ SKIP_GATEWAY_BUILD=1 but no executable binary at $REPO_ROOT/tmp/bifrost-http" >&2
+    exit 1
+  fi
+  echo "⏭️  Using prebuilt bifrost-http binary at $REPO_ROOT/tmp/bifrost-http"
+else
+  echo "🎨 Building UI..."
+  make build-ui
+
+  echo "🔨 Building bifrost-http binary..."
+  mkdir -p "$REPO_ROOT/tmp"
+  (cd "$REPO_ROOT/transports/bifrost-http" && go build -o "$REPO_ROOT/tmp/bifrost-http" .)
+fi
 
 if [ ! -f "$REPO_ROOT/tmp/bifrost-http" ]; then
   echo "❌ Error: bifrost-http binary not found at $REPO_ROOT/tmp/bifrost-http"
@@ -62,6 +87,36 @@ if [ ! -f "$REPO_ROOT/tmp/bifrost-http" ]; then
 fi
 
 echo "✅ Build complete: $REPO_ROOT/tmp/bifrost-http"
+
+# Step 1b: Start the local MCP fixture backing config.json's sse_mcp client.
+#
+# That client used to point at a hosted Composio endpoint via MCP_SSE_URL and
+# friends. When the endpoint was decommissioned the config kept referencing it,
+# so the gateway spent its startup retrying a dead host. examples/mcps/remote-test-server
+# serves the same MCP protocol over SSE on 3012 with no auth, which is all the
+# sse_mcp client needs - and it costs no secret and no egress allowlist entry.
+#
+# Non-fatal if missing: an unreachable MCP client makes the gateway log and move
+# on, exactly as it did with the dead remote, and none of the provider
+# integration tests assert on MCP.
+MCP_TEST_SERVER="$REPO_ROOT/examples/mcps/remote-test-server/bin/remote-test-server"
+if [ -x "$MCP_TEST_SERVER" ]; then
+  echo ""
+  echo "🔌 Starting local MCP test server (SSE on 3012)..."
+  MCP_HTTP_PORT=3011 MCP_SSE_PORT=3012 "$MCP_TEST_SERVER" > /tmp/mcp-test-server.log 2>&1 &
+  MCP_SERVER_PID=$!
+  for _ in $(seq 1 40); do
+    if nc -z localhost 3012 2>/dev/null; then break; fi
+    sleep 0.25
+  done
+  if nc -z localhost 3012 2>/dev/null; then
+    echo "   ✅ MCP test server ready (PID: $MCP_SERVER_PID)"
+  else
+    echo "   ⚠️  MCP test server did not come up; sse_mcp client will be unreachable"
+  fi
+else
+  echo "⚠️  MCP test server not built at $MCP_TEST_SERVER; sse_mcp client will be unreachable"
+fi
 
 # Step 2: Start Bifrost server with Python integration test config
 echo ""
