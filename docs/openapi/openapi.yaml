@@ -1086,6 +1086,8 @@ paths:
     $ref: "./paths/management/governance.yaml#/complexity"
   /api/governance/complexity-analyzer-config/reset:
     $ref: "./paths/management/governance.yaml#/complexity-reset"
+  /api/governance/complexity-analyzer-status:
+    $ref: './paths/management/governance.yaml#/complexity-status'
 
   # Logging
   /api/logs:

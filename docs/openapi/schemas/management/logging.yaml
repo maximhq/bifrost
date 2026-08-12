@@ -56,11 +56,11 @@ LogEntry:
       nullable: true
     complexity_mechanism:
       type: string
-      description: How the complexity tier was classified (lexical, or skipped when classification was demanded but produced no tier)
+      description: How the complexity tier was classified (semantic for the embedding-based classifier, or skipped when classification was demanded but produced no tier)
       nullable: true
     complexity_score:
       type: number
-      description: Raw complexity score behind the tier
+      description: Similarity score of the nearest reference phrase behind the tier
       nullable: true
     stream:
       type: boolean

@@ -482,6 +482,13 @@ func TestSchemaComplexityAnalyzerKeywordCompatibility(t *testing.T) {
 
 func TestSchemaComplexitySemanticConfig(t *testing.T) {
 	compiled := compileSchema(t)
+	t.Run("semantic block requires keyword lists", func(t *testing.T) {
+		config := `{"governance":{"complexity_analyzer_config":{"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"}}}}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Fatal("semantic config without keywords should be invalid")
+		}
+	})
+
 	prefix := `{"governance":{"complexity_analyzer_config":{"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4},"keywords":{"simple_keywords":["hello"],"medium_keywords":["api"],"complex_keywords":["tradeoffs"]}`
 	suffix := `}}}`
 

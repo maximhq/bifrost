@@ -64,8 +64,8 @@ type SearchFilters struct {
 	UserIDs              []string          `json:"user_ids,omitempty"`
 	BusinessUnitIDs      []string          `json:"business_unit_ids,omitempty"`
 	RoutingEngineUsed    []string          `json:"routing_engine_used,omitempty"` // For filtering by routing engine (routing-rule, governance, loadbalancing)
-	Apps              []string          `json:"apps,omitempty"`                // Backend-detected client apps
-	UserAgents        []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
+	Apps                 []string          `json:"apps,omitempty"`                // Backend-detected client apps
+	UserAgents           []string          `json:"user_agents,omitempty"`         // Raw User-Agent strings; kept for compatibility/debug filtering
 	StartTime            *time.Time        `json:"start_time,omitempty"`
 	EndTime              *time.Time        `json:"end_time,omitempty"`
 	MinLatency           *float64          `json:"min_latency,omitempty"`

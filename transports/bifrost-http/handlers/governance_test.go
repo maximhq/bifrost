@@ -566,6 +566,7 @@ func TestComplexityAnalyzerConfigPutRejectsInvalidPayloads(t *testing.T) {
 		{name: "multiple json values", body: validBody + `{}`, want: "multiple JSON values"},
 		{name: "invalid boundaries", body: testComplexityAnalyzerPayload(t, invalidBoundaries), want: "tier boundaries"},
 		{name: "empty keywords", body: testComplexityAnalyzerPayload(t, emptyKeywords), want: "keyword lists must be non-empty"},
+		{name: "missing keyword block", body: `{"semantic":{"provider":"openai","embedding_model":"text-embedding-3-small"}}`, want: "keyword lists must be non-empty"},
 	}
 
 	for _, tt := range tests {
