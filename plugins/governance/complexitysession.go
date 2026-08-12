@@ -38,6 +38,11 @@ var (
 // complexity-routed session. It deliberately carries no switching thresholds
 // or other policy; callers apply the current session config to these facts.
 type SessionRouteObservation struct {
+	// Tier is the complexity tier the session was published on when this route
+	// served. Cache evidence is only meaningful against the tier that produced
+	// it: a warm cache built while the session was on COMPLEX is not at risk when
+	// moving MEDIUM to SIMPLE, so a decision must not weigh it.
+	Tier string `json:"tier"`
 	// CachedReadTokens is the positive cached input-token count most recently
 	// observed for this route. Zero carries no cache-presence claim.
 	CachedReadTokens int `json:"cached_read_tokens"`
@@ -475,7 +480,7 @@ func updateSessionTierRecord(
 		return unswitchedSessionTierDecision(record, sessionTierReasonDowngradePending, recordChanged)
 	}
 
-	observation, ok := latestUsableSessionRouteObservation(record, now, config.TTL)
+	observation, ok := heldTierCacheEvidence(record, now, config.TTL)
 	if !ok || !observation.CacheObserved || observation.CachedReadTokens <= 0 {
 		return unswitchedSessionTierDecision(record, sessionTierReasonCacheStateUnknown, recordChanged)
 	}
@@ -549,32 +554,50 @@ func advancePendingSessionTier(record *SessionComplexityRecord, tier string, sco
 	return changed
 }
 
-// latestUsableSessionRouteObservation returns the freshest route fact that is
-// no newer than now and still within the session observation window. We use the
-// latest served route because tier selection happens before routing, so the
-// destination route for a proposed tier is not known yet.
+// heldTierCacheEvidence returns the strongest cache fact recorded for the tier
+// the session currently holds, ignoring facts that are stale, dated in the
+// future, or attributed to a tier the session has already left.
+//
+// It cannot simply ask about the route a switch would leave, because tier
+// selection happens before routing: the destination route for a proposed tier is
+// not known yet. What it can do is bound the question to the evidence that is
+// actually at risk.
 //
 // A stale fact is unknown, not cold: session TTL is not proof of a provider's
 // prompt-cache TTL, and guessing expiry could discard a still-warm cache.
-func latestUsableSessionRouteObservation(
+func heldTierCacheEvidence(
 	record *SessionComplexityRecord,
 	now time.Time,
 	ttl time.Duration,
 ) (SessionRouteObservation, bool) {
-	if record == nil || now.IsZero() || ttl <= 0 {
+	if record == nil || now.IsZero() || ttl <= 0 || record.Tier == "" {
 		return SessionRouteObservation{}, false
 	}
 
-	var latest SessionRouteObservation
+	// Two filters, and both are load-bearing.
+	//
+	// Only the held tier's observations count, because only that tier's cache is
+	// at risk from the move being considered. A warm cache recorded before an
+	// earlier switch belongs to a tier the session has already left.
+	//
+	// Within the tier the strongest evidence wins rather than the newest. A
+	// fallback that served one turn is the most recent observation and is cold by
+	// construction, so taking the newest would let a transient detour mask the
+	// primary route's warm cache and license a downgrade that discards it.
+	var strongest SessionRouteObservation
+	found := false
 	for _, observation := range record.RouteObservations {
-		if observation.LastSeenAt.After(latest.LastSeenAt) {
-			latest = observation
+		if observation.Tier != record.Tier {
+			continue
+		}
+		if observation.LastSeenAt.IsZero() || observation.LastSeenAt.After(now) || now.Sub(observation.LastSeenAt) > ttl {
+			continue
+		}
+		if !found || observation.CachedReadTokens > strongest.CachedReadTokens {
+			strongest, found = observation, true
 		}
 	}
-	if latest.LastSeenAt.IsZero() || latest.LastSeenAt.After(now) || now.Sub(latest.LastSeenAt) > ttl {
-		return SessionRouteObservation{}, false
-	}
-	return latest, true
+	return strongest, found
 }
 
 func switchedSessionTierDecision(

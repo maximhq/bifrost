@@ -133,12 +133,20 @@ func (p *GovernancePlugin) recordSessionRouteObservation(
 	}
 	store := *stored
 
-	routeID := effectiveSessionRouteIdentity(ctx, provider, model)
+	// The tier this turn was published on. Without it the observation cannot be
+	// attributed, and an unattributed one is worse than none: it would be weighed
+	// against a tier it says nothing about.
+	tier := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier)
+	if tier == "" {
+		return
+	}
+	routeID := effectiveSessionRouteIdentity(ctx, tier, provider, model)
 	if routeID == "" {
 		return
 	}
 	cachedTokens, cacheObserved := sessionCachedReadTokens(result)
 	observation := SessionRouteObservation{
+		Tier:             tier,
 		CachedReadTokens: cachedTokens,
 		CacheObserved:    cacheObserved,
 		LastSeenAt:       time.Now(),
@@ -182,7 +190,7 @@ func applySessionRouteObservation(
 		record.RouteObservations = make(map[string]SessionRouteObservation, 1)
 	}
 	record.RouteObservations[routeID] = observation
-	boundSessionRouteObservations(record.RouteObservations, maxSessionRouteObservations)
+	boundSessionRouteObservations(record.RouteObservations, maxSessionRouteObservations, record.Tier)
 	return true
 }
 
@@ -235,19 +243,30 @@ func sessionCachedTokensMateriallyChanged(previous, next int) bool {
 	return float64(delta) > float64(previous)*sessionObservationChangeRatio
 }
 
-// boundSessionRouteObservations evicts the least recently seen routes until the
-// map fits. Recency is the right axis: a route not seen for a while is not the
-// one a switch would be giving up.
-func boundSessionRouteObservations(observations map[string]SessionRouteObservation, limit int) {
+// boundSessionRouteObservations evicts observations until the map fits, taking
+// the least recently seen first within whichever group is evictable.
+//
+// heldTier is the tier the session is currently on. Its observations are evicted
+// last: they are the only ones a switch decision reads, so dropping them to make
+// room for a tier the session has already left would blind the very decision
+// this history exists to inform. Scoping identities by tier multiplies the key
+// space, which makes reaching the limit realistic rather than theoretical.
+func boundSessionRouteObservations(observations map[string]SessionRouteObservation, limit int, heldTier string) {
 	for len(observations) > limit {
-		oldestKey := ""
-		var oldestSeen time.Time
+		evictKey := ""
+		var evictSeen time.Time
+		evictingHeld := true
 		for key, observation := range observations {
-			if oldestKey == "" || observation.LastSeenAt.Before(oldestSeen) {
-				oldestKey, oldestSeen = key, observation.LastSeenAt
+			isHeld := observation.Tier == heldTier
+			// Prefer any non-held observation over every held one, and among
+			// equals take the least recently seen.
+			if evictKey == "" ||
+				(evictingHeld && !isHeld) ||
+				(evictingHeld == isHeld && observation.LastSeenAt.Before(evictSeen)) {
+				evictKey, evictSeen, evictingHeld = key, observation.LastSeenAt, isHeld
 			}
 		}
-		delete(observations, oldestKey)
+		delete(observations, evictKey)
 	}
 }
 
@@ -255,12 +274,17 @@ func boundSessionRouteObservations(observations map[string]SessionRouteObservati
 // is not necessarily the one routing selected: a fallback changes provider and
 // model, and key rotation changes which cache is warm. The value is hashed
 // because callers only ever compare identities, and the record replicates.
-func effectiveSessionRouteIdentity(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) string {
+//
+// The tier is part of the identity, not just a field on the observation. Nothing
+// stops two tiers resolving to the same provider and model, and sharing a key
+// would let the later tier's observation overwrite the earlier one's — silently
+// attributing one tier's cache evidence to another.
+func effectiveSessionRouteIdentity(ctx *schemas.BifrostContext, tier string, provider schemas.ModelProvider, model string) string {
 	keyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	if provider == "" && model == "" && keyID == "" {
 		return ""
 	}
-	return complexitySessionHash(string(provider) + "\x00" + model + "\x00" + keyID)
+	return complexitySessionHash(tier + "\x00" + string(provider) + "\x00" + model + "\x00" + keyID)
 }
 
 // sessionCachedReadTokens reports positive evidence of provider cache reuse.
