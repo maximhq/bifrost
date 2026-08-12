@@ -1,0 +1,114 @@
+---
+title: "Pi"
+description: "Use the Pi coding agent with Bifrost for automatic model discovery, virtual keys, and observability."
+icon: "terminal"
+---
+
+[Pi](https://pi.dev) is a lightweight terminal coding agent. The community-maintained [Pi Bifrost provider](https://github.com/lxdlam/pi-bifrost-provider) connects Pi to your Bifrost instance and automatically discovers the models available to you.
+
+<Warning>
+Pi packages run with your user permissions. Review the provider's [source code](https://github.com/lxdlam/pi-bifrost-provider) before installing it.
+</Warning>
+
+## Setup
+
+### 1. Install Pi
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
+### 2. Install the Bifrost provider
+
+```bash
+pi install npm:pi-bifrost-provider
+```
+
+### 3. Connect to Bifrost
+
+Make sure Bifrost is running with at least one [provider configured](/quickstart/gateway/provider-configuration), then start Pi:
+
+```bash
+pi
+```
+
+Inside Pi, run:
+
+```text
+/login bifrost
+```
+
+Enter the following when prompted:
+
+1. **Bifrost URL**, such as `http://localhost:8080`
+2. **API key**, if your Bifrost server requires authentication
+3. **Virtual key**, if you use Bifrost governance
+
+<Tip>
+For most local setups, enter `http://localhost:8080` and leave both key fields empty. If you use only a Bifrost virtual key, leave the API key empty and enter your key in the virtual key field.
+</Tip>
+
+Pi saves the connection and discovers your available models automatically.
+
+### 4. Select a model
+
+Run `/model` inside Pi and choose a model under the `bifrost` provider.
+
+You can also launch Pi with a specific model:
+
+```bash
+pi --provider bifrost --model 'anthropic/claude-*'
+```
+
+Bifrost model IDs use the `provider/model-name` format:
+
+```text
+openai/gpt-5
+anthropic/claude-sonnet-4-5-20250929
+gemini/gemini-2.5-pro
+mistral/mistral-large-latest
+```
+
+<Warning>
+Choose a model that supports tool use. Pi relies on tool calling to read files, run terminal commands, and edit code.
+</Warning>
+
+## Virtual Keys
+
+When [virtual keys](/features/governance/virtual-keys) are enabled, enter your virtual key during `/login bifrost`. Bifrost then limits model discovery and requests according to that key's budgets, rate limits, and access rules.
+
+Run `/login bifrost` again whenever you need to change the URL or credentials.
+
+## Environment Variable Setup
+
+For automated or non-interactive environments, configure the provider with environment variables:
+
+```bash
+export BIFROST_URL=http://localhost:8080
+export BIFROST_API_KEY=your-api-key      # optional
+export BIFROST_VIRTUAL_KEY=sk-bf-...     # optional
+
+pi
+```
+
+You can also try the provider for one session without installing it:
+
+```bash
+pi -e npm:pi-bifrost-provider
+```
+
+<Note>
+If requests fail because of Bifrost's Allowed Headers setting, allow `Authorization` and `x-bf-vk`, or set Allowed Headers to `*`.
+</Note>
+
+## Observability
+
+When `client.enable_logging` is enabled and a log store is configured, Pi requests routed through Bifrost are logged. Monitor them at `http://localhost:8080/logs` and filter by provider or model.
+
+For deployments that must not persist source code, prompts, tool data, or other request/response content, set `client.disable_content_logging` to `true`. Bifrost still records metadata such as model, provider, token usage, cost, latency, and status. OpenTelemetry and other observability exporters have independent `disable_content_logging` settings, so enable the same protection on every configured exporter. See [Content Logging](/features/observability/content-logging) for details.
+
+## Next Steps
+
+- [Provider Configuration](/quickstart/gateway/provider-configuration) - Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) - Add budgets, rate limits, and access control
+- [Built-in Observability](/features/observability/default) - Monitor Pi requests through Bifrost
