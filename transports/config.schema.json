@@ -4164,7 +4164,11 @@
                     "s3": {
                       "type": "string",
                       "pattern": "\\.",
-                      "description": "Host for the s3 service, which serves batch file I/O. Must carry the literal \"bucket.\" prefix, since Bifrost prepends the bucket name to build the virtual-hosted URL. A Gateway endpoint needs no value here (can use env. prefix)"
+                      "description": "Host for the s3 service, which serves batch file I/O. Explicit overrides use path-style bucket addressing; do not include a bucket prefix. A Gateway endpoint needs no value here (can use env. prefix)"
+                    },
+                    "dns_suffix": {
+                      "type": "string",
+                      "description": "Partition DNS suffix used to build regional Bedrock, Agent Runtime, and S3 hosts, for example c2s.ic.gov"
                     }
                   },
                   "additionalProperties": false

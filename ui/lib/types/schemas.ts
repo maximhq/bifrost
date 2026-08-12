@@ -158,6 +158,7 @@ export const bedrockEndpointsSchema = z.object({
 	mantle: secretVarSchema.optional(),
 	agent_runtime: secretVarSchema.optional(),
 	s3: secretVarSchema.optional(),
+	dns_suffix: z.string().optional(),
 });
 
 // Bedrock key config schema

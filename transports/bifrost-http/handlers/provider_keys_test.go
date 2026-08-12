@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -9,6 +10,54 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+func TestValidateBedrockKeyEndpoints(t *testing.T) {
+	key := func(endpoints *schemas.BedrockEndpoints) schemas.Key {
+		return schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Region:    schemas.NewSecretVar("us-east-1"),
+			Endpoints: endpoints,
+		}}
+	}
+	cases := []struct {
+		name         string
+		key          schemas.Key
+		allowPrivate bool
+		wantErr      string
+		needsDNS     bool
+	}{
+		{"nil endpoints", key(nil), false, "", false},
+		{"private host blocked", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("10.0.0.1")}), false, "endpoints.runtime", false},
+		{"private host allowed", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("10.0.0.1")}), true, "", false},
+		{"scheme and path normalized", key(&schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("https://127.0.0.1/path")}), false, "", false},
+		{"localhost suffix rejected", key(&schemas.BedrockEndpoints{DNSSuffix: " svc.localhost "}), true, "endpoints.dns_suffix", false},
+		{"invalid suffix rejected", key(&schemas.BedrockEndpoints{DNSSuffix: "bad suffix"}), true, "endpoints.dns_suffix", false},
+		{"commercial suffix accepted", key(&schemas.BedrockEndpoints{DNSSuffix: ".amazonaws.com."}), false, "", true},
+		{"all suffix hosts overridden", key(&schemas.BedrockEndpoints{
+			DNSSuffix:    "test.invalid",
+			Runtime:      schemas.NewSecretVar("127.0.0.1"),
+			ControlPlane: schemas.NewSecretVar("127.0.0.1"),
+			AgentRuntime: schemas.NewSecretVar("127.0.0.1"),
+			S3:           schemas.NewSecretVar("127.0.0.1"),
+		}), false, "", false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if testCase.needsDNS && os.Getenv("BIFROST_TEST_LIVE_DNS") == "" {
+				t.Skip("requires outbound DNS; set BIFROST_TEST_LIVE_DNS=1 to run")
+			}
+			err := validateBedrockKeyEndpoints(testCase.key, testCase.allowPrivate)
+			if testCase.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", testCase.wantErr, err)
+			}
+		})
+	}
+}
 
 // TestMergeUpdatedKey_Value locks in the invariant that a masked key preview can
 // never be persisted as the real key value. The provider keys API renders keys

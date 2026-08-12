@@ -128,6 +128,7 @@ export interface BedrockEndpoints {
 	mantle?: SecretVar;
 	agent_runtime?: SecretVar;
 	s3?: SecretVar;
+	dns_suffix?: string;
 }
 
 // BedrockKeyConfig matching Go's schemas.BedrockKeyConfig

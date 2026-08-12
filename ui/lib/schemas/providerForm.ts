@@ -119,6 +119,7 @@ const BedrockEndpointsSchema = z.object({
 	mantle: VPCEndpointHostSchema,
 	agent_runtime: VPCEndpointHostSchema,
 	s3: VPCEndpointHostSchema,
+	dns_suffix: z.string().optional(),
 });
 
 const BedrockKeyConfigSchema = z

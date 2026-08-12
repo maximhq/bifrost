@@ -459,7 +459,8 @@ bifrost:
   #         #   control_plane: "vpce-0abc123-x1y2z3.bedrock.us-east-1.vpce.amazonaws.com"          # Model listing, batch jobs
   #         #   mantle: "vpce-0abc123-x1y2z3.bedrock-mantle.us-east-1.vpce.amazonaws.com"          # Mantle-routed models
   #         #   agent_runtime: "vpce-0abc123-x1y2z3.bedrock-agent-runtime.us-east-1.vpce.amazonaws.com"  # Rerank
-  #         #   s3: "bucket.vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com"                   # Batch file I/O; needs the bucket. prefix
+  #         #   s3: "vpce-0abc123-x1y2z3.s3.us-east-1.vpce.amazonaws.com"                          # Batch file I/O; overrides use path-style buckets
+  #         #   dns_suffix: "c2s.ic.gov"                                                           # Optional partition suffix for regional defaults
   #
   # # AWS Bedrock Mantle example (requires bedrock_mantle_key_config)
   # bedrock_mantle:
