@@ -1019,7 +1019,10 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 	return responseChan, nil
 }
 
-// Transcription is not supported by the Azure provider.
+// Transcription performs a transcription request to Azure's API.
+// It uses the OpenAI-compatible /openai/v1 surface, like every other operation on this
+// provider (see Speech, which already targets /openai/v1/audio/speech). The deployment is
+// selected through the multipart `model` field instead of the URL path.
 func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	endpoint := resolveAzureEndpoint(ctx, key)
 	if endpoint == "" {
@@ -1030,7 +1033,11 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		return nil, bifrostErr
 	}
 
-	url := fmt.Sprintf("%s/openai/deployments/%s/audio/transcriptions?api-version=%s", endpoint, request.Model, resolveAPIVersion(ctx, DefaultAzureAPIVersion))
+	path := "openai/v1/audio/transcriptions"
+	if v := resolveAPIVersion(ctx, ""); v != "" {
+		path += "?api-version=" + v
+	}
+	url := fmt.Sprintf("%s/%s", endpoint, path)
 
 	response, err := openai.HandleOpenAITranscriptionRequest(
 		ctx,
