@@ -3573,6 +3573,107 @@ func TestAnthropicReasoningConfigUsesThinkingField(t *testing.T) {
 	}
 }
 
+// TestAnthropicForceFixedBudgetThinkingOverride verifies the per-alias
+// ForceFixedBudgetThinking override decouples "attach a canonical model_name to
+// an alias" (for cachePoint/pricing) from "opt into the adaptive-thinking wire
+// shape". The wire model id stays opaque (mirroring the Bedrock resource id from
+// the incident); capModel is resolved from the alias ModelName.
+func TestAnthropicForceFixedBudgetThinkingOverride(t *testing.T) {
+	tests := []struct {
+		name               string
+		modelName          string // alias ModelName → resolves capModel for capability gating
+		force              *bool  // ForceFixedBudgetThinking override
+		expectedType       string // expected thinking.type
+		expectBudgetTokens bool
+	}{
+		{
+			name:               "Sonnet4.6_NoOverride_UsesAdaptive_Regression",
+			modelName:          "claude-sonnet-4-6",
+			force:              nil,
+			expectedType:       "adaptive",
+			expectBudgetTokens: false,
+		},
+		{
+			name:               "Sonnet4.6_OverrideFalse_UsesAdaptive",
+			modelName:          "claude-sonnet-4-6",
+			force:              schemas.Ptr(false),
+			expectedType:       "adaptive",
+			expectBudgetTokens: false,
+		},
+		{
+			name:               "Sonnet4.6_OverrideTrue_UsesBudgetTokens_NewBehavior",
+			modelName:          "claude-sonnet-4-6",
+			force:              schemas.Ptr(true),
+			expectedType:       "enabled",
+			expectBudgetTokens: true,
+		},
+		{
+			name:               "Sonnet5_AdaptiveOnly_OverrideTrue_IgnoredStaysAdaptive",
+			modelName:          "claude-sonnet-5",
+			force:              schemas.Ptr(true),
+			expectedType:       "adaptive",
+			expectBudgetTokens: false,
+		},
+		{
+			name:               "Sonnet3.5_NoAdaptiveSupport_OverrideTrue_UsesBudgetTokens",
+			modelName:          "claude-3-5-sonnet",
+			force:              schemas.Ptr(true),
+			expectedType:       "enabled",
+			expectBudgetTokens: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const wireModelID = "v9xyf4o111s5" // opaque Bedrock resource id (like the incident)
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model: wireModelID,
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Hello"),
+						},
+					},
+				},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+				Key: "best-claude",
+				Config: &schemas.AliasConfig{
+					ModelID:                  wireModelID,
+					ModelName:                schemas.Ptr(tt.modelName),
+					ForceFixedBudgetThinking: tt.force,
+				},
+			})
+
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, result.AdditionalModelRequestFields)
+
+			thinkingConfig, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
+			require.True(t, hasThinking, "expected thinking field in AdditionalModelRequestFields")
+
+			configMap, ok := thinkingConfig.(map[string]any)
+			require.True(t, ok, "thinking config should be map[string]any, got %T", thinkingConfig)
+			assert.Equal(t, tt.expectedType, configMap["type"], "thinking.type mismatch")
+
+			_, hasBudget := configMap["budget_tokens"]
+			assert.Equal(t, tt.expectBudgetTokens, hasBudget, "budget_tokens presence mismatch")
+
+			// The adaptive branch pairs thinking:{type:"adaptive"} with
+			// output_config.effort; the budget_tokens branch must not emit it.
+			_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+			assert.Equal(t, tt.expectedType == "adaptive", hasOutputConfig, "output_config presence should track adaptive shape")
+		})
+	}
+}
+
 func TestAnthropicOrderedOutputConfigRoundTripsReasoning(t *testing.T) {
 	request := &bedrock.BedrockConverseRequest{
 		ModelID: "anthropic.claude-opus-4-6-v1",
