@@ -67,6 +67,8 @@ type (
 	ScopeKind           = datasheet.ScopeKind
 	MatchType           = datasheet.MatchType
 
+	CatalogPricingOverrides = datasheet.CatalogPricingOverrides
+
 	KeyConfigEntry = keyconfig.KeyEntry
 	AliasOwner     = keyconfig.AliasOwner
 )
