@@ -233,6 +233,28 @@ type AliasConfig struct {
 	ProjectID             *SecretVar `json:"project_id,omitempty"`
 	UseAnthropicEndpoints *bool      `json:"use_anthropic_endpoints,omitempty"` // Whether to use anthropic endpoints for this alias
 
+	// ForceFixedBudgetThinking, when true, pins Anthropic reasoning requests for
+	// this alias to the classic thinking:{type:"enabled",budget_tokens:N} wire
+	// shape even when the resolved canonical model (ModelName/ModelID; see
+	// ResolveCanonicalModel) supports the newer adaptive-thinking surface
+	// (thinking:{type:"adaptive"} + output_config.effort).
+	//
+	// Use this when adding ModelName/ModelID metadata to an alias for an
+	// unrelated reason (e.g. enabling Bedrock cachePoint via
+	// BedrockModelSupportsCachePoints, which also needs the canonical model to
+	// be resolvable) and you do NOT want to also opt into the adaptive-thinking
+	// behavior that resolving the canonical model incidentally unlocks —
+	// adaptive thinking removes the budget_tokens cap that previously bounded
+	// generation length under a given effort level, which can materially
+	// change latency/token-usage characteristics for existing callers tuned
+	// against the budget_tokens behavior.
+	//
+	// Has no effect on adaptive-ONLY models (Opus 4.7+, Sonnet 5+, Fable/Mythos
+	// — see IsAdaptiveOnlyThinkingModel in the anthropic package) since those
+	// reject budget_tokens outright; the override is silently ignored for
+	// those models and adaptive thinking is used regardless.
+	ForceFixedBudgetThinking *bool `json:"force_fixed_budget_thinking,omitempty"`
+
 	*AzureAliasCfg
 	*VertexAliasCfg
 	*BedrockAliasCfg
@@ -250,6 +272,7 @@ func (ac AliasConfig) isLegacyShape() bool {
 		ac.Region == nil &&
 		ac.ProjectID == nil &&
 		ac.UseAnthropicEndpoints == nil &&
+		ac.ForceFixedBudgetThinking == nil &&
 		ac.AzureAliasCfg == nil &&
 		ac.VertexAliasCfg == nil &&
 		ac.BedrockAliasCfg == nil &&
@@ -460,6 +483,35 @@ func ResolveCanonicalModel(ctx *BifrostContext, fallbackModel string) string {
 		}
 	}
 	return fallbackModel
+}
+
+// ShouldUseAdaptiveThinking reports whether reasoning requests for the current
+// attempt should use Anthropic's adaptive-thinking wire shape
+// (thinking:{type:"adaptive"}) instead of the classic budget_tokens shape.
+//
+// Callers first determine model capability via
+// anthropic.SupportsAdaptiveThinking(capModel) and
+// anthropic.IsAdaptiveOnlyThinkingModel(capModel) (capModel from
+// ResolveCanonicalModel) and pass the results in here — this package cannot
+// import the anthropic package directly (would create an import cycle), so it
+// only adds the per-alias ForceFixedBudgetThinking override on top of the
+// capability check the caller already computed.
+//
+// adaptiveOnly must be true for models where budget_tokens is rejected
+// outright (Opus 4.7+, Sonnet 5+, Fable/Mythos); the override never applies to
+// those regardless of alias config.
+func ShouldUseAdaptiveThinking(ctx *BifrostContext, supportsAdaptive bool, adaptiveOnly bool) bool {
+	if !supportsAdaptive {
+		return false
+	}
+	if adaptiveOnly {
+		return true
+	}
+	if ra := GetResolvedAlias(ctx); ra != nil && ra.Config != nil &&
+		ra.Config.ForceFixedBudgetThinking != nil && *ra.Config.ForceFixedBudgetThinking {
+		return false
+	}
+	return true
 }
 
 // ResolveBaseProvider returns the built-in provider that actually served this
