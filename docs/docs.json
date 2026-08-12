@@ -444,6 +444,7 @@
               "cli-agents/gemini-cli",
               "cli-agents/qwen-code",
               "cli-agents/opencode",
+              "cli-agents/pi",
               "cli-agents/zed-editor",
               "cli-agents/roo-code",
               "cli-agents/open-webui"
