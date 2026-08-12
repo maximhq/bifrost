@@ -347,6 +347,59 @@ func TestEmbedComplexityTextRecordsRoutingUsage(t *testing.T) {
 	assert.True(t, usage.CountTowardBudgets)
 }
 
+// TestEmbedComplexityTextAccumulatesUsageAcrossFallbackAttempts models a
+// request that fails over: core hands the same context to tryRequest for each
+// fallback, the pre-hooks re-run, and classification embeds again. Only one
+// record survives to the RoutingDebug stamp, so it has to carry every attempt's
+// tokens or the provider bills for embeds nothing prices.
+func TestEmbedComplexityTextAccumulatesUsageAcrossFallbackAttempts(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 20), nil
+	})
+
+	cfg := testEmbeddingSemanticConfig()
+	cfg.CountTowardBudgets = true
+
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	for range 3 {
+		_, err := plugin.embedComplexityText(ctx, cfg, "classify me")
+		require.NoError(t, err)
+	}
+
+	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	require.True(t, ok)
+	assert.Equal(t, 60, usage.InputTokens, "every attempt's embed must be priced, not just the last")
+	assert.Equal(t, "openai", usage.Provider)
+	assert.True(t, usage.CountTowardBudgets)
+}
+
+// A semantic config reloaded between attempts embeds through different rates,
+// and one record cannot describe both — the newer provider/model must win and
+// start a fresh count rather than billing older tokens at the new rate.
+func TestEmbedComplexityTextRestartsUsageWhenTheEmbeddingModelChanges(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 20), nil
+	})
+
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	_, err := plugin.embedComplexityText(ctx, testEmbeddingSemanticConfig(), "classify me")
+	require.NoError(t, err)
+
+	reloaded := testEmbeddingSemanticConfig()
+	reloaded.EmbeddingModel = "text-embedding-3-large"
+	_, err = plugin.embedComplexityText(ctx, reloaded, "classify me")
+	require.NoError(t, err)
+
+	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	require.True(t, ok)
+	assert.Equal(t, "text-embedding-3-large", usage.Model)
+	assert.Equal(t, 20, usage.InputTokens)
+}
+
 // A provider that reports a negative token count must not have it recorded:
 // the stamp feeds cost calculation and warmup budget attribution, where a
 // negative count would subtract from billed usage.
@@ -435,6 +488,43 @@ func TestEmbedComplexityTextsObservesWarmupNeverRecordsRoutingUsage(t *testing.T
 	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 7}, observed[0])
 }
 
+// TestEmbedComplexityTextsSettlesUsageOnUnsupportedBatch covers the shape a
+// single-input-only model returns for a multi-text batch. Warmup recovers by
+// re-embedding each phrase on its own, so this call's tokens are the ones that
+// would silently vanish: the provider billed for them and the run still
+// succeeds.
+func TestEmbedComplexityTextsSettlesUsageOnUnsupportedBatch(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 5), nil
+	})
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	_, err := plugin.embedComplexityTexts(t.Context(), testEmbeddingSemanticConfig(), []string{"a", "b"})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, complexity.ErrBatchEmbeddingsUnsupported))
+	require.Len(t, observed, 1)
+	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 5}, observed[0])
+}
+
+// A call that never reached the provider consumed nothing, so it must not reach
+// the observer at all — that would inflate the warmup embedding call counter
+// with attempts the provider never saw.
+func TestEmbedComplexityTextsSkipsUsageWhenTheCallNeverReachedTheProvider(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	_, err := plugin.embedComplexityTexts(t.Context(), testEmbeddingSemanticConfig(), []string{"a", "b"})
+	require.ErrorIs(t, err, ErrEmbeddingRequestExecutorNotConfigured)
+	assert.Empty(t, observed)
+}
+
 func TestRequestClassificationEmbedDoesNotObserveWarmup(t *testing.T) {
 	plugin := &GovernancePlugin{}
 	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
@@ -453,6 +543,80 @@ func TestRequestClassificationEmbedDoesNotObserveWarmup(t *testing.T) {
 	_, err := plugin.embedComplexityText(ctx, testEmbeddingSemanticConfig(), "classify me")
 	require.NoError(t, err)
 	assert.NotNil(t, ctx.Value(routingEmbedUsageContextKey))
+	assert.Empty(t, observed)
+}
+
+// TestEmbedComplexityTextSettlesUsageWhenProviderReturnsNoVectors is the
+// single-input side of the same rule the batch path already follows. Warmup
+// reaches this path through its fallback after a provider refuses a batch, so a
+// deployment on a single-input-only model settles every warmup embed here.
+func TestEmbedComplexityTextSettlesUsageWhenProviderReturnsNoVectors(t *testing.T) {
+	plugin, store := newWarmupBudgetFixture(t)
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  nil,
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: 1000},
+		}, nil
+	})
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	cfg := testEmbeddingSemanticConfig()
+	cfg.CountTowardBudgets = true
+
+	// A plain context is warmup's single-input fallback.
+	_, err := plugin.embedComplexityText(t.Context(), cfg, "warm me")
+	require.Error(t, err)
+
+	require.Len(t, observed, 1)
+	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 1000}, observed[0])
+	// 1000 tokens × $0.00000002/token (text-embedding-3-small in testdata).
+	usage := store.GetGovernanceData(context.Background()).Budgets["provider-budget"].CurrentUsage
+	assert.InDelta(t, 0.00002, usage, 1e-12)
+}
+
+// TestRequestClassificationEmbedRecordsUsageWhenProviderReturnsNoVectors keeps
+// the request side consistent: a classification that failed on response shape
+// still cost the caller tokens, so it reaches the RoutingDebug stamp rather
+// than disappearing because no tier came back.
+func TestRequestClassificationEmbedRecordsUsageWhenProviderReturnsNoVectors(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  nil,
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: 42},
+		}, nil
+	})
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	_, err := plugin.embedComplexityText(ctx, testEmbeddingSemanticConfig(), "classify me")
+	require.Error(t, err)
+
+	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	require.True(t, ok, "a billed classification embed must be recorded for the stamp")
+	assert.Equal(t, 42, usage.InputTokens)
+	assert.Empty(t, observed, "a request embed must never fire the warmup observer")
+}
+
+// TestEmbedComplexityTextSkipsUsageBeforeProviderResponds keeps the two tests
+// above from becoming "settle on every failure": a call that never reached the
+// provider has nothing to bill.
+func TestEmbedComplexityTextSkipsUsageBeforeProviderResponds(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	_, err := plugin.embedComplexityText(t.Context(), testEmbeddingSemanticConfig(), "warm me")
+	require.ErrorIs(t, err, ErrEmbeddingRequestExecutorNotConfigured)
 	assert.Empty(t, observed)
 }
 
@@ -577,6 +741,44 @@ func TestSettleWarmupEmbedUsageAttributesProviderBudget(t *testing.T) {
 	cfg.CountTowardBudgets = true
 
 	plugin.settleWarmupEmbedUsage(cfg, 1000)
+
+	// 1000 tokens × $0.00000002/token (text-embedding-3-small in testdata).
+	usage := store.GetGovernanceData(context.Background()).Budgets["provider-budget"].CurrentUsage
+	assert.InDelta(t, 0.00002, usage, 1e-12)
+}
+
+// TestEmbedComplexityTextsSettlesUsageWhenProviderReturnsNoVectors covers the
+// one post-response failure that used to drop its tokens: a provider that
+// reports usage but returns an empty Data array. The call completed and was
+// billed, so it must reach both the observer and, with count_toward_budgets on,
+// the provider budget — exactly like the vector-count mismatch beside it.
+func TestEmbedComplexityTextsSettlesUsageWhenProviderReturnsNoVectors(t *testing.T) {
+	plugin, store := newWarmupBudgetFixture(t)
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  nil,
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: 1000},
+		}, nil
+	})
+
+	var observedProvider, observedModel string
+	var observedTokens int
+	var observedCalls int
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observedCalls++
+		observedProvider, observedModel, observedTokens = provider, model, inputTokens
+	})
+
+	cfg := testEmbeddingSemanticConfig()
+	cfg.CountTowardBudgets = true
+
+	_, err := plugin.embedComplexityTexts(t.Context(), cfg, []string{"first", "second"})
+	require.Error(t, err, "an empty Data array is still a rejected response shape")
+
+	require.Equal(t, 1, observedCalls, "the observer must see the billed call exactly once")
+	assert.Equal(t, "openai", observedProvider)
+	assert.Equal(t, "text-embedding-3-small", observedModel)
+	assert.Equal(t, 1000, observedTokens)
 
 	// 1000 tokens × $0.00000002/token (text-embedding-3-small in testdata).
 	usage := store.GetGovernanceData(context.Background()).Budgets["provider-budget"].CurrentUsage

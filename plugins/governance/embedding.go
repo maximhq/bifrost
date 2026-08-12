@@ -104,8 +104,8 @@ func (p *GovernancePlugin) SetEmbeddingRequestExecutor(executor EmbeddingRequest
 }
 
 // SetComplexityVectorStore supplies the configured shared VectorStore. The
-// classifier chooses it only for auto or external mode; embedded mode retains
-// its private Chromem store.
+// classifier uses it only in "vector_store" mode; "embedded" mode retains its
+// private Chromem store.
 func (p *GovernancePlugin) SetComplexityVectorStore(store vectorstore.VectorStore) {
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.SetConfiguredStore(store)
@@ -130,13 +130,24 @@ func (p *GovernancePlugin) embedComplexityText(ctx context.Context, semantic *co
 	embeddingCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	defer embeddingCtx.Cancel()
 	embedding, inputTokens, err := p.generateEmbedding(embeddingCtx, semantic, text, timeout)
+	// Mirrors embedComplexityTexts: a response that arrived and was billed is
+	// accounted for even when its shape was rejected, because the provider
+	// completed the call either way. This is the single-input side of the same
+	// rule — reached both by warmup's fallback after a batch is refused and by a
+	// live request's classification embed.
+	//
+	// generateEmbeddings reports zero tokens for every failure before the
+	// response arrives (no executor, bad config, timeout), so gating on a
+	// positive count keeps those out and leaves the success path unchanged.
+	if err == nil || inputTokens > 0 {
+		if isRequest {
+			recordRoutingEmbedUsage(ctx, semantic, inputTokens)
+		} else {
+			p.settleWarmupEmbedUsage(semantic, inputTokens)
+		}
+	}
 	if err != nil {
 		return nil, err
-	}
-	if isRequest {
-		recordRoutingEmbedUsage(ctx, semantic, inputTokens)
-	} else {
-		p.settleWarmupEmbedUsage(semantic, inputTokens)
 	}
 	return embedding, nil
 }
@@ -154,14 +165,30 @@ func requestEmbeddingTimeout(semantic *complexity.SemanticConfig) time.Duration 
 // triggering request's context. Warmup embeds arrive on plain background
 // contexts (never a *schemas.BifrostContext), so they are naturally excluded —
 // boot/warmup embedding cost is never stamped or attributed to any request.
+// A request that fails over classifies once per attempt: core's fallback loop
+// hands the same context to tryRequest, which re-runs the plugin pre-hooks, and
+// clearCtxForFallback does not clear this key. Tokens therefore accumulate
+// rather than replace — the provider billed for every one of those embeds, but
+// only the surviving record reaches the RoutingDebug stamp that cost
+// calculation reads, so replacing would silently drop all but the last.
 func recordRoutingEmbedUsage(ctx context.Context, semantic *complexity.SemanticConfig, inputTokens int) {
 	bfCtx, ok := ctx.(*schemas.BifrostContext)
 	if !ok || semantic == nil {
 		return
 	}
+	provider := string(semantic.Provider)
+	model := semantic.EmbeddingModel
+	// Only accumulate across embeds that price identically. A semantic config
+	// reloaded mid-request embeds through different rates, and one record cannot
+	// describe both, so the newest provider/model wins and starts a fresh count
+	// instead of billing the older tokens at the newer rate.
+	if previous, ok := bfCtx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage); ok &&
+		previous != nil && previous.Provider == provider && previous.Model == model {
+		inputTokens += previous.InputTokens
+	}
 	bfCtx.SetValue(routingEmbedUsageContextKey, &routingEmbedUsage{
-		Provider:           string(semantic.Provider),
-		Model:              semantic.EmbeddingModel,
+		Provider:           provider,
+		Model:              model,
 		InputTokens:        inputTokens,
 		CountTowardBudgets: semantic.CountTowardBudgets,
 	})
@@ -214,10 +241,24 @@ func (p *GovernancePlugin) embedComplexityTexts(ctx context.Context, semantic *c
 	embeddingCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	defer embeddingCtx.Cancel()
 	embeddings, inputTokens, err := p.generateEmbeddings(embeddingCtx, semantic, texts, warmupEmbeddingTimeout)
+	// A rejected response shape still cost input tokens: the provider completed
+	// the call and billed for it, we just refused to trust its vector count or
+	// indices. ErrBatchEmbeddingsUnsupported is the case that matters, because
+	// warmup recovers from it by re-embedding one text at a time and then
+	// succeeds — dropping the batch's usage here would leave those tokens
+	// unobserved and unbilled with nothing downstream to notice. The retries
+	// settle their own separate calls, so this cannot double-count.
+	//
+	// generateEmbeddings reports zero tokens for every failure before the
+	// response arrives (no executor, bad config, timeout), so gating on a
+	// positive count keeps those out of the observer's call counter while
+	// leaving the success path settling exactly as before.
+	if err == nil || inputTokens > 0 {
+		p.settleWarmupEmbedUsage(semantic, inputTokens)
+	}
 	if err != nil {
 		return nil, err
 	}
-	p.settleWarmupEmbedUsage(semantic, inputTokens)
 	return embeddings, nil
 }
 
@@ -295,12 +336,16 @@ func (p *GovernancePlugin) CanClassifySemantically(semantic *complexity.Semantic
 // attribution). The call is bounded by the configured semantic timeout: the
 // router hot path must never wait on a slow embedding provider.
 func (p *GovernancePlugin) generateEmbedding(ctx *schemas.BifrostContext, semantic *complexity.SemanticConfig, text string, timeout time.Duration) ([]float32, int, error) {
+	// Both failure paths carry the token count through rather than zeroing it:
+	// generateEmbeddings only reports a positive count once the provider has
+	// responded and billed, and callers decide what to do with usage from a
+	// rejected response. Zeroing here hid it from them entirely.
 	embeddings, inputTokens, err := p.generateEmbeddings(ctx, semantic, []string{text}, timeout)
 	if err != nil {
-		return nil, 0, err
+		return nil, inputTokens, err
 	}
 	if len(embeddings) != 1 {
-		return nil, 0, fmt.Errorf("expected one embedding, got %d", len(embeddings))
+		return nil, inputTokens, fmt.Errorf("expected one embedding, got %d", len(embeddings))
 	}
 	return embeddings[0], inputTokens, nil
 }
@@ -363,7 +408,9 @@ func (p *GovernancePlugin) generateEmbeddings(ctx *schemas.BifrostContext, seman
 		return nil, 0, fmt.Errorf("failed to generate embedding: %v", bifrostErr)
 	}
 
-	if response == nil || len(response.Data) == 0 {
+	// A nil response means nothing arrived to read usage from, so it keeps the
+	// zero-token contract every pre-response failure above shares.
+	if response == nil {
 		return nil, 0, fmt.Errorf("no embeddings returned from provider")
 	}
 	inputTokens := 0
@@ -373,6 +420,14 @@ func (p *GovernancePlugin) generateEmbeddings(ctx *schemas.BifrostContext, seman
 	// Drop it to zero — the embed still happened, we just cannot price it.
 	if response.Usage != nil && response.Usage.TotalTokens > 0 {
 		inputTokens = response.Usage.TotalTokens
+	}
+	// Read usage before rejecting the shape, for the same reason the vector-count
+	// mismatch below returns it: the provider completed the call and billed for
+	// it, and we are only refusing to trust what came back. Returning zero here
+	// left an empty-Data response as the one post-response failure whose tokens
+	// went unobserved and unbilled.
+	if len(response.Data) == 0 {
+		return nil, inputTokens, fmt.Errorf("no embeddings returned from provider")
 	}
 
 	if len(response.Data) != len(texts) {

@@ -1407,16 +1407,28 @@ func (h *GovernanceHandler) resetComplexityAnalyzerConfig(ctx *fasthttp.RequestC
 		// change and overwrite what this reset just preserved.
 		defaults.ConfigHashes.SemanticSettings = current.ConfigHashes.SemanticSettings
 	}
-	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	// Normalize before anything leaves this handler, matching the PUT path. The
+	// store and the classifier normalize on their own, so persistence and
+	// routing were always correct — but the raw defaults carry phrases as
+	// authored ("Give me the SQL to count paid orders."), while everything
+	// downstream lowercases, trims, dedupes, and sorts them. Returning the raw
+	// form handed clients phrase text that does not match what was stored or
+	// embedded, which is not something a caller can be expected to reconcile.
+	normalized, err := complexity.ValidateAndNormalize(&defaults)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to normalize default complexity analyzer config: %v", err))
+		return
+	}
+	if err := h.configStore.UpdateComplexityAnalyzerConfig(ctx, normalized); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reset complexity analyzer config: %v", err))
 		return
 	}
-	if err := h.reloadComplexityAnalyzerConfig(ctx, &defaults); err != nil {
+	if err := h.reloadComplexityAnalyzerConfig(ctx, normalized); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload complexity analyzer config in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
 
-	SendJSON(ctx, defaults)
+	SendJSON(ctx, normalized)
 }
 
 func (h *GovernanceHandler) reloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
