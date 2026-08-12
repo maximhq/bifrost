@@ -5,8 +5,13 @@ package semanticcache
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +43,7 @@ type Config struct {
 
 	// Advanced caching behavior
 	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
+	DirectKeyCacheSecretEnv      string `json:"direct_key_cache_secret_env,omitempty"`    // Environment variable containing the HMAC secret for direct-key cache namespaces
 	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
 	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
 	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
@@ -226,7 +232,10 @@ const (
 	CacheThresholdKey schemas.BifrostContextKey = "semantic_cache-threshold"  // float64. Per-request override of the semantic similarity threshold.
 	CacheTypeKey      schemas.BifrostContextKey = "semantic_cache-cache_type" // CacheType. Narrow lookup to a single path (direct or semantic).
 	CacheNoStoreKey   schemas.BifrostContextKey = "semantic_cache-no_store"   // bool. Skip writing the response to cache (still served from cache on hit).
+	cacheBypassKey    schemas.BifrostContextKey = "semantic_cache-bypass"     // bool. Skip both cache lookup and cache write for unsafe requests.
 )
+
+const directKeyCacheNamespacePrefix = "direct-key-hmac-v1:"
 
 type CacheType string
 
@@ -330,8 +339,12 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 	return chunk, nil
 }
 
-// PreRequestHook implements schemas.LLMPlugin (no-op — required for plugin indexing).
-func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+// PreRequestHook marks requests that must skip both cache lookup and cache writes.
+func (plugin *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	if plugin.shouldBypassCache(ctx, req) {
+		ctx.SetValue(cacheBypassKey, true)
+		ctx.SetValue(CacheNoStoreKey, true)
+	}
 	return nil
 }
 
@@ -342,6 +355,13 @@ func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.Bifro
 // state on the plugin keyed by request ID for PostLLMHook to consume when
 // the upstream response arrives.
 func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if bypass, _ := ctx.Value(cacheBypassKey).(bool); bypass {
+		if requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); ok {
+			plugin.clearCacheState(requestID)
+		}
+		return req, nil, nil
+	}
+
 	cacheKey, ok := plugin.resolveCacheKey(ctx)
 	if !ok {
 		return req, nil, nil
@@ -456,6 +476,9 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 // resolveCacheKey returns the per-request cache key (or the configured default)
 // and a bool indicating whether the caller should proceed with caching.
 func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool) {
+	if cacheKey, ok, handled := plugin.resolveDirectKeyCacheKey(ctx); handled {
+		return cacheKey, ok
+	}
 	if cacheKey, ok := ctx.Value(CacheKey).(string); ok && cacheKey != "" {
 		return cacheKey, true
 	}
@@ -463,6 +486,133 @@ func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool
 		return plugin.config.DefaultCacheKey, true
 	}
 	return "", false
+}
+
+func (plugin *Plugin) resolveDirectKeyCacheKey(ctx *schemas.BifrostContext) (string, bool, bool) {
+	directKey, isDirect := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+	if !isDirect {
+		return "", false, false
+	}
+	if plugin.config.DirectKeyCacheSecretEnv == "" {
+		return "", false, true
+	}
+	secret, ok := os.LookupEnv(plugin.config.DirectKeyCacheSecretEnv)
+	rawKey := directKey.Value.GetValue()
+	if !ok || len(secret) < 32 || rawKey == "" {
+		return "", false, true
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(rawKey))
+	return directKeyCacheNamespacePrefix + hex.EncodeToString(mac.Sum(nil)), true, true
+}
+
+func (plugin *Plugin) shouldBypassCache(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
+	if headers, ok := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string); ok {
+		for name, value := range headers {
+			if strings.EqualFold(name, "x-edgeai-cache-bypass") && isCacheBypassValue(value) {
+				return true
+			}
+		}
+	}
+	if req == nil {
+		return false
+	}
+	if req.ChatRequest != nil {
+		return shouldBypassChatCache(req.ChatRequest)
+	}
+	if req.ResponsesRequest != nil {
+		return shouldBypassResponsesCache(req.ResponsesRequest)
+	}
+	return false
+}
+
+func isCacheBypassValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldBypassChatCache(req *schemas.BifrostChatRequest) bool {
+	if req.Params != nil {
+		params := req.Params
+		if len(params.Tools) > 0 || params.ToolChoice != nil || params.WebSearchOptions != nil ||
+			len(params.MCPServers) > 0 || params.Audio != nil || boolIsTrue(params.Store) ||
+			boolIsTrue(params.IncludeServerSideToolInvocations) || hasUnsafeCacheExtraParams(params.ExtraParams) {
+			return true
+		}
+		for _, modality := range params.Modalities {
+			if !strings.EqualFold(modality, "text") {
+				return true
+			}
+		}
+	}
+	for _, message := range req.Input {
+		if message.Role == schemas.ChatMessageRoleTool || message.ChatToolMessage != nil ||
+			(message.ChatAssistantMessage != nil && len(message.ChatAssistantMessage.ToolCalls) > 0) {
+			return true
+		}
+		if message.Content == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			if block.Type != schemas.ChatContentBlockTypeText && block.Type != schemas.ChatContentBlockTypeRefusal {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func shouldBypassResponsesCache(req *schemas.BifrostResponsesRequest) bool {
+	if req.Params != nil {
+		params := req.Params
+		if len(params.Tools) > 0 || params.ToolChoice != nil || boolIsTrue(params.Background) ||
+			boolIsTrue(params.Store) || boolIsTrue(params.IncludeServerSideToolInvocations) ||
+			(params.PreviousResponseID != nil && *params.PreviousResponseID != "") ||
+			(params.Conversation != nil && *params.Conversation != "") ||
+			hasUnsafeCacheExtraParams(params.ExtraParams) {
+			return true
+		}
+	}
+	for _, message := range req.Input {
+		if message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage {
+			return true
+		}
+		if message.ResponsesToolMessage != nil {
+			return true
+		}
+		if message.Content == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			switch block.Type {
+			case schemas.ResponsesInputMessageContentBlockTypeText,
+				schemas.ResponsesOutputMessageContentTypeText,
+				schemas.ResponsesOutputMessageContentTypeRefusal,
+				schemas.ResponsesOutputMessageContentTypeReasoning:
+			default:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func boolIsTrue(value *bool) bool {
+	return value != nil && *value
+}
+
+func hasUnsafeCacheExtraParams(params map[string]interface{}) bool {
+	for name := range params {
+		switch strings.ToLower(name) {
+		case "background", "computer_use", "file_search", "mcp_servers", "tool_choice", "tools", "web_search", "web_search_options":
+			return true
+		}
+	}
+	return false
 }
 
 // resolveCacheTypes returns whether direct and semantic search paths should

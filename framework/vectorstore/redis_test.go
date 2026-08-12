@@ -762,8 +762,9 @@ func TestParseOffsetCursor(t *testing.T) {
 
 func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
 	fieldTypes := map[string]VectorStorePropertyType{
-		"size": VectorStorePropertyTypeInteger,
-		"type": VectorStorePropertyTypeString,
+		"size":      VectorStorePropertyTypeInteger,
+		"type":      VectorStorePropertyTypeString,
+		"cache_key": VectorStorePropertyTypeString,
 	}
 
 	tests := []struct {
@@ -815,6 +816,15 @@ func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
 				Value:    7,
 			},
 			expected: "@type:{7}",
+		},
+		{
+			name: "tag value escapes semantic cache namespace punctuation",
+			query: Query{
+				Field:    "cache_key",
+				Operator: QueryOperatorEqual,
+				Value:    "direct-key-hmac-v1:0123abcdef",
+			},
+			expected: "@cache_key:{direct\\-key\\-hmac\\-v1\\:0123abcdef}",
 		},
 	}
 
