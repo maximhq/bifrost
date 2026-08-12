@@ -423,6 +423,245 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigConcurrentCarryOver(t *tes
 	assert.Equal(t, hashesA, got.ConfigHashes)
 }
 
+func testSessionConfig() *ComplexitySessionConfig {
+	return &ComplexitySessionConfig{Mode: ComplexitySessionModePinned}
+}
+
+func TestComplexitySessionConfigTTLDecoding(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "duration string", payload: `{"ttl":"30m"}`, want: 30 * time.Minute},
+		{name: "number is milliseconds", payload: `{"ttl":250}`, want: 250 * time.Millisecond},
+		{name: "absent keeps zero", payload: `{}`, want: 0},
+		{name: "null keeps zero", payload: `{"ttl":null}`, want: 0},
+		{name: "negative number rejected", payload: `{"ttl":-5}`, wantErr: true},
+		{name: "bad string rejected", payload: `{"ttl":"a while"}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg ComplexitySessionConfig
+			err := json.Unmarshal([]byte(tt.payload), &cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.TTL)
+		})
+	}
+}
+
+// A default-encoded time.Duration is nanoseconds, which the millisecond decode
+// path would misread by six orders of magnitude. The string encoding is what
+// keeps a persisted TTL meaning what it said.
+func TestComplexitySessionConfigTTLMarshalRoundTrip(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.TTL = 30 * time.Minute
+
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"ttl":"30m0s"`)
+
+	var decoded ComplexitySessionConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, cfg.TTL, decoded.TTL)
+}
+
+func TestComplexitySessionConfigNormalizedDefaults(t *testing.T) {
+	normalized := testSessionConfig().normalized()
+
+	assert.Equal(t, DefaultComplexitySessionTTL, normalized.TTL)
+	assert.Equal(t, DefaultComplexitySessionIdentitySources(), normalized.IdentitySources)
+	assert.Equal(t, DefaultComplexitySessionReleaseAfterFailures, normalized.ReleaseAfterFailures)
+	assert.Equal(t, DefaultComplexitySessionDowngradeAfterNTurns, normalized.DowngradeAfterNTurns)
+	assert.Equal(t, DefaultComplexitySessionMinCachedTokensToHold, normalized.MinCachedTokensToHold)
+	// Ships unset: no sensible absolute default exists until the exemplar set's
+	// score distribution is measured.
+	assert.Zero(t, normalized.SwitchMinSimilarity)
+	assert.Zero(t, normalized.MaxSwitchesPerSession)
+	require.NoError(t, normalized.Validate())
+}
+
+func TestComplexitySessionConfigEnabled(t *testing.T) {
+	var nilCfg *ComplexitySessionConfig
+	assert.False(t, nilCfg.Enabled())
+	assert.False(t, (&ComplexitySessionConfig{}).Enabled())
+	assert.False(t, (&ComplexitySessionConfig{Mode: ComplexitySessionModeOff}).Enabled())
+	assert.True(t, (&ComplexitySessionConfig{Mode: ComplexitySessionModePinned}).Enabled())
+	assert.True(t, (&ComplexitySessionConfig{Mode: ComplexitySessionModeCacheAware}).Enabled())
+}
+
+// Turning session behaviour off must not discard the tuning an admin did, so
+// the toggle carries a mode rather than nilling the block.
+func TestComplexitySessionConfigOffPreservesSettings(t *testing.T) {
+	cfg := &ComplexitySessionConfig{
+		Mode:                 ComplexitySessionModeOff,
+		TTL:                  90 * time.Minute,
+		DowngradeAfterNTurns: 5,
+	}
+	normalized := cfg.normalized()
+
+	assert.False(t, normalized.Enabled())
+	assert.Equal(t, 90*time.Minute, normalized.TTL)
+	assert.Equal(t, 5, normalized.DowngradeAfterNTurns)
+}
+
+func TestComplexitySessionConfigIdentitySourceNormalization(t *testing.T) {
+	cfg := &ComplexitySessionConfig{
+		Mode:            ComplexitySessionModePinned,
+		IdentitySources: []string{" HARNESS ", "header", "header", ""},
+	}
+	normalized := cfg.normalized()
+
+	// De-duplicated, and reordered into resolution order regardless of input order.
+	assert.Equal(t, []string{ComplexitySessionIdentityHeader, ComplexitySessionIdentityHarness}, normalized.IdentitySources)
+	require.NoError(t, normalized.Validate())
+}
+
+// Unsupported sources are preserved through normalization so validation can
+// name them rather than silently dropping stale or misspelled configuration.
+func TestComplexitySessionConfigRejectsUnknownIdentitySource(t *testing.T) {
+	for _, source := range []string{"fingerprint", "telepathy"} {
+		t.Run(source, func(t *testing.T) {
+			cfg := &ComplexitySessionConfig{
+				Mode:            ComplexitySessionModePinned,
+				IdentitySources: []string{"header", source},
+			}
+			err := cfg.normalized().Validate()
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), source)
+		})
+	}
+}
+
+func TestComplexitySessionConfigValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ComplexitySessionConfig)
+		errs   string
+	}{
+		{name: "valid pinned"},
+		{name: "unknown mode", mutate: func(c *ComplexitySessionConfig) { c.Mode = "adaptive" }, errs: "session mode"},
+		{name: "switch similarity at ceiling", mutate: func(c *ComplexitySessionConfig) { c.SwitchMinSimilarity = 1 }, errs: "switch_min_similarity"},
+		{name: "negative switch similarity", mutate: func(c *ComplexitySessionConfig) { c.SwitchMinSimilarity = -0.1 }, errs: "switch_min_similarity"},
+		{name: "negative max switches", mutate: func(c *ComplexitySessionConfig) { c.MaxSwitchesPerSession = -1 }, errs: "max_switches_per_session"},
+		{name: "negative min cached tokens", mutate: func(c *ComplexitySessionConfig) { c.MinCachedTokensToHold = -1 }, errs: "min_cached_tokens_to_hold"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testSessionConfig()
+			if tt.mutate != nil {
+				tt.mutate(cfg)
+			}
+			normalized := cfg.normalized()
+			// normalized must not launder an invalid value into a default.
+			if tt.mutate != nil {
+				tt.mutate(normalized)
+			}
+			err := normalized.Validate()
+			if tt.errs == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errs)
+		})
+	}
+}
+
+// Hysteresis: a classification too weak to be believed must not be strong
+// enough to move a session.
+func TestComplexityAnalyzerConfigRejectsSwitchSimilarityBelowMinSimilarity(t *testing.T) {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.Semantic.MinSimilarity = 0.80
+	cfg.Session = testSessionConfig()
+	cfg.Session.SwitchMinSimilarity = 0.70
+
+	normalized := cfg.Normalized()
+	err := normalized.Validate()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "switch_min_similarity")
+
+	normalized.Session.SwitchMinSimilarity = 0.80
+	require.NoError(t, normalized.Validate())
+}
+
+// Zero means the switch gate is off entirely, not a threshold of zero, so it is
+// exempt from the ordering rule.
+func TestComplexityAnalyzerConfigAllowsUnsetSwitchSimilarity(t *testing.T) {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.Semantic.MinSimilarity = 0.80
+	cfg.Session = testSessionConfig()
+
+	normalized := cfg.Normalized()
+	require.NoError(t, normalized.Validate())
+	assert.Zero(t, normalized.Session.SwitchMinSimilarity)
+}
+
+// The record mirror is a separate struct from the public config; a field added
+// to one and not the other round-trips as nothing.
+func TestComplexityAnalyzerConfigSessionRoundTrip(t *testing.T) {
+	cfg := testSemanticAnalyzerConfig()
+	cfg.Session = &ComplexitySessionConfig{
+		Mode:                  ComplexitySessionModeCacheAware,
+		TTL:                   90 * time.Minute,
+		IdentitySources:       []string{ComplexitySessionIdentityHeader},
+		SwitchMinSimilarity:   0.9,
+		MaxSwitchesPerSession: 4,
+		AlwaysAllowEscalation: true,
+	}
+
+	encoded, err := encodeComplexityAnalyzerConfig(cfg.Normalized())
+	require.NoError(t, err)
+
+	decoded, err := DecodeComplexityAnalyzerConfig(encoded)
+	require.NoError(t, err)
+	require.NotNil(t, decoded.Session)
+	assert.Equal(t, cfg.Session.Mode, decoded.Session.Mode)
+	assert.Equal(t, cfg.Session.TTL, decoded.Session.TTL)
+	assert.Equal(t, cfg.Session.IdentitySources, decoded.Session.IdentitySources)
+	assert.Equal(t, cfg.Session.SwitchMinSimilarity, decoded.Session.SwitchMinSimilarity)
+	assert.Equal(t, cfg.Session.MaxSwitchesPerSession, decoded.Session.MaxSwitchesPerSession)
+	assert.True(t, decoded.Session.AlwaysAllowEscalation)
+}
+
+// A config.json without a session block means "no opinion", not removal.
+func TestMergeComplexityAnalyzerConfigByHashesKeepsSessionWhenFileOmitsIt(t *testing.T) {
+	base := testSemanticAnalyzerConfig()
+	base.Session = testSessionConfig()
+	base.ConfigHashes.SessionSettings = "hash-a"
+
+	file := testSemanticAnalyzerConfig()
+
+	merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+	require.NoError(t, err)
+	require.NotNil(t, merged.Session)
+	assert.Equal(t, ComplexitySessionModePinned, merged.Session.Mode)
+	assert.Equal(t, "hash-a", merged.ConfigHashes.SessionSettings)
+}
+
+func TestMergeComplexityAnalyzerConfigByHashesAppliesChangedSessionSection(t *testing.T) {
+	base := testSemanticAnalyzerConfig()
+	base.Session = testSessionConfig()
+	base.ConfigHashes.SessionSettings = "hash-a"
+
+	file := testSemanticAnalyzerConfig()
+	file.Session = &ComplexitySessionConfig{Mode: ComplexitySessionModeCacheAware}
+	file.ConfigHashes.SessionSettings = "hash-b"
+
+	merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
+	require.NoError(t, err)
+	require.NotNil(t, merged.Session)
+	assert.Equal(t, ComplexitySessionModeCacheAware, merged.Session.Mode)
+	assert.Equal(t, "hash-b", merged.ConfigHashes.SessionSettings)
+}
+
 func TestComplexitySemanticConfigRejectsRemovedFields(t *testing.T) {
 	for _, field := range []string{"dimension", "fallback"} {
 		t.Run(field, func(t *testing.T) {
