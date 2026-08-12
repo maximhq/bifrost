@@ -10,11 +10,11 @@ import { RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/lib/store";
 import { KnownProvider } from "@/lib/types/config";
-import { formatTokenPriceCompact } from "@/lib/utils/numbers";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
+import OverriddenPrice from "./overriddenPrice";
 
 const PAGE_SIZE = 25;
 
@@ -74,6 +74,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 
 	const models = data?.models ?? [];
 	const totalCount = data?.total ?? 0;
+	const overridesById = useMemo(() => data?.pricing_overrides ?? {}, [data?.pricing_overrides]);
 
 	// Snap offset back when total shrinks past current page
 	useEffect(() => {
@@ -106,7 +107,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 
 	return (
 		<>
-			{editing && <AttributeSheet model={editing} onClose={() => setEditing(null)} />}
+			{editing && <AttributeSheet model={editing} overrides={overridesById} onClose={() => setEditing(null)} />}
 
 			<div className="flex min-h-0 w-full grow flex-col overflow-hidden">
 				<div className="mb-4 flex shrink-0 items-center justify-between">
@@ -149,13 +150,13 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="w-[116px] font-medium">Provider</TableHead>
 								<TableHead className="font-medium">Model</TableHead>
-								<TableHead className="w-[72px] px-2 text-right font-medium">Input</TableHead>
-								<TableHead className="w-[76px] px-2 text-right font-medium">Output</TableHead>
-								<TableHead className="w-[86px] px-2 text-right font-medium">Cache Write</TableHead>
-								<TableHead className="w-[80px] px-2 text-right font-medium">Cache Read</TableHead>
+								<TableHead className="w-[104px] px-2 text-right font-medium">Input</TableHead>
+								<TableHead className="w-[104px] px-2 text-right font-medium">Output</TableHead>
+								<TableHead className="w-[112px] px-2 text-right font-medium">Cache Write</TableHead>
+								<TableHead className="w-[108px] px-2 text-right font-medium">Cache Read</TableHead>
 								<TableHead className="font-medium">Description</TableHead>
 								<TableHead className="w-[68px] font-medium">Other</TableHead>
-								<TableHead className="w-[40px] px-1"></TableHead>
+								<TableHead className="w-[80px] px-1"></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -172,6 +173,8 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 									const attrs = m.additional_attributes ?? {};
 									const extraKeys = Object.keys(attrs).filter((k) => k !== "description");
 									const testKey = `${toTestIdPart(m.name)}-${toTestIdPart(m.provider)}`;
+									const overrideName = m.applied_override_id ? overridesById[m.applied_override_id]?.name : undefined;
+									const overrideCount = m.pricing_override_ids?.length ?? 0;
 									return (
 										<TableRow key={`${m.provider}|${m.name}`} data-testid={`model-catalog-row-${testKey}`}>
 											<TableCell className="py-3">
@@ -184,34 +187,63 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 												{m.name}
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPriceCompact(m.input_cost_per_token)}
+												<OverriddenPrice
+													variant="compact"
+													base={m.input_cost_per_token}
+													override={m.overridden_pricing?.input_cost_per_token}
+													overrideName={overrideName}
+												/>
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPriceCompact(m.output_cost_per_token)}
+												<OverriddenPrice
+													variant="compact"
+													base={m.output_cost_per_token}
+													override={m.overridden_pricing?.output_cost_per_token}
+													overrideName={overrideName}
+												/>
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPriceCompact(m.cache_creation_input_token_cost)}
+												<OverriddenPrice
+													variant="compact"
+													base={m.cache_creation_input_token_cost}
+													override={m.overridden_pricing?.cache_creation_input_token_cost}
+													overrideName={overrideName}
+												/>
 											</TableCell>
 											<TableCell className="px-2 py-3 text-right font-mono text-sm">
-												{formatTokenPriceCompact(m.cache_read_input_token_cost)}
+												<OverriddenPrice
+													variant="compact"
+													base={m.cache_read_input_token_cost}
+													override={m.overridden_pricing?.cache_read_input_token_cost}
+													overrideName={overrideName}
+												/>
 											</TableCell>
 											<TableCell className="py-3">
 												<DescriptionCell description={attrs.description} />
 											</TableCell>
 											<TableCell className="py-3">
-												{extraKeys.length === 0 ? (
+												{extraKeys.length === 0 && !overrideCount ? (
 													<span className="text-muted-foreground text-sm">—</span>
 												) : (
-													<Badge variant="secondary">
-														{extraKeys.length} {extraKeys.length === 1 ? "attribute" : "attributes"}
-													</Badge>
+													<div className="flex flex-wrap gap-1 pr-4">
+														{extraKeys.length > 0 && (
+															<Badge variant="secondary">
+																{extraKeys.length} {extraKeys.length === 1 ? "attribute" : "attributes"}
+															</Badge>
+														)}
+														{overrideCount > 0 && (
+															<Badge variant="outline" data-testid={`model-catalog-override-badge-${testKey}`}>
+																{overrideCount} {overrideCount === 1 ? "override" : "overrides"}
+															</Badge>
+														)}
+													</div>
 												)}
 											</TableCell>
 											<TableCell className="px-1 py-3">
 												<Button
 													variant="ghost"
 													size="icon"
-													className="h-7 w-7"
+													className="ml-6 h-7 w-7"
 													disabled={!hasUpdateAccess}
 													onClick={() => setEditing(m)}
 													aria-label={`Edit attributes for ${m.name}`}
