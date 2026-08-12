@@ -304,7 +304,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				}}
 				data-testid="model-limit-sheet"
 			>
-				<SheetHeader className="flex flex-col items-start p-0 px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start p-0 px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>{isEditing ? "Edit Limit" : "Create Limit"}</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update budget and rate limit configuration." : "Set up budget and rate limits for a scope."}
@@ -313,7 +313,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<div className="grow space-y-4 px-8">
+						<div className="grow space-y-4 px-4 md:px-8">
 							{/* Provider */}
 							<FormField
 								control={form.control}
@@ -533,7 +533,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									<DottedSeparator />
 									<div className="space-y-3">
 										<Label className="text-sm font-medium">Current Usage</Label>
-										<div className="bg-muted/50 grid grid-cols-2 gap-4 rounded-lg p-4">
+										<div className="bg-muted/50 grid grid-cols-1 gap-4 rounded-lg p-4 md:grid-cols-2">
 											{(modelConfig?.budgets ?? []).map((b) => (
 												<div key={b.id} className="space-y-1">
 													<p className="text-muted-foreground text-xs">Budget ({b.reset_duration})</p>
@@ -567,7 +567,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 						</div>
 
 						{/* Footer */}
-						<div className="bg-card sticky bottom-0 shrink-0 border-t px-8 py-4">
+						<div className="bg-card sticky bottom-0 shrink-0 border-t px-4 py-4 md:px-8">
 							<div className="flex items-center justify-end gap-3">
 								{!canSubmit && <p className="text-destructive text-sm">You don't have permission to perform this action</p>}
 								<Button type="button" variant="outline" onClick={handleClose}>

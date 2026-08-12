@@ -286,9 +286,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		const submitPromise =
 			isEditing && editingRule
 				? updateRoutingRule({
-					id: editingRule.id,
-					data: payload,
-				}).unwrap()
+						id: editingRule.id,
+						data: payload,
+					}).unwrap()
 				: createRoutingRule(payload).unwrap();
 
 		submitPromise
@@ -328,7 +328,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-0 pt-4">
-				<SheetHeader className="flex flex-col items-start px-8 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10">
+				<SheetHeader className="flex flex-col items-start px-4 py-4 md:px-8" headerClassName="mb-0 sticky -top-4 bg-card z-10">
 					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}</SheetTitle>
 					<SheetDescription>
 						{isEditing ? "Update the routing rule configuration" : "Create a new CEL-based routing rule for intelligent request routing"}
@@ -336,7 +336,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit(onSubmit)} className="flex grow flex-col">
-					<div className="flex grow flex-col gap-6 px-8 pb-6">
+					<div className="flex grow flex-col gap-6 px-4 pb-6 md:px-8">
 						{/* Rule Name */}
 						<div className="space-y-3">
 							<Label htmlFor="name">
@@ -383,7 +383,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						</div>
 
 						{/* Scope and Priority - Side by Side */}
-						<div className="grid grid-cols-2 gap-4">
+						<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 							<div className="space-y-3">
 								<Label htmlFor="scope">Scope</Label>
 								<Select
@@ -456,7 +456,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 									))}
 								{/* Teams, customers and virtual keys are all searched lazily inside their
 								    selectors, each of which surfaces its own empty state. */}
-								{errors.scope_id &&<p className="text-destructive text-sm">{errors.scope_id.message}</p>}
+								{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 							</div>
 						)}
 
@@ -631,7 +631,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						</div>
 					</div>
 					{/* Action Buttons */}
-					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-8 py-4">
+					<div className="bg-card sticky bottom-0 flex justify-end gap-3 border-t px-4 py-4 md:px-8">
 						<Button type="button" variant="outline" onClick={handleCancel} disabled={isLoading}>
 							Cancel
 						</Button>
@@ -697,7 +697,7 @@ function TargetRow({ target, index, providerOptions, allKeys, showRemove, onUpda
 				</div>
 			</div>
 
-			<div className="grid grid-cols-2 gap-3">
+			<div className="grid grid-cols-1 gap-3 md:grid-cols-2">
 				<div className="space-y-1.5">
 					<Label id={`routing-target-${index}-provider-label`} className="text-xs">
 						Provider

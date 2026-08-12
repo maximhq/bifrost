@@ -373,7 +373,7 @@ export default function SecurityView() {
 								setLocalConfig((prev) => ({ ...prev, dual_credential_conflict_behavior: value as CoreConfig["dual_credential_conflict_behavior"] }))
 							}
 						>
-							<SelectTrigger id="dual-credential-conflict-behavior" data-testid="dual-credential-conflict-behavior-select" className="w-[180px]">
+							<SelectTrigger id="dual-credential-conflict-behavior" data-testid="dual-credential-conflict-behavior-select" className="w-full sm:w-[180px]">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>

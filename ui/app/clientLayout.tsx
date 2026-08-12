@@ -5,7 +5,7 @@ import ProgressProvider from "@/components/progressBar";
 import Sidebar from "@/components/sidebar";
 import { ThemeProvider } from "@/components/themeProvider";
 import TrialExpiryBanner from "@/components/trialExpiryBanner";
-import { SidebarProvider } from "@/components/ui/sidebar";
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { useStoreSync } from "@/hooks/useStoreSync";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
@@ -49,6 +49,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
 	// neither a fragment nor a cookie to drive the tempTokenScoped per-visitor
 	// logic.
 	const publicShell = matches.some((m) => (m.staticData as { publicShell?: boolean } | undefined)?.publicShell === true);
+	const pathname = useLocation({ select: (location) => location.pathname });
+	const mobilePageTitle = (pathname.split("/").filter(Boolean).at(-1) ?? "Dashboard")
+		.split("-")
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ");
 
 	// Probe dashboard auth state on opted-in routes. is-auth-enabled is whitelisted
 	// (no 401 risk) and returns whether the current cookie is a valid session.
@@ -111,9 +116,15 @@ function AppContent({ children }: { children: React.ReactNode }) {
 				<StoreSyncInitializer />
 				<SidebarProvider>
 					<Sidebar />
-					<div className="dark:bg-card custom-scrollbar content-container my-[0.5rem] mr-[0.5rem] h-[calc(100dvh-1rem)] w-full min-w-xl overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800">
+					<div className="dark:bg-card custom-scrollbar content-container mx-0 h-dvh w-full min-w-0 overflow-auto border border-gray-200 bg-white md:my-[0.5rem] md:mr-[0.5rem] md:h-[calc(100dvh-1rem)] md:rounded-md md:px-10 dark:border-zinc-800">
+						<div className="bg-card sticky top-0 z-20 flex h-12 min-w-0 items-center border-b px-4 md:hidden">
+							<div className="flex min-w-0 items-center gap-2">
+								<SidebarTrigger className="shrink-0" />
+								<span className="truncate text-sm font-semibold">{mobilePageTitle}</span>
+							</div>
+						</div>
 						<TrialExpiryBanner />
-						<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden p-4">
+						<main className="custom-scrollbar content-container-inner relative mx-auto flex h-[calc(100%-3rem)] min-h-0 flex-col overflow-y-hidden md:h-full md:p-4">
 							{isLoading ? <FullPageLoader /> : <FullPage config={bifrostConfig}>{children}</FullPage>}
 						</main>
 						{bifrostConfig?.is_db_connected && <OnboardingWidget />}
@@ -130,7 +141,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 // like the MCP per-user OAuth auth page.
 function MinimalShell({ children }: { children: React.ReactNode }) {
 	return (
-		<div className="dark:bg-card custom-scrollbar content-container my-[0.5rem] h-[calc(100dvh-1rem)] w-full overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800">
+		<div className="dark:bg-card custom-scrollbar content-container h-dvh w-full overflow-auto border border-gray-200 bg-white px-4 md:my-[0.5rem] md:h-[calc(100dvh-1rem)] md:rounded-md md:px-10 dark:border-zinc-800">
 			<main className="custom-scrollbar content-container-inner relative mx-auto flex h-full min-h-0 flex-col overflow-y-hidden p-4">
 				{children}
 			</main>
