@@ -155,6 +155,33 @@ func TestWeightedRandomAllNegativeWeightsError(t *testing.T) {
 	}
 }
 
+// TestWeightedRandomNonFiniteWeightsRejected ensures NaN and infinite weights
+// error out instead of poisoning normalization: +Inf/+Inf produces NaN, after
+// which no cumulative comparison matches and every draw silently falls through
+// to keys[0] regardless of its weight.
+func TestWeightedRandomNonFiniteWeightsRejected(t *testing.T) {
+	tests := []struct {
+		name   string
+		weight float64
+	}{
+		{name: "NaN", weight: math.NaN()},
+		{name: "positive infinity", weight: math.Inf(1)},
+		{name: "negative infinity", weight: math.Inf(-1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keys := []schemas.Key{
+				{ID: "excluded", Weight: -1},
+				{ID: "bad", Weight: tt.weight},
+				{ID: "good", Weight: 1},
+			}
+			if _, err := WeightedRandom(nil, keys, schemas.OpenAI, "gpt-4o"); err == nil {
+				t.Fatalf("expected error for %s weight, got nil", tt.name)
+			}
+		})
+	}
+}
+
 // TestWeightedRandomZeroWeightKeyGetsNoTraffic ensures an explicitly
 // zero-weighted key is never selected while a positive-weight key exists.
 func TestWeightedRandomZeroWeightKeyGetsNoTraffic(t *testing.T) {

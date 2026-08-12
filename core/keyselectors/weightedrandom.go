@@ -2,6 +2,7 @@ package keyselectors
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -13,8 +14,14 @@ func WeightedRandom(ctx *schemas.BifrostContext, keys []schemas.Key, providerKey
 	// bucket size to zero, silently starving that key. Each weight is
 	// normalized by the largest positive weight before accumulating so that
 	// extreme finite weights cannot overflow the running sum to +Inf.
+	// Reject non-finite weights up front: a +Inf weight normalizes to NaN,
+	// which poisons the cumulative sum so no draw ever matches and every
+	// selection silently falls through to keys[0].
 	maxWeight := 0.0
 	for _, key := range keys {
+		if math.IsNaN(key.Weight) || math.IsInf(key.Weight, 0) {
+			return schemas.Key{}, fmt.Errorf("invalid weight %v for key %s: weight must be a finite number", key.Weight, key.ID)
+		}
 		if key.Weight > maxWeight {
 			maxWeight = key.Weight
 		}
