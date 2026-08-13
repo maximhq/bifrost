@@ -367,7 +367,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 											Align to calendar cycle
 										</Label>
 										<p className="text-muted-foreground text-xs">
-											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
 											Applies to durations of a day or longer.
 										</p>
 									</div>

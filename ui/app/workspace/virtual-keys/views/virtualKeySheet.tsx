@@ -119,6 +119,7 @@ const providerConfigSchema = z.object({
 							id: z.string().optional(),
 							max_limit: z.number().nonnegative().optional(),
 							reset_duration: z.string().optional(),
+							reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
 						}),
 					)
 					.optional(),
@@ -377,6 +378,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 							id: b.id,
 							max_limit: b.max_limit,
 							reset_duration: b.reset_duration,
+							reset_config: b.reset_config,
 						})),
 						rate_limit: mb.rate_limit
 							? {
@@ -1604,7 +1606,7 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 												Align to calendar cycle
 											</Label>
 											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
-												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+												Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
 												Applies to durations of a day or longer.
 											</p>
 										</div>

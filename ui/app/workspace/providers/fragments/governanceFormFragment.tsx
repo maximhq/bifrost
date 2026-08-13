@@ -225,7 +225,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 								Align to calendar cycle
 							</Label>
 							<p className="text-muted-foreground text-xs">
-								Reset budgets at the start of each period (e.g. 1st of month) instead of rolling from creation date.
+								Reset budgets at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
 							</p>
 						</div>
 						<Switch
