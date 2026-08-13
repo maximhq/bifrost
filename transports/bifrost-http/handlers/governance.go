@@ -27,8 +27,9 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
+	"github.com/maximhq/bifrost/plugins/routing/rules"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -4639,7 +4640,7 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Reject malformed CEL at write time instead of it silently failing at first evaluation.
-	if err := governance.ValidateRoutingCELExpression(req.CelExpression); err != nil {
+	if err := rules.ValidateCELExpression(req.CelExpression); err != nil {
 		SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
 		return
 	}
@@ -4760,7 +4761,7 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	if req.CelExpression != nil {
 		// Validate only when the field is supplied, so unrelated updates (e.g. toggling
 		// enabled) never start failing on a pre-existing malformed expression.
-		if err := governance.ValidateRoutingCELExpression(*req.CelExpression); err != nil {
+		if err := rules.ValidateCELExpression(*req.CelExpression); err != nil {
 			SendError(ctx, 400, fmt.Sprintf("invalid CEL expression: %s", err.Error()))
 			return
 		}

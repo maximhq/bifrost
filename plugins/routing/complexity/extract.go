@@ -1,50 +1,49 @@
-package governance
+package complexity
 
 import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 )
 
-// buildComplexityInput extracts text from normalized BifrostRequest values for
+// BuildInput extracts text from normalized BifrostRequest values for
 // complexity_tier routing. It intentionally runs after the transport converters
-// have produced Bifrost's typed request shape, so governance does not duplicate
+// have produced Bifrost's typed request shape, so this package does not duplicate
 // provider-specific raw payload parsing.
-func buildComplexityInput(req *schemas.BifrostRequest) (complexity.ComplexityInput, bool) {
+func BuildInput(req *schemas.BifrostRequest) (ComplexityInput, bool) {
 	if req == nil {
-		return complexity.ComplexityInput{}, false
+		return ComplexityInput{}, false
 	}
 
 	switch req.RequestType {
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		if req.ChatRequest == nil {
-			return complexity.ComplexityInput{}, false
+			return ComplexityInput{}, false
 		}
 		return extractFromChatMessages(req.ChatRequest.Input)
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if req.TextCompletionRequest == nil {
-			return complexity.ComplexityInput{}, false
+			return ComplexityInput{}, false
 		}
 		return extractFromTextCompletionRequest(req.TextCompletionRequest)
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		if req.ResponsesRequest == nil {
-			return complexity.ComplexityInput{}, false
+			return ComplexityInput{}, false
 		}
 		return extractFromResponsesRequest(req.ResponsesRequest)
 	default:
-		return complexity.ComplexityInput{}, false
+		return ComplexityInput{}, false
 	}
 }
 
 // extractFromChatMessages builds a complexity input from chat messages by
 // preserving system/developer context and tracking only text-only user turns.
-func extractFromChatMessages(messages []schemas.ChatMessage) (complexity.ComplexityInput, bool) {
+func extractFromChatMessages(messages []schemas.ChatMessage) (ComplexityInput, bool) {
 	if len(messages) == 0 {
-		return complexity.ComplexityInput{}, false
+		return ComplexityInput{}, false
 	}
 
-	var input complexity.ComplexityInput
+	var input ComplexityInput
 	var userTexts []string
 
 	for _, msg := range messages {
@@ -54,14 +53,14 @@ func extractFromChatMessages(messages []schemas.ChatMessage) (complexity.Complex
 		case schemas.ChatMessageRoleUser:
 			text, ok := extractChatTextOnly(msg.Content)
 			if !ok || strings.TrimSpace(text) == "" {
-				return complexity.ComplexityInput{}, false
+				return ComplexityInput{}, false
 			}
 			userTexts = append(userTexts, text)
 		}
 	}
 
 	if len(userTexts) == 0 {
-		return complexity.ComplexityInput{}, false
+		return ComplexityInput{}, false
 	}
 
 	input.LastUserText = userTexts[len(userTexts)-1]
@@ -73,24 +72,24 @@ func extractFromChatMessages(messages []schemas.ChatMessage) (complexity.Complex
 
 // extractFromTextCompletionRequest builds a complexity input from a single text
 // completion prompt and deliberately skips batched prompt arrays.
-func extractFromTextCompletionRequest(req *schemas.BifrostTextCompletionRequest) (complexity.ComplexityInput, bool) {
+func extractFromTextCompletionRequest(req *schemas.BifrostTextCompletionRequest) (ComplexityInput, bool) {
 	if req == nil || req.Input == nil || req.Input.PromptStr == nil || strings.TrimSpace(*req.Input.PromptStr) == "" {
-		return complexity.ComplexityInput{}, false
+		return ComplexityInput{}, false
 	}
 
 	// PromptArray represents batched completions, not one logical prompt. Do not
 	// synthesize a single routing input by joining unrelated batch entries.
-	return complexity.ComplexityInput{LastUserText: *req.Input.PromptStr}, true
+	return ComplexityInput{LastUserText: *req.Input.PromptStr}, true
 }
 
 // extractFromResponsesRequest builds a complexity input from Responses API
 // messages while combining instructions with system/developer message text.
-func extractFromResponsesRequest(req *schemas.BifrostResponsesRequest) (complexity.ComplexityInput, bool) {
+func extractFromResponsesRequest(req *schemas.BifrostResponsesRequest) (ComplexityInput, bool) {
 	if req == nil || len(req.Input) == 0 {
-		return complexity.ComplexityInput{}, false
+		return ComplexityInput{}, false
 	}
 
-	var input complexity.ComplexityInput
+	var input ComplexityInput
 	if req.Params != nil && req.Params.Instructions != nil {
 		input.SystemText = *req.Params.Instructions
 	}
@@ -107,14 +106,14 @@ func extractFromResponsesRequest(req *schemas.BifrostResponsesRequest) (complexi
 		case schemas.ResponsesInputMessageRoleUser:
 			text, ok := extractResponsesTextOnly(msg.Content)
 			if !ok || strings.TrimSpace(text) == "" {
-				return complexity.ComplexityInput{}, false
+				return ComplexityInput{}, false
 			}
 			userTexts = append(userTexts, text)
 		}
 	}
 
 	if len(userTexts) == 0 {
-		return complexity.ComplexityInput{}, false
+		return ComplexityInput{}, false
 	}
 
 	input.LastUserText = userTexts[len(userTexts)-1]
