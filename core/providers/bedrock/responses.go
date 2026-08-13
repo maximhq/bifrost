@@ -1523,6 +1523,12 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
 				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
 			}
+		case bedrockStopReasonContentFilter, bedrockStopReasonGuardrailIntervened:
+			terminalEventType = schemas.ResponsesStreamResponseTypeIncomplete
+			response.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			response.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
+			}
 		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
 			if response.Status == nil {
 				response.Status = schemas.Ptr(schemas.ResponsesResponseStatusCompleted)
@@ -2790,13 +2796,19 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 			}
 		}
 		bifrostResp.StopReason = &stopReason
-		// Surface truncation via Status + IncompleteDetails per OpenAI's
-		// Responses-API contract; without these, truncations are silent.
+		// Surface truncation/filtering via Status + IncompleteDetails per OpenAI's
+		// Responses-API contract; without these, a content-filtered or truncated
+		// turn is indistinguishable from a genuine empty completion.
 		switch stopReason {
 		case string(schemas.BifrostFinishReasonLength):
 			bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
 			bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
 				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			}
+		case bedrockStopReasonContentFilter, bedrockStopReasonGuardrailIntervened:
+			bifrostResp.Status = schemas.Ptr(schemas.ResponsesResponseStatusIncomplete)
+			bifrostResp.IncompleteDetails = &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonContentFilter,
 			}
 		case string(schemas.BifrostFinishReasonStop), string(schemas.BifrostFinishReasonToolCalls):
 			if bifrostResp.Status == nil {
