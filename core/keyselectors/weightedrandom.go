@@ -1,30 +1,64 @@
 package keyselectors
 
 import (
+	"fmt"
+	"math"
 	"math/rand"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func WeightedRandom(ctx *schemas.BifrostContext, keys []schemas.Key, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
-	// Use a weighted random selection based on key weights
-	totalWeight := 0
+	// Use a weighted random selection based on key weights. Weights stay
+	// float64 throughout: integer bucketing truncates any weight below the
+	// bucket size to zero, silently starving that key. Each weight is
+	// normalized by the largest positive weight before accumulating so that
+	// extreme finite weights cannot overflow the running sum to +Inf.
+	// Reject non-finite weights up front: a +Inf weight normalizes to NaN,
+	// which poisons the cumulative sum so no draw ever matches and every
+	// selection silently falls through to keys[0].
+	maxWeight := 0.0
 	for _, key := range keys {
-		totalWeight += int(key.Weight * 100) // Convert float to int for better performance
+		if math.IsNaN(key.Weight) || math.IsInf(key.Weight, 0) {
+			return schemas.Key{}, fmt.Errorf("invalid weight %v for key %s: weight must be a finite number", key.Weight, key.ID)
+		}
+		if key.Weight > maxWeight {
+			maxWeight = key.Weight
+		}
 	}
 
-	// If all keys have zero weight, fall back to uniform random selection
-	if totalWeight == 0 {
-		return keys[rand.Intn(len(keys))], nil
+	// If no key has a positive weight, fall back to uniform random selection
+	// over zero-weight keys only: negative weights mean "exclude this key" and
+	// must not receive traffic through the fallback either.
+	if maxWeight == 0 {
+		eligible := make([]schemas.Key, 0, len(keys))
+		for _, key := range keys {
+			if key.Weight == 0 {
+				eligible = append(eligible, key)
+			}
+		}
+		if len(eligible) == 0 {
+			return schemas.Key{}, fmt.Errorf("no eligible keys for provider: %v: all key weights are negative", providerKey)
+		}
+		return eligible[rand.Intn(len(eligible))], nil
+	}
+
+	totalWeight := 0.0
+	for _, key := range keys {
+		if key.Weight > 0 {
+			totalWeight += key.Weight / maxWeight
+		}
 	}
 
 	// Use global thread-safe random (Go 1.20+) - no allocation, no syscall
-	randomValue := rand.Intn(totalWeight)
+	randomValue := rand.Float64() * totalWeight
 
 	// Select key based on weight
-	currentWeight := 0
+	currentWeight := 0.0
 	for _, key := range keys {
-		currentWeight += int(key.Weight * 100)
+		if key.Weight > 0 {
+			currentWeight += key.Weight / maxWeight
+		}
 		if randomValue < currentWeight {
 			return key, nil
 		}
