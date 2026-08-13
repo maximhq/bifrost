@@ -1,0 +1,12 @@
+---
+title: "v2.1.36"
+description: "Helm v2.1.36 changelog - 2026-08-13"
+---
+
+<Update label="Bifrost Helm" description="v2.1.36">
+
+## Changelog
+
+- Added `storage.logsStore.postgres` to point the logs store at a **separate external PostgreSQL** (different host and/or database) than the config store, instead of forcing both onto the shared top-level `postgresql` connection. Only applies when the logs store resolves to postgres; `enabled: false` (default) preserves existing behavior. Fields mirror `postgresql.external` (`host`, `port`, `user`, `password`, `passwordCommand`, `database`, `sslMode`, `connMaxLifetime`, `existingSecret`, `passwordKey`); with `existingSecret` the password is injected as `BIFROST_LOGS_POSTGRES_PASSWORD`. Renders into `logs_store.config`.
+
+</Update>
