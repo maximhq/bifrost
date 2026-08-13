@@ -3529,17 +3529,26 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 	case schemas.ResponsesStreamResponseTypePing:
 		streamResp.Type = AnthropicStreamEventTypePing
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
+	case schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeIncomplete:
+		// response.incomplete is the terminal event for a truncated stream
+		// (e.g. max_tokens): it must still close the message with
+		// message_delta (stop_reason + usage) + message_stop, otherwise the
+		// client gets a clean end of stream with no terminal frames at all.
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
 		// If a message_delta was already emitted from the upstream event, only emit message_stop
 		// to avoid sending a duplicate message_delta to the client.
 		if alreadyEmitted, ok := ctx.Value(schemas.BifrostContextKeyHasEmittedMessageDelta).(bool); ok && alreadyEmitted {
 			return []*AnthropicStreamEvent{streamResp}
 		}
+		defaultStopReason := AnthropicStopReasonEndTurn
+		if bifrostResp.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+			defaultStopReason = AnthropicStopReasonMaxTokens
+		}
 		anthropicContentDeltaEvent := &AnthropicStreamEvent{
 			Type: AnthropicStreamEventTypeMessageDelta,
 			Delta: &AnthropicStreamDelta{
-				StopReason:   schemas.Ptr(AnthropicStopReasonEndTurn),
+				StopReason:   schemas.Ptr(defaultStopReason),
 				StopSequence: schemas.Ptr(""),
 			},
 		}

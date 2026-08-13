@@ -1795,14 +1795,21 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		event.ContentBlockIndex = &contentBlockIndex
 		event.ContentBlockStop = true
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
-		// Message stop - always set stopReason
+	case schemas.ResponsesStreamResponseTypeCompleted,
+		schemas.ResponsesStreamResponseTypeIncomplete:
+		// Message stop - always set stopReason. response.incomplete is the
+		// terminal event for a truncated stream (e.g. max_tokens) and must
+		// still emit messageStop + metadata, not be silently dropped.
 		stopReason := "end_turn"
+		if bifrostResp.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+			stopReason = "max_tokens"
+		}
 		if bifrostResp.Response != nil {
 			if bifrostResp.Response.StopReason != nil {
 				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
-			} else if bifrostResp.Response.IncompleteDetails != nil {
-				stopReason = bifrostResp.Response.IncompleteDetails.Reason
+			} else if bifrostResp.Response.IncompleteDetails != nil &&
+				bifrostResp.Response.IncompleteDetails.Reason == schemas.ResponsesResponseIncompleteReasonMaxOutputTokens {
+				stopReason = "max_tokens"
 			}
 		}
 		event.StopReason = &stopReason
