@@ -73,7 +73,6 @@ func TestComplexitySemanticConfigNormalizedDefaults(t *testing.T) {
 	normalized := testSemanticConfig().normalized()
 
 	assert.Equal(t, DefaultComplexitySemanticTimeout, normalized.Timeout)
-	assert.Equal(t, ComplexitySemanticFallbackLexical, normalized.Fallback)
 	assert.Equal(t, ComplexitySemanticVectorStoreEmbedded, normalized.VectorStore)
 	require.NoError(t, normalized.Validate())
 }
@@ -292,7 +291,6 @@ func TestMergeComplexityAnalyzerConfigByHashesSemantic(t *testing.T) {
 		merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
 		require.NoError(t, err)
 		assert.Equal(t, "text-embedding-3-large", merged.Semantic.EmbeddingModel)
-		assert.Equal(t, ComplexitySemanticFallbackLexical, merged.Semantic.Fallback)
 		assert.Equal(t, fileHashes.SemanticSettings, merged.ConfigHashes.SemanticSettings)
 	})
 
@@ -407,4 +405,14 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigConcurrentCarryOver(t *tes
 	require.NoError(t, err)
 	assert.Equal(t, "fingerprint-new", got.EmbeddingFingerprint)
 	assert.Equal(t, hashesA, got.ConfigHashes)
+}
+
+func TestComplexitySemanticConfigRejectsRemovedFields(t *testing.T) {
+	for _, field := range []string{"dimension", "fallback"} {
+		t.Run(field, func(t *testing.T) {
+			var cfg ComplexitySemanticConfig
+			err := json.Unmarshal([]byte(`{"provider":"openai","embedding_model":"text-embedding-3-small","`+field+`":true}`), &cfg)
+			require.ErrorContains(t, err, `unknown semantic complexity field "`+field+`"`)
+		})
+	}
 }

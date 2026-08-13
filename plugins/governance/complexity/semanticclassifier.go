@@ -72,7 +72,7 @@ type SemanticResult struct {
 	MinSimilarity float64
 	// Accepted reports whether Score cleared MinSimilarity. A rejected result
 	// still carries its tier and score for logging, but callers must not route
-	// on it — they resolve it through the configured fallback instead.
+	// on it — they fall back to lexical scoring instead.
 	Accepted bool
 	// MatchedExemplar is the tier phrase this request landed on. Tier and Score
 	// report what the classifier decided and how confidently; without the phrase
@@ -214,17 +214,6 @@ func (c *SemanticClassifier) Status() SemanticStatusInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.status
-}
-
-// Fallback returns the configured behavior when semantic classification cannot
-// serve the current request. Disabled semantic routing always falls back to lexical.
-func (c *SemanticClassifier) Fallback() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.config == nil || c.config.Semantic == nil {
-		return configstore.ComplexitySemanticFallbackLexical
-	}
-	return c.config.Semantic.Fallback
 }
 
 // Timeout returns the per-request embedding budget currently in force,

@@ -748,11 +748,6 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				// (semantic.message_history_count); the classifier applies it from
 				// the same snapshot that owns the exemplars.
 				semanticResult, err := p.semanticClassifier.Classify(ctx, input)
-				// Retained so the fallback-disabled path can report *why* semantic routing
-				// produced nothing: a rejected near-match reads very differently from a
-				// classifier that never returned a result at all.
-				var rejectedResult *complexity.SemanticResult
-				var timedOut bool
 				if err != nil {
 					if p.logger != nil {
 						p.logger.Debug("[Governance] Semantic complexity classification unavailable: %v", err)
@@ -766,7 +761,6 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 					// operator hunting for a broken provider or an incomplete
 					// warmup instead of raising semantic.timeout.
 					if errors.Is(err, ErrEmbeddingTimeout) {
-						timedOut = true
 						unavailableLog = fmt.Sprintf(
 							"Semantic complexity classification timed out after %s; resolving through fallback",
 							p.semanticClassifier.Timeout(),
@@ -774,7 +768,6 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 					}
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelWarn, unavailableLog)
 				} else if semanticResult != nil && !semanticResult.Accepted {
-					rejectedResult = semanticResult
 					if p.logger != nil {
 						p.logger.Debug(
 							"[Governance] Semantic complexity below min_similarity: tier=%s similarity=%.2f min=%.2f",
@@ -817,29 +810,6 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 						),
 					)
 					return result
-				}
-				if p.semanticClassifier.Fallback() == configstore.ComplexitySemanticFallbackNone {
-					ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
-					fallbackDisabledLog := "Semantic complexity analysis unavailable and fallback is disabled"
-					switch {
-					case rejectedResult != nil:
-						fallbackDisabledLog = withMatchedExemplar(
-							fmt.Sprintf(
-								"Semantic complexity rejected (nearest tier=%s similarity=%.2f below min_similarity=%.2f) and fallback is disabled",
-								rejectedResult.Tier,
-								rejectedResult.Score,
-								rejectedResult.MinSimilarity,
-							),
-							rejectedResult.MatchedExemplar,
-						)
-					case timedOut:
-						fallbackDisabledLog = fmt.Sprintf(
-							"Semantic complexity classification timed out after %s and fallback is disabled",
-							p.semanticClassifier.Timeout(),
-						)
-					}
-					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fallbackDisabledLog)
-					return nil
 				}
 			}
 

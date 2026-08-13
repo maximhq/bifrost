@@ -3457,9 +3457,8 @@ func validateComplexitySemanticVectorStore(config *Config, configData *ConfigDat
 		return nil
 	}
 	if !fileRequestsExternalComplexityVectorStore(configData) {
-		logger.Error("stored governance complexity analyzer config sets semantic.vector_store to %q but no vector store is configured; semantic complexity classification will report \"failed\" and fall back to %q. Add a vector_store section to config.json, or set semantic.vector_store to %q or %q",
+		logger.Error("stored governance complexity analyzer config sets semantic.vector_store to %q but no vector store is configured; semantic complexity classification will report \"failed\" and fall back to lexical scoring. Add a vector_store section to config.json, or set semantic.vector_store to %q or %q",
 			configstore.ComplexitySemanticVectorStoreExternal,
-			semantic.Fallback,
 			configstore.ComplexitySemanticVectorStoreAuto,
 			configstore.ComplexitySemanticVectorStoreEmbedded)
 		return nil

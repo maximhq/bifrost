@@ -862,11 +862,15 @@ export const governanceApi = baseApi.injectEndpoints({
 			providesTags: ["ComplexityAnalyzerConfig"],
 		}),
 
+		// Runtime readiness, not persisted config. Tagged with the config so that
+		// saving a new analyzer config refetches it: every save restarts semantic
+		// warmup, which is exactly when the state changes.
 		getComplexitySemanticStatus: builder.query<SemanticStatusInfo, void>({
 			query: () => ({
 				url: "/governance/complexity-analyzer-status",
 				method: "GET",
 			}),
+			providesTags: ["ComplexityAnalyzerConfig"],
 		}),
 
 		updateComplexityAnalyzerConfig: builder.mutation<AnalyzerConfig, AnalyzerConfig>({
