@@ -349,6 +349,8 @@ jobs:
             packages.cloud.google.com:443
             proxy.golang.org:443
             registry.npmjs.org:443
+            router.requesty.ai:443
+            api.dev.runwayml.com:443
             release-assets.githubusercontent.com:443
             router.huggingface.co:443
             storage.googleapis.com:443
@@ -542,6 +544,8 @@ jobs:
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             router.huggingface.co:443
+            router.requesty.ai:443
+            api.dev.runwayml.com:443
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
@@ -1055,6 +1059,8 @@ jobs:
             sum.golang.org:443
             telemetry.qdrant.io:443
             uploader.codecov.io:443
+            router.requesty.ai:443
+            api.dev.runwayml.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1532,6 +1538,8 @@ jobs:
             sum.golang.org:443
             telemetry.qdrant.io:443
             www.getbifrost.ai:443
+            router.requesty.ai:443
+            api.dev.runwayml.com:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
