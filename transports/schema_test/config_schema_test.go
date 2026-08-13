@@ -397,6 +397,46 @@ func TestSchemaGuardrailRuleTarget(t *testing.T) {
 	}
 }
 
+// TestSchemaComplexityTierBoundaryCompatibility verifies that the retired
+// complex_reasoning boundary remains accepted without allowing unknown fields.
+func TestSchemaComplexityTierBoundaryCompatibility(t *testing.T) {
+	compiled := compileSchema(t)
+	prefix := `{"governance":{"complexity_analyzer_config":{"tier_boundaries":`
+	suffix := `,"keywords":{"code_keywords":["api"],"reasoning_keywords":["tradeoffs"],"technical_keywords":["latency"],"simple_keywords":["hello"]}}}}`
+
+	tests := []struct {
+		name       string
+		boundaries string
+		wantError  bool
+	}{
+		{
+			name:       "canonical boundaries",
+			boundaries: `{"simple_medium":0.2,"medium_complex":0.4}`,
+		},
+		{
+			name:       "deprecated complex reasoning boundary",
+			boundaries: `{"simple_medium":0.2,"medium_complex":0.4,"complex_reasoning":0.6}`,
+		},
+		{
+			name:       "unknown boundary",
+			boundaries: `{"simple_medium":0.2,"medium_complex":0.4,"other_boundary":0.6}`,
+			wantError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateConfig(t, compiled, prefix+tt.boundaries+suffix)
+			if tt.wantError && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaSCIMConfigValidation(t *testing.T) {
 	compiled := compileSchema(t)
 
