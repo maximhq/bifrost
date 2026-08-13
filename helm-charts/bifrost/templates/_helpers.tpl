@@ -1190,7 +1190,10 @@ false
 {{- with $client.oauthConfig.tokenUrl }}{{- $_ := set $oauthCfg "token_url" . }}{{- end }}
 {{- with $client.oauthConfig.registrationUrl }}{{- $_ := set $oauthCfg "registration_url" . }}{{- end }}
 {{- with $client.oauthConfig.scopes }}{{- $_ := set $oauthCfg "scopes" . }}{{- end }}
+{{- /* Only emit oauth_config when at least one field resolved; an all-empty block would render "oauth_config": {} instead of relying on discovery. */ -}}
+{{- if $oauthCfg }}
 {{- $_ := set $cc "oauth_config" $oauthCfg }}
+{{- end }}
 {{- end }}
 {{- /* Delegated token-exchange config for auth_type "token_exchange" (Enterprise builds only). */ -}}
 {{- if $client.tokenExchange }}

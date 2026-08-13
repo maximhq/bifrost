@@ -626,7 +626,8 @@
             "pluginDownloadPrivateAllowlist": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "description": "Hostnames, IP addresses, or CIDR ranges that custom plugin (.so) downloads are allowed to reach even when they resolve to a private/loopback/link-local/CGNAT address (blocked by default to prevent SSRF). Deploy-time only. Renders into server.plugin_download_private_allowlist."
             }
@@ -1512,6 +1513,19 @@
                     "type": "boolean",
                     "description": "Snap budget reset windows to calendar boundaries",
                     "default": false
+                  },
+                  "reset_config": {
+                    "type": "object",
+                    "description": "Window settings the reset duration cannot express. Only valid when reset_duration is quarterly (\"1Q\").",
+                    "properties": {
+                      "quarter_start_month": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 12,
+                        "description": "First month of Q1 as 1-12 (e.g. 4 = fiscal year starting April). Omitted or 0 means January."
+                      }
+                    },
+                    "additionalProperties": false
                   },
                   "current_usage": {
                     "type": "number"

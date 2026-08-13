@@ -549,13 +549,16 @@ bifrost:
       #   # Inline OAuth provider config. All fields optional — omitted URLs are discovered from the
       #   # connection_string (RFC 8414) and a missing clientId triggers dynamic client registration
       #   # (RFC 7591) at admin-click time. Omit the whole block to rely entirely on discovery.
+      #   # Omit any field to have it discovered/registered during admin verification.
+      #   # Leaving every field blank is the same as omitting oauthConfig entirely (full discovery);
+      #   # blank/empty values are dropped, not written as an empty oauth_config block.
       #   oauthConfig:
       #     clientId: "env.MY_MCP_OAUTH_CLIENT_ID"       # optional (can use env./vault. prefix)
       #     clientSecret: "env.MY_MCP_OAUTH_CLIENT_SECRET"  # optional (omit for PKCE/DCR public clients)
-      #     authorizeUrl: ""                             # optional — discovered when omitted
-      #     tokenUrl: ""                                 # optional — discovered when omitted
-      #     registrationUrl: ""                          # optional — discovered when omitted
-      #     scopes: []                                   # OAuth scopes to request
+      #     # authorizeUrl: "https://idp.corp/oauth2/authorize"   # optional — discovered when omitted
+      #     # tokenUrl: "https://idp.corp/oauth2/token"           # optional — discovered when omitted
+      #     # registrationUrl: "https://idp.corp/oauth2/register" # optional — discovered when omitted
+      #     # scopes: ["read", "write"]                           # optional — OAuth scopes to request
       #   # Only meaningful for connectionType "http": true keeps one persistent connection reused
       #   # across every caller; false (default for new clients) connects fresh per call.
       #   needsSessionStickiness: false
