@@ -733,13 +733,13 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 	var computeComplexity func() *complexity.ComplexityResult
 	if analyzer := p.complexityAnalyzer.Load(); analyzer != nil {
 		computeComplexity = func() *complexity.ComplexityResult {
-			input, ok := buildComplexityInput(req)
+			input, ok := buildComplexityInput(ctx, req)
 			if !ok {
 				if p.logger != nil {
-					p.logger.Debug("[Governance] Complexity analysis skipped: unsupported request type")
+					p.logger.Debug("[Governance] Complexity analysis skipped: no routable human-authored text detected")
 				}
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceComplexityMechanism, complexity.MechanismSkipped)
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no supported text-bearing input detected")
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, "Complexity analysis skipped: no routable human-authored text detected")
 				return nil
 			}
 
