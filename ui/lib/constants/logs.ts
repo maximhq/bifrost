@@ -5,6 +5,7 @@ export const KnownProvidersNames = [
 	"bedrock",
 	"bedrock_mantle",
 	"cerebras",
+	"cloudflare",
 	"cohere",
 	"deepseek",
 	"gemini",
@@ -42,6 +43,7 @@ export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"azure",
 	"bedrock",
+	"cloudflare",
 	"cohere",
 	"fireworks",
 	"gemini",
@@ -130,6 +132,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	perplexity: "Perplexity",
 	sgl: "SGLang",
 	cerebras: "Cerebras",
+	cloudflare: "Cloudflare Workers AI",
 	gemini: "Gemini",
 	openrouter: "OpenRouter",
 	huggingface: "HuggingFace",

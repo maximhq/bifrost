@@ -99,7 +99,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 	}, [form.formState.isDirty, dispatch]);
 
 	const onSubmit = (data: NetworkOnlyFormSchema) => {
-		const requiresBaseUrl = isCustomProvider;
+		const requiresBaseUrl = isCustomProvider || provider.name === "cloudflare";
 		if (requiresBaseUrl && (data.network_config?.base_url ?? "").trim() === "") {
 			if ((provider.network_config?.base_url ?? "").trim() !== "") {
 				toast.error("You can't remove network configuration for this provider.");
@@ -167,8 +167,9 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		});
 	}, [form, provider.name, provider.network_config]);
 
-	const baseURLRequired = isCustomProvider;
+	const baseURLRequired = isCustomProvider || provider.name === "cloudflare";
 	const hideBaseURL = provider.name === "vllm" || provider.name === "ollama" || provider.name === "sgl";
+	const canRemoveConfiguration = !hideBaseURL && !baseURLRequired;
 
 	return (
 		<Form {...form}>
@@ -560,7 +561,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 
 				{/* Form Actions */}
 				<div className="bg-card sticky bottom-0 flex justify-end space-x-2 rounded-b-sm border-t px-6 py-4">
-					{!hideBaseURL && (
+					{canRemoveConfiguration && (
 						<Button
 							type="button"
 							variant="outline"
