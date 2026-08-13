@@ -1153,3 +1153,657 @@ func TestMantleEncryptedContentRefusalIsNotConfusedWithOtherValidationErrors(t *
 		})
 	}
 }
+
+// newThinkingSignatureChatRequest builds the shape a complexity/virtual-model router
+// produces: a multi-turn chat conversation whose assistant turn replays a thinking
+// block minted by whichever model the router picked on an earlier turn. When the
+// router sends the next turn to a different model, the signature travels with it and
+// the upstream refuses it.
+func newThinkingSignatureChatRequest(signature string) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-sonnet-5",
+			Input: []schemas.ChatMessage{
+				{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("run the tests")},
+				},
+				{
+					Role:    schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("On it.")},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ReasoningDetails: []schemas.ChatReasoningDetails{
+							{
+								Index:     0,
+								Type:      schemas.BifrostReasoningDetailsTypeText,
+								Text:      schemas.Ptr("planning the run"),
+								Signature: schemas.Ptr(signature),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// thinkingSignatureError is the refusal reported against smart-routing-v1: an
+// Anthropic model rejecting a thinking-block signature it did not mint.
+func thinkingSignatureError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("invalid_request_error"),
+			Message: "The model returned the following errors: messages.23.content.0: Invalid `signature` in `thinking` block",
+		},
+	}
+}
+
+// TestIsEncryptedReasoningRejection_ThinkingSignature pins the reported refusal as a
+// fail-soft trigger. It matches through the bare-"signature" branch rather than a
+// field marker: the message names neither encrypted_content nor redacted_thinking.
+func TestIsEncryptedReasoningRejection_ThinkingSignature(t *testing.T) {
+	if !isEncryptedReasoningRejection(thinkingSignatureError()) {
+		t.Fatal("expected the thinking-block signature refusal to be a fail-soft trigger")
+	}
+
+	// A 5xx carrying the same words is a transient upstream fault, not an
+	// unverifiable payload; the ordinary retry path owns it.
+	transient := thinkingSignatureError()
+	transient.StatusCode = schemas.Ptr(503)
+	if isEncryptedReasoningRejection(transient) {
+		t.Error("expected a 5xx not to trigger the fail-soft strip")
+	}
+}
+
+// TestStripUnverifiableReasoning_ChatShape covers the gap that let this error reach
+// clients: the strip only ever handled Responses-shaped requests, so a chat-shaped
+// one returned false and the retry never happened.
+func TestStripUnverifiableReasoning_ChatShape(t *testing.T) {
+	t.Run("clears a thinking signature and keeps the reasoning text", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
+
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change on a chat-shaped request")
+		}
+		details := req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails
+		if len(details) != 1 {
+			t.Fatalf("expected the reasoning detail to survive, got %d", len(details))
+		}
+		if details[0].Signature != nil {
+			t.Errorf("expected the signature to be cleared, got %q", *details[0].Signature)
+		}
+		if details[0].Text == nil || *details[0].Text != "planning the run" {
+			t.Errorf("expected the reasoning text to survive, got %+v", details[0].Text)
+		}
+	})
+
+	t.Run("clears encrypted reasoning data", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("sig")
+		details := req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails
+		details[0].Type = schemas.BifrostReasoningDetailsTypeEncrypted
+		details[0].Signature = nil
+		details[0].Data = schemas.Ptr("ciphertext")
+
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		if got := req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails[0].Data; got != nil {
+			t.Errorf("expected encrypted data to be cleared, got %q", *got)
+		}
+	})
+
+	t.Run("drops a reasoning detail left with nothing to say", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("sig")
+		req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails[0].Text = nil
+
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		if got := len(req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails); got != 0 {
+			t.Errorf("expected the empty reasoning detail to be dropped, got %d", got)
+		}
+	})
+
+	// Claiming a change with nothing to strip buys a second identical upstream call.
+	t.Run("reports no change when nothing is unverifiable", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("sig")
+		req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails[0].Signature = nil
+
+		if stripUnverifiableReasoning(nil, req) {
+			t.Error("expected no change when no signature or encrypted data is present")
+		}
+	})
+
+	// The caller's slice and structs are shared with plugins and the transport layer,
+	// so the rewrite must not mutate them in place.
+	t.Run("does not mutate the caller's reasoning details", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("keep-me")
+		original := req.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails
+
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		if original[0].Signature == nil || *original[0].Signature != "keep-me" {
+			t.Error("expected the caller's original reasoning detail to be untouched")
+		}
+	})
+}
+
+// TestStripUnverifiableReasoning_ResponsesContentBlockSignature covers the second half
+// of the gap: even on the Responses shape the strip only cleared
+// ResponsesReasoning.EncryptedContent, never a reasoning content block's signature.
+func TestStripUnverifiableReasoning_ResponsesContentBlockSignature(t *testing.T) {
+	req := newEncryptedReasoningRequest("ciphertext")
+	req.ResponsesRequest.Input[1].ResponsesReasoning.EncryptedContent = nil
+	req.ResponsesRequest.Input[1].Content = &schemas.ResponsesMessageContent{
+		ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{
+				Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+				Text:      schemas.Ptr("planning the run"),
+				Signature: schemas.Ptr("ErUBCkYIBRgCKkD..."),
+			},
+		},
+	}
+
+	if !stripUnverifiableReasoning(nil, req) {
+		t.Fatal("expected the strip to report a change for a content-block signature")
+	}
+	blocks := req.ResponsesRequest.Input[1].Content.ContentBlocks
+	if len(blocks) != 1 {
+		t.Fatalf("expected the block to survive, got %d", len(blocks))
+	}
+	if blocks[0].Signature != nil {
+		t.Errorf("expected the signature to be cleared, got %q", *blocks[0].Signature)
+	}
+	if blocks[0].Text == nil || *blocks[0].Text != "planning the run" {
+		t.Errorf("expected the reasoning text to survive, got %+v", blocks[0].Text)
+	}
+}
+
+// TestStripUnverifiableReasoning_ResponsesContentBlockEncryptedContent covers the other
+// unverifiable field the content block models. ResponsesMessageContentBlock carries both
+// Signature and EncryptedContent, so clearing only the signature leaves a block-only
+// encrypted payload on the retry -- which earns the same refusal the strip exists to avoid.
+func TestStripUnverifiableReasoning_ResponsesContentBlockEncryptedContent(t *testing.T) {
+	req := newEncryptedReasoningRequest("ciphertext")
+	req.ResponsesRequest.Input[1].ResponsesReasoning.EncryptedContent = nil
+	req.ResponsesRequest.Input[1].Content = &schemas.ResponsesMessageContent{
+		ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{
+				Type:             schemas.ResponsesOutputMessageContentTypeReasoning,
+				Text:             schemas.Ptr("planning the run"),
+				EncryptedContent: schemas.Ptr("gAAAAABn..."),
+			},
+		},
+	}
+
+	if !stripUnverifiableReasoning(nil, req) {
+		t.Fatal("expected the strip to report a change for a content-block encrypted_content")
+	}
+	blocks := req.ResponsesRequest.Input[1].Content.ContentBlocks
+	if len(blocks) != 1 {
+		t.Fatalf("expected the block to survive, got %d", len(blocks))
+	}
+	if blocks[0].EncryptedContent != nil {
+		t.Errorf("expected encrypted_content to be cleared, got %q", *blocks[0].EncryptedContent)
+	}
+	if blocks[0].Text == nil || *blocks[0].Text != "planning the run" {
+		t.Errorf("expected the reasoning text to survive, got %+v", blocks[0].Text)
+	}
+}
+
+// TestStripUnverifiableReasoning_ResponsesContentBlockBothFields pins that one pass clears
+// both carriers. Clearing them in separate passes would still need two upstream calls to
+// heal, and the strip only gets one retry.
+func TestStripUnverifiableReasoning_ResponsesContentBlockBothFields(t *testing.T) {
+	req := newEncryptedReasoningRequest("ciphertext")
+	req.ResponsesRequest.Input[1].ResponsesReasoning.EncryptedContent = nil
+	req.ResponsesRequest.Input[1].Content = &schemas.ResponsesMessageContent{
+		ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{
+				Type:             schemas.ResponsesOutputMessageContentTypeReasoning,
+				Text:             schemas.Ptr("planning the run"),
+				Signature:        schemas.Ptr("ErUBCkYIBRgCKkD..."),
+				EncryptedContent: schemas.Ptr("gAAAAABn..."),
+			},
+		},
+	}
+
+	if !stripUnverifiableReasoning(nil, req) {
+		t.Fatal("expected the strip to report a change")
+	}
+	blocks := req.ResponsesRequest.Input[1].Content.ContentBlocks
+	if len(blocks) != 1 {
+		t.Fatalf("expected the block to survive, got %d", len(blocks))
+	}
+	if blocks[0].Signature != nil {
+		t.Errorf("expected the signature to be cleared, got %q", *blocks[0].Signature)
+	}
+	if blocks[0].EncryptedContent != nil {
+		t.Errorf("expected encrypted_content to be cleared, got %q", *blocks[0].EncryptedContent)
+	}
+}
+
+// TestStripUnverifiableReasoning_RawContentBlockCarriers is the raw-body half of the same
+// rule. The passthrough path used to key entirely off a top-level encrypted_content, so an
+// item whose only carrier was a content-block signature -- replayed Anthropic thinking --
+// was forwarded verbatim AND reported as no-change, which meant the one fail-soft retry
+// never fired at all on this path even though the typed path heals the identical request.
+func TestStripUnverifiableReasoning_RawContentBlockCarriers(t *testing.T) {
+	t.Run("content block signature with no top-level encrypted_content", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		req := newEncryptedReasoningRequest("ciphertext")
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","input":[` +
+			`{"type":"message","role":"user","content":"run the tests"},` +
+			`{"type":"reasoning","id":"rs_1","summary":[],"content":[` +
+			`{"type":"reasoning_text","text":"planning","signature":"ErUBCkYIBRgCKkD...","unmodeled_field":7}` +
+			`]}` +
+			`],"store":false}`)
+
+		if !stripResponsesEncryptedContent(ctx, req) {
+			t.Fatal("expected a content-block signature alone to be rewritten on the raw path")
+		}
+
+		body := string(req.ResponsesRequest.RawRequestBody)
+		if strings.Contains(body, "signature") {
+			t.Errorf("expected the content-block signature to be gone, got %s", body)
+		}
+		if !strings.Contains(body, `"planning"`) {
+			t.Errorf("expected the reasoning text to survive, got %s", body)
+		}
+		if !strings.Contains(body, `"unmodeled_field":7`) {
+			t.Errorf("expected fields Bifrost does not model to survive, got %s", body)
+		}
+		if !strings.Contains(body, `"store":false`) || !strings.Contains(body, `"run the tests"`) {
+			t.Errorf("expected the rest of the body to be untouched, got %s", body)
+		}
+	})
+
+	t.Run("content block encrypted_content with no top-level encrypted_content", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		req := newEncryptedReasoningRequest("ciphertext")
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-5.6-sol","input":[` +
+			`{"type":"message","role":"user","content":"run the tests"},` +
+			`{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"planning"}],"content":[` +
+			`{"type":"reasoning_text","text":"planning","encrypted_content":"gAAAAABn..."}` +
+			`]}` +
+			`],"store":false}`)
+
+		if !stripResponsesEncryptedContent(ctx, req) {
+			t.Fatal("expected a content-block encrypted_content alone to be rewritten on the raw path")
+		}
+
+		body := string(req.ResponsesRequest.RawRequestBody)
+		if strings.Contains(body, "encrypted_content") {
+			t.Errorf("expected the content-block encrypted_content to be gone, got %s", body)
+		}
+		if !strings.Contains(body, `"summary_text"`) {
+			t.Errorf("expected the summary to survive, got %s", body)
+		}
+	})
+
+	t.Run("leaves an item with no carrier untouched", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+
+		req := newEncryptedReasoningRequest("ciphertext")
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-5.6-sol","input":[` +
+			`{"type":"message","role":"user","content":"run the tests"},` +
+			`{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"planning"}],"content":[` +
+			`{"type":"reasoning_text","text":"planning"}` +
+			`]}` +
+			`],"store":false}`)
+		before := string(req.ResponsesRequest.RawRequestBody)
+
+		if stripResponsesEncryptedContent(ctx, req) {
+			t.Error("expected no change to be claimed when nothing unverifiable is present")
+		}
+		if body := string(req.ResponsesRequest.RawRequestBody); body != before {
+			t.Errorf("expected the body to be untouched, got %s", body)
+		}
+	})
+}
+
+// TestStripChatUnverifiableReasoning_AnthropicRawBody covers the raw-passthrough half of
+// the chat shape. /v1/messages is the drop-in route a signature-replaying router most
+// often arrives on, and it sets BifrostContextKeyUseRawRequestBody -- so the typed strip
+// never sees the payload, the strip reported no change, and the client got the same 400
+// the fail-soft exists to absorb.
+func TestStripChatUnverifiableReasoning_AnthropicRawBody(t *testing.T) {
+	anthropicCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+		return ctx
+	}
+
+	t.Run("blanks a thinking signature and keeps the reasoning text", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
+		req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
+			`{"role":"user","content":"run the tests"},` +
+			`{"role":"assistant","content":[` +
+			`{"type":"thinking","thinking":"planning the run","signature":"ErUBCkYIBRgCKkD...","unmodeled_field":7},` +
+			`{"type":"text","text":"On it."}` +
+			`]},` +
+			// The later assistant turn matters: Anthropic protects the last message with
+			// role assistant from any edit, so without a turn after it the payload under
+			// test would sit on the protected turn and the rewrite would decline.
+			`{"role":"user","content":"now ship it"},` +
+			`{"role":"assistant","content":[{"type":"text","text":"Shipped."}]},` +
+			`{"role":"user","content":"thanks"}` +
+			`],"max_tokens":1024}`)
+
+		if !stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Fatal("expected the raw Anthropic body to be rewritten")
+		}
+
+		body := string(req.ChatRequest.RawRequestBody)
+		if strings.Contains(body, "ErUBCkYIBRgCKkD") {
+			t.Errorf("expected the foreign signature to be gone, got %s", body)
+		}
+		if !strings.Contains(body, `"signature":""`) {
+			t.Errorf("expected an empty signature rather than an omitted field, got %s", body)
+		}
+		if !strings.Contains(body, `"planning the run"`) || !strings.Contains(body, `"On it."`) {
+			t.Errorf("expected the reasoning text and the reply to survive, got %s", body)
+		}
+		if !strings.Contains(body, `"unmodeled_field":7`) {
+			t.Errorf("expected fields Bifrost does not model to survive, got %s", body)
+		}
+		if !strings.Contains(body, `"max_tokens":1024`) || !strings.Contains(body, `"run the tests"`) {
+			t.Errorf("expected the rest of the body to be untouched, got %s", body)
+		}
+	})
+
+	t.Run("drops a redacted_thinking block whose data is the whole payload", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("sig")
+		req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
+			`{"role":"user","content":"run the tests"},` +
+			`{"role":"assistant","content":[` +
+			`{"type":"redacted_thinking","data":"EroBCkYIBRgCKkDdeadbeef"},` +
+			`{"type":"text","text":"On it."}` +
+			`]},` +
+			// Earlier turn, not the protected latest assistant message -- see above.
+			`{"role":"user","content":"now ship it"},` +
+			`{"role":"assistant","content":[{"type":"text","text":"Shipped."}]},` +
+			`{"role":"user","content":"thanks"}` +
+			`],"max_tokens":1024}`)
+
+		if !stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Fatal("expected the redacted_thinking block to be removed")
+		}
+
+		body := string(req.ChatRequest.RawRequestBody)
+		if strings.Contains(body, "redacted_thinking") || strings.Contains(body, "deadbeef") {
+			t.Errorf("expected the redacted block and its data to be gone, got %s", body)
+		}
+		if !strings.Contains(body, `"On it."`) {
+			t.Errorf("expected the assistant's own text to survive, got %s", body)
+		}
+	})
+
+	t.Run("leaves a turn that would be emptied untouched", func(t *testing.T) {
+		// A redacted-only assistant turn cannot be healed by removal: dropping the block
+		// leaves an empty content array, which Anthropic rejects, and dropping the whole
+		// message would break user/assistant alternation. Reporting no change is the
+		// truthful answer -- the caller spends an upstream call on a true.
+		req := newThinkingSignatureChatRequest("sig")
+		raw := `{"model":"claude-sonnet-5","messages":[` +
+			`{"role":"user","content":"run the tests"},` +
+			`{"role":"assistant","content":[{"type":"redacted_thinking","data":"EroBdeadbeef"}]}` +
+			`],"max_tokens":1024}`
+		req.ChatRequest.RawRequestBody = []byte(raw)
+
+		if stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Error("expected no change to be claimed when the turn cannot be rewritten")
+		}
+		if string(req.ChatRequest.RawRequestBody) != raw {
+			t.Errorf("expected the body to be untouched, got %s", req.ChatRequest.RawRequestBody)
+		}
+	})
+
+	t.Run("reports no change when nothing is unverifiable", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("sig")
+		raw := `{"model":"claude-sonnet-5","messages":[` +
+			`{"role":"user","content":"run the tests"},` +
+			`{"role":"assistant","content":[{"type":"text","text":"On it."}]}` +
+			`],"max_tokens":1024}`
+		req.ChatRequest.RawRequestBody = []byte(raw)
+
+		if stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Error("expected no change for a body carrying no thinking blocks")
+		}
+		if string(req.ChatRequest.RawRequestBody) != raw {
+			t.Errorf("expected the body to be untouched, got %s", req.ChatRequest.RawRequestBody)
+		}
+	})
+
+	t.Run("declines a dialect it cannot parse", func(t *testing.T) {
+		// Gemini also enables raw chat passthrough, but its thought_signature rides inside
+		// parts[*] on a generateContent body. Rewriting it with the Anthropic field paths
+		// would corrupt the request, so the strip keeps returning false there.
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "genai")
+
+		req := newThinkingSignatureChatRequest("sig")
+		raw := `{"contents":[{"role":"model","parts":[{"text":"planning","thoughtSignature":"abc"}]}]}`
+		req.ChatRequest.RawRequestBody = []byte(raw)
+
+		if stripUnverifiableReasoning(ctx, req) {
+			t.Error("expected no change to be claimed for an unsupported raw dialect")
+		}
+		if string(req.ChatRequest.RawRequestBody) != raw {
+			t.Errorf("expected the body to be untouched, got %s", req.ChatRequest.RawRequestBody)
+		}
+	})
+
+	t.Run("declines large payload mode even on the anthropic dialect", func(t *testing.T) {
+		ctx := anthropicCtx()
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+
+		req := newThinkingSignatureChatRequest("sig")
+		raw := `{"messages":[{"role":"assistant","content":[` +
+			`{"type":"thinking","thinking":"x","signature":"sig"}]}]}`
+		req.ChatRequest.RawRequestBody = []byte(raw)
+
+		if stripUnverifiableReasoning(ctx, req) {
+			t.Error("expected no change when the body streams past core unparsed")
+		}
+	})
+
+	// Anthropic verifies that thinking and redacted_thinking blocks in the latest
+	// assistant message arrive exactly as it minted them: "Within the latest assistant
+	// message, the sequence of consecutive thinking blocks must match what the model
+	// generated in the original request: you can't rearrange, edit, or partially drop
+	// them." Editing there swaps the signature refusal for a second 400 -- "`thinking`
+	// or `redacted_thinking` blocks in the latest assistant message cannot be modified"
+	// -- after a wasted upstream call, so the retry has to leave that turn alone.
+	// https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks
+
+	t.Run("leaves the latest assistant message untouched", func(t *testing.T) {
+		req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
+		raw := `{"model":"claude-sonnet-5","messages":[` +
+			`{"role":"user","content":"run the tests"},` +
+			`{"role":"assistant","content":[` +
+			`{"type":"thinking","thinking":"planning the run","signature":"ErUBCkYIBRgCKkD..."},` +
+			`{"type":"text","text":"On it."}` +
+			`]}` +
+			`],"max_tokens":1024}`
+		req.ChatRequest.RawRequestBody = []byte(raw)
+
+		if stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Error("expected no change to be claimed when only the protected turn carries a payload")
+		}
+		if string(req.ChatRequest.RawRequestBody) != raw {
+			t.Errorf("expected the latest assistant message to survive verbatim, got %s", req.ChatRequest.RawRequestBody)
+		}
+	})
+
+	t.Run("skips the latest assistant turn even when it is not the last message", func(t *testing.T) {
+		// A tool-result round trip ends on a user message, so the protected turn sits at
+		// index 1 rather than at the end. Treating the last element as the protected one
+		// would rewrite it anyway and earn the "cannot be modified" refusal.
+		req := newThinkingSignatureChatRequest("sig")
+		raw := `{"model":"claude-sonnet-5","messages":[` +
+			`{"role":"user","content":"what is the weather in Paris?"},` +
+			`{"role":"assistant","content":[` +
+			`{"type":"redacted_thinking","data":"EroBCkYIBRgCKkDdeadbeef"},` +
+			`{"type":"tool_use","id":"toolu_01","name":"get_weather","input":{"city":"Paris"}}` +
+			`]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"20C, sunny"}]}` +
+			`],"max_tokens":1024}`
+		req.ChatRequest.RawRequestBody = []byte(raw)
+
+		if stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Error("expected the protected turn to be located by role, not by array position")
+		}
+		if string(req.ChatRequest.RawRequestBody) != raw {
+			t.Errorf("expected the tool-use turn to survive verbatim, got %s", req.ChatRequest.RawRequestBody)
+		}
+	})
+
+	t.Run("still rewrites earlier assistant turns", func(t *testing.T) {
+		// Only the latest assistant message is protected -- "Allowed: outside tool use,
+		// omit prior turns' thinking" -- so an earlier turn is still healed, which is the
+		// case the retry exists to fix.
+		req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
+		req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
+			`{"role":"user","content":"run the tests"},` +
+			`{"role":"assistant","content":[` +
+			`{"type":"thinking","thinking":"planning the run","signature":"ErUBCkYIBRgCKkD..."},` +
+			`{"type":"redacted_thinking","data":"EroBCkYIBRgCKkDdeadbeef"},` +
+			`{"type":"text","text":"On it."}` +
+			`]},` +
+			`{"role":"user","content":"now ship it"},` +
+			`{"role":"assistant","content":[{"type":"text","text":"Shipped."}]},` +
+			`{"role":"user","content":"thanks"}` +
+			`],"max_tokens":1024}`)
+
+		if !stripUnverifiableReasoning(anthropicCtx(), req) {
+			t.Fatal("expected the earlier assistant turn to be rewritten")
+		}
+
+		body := string(req.ChatRequest.RawRequestBody)
+		if strings.Contains(body, "ErUBCkYIBRgCKkD") || strings.Contains(body, "deadbeef") {
+			t.Errorf("expected the earlier turn's unverifiable payloads to be gone, got %s", body)
+		}
+		if !strings.Contains(body, `"signature":""`) {
+			t.Errorf("expected an empty signature rather than an omitted field, got %s", body)
+		}
+		if !strings.Contains(body, `"planning the run"`) || !strings.Contains(body, `"On it."`) {
+			t.Errorf("expected the earlier turn's own text to survive, got %s", body)
+		}
+		if !strings.Contains(body, `{"type":"text","text":"Shipped."}`) {
+			t.Errorf("expected the latest assistant message to survive verbatim, got %s", body)
+		}
+	})
+}
+
+// TestExecuteRequestWithRetries_HealsThinkingSignatureOnRawAnthropicChat is the
+// consequence test for the raw path: the rewrite only matters if the retry it gates
+// actually reaches the upstream with the signature blanked.
+func TestExecuteRequestWithRetries_HealsThinkingSignatureOnRawAnthropicChat(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
+	req.ChatRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5","messages":[` +
+		`{"role":"user","content":"run the tests"},` +
+		`{"role":"assistant","content":[` +
+		`{"type":"thinking","thinking":"planning the run","signature":"ErUBCkYIBRgCKkD..."}` +
+		`]},` +
+		// Earlier turn: Anthropic protects the last message with role assistant from
+		// edits, so the payload has to sit behind a later assistant turn to reach a retry.
+		`{"role":"user","content":"now ship it"},` +
+		`{"role":"assistant","content":[{"type":"text","text":"Shipped."}]},` +
+		`{"role":"user","content":"thanks"}` +
+		`],"max_tokens":1024}`)
+
+	callCount := 0
+	var secondAttemptBody string
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", thinkingSignatureError()
+		}
+		secondAttemptBody = string(req.ChatRequest.RawRequestBody)
+		return "success", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Anthropic, "claude-sonnet-5", req, logger)
+
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %v", err)
+	}
+	if result != "success" {
+		t.Fatalf("expected 'success', got %q", result)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 attempts (original + stripped retry), got %d", callCount)
+	}
+	if strings.Contains(secondAttemptBody, "ErUBCkYIBRgCKkD") {
+		t.Errorf("the retry still carried the foreign signature: %s", secondAttemptBody)
+	}
+	if !strings.Contains(secondAttemptBody, `"planning the run"`) {
+		t.Errorf("expected the reasoning text to survive into the retry, got %s", secondAttemptBody)
+	}
+}
+
+// TestExecuteRequestWithRetries_HealsThinkingSignatureOnChatShape is the consequence
+// test: the predicate answering correctly only matters if the retry it gates actually
+// reaches the upstream with the signature removed.
+func TestExecuteRequestWithRetries_HealsThinkingSignatureOnChatShape(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...")
+
+	callCount := 0
+	var secondAttemptInput []schemas.ChatMessage
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", thinkingSignatureError()
+		}
+		secondAttemptInput = req.ChatRequest.Input
+		return "success", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ChatCompletionRequest, schemas.Anthropic, "claude-sonnet-5", req, logger)
+
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %v", err)
+	}
+	if result != "success" {
+		t.Fatalf("expected 'success', got %q", result)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 attempts (original + stripped retry), got %d", callCount)
+	}
+	if len(secondAttemptInput) != 2 {
+		t.Fatalf("expected both messages to survive, got %d", len(secondAttemptInput))
+	}
+	details := secondAttemptInput[1].ChatAssistantMessage.ReasoningDetails
+	if len(details) != 1 {
+		t.Fatalf("expected the reasoning detail to survive, got %d", len(details))
+	}
+	if details[0].Signature != nil {
+		t.Errorf("expected the signature to be gone from the retry, got %q", *details[0].Signature)
+	}
+}

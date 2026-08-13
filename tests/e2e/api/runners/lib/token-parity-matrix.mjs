@@ -31,7 +31,15 @@ const TOLERANCE_PCT = 20;
 // single biggest source of FAILs that weren't actual bugs). Passing on EITHER the relative band
 // OR this floor, whichever is looser, doesn't weaken detection of genuinely large swings (they
 // fail both checks), it just stops small numbers from manufacturing noise on their own.
-const COMPLETION_ABS_FLOOR = 10;
+//
+// Raised from 10 after gemini/audio r3 reported direct=15 bifrost=30 while the two legs' PROMPT
+// counts sat one token apart (6585 vs 6584) - the conversation reached the model identically on
+// both legs and the model simply answered at double length on one, restating its earlier turns
+// instead of obeying "reply with ONLY the exact text". One extra volunteered sentence is the
+// natural unit of this noise and costs about 15 tokens, so a floor of 10 cannot absorb it. Real
+// gateway drift in completion counts does not look like this: it is systematic across a
+// backend's cells or it is zero, and either still fails both checks at 24.
+const COMPLETION_ABS_FLOOR = 24;
 
 // Deterministic ~5000-token reference block (274 numbered, templated facts about a fictional
 // research station - never a real-world topic a model might "correct" or paraphrase instead of

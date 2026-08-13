@@ -1922,7 +1922,35 @@ HARNESS_CLASSES := reasoning tools chat streaming json vision other audio embedd
 # serial length by n while the fast ones stay single shards, so the grid grows only where it buys
 # wall clock. Counts are set from that same measured finish order. A class not listed here is 1.
 # Set SUBSHARDS=0 to collapse this axis and get the previous one-shard-per-class behaviour.
+#
+# FALLBACK ONLY as of the shard planner. When a timing table exists (HARNESS_TIMINGS, written at
+# the end of every run by build-harness-timings.mjs), filter-collection.mjs --plan sizes each
+# (provider, class) cell from measured cost and this table is not consulted. It still runs a fresh
+# checkout's first sweep, a run with a corrupt table, and SUBSHARDS=0.
+#
+# It is a fallback rather than the mechanism because one number per CLASS cannot fit eight
+# providers: "reasoning" is ~30 minutes for openai and seconds for embeddings-heavy providers, so
+# any single count is badly wrong for one of them. Measured: a full sweep spent 77% of its 10.7
+# minute wall clock on the last 16% of its requests, dropping from 98 concurrent shards to 1 while
+# openai--reasoning-s4 finished alone. Sizing from cost puts the same work in 2.8 minutes.
 HARNESS_SUBSHARDS := reasoning=4 tools=3 chat=3 streaming=3 json=2 vision=2
+
+# Wall clock a single sub-shard aims for, in seconds. The planner splits each cell into
+# ceil(cellCost / target) shards, capped by its row count. Simulated against a measured sweep at
+# 120/150/180/240s: 150 is the smallest target that still reaches the floor set by the slowest
+# single request (2.8 min worst shard) without buying shards that cannot help - 120s costs 21 more
+# node processes for the same 2.8 min, 180s saves 16 processes for +0.2 min.
+#
+# Lower it to trade processes for wall clock, raise it to trade the other way. It cannot push the
+# sweep below its slowest single request (~170s today), because a request is not divisible.
+HARNESS_SHARD_TARGET ?= 150
+
+# Where the measured per-request timing table lives. Refreshed at the end of every run from that
+# run's newman reports, and merged onto whatever was there so a scoped run refines its own rows
+# instead of erasing the seven providers it did not touch. The committed baseline at
+# tests/e2e/api/collections/harness-timings.json is consulted when this file is absent, which is
+# what lets a fresh checkout and CI balance on their first sweep rather than their second.
+HARNESS_TIMINGS ?= tmp/harness-timings.json
 
 # Cap on concurrently running newman shards. The provider x class x sub-shard grid is ~168 cells
 # now that HARNESS_SUBSHARDS splits the slow classes, so unlike before the cap genuinely binds and
@@ -1984,18 +2012,35 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  run is not bound by one provider's whole sequential list - openai alone is ~1264 requests and its"; \
 		printf '  %-18s %s\n' ""                "  largest class is ~268. filter-collection.mjs --class puts every request in exactly one class, so the"; \
 		printf '  %-18s %s\n' ""                "  shards partition the fork instead of overlapping it. Shard artifacts are named <provider>--<class>."; \
-		printf '  %-18s %s\n' "SUBSHARDS=0"    "Collapse the third parallelism axis. By default the slow classes are split again (HARNESS_SUBSHARDS:"; \
-		printf '  %-18s %s\n' ""                "  reasoning x4, tools/chat/streaming x3, json/vision x2) via filter-collection.mjs --shard <k>/<n>,"; \
-		printf '  %-18s %s\n' ""                "  because those classes are slow PER REQUEST (~8s for a reasoning row vs ~1s for chat), so the class"; \
-		printf '  %-18s %s\n' ""                "  axis alone leaves a ~20 minute tail. Sub-shard artifacts are named <provider>--<class>-s<k>."; \
+		printf '  %-18s %s\n' "SUBSHARDS=0"    "Collapse the third parallelism axis. By default each (provider, class) cell is split again via"; \
+		printf '  %-18s %s\n' ""                "  filter-collection.mjs --shard <k>/<n>, because the slow classes are slow PER REQUEST (~8s for a"; \
+		printf '  %-18s %s\n' ""                "  reasoning row vs ~1s for chat), so the class axis alone leaves a long tail. How many sub-shards"; \
+		printf '  %-18s %s\n' ""                "  and which rows go in each are both MEASURED, from HARNESS_TIMINGS - see the two knobs below."; \
+		printf '  %-18s %s\n' ""                "  Sub-shard artifacts are named <provider>--<class>-s<k>."; \
+		printf '  %-18s %s\n' "HARNESS_SHARD_TARGET=N" ""; \
+		printf '  %-18s %s\n' ""                "  Wall clock a single sub-shard aims for, in seconds (default 150). Each cell is split into"; \
+		printf '  %-18s %s\n' ""                "  ceil(cellCost / target) shards, capped by its row count, and filled by greedy longest-"; \
+		printf '  %-18s %s\n' ""                "  processing-time rather than by row position. Lower it to trade node processes for wall clock."; \
+		printf '  %-18s %s\n' ""                "  It cannot push a sweep below its slowest single request (~170s today) - a request is not"; \
+		printf '  %-18s %s\n' ""                "  divisible. Measured effect: worst shard 9.4min -> 2.8min, using fewer shards than the old table."; \
+		printf '  %-18s %s\n' "HARNESS_TIMINGS=path" ""; \
+		printf '  %-18s %s\n' ""                "  Per-request timing table (default tmp/harness-timings.json), refreshed at the end of every run"; \
+		printf '  %-18s %s\n' ""                "  and MERGED onto what was there, so a scoped run refines its own rows without erasing the"; \
+		printf '  %-18s %s\n' ""                "  providers it never ran. Falls back to tests/e2e/api/collections/harness-timings.json, which is"; \
+		printf '  %-18s %s\n' ""                "  what lets a fresh checkout and CI balance on their FIRST sweep. With no table at all the run"; \
+		printf '  %-18s %s\n' ""                "  falls back to the static HARNESS_SUBSHARDS counts and positional slicing - slower, never wrong."; \
 		printf '  %-18s %s\n' "HARNESS_JOBS=N"  "Cap on concurrently running newman shards (default 100). The grid is ~168 live cells with sub-shards"; \
 		printf '  %-18s %s\n' ""                "  on, so the cap does block - which is why HARNESS_CLASSES is ordered slowest-first, to keep the long"; \
 		printf '  %-18s %s\n' ""                "  shards holding slots from the start. Lower it if a provider starts returning 429s."; \
-		printf '  %-18s %s\n' "RETRY_429=N"     "Max 429 retry attempts per shard (default 3; 0 disables). After the main pass, any shard that"; \
-		printf '  %-18s %s\n' ""                "  failed with a 429 replays ONLY its rate-limited rows, after waiting max(retry-after) across them"; \
+		printf '  %-18s %s\n' "RETRY_429=N"     "Max transient-failure retry attempts per shard (default 3; 0 disables). Covers 429 plus the two"; \
+		printf '  %-18s %s\n' ""                "  overload codes - 503 (OpenAI 'engine is currently overloaded') and 529 (Anthropic"; \
+		printf '  %-18s %s\n' ""                "  overloaded_error, which is its whole equivalent of 503; its error table has no 503). Other 5xx"; \
+		printf '  %-18s %s\n' ""                "  are NOT retried: a 500/502 is ambiguous between an upstream blip and a Bifrost defect, and"; \
+		printf '  %-18s %s\n' ""                "  finding the second kind is what this sweep is for. After the main pass, any shard that failed"; \
+		printf '  %-18s %s\n' ""                "  on one of those replays ONLY its affected rows, after waiting max(retry-after) across them"; \
 		printf '  %-18s %s\n' ""                "  or an exponential 5/10/20s when the provider sent no header (capped at 120s). A shard with any"; \
-		printf '  %-18s %s\n' ""                "  non-429 failure stays failed however well the retry went, so a real defect is never masked."; \
-		printf '  %-18s %s\n' ""                "  Retry reports merge LAST, so a successful attempt supersedes its own 429 in tmp/newman-report.json."; \
+		printf '  %-18s %s\n' ""                "  non-retryable failure stays failed however well the retry went, so a real defect is never masked."; \
+		printf '  %-18s %s\n' ""                "  Retry reports merge LAST, so a successful attempt supersedes its own failure in tmp/newman-report.json."; \
 		printf '  %-18s %s\n' "SHARD_LINES=0"  "Drop the per-shard completion lines (<shard> N total/pass/fail) and show only the provider table."; \
 		printf '  %-18s %s\n' "SKIP_STREAM_CANCEL=1" "Skip the post-Newman stream-abort probes that verify server-side cancellation on client disconnect."; \
 		printf '  %-18s %s\n' "DB_VERIFY=0"      "Disable the dbverify reporter (ON by default). When on, [Costing]/[Accounting] requests assert the logs DB cost matches the getbifrost.ai/datasheet-computed cost (resolves DB from APP_DIR/config.json or BIFROST_LOGS_DB_URL); skips gracefully if no logs DB is reachable."; \
@@ -2048,6 +2093,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
+		printf '  %-30s %s\n' "tmp/harness-timings.json"    "Measured median ms per request name, merged across runs. Drives both the shard sizing and the"; \
+		printf '  %-30s %s\n' ""                            "  slice fill. Safe to delete: the next run falls back to the static table and rewrites it."; \
+		printf '  %-30s %s\n' "tmp/harness-shard-plan.txt"  "The sized grid this run launched: '<provider> <class> <shards> <rows> <seconds>' per cell."; \
+		printf '  %-30s %s\n' ""                            "  Absent means no timing table was available and the static HARNESS_SUBSHARDS counts were used."; \
 		printf '  %-30s %s\n' "tmp/newman-report-<shard>.json" "Per-shard newman report (parallel mode only). <shard> is \"<provider>--<class>\", \"<provider>--<class>-s<k>\" for a sub-sharded class, or plain \"<provider>\" under CLASS_SHARDS=0."; \
 		printf '  %-30s %s\n' "tmp/parallel-exit-<shard>"  "Exit code of each shard's newman process. Read instead of 'wait <pid>' because the HARNESS_JOBS cap reaps pids as slots free up."; \
 		printf '  %-30s %s\n' "tmp/newman-cli-<p>.log"     "Per-provider newman stdout/stderr (parallel mode only)."; \
@@ -2158,6 +2207,14 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	BASE_URL_VAL="$(or $(BASE_URL),http://localhost:8080)"; \
 	APP_DIR_VAL="$(or $(APP_DIR),tests/integrations/python)"; \
 	VIEWER_PORT_VAL="$(or $(VIEWER_PORT),8090)"; \
+	: "Measured per-request cost, used to size the shard grid and to fill each shard (see"; \
+	: "lib/shard-cost.mjs). tmp/ first because it is refreshed by every run and so tracks the"; \
+	: "collection as it changes; the committed baseline is the fallback that makes a fresh"; \
+	: "checkout and CI balanced on their FIRST sweep rather than on their second."; \
+	TIMINGS_FILE=""; \
+	for cand in "$(or $(HARNESS_TIMINGS),tmp/harness-timings.json)" tests/e2e/api/collections/harness-timings.json; do \
+		if [ -s "$$cand" ]; then TIMINGS_FILE="$$cand"; break; fi; \
+	done; \
 	DBVERIFY_REPORTER=""; DBVERIFY_ARGS=""; DBVERIFY_READY=0; E2E_DEPS_READY=0; \
 	if [ -d tests/e2e/api/node_modules ] && npm --prefix tests/e2e/api ls --depth=0 >/dev/null 2>&1; then \
 		E2E_DEPS_READY=1; \
@@ -2367,20 +2424,62 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: "string is the sentinel for 'do not pass --class', so the loop body stays one code path."; \
 		CLASSES="$(HARNESS_CLASSES)"; \
 		if [ "$(CLASS_SHARDS)" = "0" ]; then CLASSES="-"; fi; \
-		: "Sub-shard count for a class, from the HARNESS_SUBSHARDS 'class=n' list; 1 when unlisted."; \
-		: "Reads the make variable rather than an env lookup so the roster stays in one place, and"; \
-		: "returns 1 for the '-' class too - CLASS_SHARDS=0 collapses both axes, not just the first."; \
+		: "Sub-shard count for a (provider, class) cell. Prefers the measured plan in $$SHARD_PLAN,"; \
+		: "and falls back to the hand-written HARNESS_SUBSHARDS 'class=n' list; 1 when unlisted."; \
+		: "Returns 1 for the '-' class too - CLASS_SHARDS=0 collapses both axes, not just the first."; \
+		: ""; \
+		: "The plan is per PROVIDER as well as per class, which the static table cannot express and"; \
+		: "which is where most of the imbalance lived: 'reasoning' is one number, but openai spends"; \
+		: "~30 minutes there against embeddings' seconds, so any single count is wrong for one of"; \
+		: "them. An absent or empty plan file means no timings were available, and the static table"; \
+		: "stands - see filter-collection.mjs --plan, which writes nothing rather than a grid of 1s."; \
 		subshards_for() { \
-			SS_C="$$1"; SS_N=1; \
+			SS_P="$$1"; SS_C="$$2"; SS_N=1; \
 			if [ "$(SUBSHARDS)" != "0" ] && [ "$$SS_C" != "-" ]; then \
-				for kv in $(HARNESS_SUBSHARDS); do \
-					case "$$kv" in "$$SS_C="*) SS_N="$${kv#*=}" ;; esac; \
-				done; \
+				SS_N=""; \
+				: "Braced default so the function is safe under 'set -u' both here (SHARD_PLAN is"; \
+				: "set just above the launch loop) and in shard-split.test.mjs, which extracts this"; \
+				: "block and runs it standalone to prove the test cannot pass against stale logic."; \
+				if [ -s "$${SHARD_PLAN:-}" ]; then \
+					SS_N="$$(awk -v p="$$SS_P" -v c="$$SS_C" '$$1==p && $$2==c {print $$3; exit}' "$$SHARD_PLAN")"; \
+				fi; \
+				if [ -z "$$SS_N" ]; then \
+					SS_N=1; \
+					for kv in $(HARNESS_SUBSHARDS); do \
+						case "$$kv" in "$$SS_C="*) SS_N="$${kv#*=}" ;; esac; \
+					done; \
+				fi; \
 			fi; \
 			printf '%s' "$$SS_N"; \
 		}; \
 		JOBS_CAP="$(or $(HARNESS_JOBS),100)"; \
 		say "$(CYAN)Shard concurrency cap: $$JOBS_CAP (HARNESS_JOBS).$(NC)"; \
+		: "Size the provider x class grid from measured per-request cost before launching it."; \
+		: "One planner invocation for the whole grid rather than one per cell: sizing a cell means"; \
+		: "running the same predicate stack that selects it, and doing that ~80 times would parse"; \
+		: "the 20MB collection ~80 times. Writes nothing when no timing table exists, which is the"; \
+		: "signal subshards_for reads as 'keep the static HARNESS_SUBSHARDS table'."; \
+		SHARD_PLAN="tmp/harness-shard-plan.txt"; \
+		rm -f "$$SHARD_PLAN"; \
+		if [ -n "$$TIMINGS_FILE" ] && [ "$(SUBSHARDS)" != "0" ]; then \
+			if node tests/e2e/api/runners/filter-collection.mjs \
+				--source "$$COLLECTION_FILE" --plan \
+				--providers "$$PROVIDERS" --classes "$$CLASSES" \
+				--timings "$$TIMINGS_FILE" \
+				--target "$(or $(HARNESS_SHARD_TARGET),150)" \
+				$(if $(FEATURE),--feature "$(FEATURE)",) \
+				$(if $(FOLDER),--folder "$(FOLDER)",) \
+				> "$$SHARD_PLAN" 2>> "$$QUIET_LOG"; then \
+				say "$(CYAN)Shard plan sized from $$TIMINGS_FILE -> $$SHARD_PLAN ($$(awk '{s+=$$3} END{print s+0}' "$$SHARD_PLAN") shards across $$(awk 'END{print NR+0}' "$$SHARD_PLAN") cells, $(or $(HARNESS_SHARD_TARGET),150)s target).$(NC)"; \
+			else \
+				: "A planner that failed leaves a partial file, and a partial plan is worse than"; \
+				: "none: the cells it did emit would be measured while the rest silently fell back."; \
+				rm -f "$$SHARD_PLAN"; \
+				say "$(YELLOW)Shard planner failed - falling back to the static HARNESS_SUBSHARDS table (see $$QUIET_LOG)$(NC)"; \
+			fi; \
+		else \
+			say "$(YELLOW)No timing table yet - using the static HARNESS_SUBSHARDS table. It is written at the end of this run, so the next sweep balances by measured cost.$(NC)"; \
+		fi; \
 		: "One newman invocation, called from two places: the main launch loop and the 429 retry"; \
 		: "pass. Factored out so the retry cannot drift from the main run - the two must send the"; \
 		: "same env vars and reporters or the retry would exercise a different configuration than"; \
@@ -2428,7 +2527,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		FILTER_FAILED=0; \
 		for p in $$PROVIDERS; do \
 		for c in $$CLASSES; do \
-		SUB_N="$$(subshards_for "$$c")"; \
+		SUB_N="$$(subshards_for "$$p" "$$c")"; \
 		SUB_K=0; \
 		: "SUB_K is bumped at the TOP of the body, not the bottom: the body below uses 'continue'"; \
 		: "for a failed filter and for an empty shard, and a bottom increment would be skipped by"; \
@@ -2443,12 +2542,17 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			: "common case produces byte-identical filenames to before this axis existed."; \
 			SHARD_FLAG=""; \
 			if [ "$$SUB_N" -gt 1 ]; then SHARD="$$SHARD-s$$SUB_K"; SHARD_FLAG="--shard $$SUB_K/$$SUB_N"; fi; \
+			: "--timings makes the slice balance measured cost instead of row count. Every"; \
+			: "sub-shard of a cell recomputes the whole assignment from the same table and keeps"; \
+			: "only its own slice, so they must all be passed the same file or the slices stop"; \
+			: "being a partition - rows would land in two shards and in none."; \
 			if ! node tests/e2e/api/runners/filter-collection.mjs \
 				--source "$$COLLECTION_FILE" \
 				--out "tmp/harness-filtered-$$SHARD.json" \
 				--provider "$$p" \
 				$$CLASS_FLAG \
 				$$SHARD_FLAG \
+				$${TIMINGS_FILE:+--timings "$$TIMINGS_FILE"} \
 				$(if $(FEATURE),--feature "$(FEATURE)",) \
 				$(if $(FOLDER),--folder "$(FOLDER)",) >> "$$QUIET_LOG" 2>&1; then \
 				say "$(RED)[$$SHARD] filter step failed - skipping (see $$QUIET_LOG)$(NC)"; \
@@ -2491,7 +2595,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		: "point. That is a deadlock: every shard finishes, the status file stays empty, and the"; \
 		: "run hangs forever reprinting a frozen heartbeat."; \
 		while read pidp; do wait "$${pidp%%:*}" 2>/dev/null || true; done < tmp/parallel-pids; \
-		: "429 retry pass. Running ~80 shards at once against one set of keys makes rate limiting an"; \
+		: "Transient-failure retry pass, covering 429 plus the overload codes 503 and 529 - see"; \
+		: "RETRYABLE_CODES in lib/rate-limit-retry.mjs for why those three and not the other 5xx."; \
+		: "Running ~80 shards at once against one set of keys makes rate limiting an"; \
 		: "expected outcome rather than an exotic one, and analyze-failures.mjs already classifies a"; \
 		: "429 as 'Backoff/retry; not a harness bug' - which is the tell that the run should do the"; \
 		: "backoff itself. Only the 429 ITEMS are replayed (--rerun-rate-limited), never the whole"; \
@@ -2540,7 +2646,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				( \
 					newman_shard "$$rs-retry$$RETRY_ATTEMPT" "$$RETRY_COLL" "tmp/newman-report-$$rs-retry$$RETRY_ATTEMPT.json" "$$rp"; \
 					RC=$$?; \
-					: "Clear the shard only when the retry passed AND every original failure was a 429."; \
+					: "Clear the shard only when the retry passed AND every original failure was retryable."; \
 					: "A shard that also failed an assertion stays failed however well the retry went,"; \
 					: "otherwise a real defect sitting beside a 429 would be erased by the backoff."; \
 					if [ "$$RC" = "0" ] && [ "$$(node tests/e2e/api/runners/rate-limit-backoff.mjs --report "tmp/newman-report-$$rs.json" --query only-rate-limited 2>/dev/null || echo 0)" = "1" ]; then \
@@ -2708,6 +2814,13 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	else \
 		say "$(YELLOW)Skipping stream cancellation probes (SKIP_STREAM_CANCEL/RERUN_FAILED/FOLDER filter).$(NC)"; \
 	fi; \
+	: "Refresh the timing table from this run's reports so the NEXT sweep sizes and fills its"; \
+	: "shards from what actually happened. Merges onto the existing table rather than replacing"; \
+	: "it, so a scoped run (PROVIDER=..., FEATURE=...) refines its own rows without erasing the"; \
+	: "providers it never ran. Never fails the target: a sweep that already produced its results"; \
+	: "must not go red because a cache file could not be refreshed."; \
+	$(USE_NODE); run_quiet node tests/e2e/api/runners/build-harness-timings.mjs \
+		--dir tmp --out "$(or $(HARNESS_TIMINGS),tmp/harness-timings.json)" || true; \
 	say "$(CYAN)Analyzing failures...$(NC)"; \
 	$(USE_NODE); run_quiet node tests/e2e/api/runners/analyze-failures.mjs \
 		--report tmp/newman-report.json \
