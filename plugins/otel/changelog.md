@@ -1,0 +1,3 @@
+- feat: add separate headers support for traces and metrics in OTEL collector (#5940)
+- feat: add support for a separate metrics tab independent of traces for OTEL (#5939)
+- chore: upgraded core to v1.7.11 and framework to v1.5.9
