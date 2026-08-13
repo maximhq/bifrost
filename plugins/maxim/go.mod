@@ -9,7 +9,7 @@ require (
 )
 
 require (
-	github.com/bytedance/sonic v1.15.1
+	github.com/bytedance/sonic v1.15.2
 	github.com/google/uuid v1.6.0
 )
 
