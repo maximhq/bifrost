@@ -4395,6 +4395,107 @@
               "description": "How long an idle physical connection is kept before being closed (default 5m). Without this the idle cap alone controls pool size, so bursts above maxIdleConns close and reopen connections. The config store and logs store open separate pools.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
+            "postgres": {
+              "type": "object",
+              "description": "Point the logs store at a separate external PostgreSQL than the config store (only applies when the logs store resolves to postgres). When enabled:false the postgres logs store shares the top-level postgresql connection.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "host": {
+                  "type": "string"
+                },
+                "port": {
+                  "description": "PostgreSQL port. Accepts an integer (e.g. 5432) or an env.VAR_NAME string for environment-variable substitution.",
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "user": {
+                  "type": "string"
+                },
+                "password": {
+                  "type": "string"
+                },
+                "passwordCommand": {
+                  "type": "object",
+                  "description": "Command executed by Bifrost to produce the PostgreSQL password on stdout. The result is cached for cache_ttl and shared across new physical connections",
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^\\S+$"
+                    },
+                    "args": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "timeout": {
+                      "type": "string",
+                      "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                    },
+                    "cache_ttl": {
+                      "type": "string",
+                      "description": "How long a resolved password is reused across new physical connections (default 60s). Keep below the credential's validity window.",
+                      "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                    }
+                  },
+                  "required": ["command"],
+                  "additionalProperties": false
+                },
+                "connMaxLifetime": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+                },
+                "database": {
+                  "type": "string"
+                },
+                "sslMode": {
+                  "type": "string",
+                  "enum": ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+                },
+                "existingSecret": {
+                  "type": "string"
+                },
+                "passwordKey": {
+                  "type": "string"
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "enabled": {
+                        "const": true
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": ["host", "port", "user", "database", "sslMode"]
+                  }
+                },
+                {
+                  "not": {
+                    "required": ["password", "passwordCommand"]
+                  }
+                },
+                {
+                  "not": {
+                    "required": ["existingSecret", "passwordCommand"]
+                  }
+                }
+              ],
+              "additionalProperties": false
+            },
             "matviewRefreshInterval": {
               "type": "string",
               "description": "How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.",
