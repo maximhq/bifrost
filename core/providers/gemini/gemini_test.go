@@ -4817,7 +4817,7 @@ func TestGroundingMetadataToChatAnnotations(t *testing.T) {
 
 // TestIncludeServerSideToolInvocations covers Gemini's tool-combination opt-in:
 // without it Gemini rejects function declarations sent alongside Google Search, so
-// the declarations are dropped; with it both go on the wire.
+// Google Search is dropped and the declarations are preserved; with it both go on the wire.
 func TestIncludeServerSideToolInvocations(t *testing.T) {
 	responsesReq := func(include *bool) *schemas.BifrostResponsesRequest {
 		return &schemas.BifrostResponsesRequest{
@@ -4839,21 +4839,57 @@ func TestIncludeServerSideToolInvocations(t *testing.T) {
 		}
 	}
 
-	t.Run("flag absent drops function declarations (unchanged behaviour)", func(t *testing.T) {
+	t.Run("flag absent drops google search, keeps function declarations", func(t *testing.T) {
 		out, err := gemini.ToGeminiResponsesRequest(nil, responsesReq(nil))
 		require.NoError(t, err)
 		require.Len(t, out.Tools, 1)
-		assert.NotNil(t, out.Tools[0].GoogleSearch)
-		assert.Empty(t, out.Tools[0].FunctionDeclarations)
-		assert.Nil(t, out.ToolConfig)
+		assert.Nil(t, out.Tools[0].GoogleSearch)
+		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+		assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
 	})
 
-	t.Run("flag false drops function declarations", func(t *testing.T) {
+	t.Run("flag false drops google search, keeps function declarations", func(t *testing.T) {
 		out, err := gemini.ToGeminiResponsesRequest(nil, responsesReq(schemas.Ptr(false)))
 		require.NoError(t, err)
 		require.Len(t, out.Tools, 1)
+		assert.Nil(t, out.Tools[0].GoogleSearch)
+		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+	})
+
+	t.Run("surviving declarations carry the tool choice through", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, out.ToolConfig, "toolConfig must survive alongside the declarations")
+		require.NotNil(t, out.ToolConfig.FunctionCallingConfig)
+		assert.Equal(t, gemini.FunctionCallingConfigModeAny, out.ToolConfig.FunctionCallingConfig.Mode)
+	})
+
+	t.Run("web search alone is untouched", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Params.Tools = req.Params.Tools[:1]
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 1)
 		assert.NotNil(t, out.Tools[0].GoogleSearch)
-		assert.Nil(t, out.ToolConfig)
+	})
+
+	t.Run("dropped google search takes its localization with it", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Params.Tools[0].ResponsesToolWebSearch = &schemas.ResponsesToolWebSearch{
+			UserLocation: &schemas.ResponsesToolWebSearchUserLocation{
+				Latitude:  schemas.Ptr(48.85),
+				Longitude: schemas.Ptr(2.35),
+			},
+		}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 1)
+		assert.Nil(t, out.Tools[0].GoogleSearch)
+		if out.ToolConfig != nil {
+			assert.Nil(t, out.ToolConfig.RetrievalConfig, "retrievalConfig is meaningless without googleSearch")
+		}
 	})
 
 	t.Run("flag true sends both as separate tool entries", func(t *testing.T) {
@@ -4950,9 +4986,11 @@ func TestIncludeServerSideToolInvocationsGenAIRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 
 			if !tt.want {
-				// Combination not requested: today's behaviour keeps search, drops declarations.
+				// Combination not requested: declarations win, googleSearch is dropped.
 				require.Len(t, out.Tools, 1)
-				assert.NotNil(t, out.Tools[0].GoogleSearch)
+				assert.Nil(t, out.Tools[0].GoogleSearch)
+				require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+				assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
 				return
 			}
 
@@ -4965,6 +5003,37 @@ func TestIncludeServerSideToolInvocationsGenAIRoundTrip(t *testing.T) {
 			assert.True(t, *out.ToolConfig.IncludeServerSideToolInvocations)
 		})
 	}
+}
+
+// TestGenAICombinedToolEntryKeepsDeclarations covers a single tools[] entry carrying both
+// googleSearch and functionDeclarations (legal on Gemini 3+): the declarations must reach
+// the wire, since they may be MCP-derived tools the caller has to be able to invoke.
+func TestGenAICombinedToolEntryKeepsDeclarations(t *testing.T) {
+	body := `{
+		"contents": [{"role": "user", "parts": [{"text": "weather in tokyo?"}]}],
+		"toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
+		"tools": [{
+			"googleSearch": {},
+			"functionDeclarations": [{"name": "get_weather", "parametersJsonSchema": {"type": "object"}}]
+		}]
+	}`
+
+	var req gemini.GeminiGenerationRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	require.Len(t, bifrostReq.Params.Tools, 2, "both tool kinds must survive ingest")
+
+	out, err := gemini.ToGeminiResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.Len(t, out.Tools, 1)
+	require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+	assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
+	require.NotNil(t, out.ToolConfig)
+	require.NotNil(t, out.ToolConfig.FunctionCallingConfig)
+	assert.Equal(t, gemini.FunctionCallingConfigModeAny, out.ToolConfig.FunctionCallingConfig.Mode)
 }
 
 // TestGroundingMultiSourceCitationsResponses covers the non-streaming Responses path
