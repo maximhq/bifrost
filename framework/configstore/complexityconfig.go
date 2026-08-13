@@ -129,6 +129,14 @@ const (
 // The number of exemplars is intentionally unrestricted.
 const MaxComplexitySemanticPhraseCharacters = 2000
 
+// Semantic message-history bounds. The ceiling keeps one classification
+// embedding cheap and bounded; the analyzer's lexical conversation window uses
+// the same depth.
+const (
+	DefaultComplexitySemanticMessageHistoryCount = 1
+	MaxComplexitySemanticMessageHistoryCount     = 10
+)
+
 // DefaultComplexitySemanticTimeout bounds per-request embedding generation.
 const DefaultComplexitySemanticTimeout = 100 * time.Millisecond
 
@@ -154,9 +162,18 @@ type ComplexitySemanticConfig struct {
 	// score, and those scales are not identical: chromem, Qdrant, Pinecone, and
 	// Redis report raw cosine similarity, while Weaviate reports certainty
 	// ((cosine+1)/2). Retune this when switching backends.
-	MinSimilarity      float64 `json:"min_similarity,omitempty"`
-	CountTowardBudgets bool    `json:"count_toward_budgets,omitempty"`
-	VectorStore        string  `json:"vector_store,omitempty"`
+	MinSimilarity float64 `json:"min_similarity,omitempty"`
+	// MessageHistoryCount is how many of the most recent user messages are
+	// combined into the text that gets embedded, oldest first. 1 (the default)
+	// embeds only the latest message. Raising it lets a short follow-up ("and
+	// make it faster") inherit the intent of the turns before it, at the cost of
+	// diluting the latest message and embedding more input tokens per request.
+	//
+	// Only user turns are counted; system prompts and assistant replies are
+	// never embedded. Requests with fewer available turns embed what they have.
+	MessageHistoryCount int    `json:"message_history_count,omitempty"`
+	CountTowardBudgets  bool   `json:"count_toward_budgets,omitempty"`
+	VectorStore         string `json:"vector_store,omitempty"`
 }
 
 // UnmarshalJSON accepts Timeout as a duration string ("100ms") or a JSON number
@@ -168,14 +185,15 @@ func (c *ComplexitySemanticConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	allowed := map[string]struct{}{
-		"provider":             {},
-		"embedding_model":      {},
-		"dimension":            {},
-		"timeout":              {},
-		"fallback":             {},
-		"min_similarity":       {},
-		"count_toward_budgets": {},
-		"vector_store":         {},
+		"provider":              {},
+		"embedding_model":       {},
+		"dimension":             {},
+		"timeout":               {},
+		"fallback":              {},
+		"min_similarity":        {},
+		"message_history_count": {},
+		"count_toward_budgets":  {},
+		"vector_store":          {},
 	}
 	for field := range fields {
 		if _, ok := allowed[field]; !ok {
@@ -243,14 +261,13 @@ func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
 		return nil
 	}
 	out := &ComplexitySemanticConfig{
-		Provider:           schemas.ModelProvider(strings.ToLower(strings.TrimSpace(string(c.Provider)))),
-		EmbeddingModel:     strings.TrimSpace(c.EmbeddingModel),
-		Dimension:          c.Dimension,
-		Timeout:            c.Timeout,
-		Fallback:           strings.ToLower(strings.TrimSpace(c.Fallback)),
-		MinSimilarity:      c.MinSimilarity,
-		CountTowardBudgets: c.CountTowardBudgets,
-		VectorStore:        strings.ToLower(strings.TrimSpace(c.VectorStore)),
+		Provider:            schemas.ModelProvider(strings.ToLower(strings.TrimSpace(string(c.Provider)))),
+		EmbeddingModel:      strings.TrimSpace(c.EmbeddingModel),
+		Timeout:             c.Timeout,
+		MinSimilarity:       c.MinSimilarity,
+		MessageHistoryCount: c.MessageHistoryCount,
+		CountTowardBudgets:  c.CountTowardBudgets,
+		VectorStore:         strings.ToLower(strings.TrimSpace(c.VectorStore)),
 	}
 	if out.Timeout == 0 {
 		out.Timeout = DefaultComplexitySemanticTimeout
@@ -260,6 +277,9 @@ func (c *ComplexitySemanticConfig) normalized() *ComplexitySemanticConfig {
 	}
 	if out.VectorStore == "" {
 		out.VectorStore = ComplexitySemanticVectorStoreEmbedded
+	}
+	if out.MessageHistoryCount == 0 {
+		out.MessageHistoryCount = DefaultComplexitySemanticMessageHistoryCount
 	}
 	return out
 }
@@ -282,6 +302,13 @@ func (c *ComplexitySemanticConfig) Validate() error {
 	// misconfiguration rather than an intentional "never classify semantically".
 	if c.MinSimilarity < 0 || c.MinSimilarity >= 1 {
 		return fmt.Errorf("semantic min_similarity must be at least 0 and less than 1, got %v", c.MinSimilarity)
+	}
+	if c.MessageHistoryCount < 1 || c.MessageHistoryCount > MaxComplexitySemanticMessageHistoryCount {
+		return fmt.Errorf(
+			"semantic message_history_count must be between 1 and %d, got %d",
+			MaxComplexitySemanticMessageHistoryCount,
+			c.MessageHistoryCount,
+		)
 	}
 	switch c.VectorStore {
 	case ComplexitySemanticVectorStoreAuto, ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreExternal:
