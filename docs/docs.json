@@ -1757,6 +1757,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.0.0-prerelease3",
               "changelogs/v1.6.10",
               "changelogs/v1.6.9",
               "changelogs/v1.6.8",
