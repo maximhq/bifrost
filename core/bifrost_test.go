@@ -895,6 +895,92 @@ func TestFilterProvidersByContext(t *testing.T) {
 	})
 }
 
+func TestGetConfiguredProvidersRespectsListModelsAllowlist(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Anthropic, 1, 1)
+
+	account.configs[schemas.OpenAI].CustomProviderConfig = &schemas.CustomProviderConfig{
+		BaseProviderType: schemas.OpenAI,
+		AllowedRequests:  &schemas.AllowedRequests{ListModels: false},
+	}
+	account.configs[schemas.Anthropic].CustomProviderConfig = &schemas.CustomProviderConfig{
+		BaseProviderType: schemas.Anthropic,
+		AllowedRequests:  &schemas.AllowedRequests{ListModels: true},
+	}
+
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	providers, err := client.GetConfiguredProviders()
+	if err != nil {
+		t.Fatalf("GetConfiguredProviders returned error: %v", err)
+	}
+	if len(providers) != 1 || providers[0] != schemas.Anthropic {
+		t.Fatalf("expected only anthropic provider, got %v", providers)
+	}
+}
+
+func TestListAllModelsExcludesProviderWithFailedPrepare(t *testing.T) {
+	account := NewMockAccount()
+	brokenProvider := schemas.ModelProvider("broken-provider")
+
+	account.mu.Lock()
+	account.configs[brokenProvider] = &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			DefaultRequestTimeoutInSeconds: 300,
+			MaxRetries:                     3,
+			RetryBackoffInitial:            500 * time.Millisecond,
+			RetryBackoffMax:                5 * time.Second,
+		},
+		ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+			Concurrency: 1,
+			BufferSize:  1,
+		},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.ModelProvider("unsupported-base-provider"),
+		},
+	}
+	account.keys[brokenProvider] = []schemas.Key{{
+		ID:     "broken-key",
+		Value:  *schemas.NewSecretVar("sk-broken"),
+		Weight: 100,
+	}}
+	account.mu.Unlock()
+
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	parentCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAvailableProviders, []schemas.ModelProvider{brokenProvider})
+
+	resp, bifrostErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bifrostErr != nil {
+		t.Fatalf("expected failed-init provider to be excluded from ListAllModels, got error: %v", bifrostErr)
+	}
+	if resp == nil {
+		t.Fatalf("expected non-nil list models response")
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("expected no models when only failed-init provider is available, got %d", len(resp.Data))
+	}
+}
+
 func TestRunStreamPreHooks_FinalChunkFlushesTrace(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	account := NewMockAccount()
