@@ -34,17 +34,68 @@ func TestAnalyze_CustomTierBoundaries(t *testing.T) {
 	}
 }
 
-func TestAnalyze_CustomReasoningKeywordsAffectOverride(t *testing.T) {
+func TestAnalyze_CustomComplexKeywordsAffectOverride(t *testing.T) {
 	cfg := DefaultAnalyzerConfig()
-	cfg.Keywords.ReasoningKeywords = []string{"deepmagic"}
+	cfg.Keywords.ComplexKeywords = []string{"deepmagic", "deepmagic-two"}
 	a := NewComplexityAnalyzerWithConfig(&cfg)
 
 	result := a.Analyze(ComplexityInput{
-		LastUserText: "deepmagic api function",
+		LastUserText: "deepmagic deepmagic-two",
 	})
 
 	if result.Tier != TierComplex {
-		t.Fatalf("expected custom reasoning keyword to promote tier to %s, got %s (score=%.3f)", TierComplex, result.Tier, result.Score)
+		t.Fatalf("expected custom Complex keywords to promote tier to %s, got %s (score=%.3f)", TierComplex, result.Tier, result.Score)
+	}
+}
+
+func TestAnalyze_DefaultKeywordCalibration(t *testing.T) {
+	cfg := DefaultAnalyzerConfig()
+	cfg.Keywords.MediumKeywords = []string{"mediumone", "mediumtwo", "mediumthree", "mediumfour"}
+	cfg.Keywords.ComplexKeywords = []string{"complexone", "complextwo", "complexthree"}
+	cfg.Keywords.SimpleKeywords = []string{"simpleone", "simpletwo", "simplethree", "simplefour"}
+	a := NewComplexityAnalyzerWithConfig(&cfg)
+
+	mediumCases := []struct {
+		text string
+		want string
+	}{
+		{text: "mediumone", want: TierSimple},
+		{text: "mediumone mediumtwo", want: TierMedium},
+		{text: "mediumone mediumtwo mediumthree", want: TierMedium},
+		{text: "mediumone mediumtwo mediumthree mediumfour", want: TierComplex},
+	}
+	for _, tc := range mediumCases {
+		result := a.Analyze(ComplexityInput{LastUserText: tc.text})
+		if result == nil || result.Tier != tc.want {
+			t.Fatalf("medium calibration for %q: got %+v, want tier %s", tc.text, result, tc.want)
+		}
+	}
+
+	complexCases := []struct {
+		text string
+		want string
+	}{
+		{text: "complexone", want: TierMedium},
+		{text: "complexone complextwo", want: TierComplex},
+		{text: "complexone complextwo complexthree", want: TierComplex},
+	}
+	for _, tc := range complexCases {
+		result := a.Analyze(ComplexityInput{LastUserText: tc.text})
+		if result == nil || result.Tier != tc.want {
+			t.Fatalf("complex calibration for %q: got %+v, want tier %s", tc.text, result, tc.want)
+		}
+	}
+
+	for _, text := range []string{
+		"simpleone",
+		"simpleone simpletwo",
+		"simpleone simpletwo simplethree",
+		"simpleone simpletwo simplethree simplefour",
+	} {
+		result := a.Analyze(ComplexityInput{LastUserText: text})
+		if result == nil || result.Tier != TierSimple || result.Score != 0 {
+			t.Fatalf("simple calibration for %q: got %+v, want SIMPLE with score 0", text, result)
+		}
 	}
 }
 
@@ -344,7 +395,7 @@ func TestAnalyze_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestAnalyze_ReasoningOverrideNotTooEager(t *testing.T) {
+func TestAnalyze_ComplexOverrideNotTooEager(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	result := a.Analyze(ComplexityInput{
@@ -352,7 +403,7 @@ func TestAnalyze_ReasoningOverrideNotTooEager(t *testing.T) {
 	})
 
 	if result != nil {
-		t.Errorf("expected removed broad reasoning markers to be unclassified, got %s (score=%.3f)", result.Tier, result.Score)
+		t.Errorf("expected removed broad Complex markers to be unclassified, got %s (score=%.3f)", result.Tier, result.Score)
 	}
 }
 
@@ -885,7 +936,7 @@ func TestAnalyze_PunctuatedKeywordStillMatches(t *testing.T) {
 	a := NewComplexityAnalyzer()
 
 	signals := a.matcher.analyzeText("Please review our CI/CD pipeline and retry middleware behavior.", lastTextBaseScanMask)
-	if signals.codeCount == 0 {
+	if signals.mediumCount == 0 {
 		t.Fatalf("expected punctuated keyword path to match code signals")
 	}
 }

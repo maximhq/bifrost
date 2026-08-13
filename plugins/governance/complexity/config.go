@@ -53,11 +53,10 @@ type AnalyzerConfig = configstore.ComplexityAnalyzerConfig
 
 // KeywordConfig is the full internal keyword set used by the compiled matcher.
 type KeywordConfig struct {
-	CodeKeywords            []string
-	StrongReasoningKeywords []string
-	TechnicalKeywords       []string
-	SimpleKeywords          []string
-	ContinuationPhrases     []string
+	MediumKeywords      []string
+	ComplexKeywords     []string
+	SimpleKeywords      []string
+	ContinuationPhrases []string
 }
 
 // DefaultTierBoundaries returns the built-in classification thresholds.
@@ -71,10 +70,9 @@ func DefaultTierBoundaries() TierBoundaries {
 // DefaultEditableKeywordConfig returns the user-visible default keyword lists.
 func DefaultEditableKeywordConfig() EditableKeywordConfig {
 	return EditableKeywordConfig{
-		CodeKeywords:      cloneStringSlice(codeKeywords),
-		ReasoningKeywords: cloneStringSlice(strongReasoningKeywords),
-		TechnicalKeywords: cloneStringSlice(technicalKeywords),
-		SimpleKeywords:    cloneStringSlice(simpleKeywords),
+		SimpleKeywords:  cloneStringSlice(simpleKeywords),
+		MediumKeywords:  cloneStringSlice(mediumKeywords),
+		ComplexKeywords: cloneStringSlice(complexKeywords),
 	}
 }
 
@@ -101,28 +99,24 @@ func ValidateAndNormalize(cfg *AnalyzerConfig) (*AnalyzerConfig, error) {
 
 func mergeEditableKeywordsOntoDefaults(editable EditableKeywordConfig) KeywordConfig {
 	keywords := defaultFullKeywordConfig()
-	if len(editable.CodeKeywords) > 0 {
-		keywords.CodeKeywords = cloneStringSlice(editable.CodeKeywords)
-	}
-	if len(editable.ReasoningKeywords) > 0 {
-		keywords.StrongReasoningKeywords = cloneStringSlice(editable.ReasoningKeywords)
-	}
-	if len(editable.TechnicalKeywords) > 0 {
-		keywords.TechnicalKeywords = cloneStringSlice(editable.TechnicalKeywords)
-	}
 	if len(editable.SimpleKeywords) > 0 {
 		keywords.SimpleKeywords = cloneStringSlice(editable.SimpleKeywords)
+	}
+	if len(editable.MediumKeywords) > 0 {
+		keywords.MediumKeywords = cloneStringSlice(editable.MediumKeywords)
+	}
+	if len(editable.ComplexKeywords) > 0 {
+		keywords.ComplexKeywords = cloneStringSlice(editable.ComplexKeywords)
 	}
 	return keywords
 }
 
 func defaultFullKeywordConfig() KeywordConfig {
 	return KeywordConfig{
-		CodeKeywords:            cloneStringSlice(codeKeywords),
-		StrongReasoningKeywords: cloneStringSlice(strongReasoningKeywords),
-		TechnicalKeywords:       cloneStringSlice(technicalKeywords),
-		SimpleKeywords:          cloneStringSlice(simpleKeywords),
-		ContinuationPhrases:     cloneStringSlice(continuationPhrases),
+		MediumKeywords:      cloneStringSlice(mediumKeywords),
+		ComplexKeywords:     cloneStringSlice(complexKeywords),
+		SimpleKeywords:      cloneStringSlice(simpleKeywords),
+		ContinuationPhrases: cloneStringSlice(continuationPhrases),
 	}
 }
 

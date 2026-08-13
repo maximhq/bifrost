@@ -87,10 +87,9 @@ func testComplexityAnalyzerConfig() *ComplexityAnalyzerConfig {
 			MediumComplex: 0.30,
 		},
 		Keywords: ComplexityEditableKeywordConfig{
-			CodeKeywords:      []string{" Function ", "api", "API"},
-			ReasoningKeywords: []string{"tradeoffs"},
-			TechnicalKeywords: []string{"latency"},
-			SimpleKeywords:    []string{"hello"},
+			SimpleKeywords:  []string{"hello"},
+			MediumKeywords:  []string{" Function ", "api", "API", "latency"},
+			ComplexKeywords: []string{"tradeoffs"},
 		},
 	}
 }
@@ -131,11 +130,10 @@ func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 
 	cfg := testComplexityAnalyzerConfig()
 	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
 
@@ -146,7 +144,7 @@ func TestRDBConfigStore_ComplexityAnalyzerConfigRoundTrip(t *testing.T) {
 		SimpleMedium:  0.10,
 		MediumComplex: 0.30,
 	}, got.TierBoundaries)
-	assert.Equal(t, []string{"api", "function"}, got.Keywords.CodeKeywords)
+	assert.Equal(t, []string{"api", "function", "latency"}, got.Keywords.MediumKeywords)
 	assert.Equal(t, cfg.ConfigHashes, got.ConfigHashes)
 }
 
@@ -159,17 +157,85 @@ func TestRDBConfigStore_GetComplexityAnalyzerConfigMissingReturnsNil(t *testing.
 	assert.Nil(t, got)
 }
 
+func TestRDBConfigStore_LegacyComplexityAnalyzerConfigReadAndCanonicalWrite(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	legacyRaw := `{
+		"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4,"complex_reasoning":0.6},
+		"keywords":{
+			"code_keywords":["api","ui-code"],
+			"reasoning_keywords":["tradeoffs","ui-reasoning"],
+			"technical_keywords":["latency","ui-technical"],
+			"simple_keywords":["hello","ui-simple"]
+		},
+		"_config_hashes":{
+			"tier_boundaries":"tier-hash",
+			"code_keywords":"code-file-hash",
+			"reasoning_keywords":"reasoning-file-hash",
+			"technical_keywords":"technical-file-hash",
+			"simple_keywords":"simple-file-hash"
+		}
+	}`
+	require.NoError(t, store.UpdateConfig(ctx, &tables.TableGovernanceConfig{
+		Key:   tables.ConfigComplexityAnalyzerConfigKey,
+		Value: legacyRaw,
+	}))
+
+	got, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, []string{"api", "latency", "ui-code", "ui-technical"}, got.Keywords.MediumKeywords)
+	assert.Equal(t, []string{"tradeoffs", "ui-reasoning"}, got.Keywords.ComplexKeywords)
+	expectedMediumHash, err := legacyMediumKeywordsHashFromSectionHashes("code-file-hash", "technical-file-hash")
+	require.NoError(t, err)
+	assert.Equal(t, expectedMediumHash, got.ConfigHashes.MediumKeywords)
+	assert.Equal(t, "reasoning-file-hash", got.ConfigHashes.ComplexKeywords)
+
+	// API/UI payloads do not contain internal hashes. The store re-reads the
+	// legacy row, preserves its translated hashes, and writes canonical JSON.
+	got.Keywords.MediumKeywords = []string{"latency", "ui-code", "ui-technical"}
+	got.ConfigHashes = ComplexityAnalyzerConfigHashes{}
+	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, got))
+
+	entry, err := store.GetConfig(ctx, tables.ConfigComplexityAnalyzerConfigKey)
+	require.NoError(t, err)
+	assert.NotContains(t, entry.Value, `"code_keywords"`)
+	assert.NotContains(t, entry.Value, `"technical_keywords"`)
+	assert.NotContains(t, entry.Value, `"reasoning_keywords"`)
+	assert.NotContains(t, entry.Value, `"complex_reasoning"`)
+	assert.Contains(t, entry.Value, `"medium_keywords"`)
+	assert.Contains(t, entry.Value, `"complex_keywords"`)
+
+	reloaded, err := store.GetComplexityAnalyzerConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded)
+	assert.Equal(t, []string{"latency", "ui-code", "ui-technical"}, reloaded.Keywords.MediumKeywords)
+	assert.Equal(t, expectedMediumHash, reloaded.ConfigHashes.MediumKeywords)
+}
+
+func TestDecodeComplexityAnalyzerConfigRejectsMixedKeywordShapes(t *testing.T) {
+	_, err := DecodeComplexityAnalyzerConfig([]byte(`{
+		"tier_boundaries":{"simple_medium":0.2,"medium_complex":0.4},
+		"keywords":{
+			"simple_keywords":["hello"],
+			"medium_keywords":["api"],
+			"complex_keywords":["tradeoffs"],
+			"code_keywords":["debug"]
+		}
+	}`))
+	require.ErrorContains(t, err, "cannot mix canonical and legacy fields")
+}
+
 func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashesOnRuntimeUpdate(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
 	fileConfig := testComplexityAnalyzerConfig()
 	fileConfig.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, fileConfig))
 
@@ -188,9 +254,9 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigPreservesExistingHashesOnR
 func TestGenerateComplexityAnalyzerConfigHashesCanonicalizesKeywords(t *testing.T) {
 	left := testComplexityAnalyzerConfig()
 	right := testComplexityAnalyzerConfig()
-	right.Keywords.CodeKeywords = []string{"api", "function"}
-	left.ConfigHashes = ComplexityAnalyzerConfigHashes{CodeKeywords: "stored-code-hash-a"}
-	right.ConfigHashes = ComplexityAnalyzerConfigHashes{CodeKeywords: "stored-code-hash-b"}
+	right.Keywords.MediumKeywords = []string{"api", "function", "latency"}
+	left.ConfigHashes = ComplexityAnalyzerConfigHashes{MediumKeywords: "stored-medium-hash-a"}
+	right.ConfigHashes = ComplexityAnalyzerConfigHashes{MediumKeywords: "stored-medium-hash-b"}
 
 	leftHashes, err := GenerateComplexityAnalyzerConfigHashes(left)
 	require.NoError(t, err)
@@ -207,9 +273,8 @@ func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testi
 		SimpleMedium:  0.20,
 		MediumComplex: 0.40,
 	}
-	file.Keywords.CodeKeywords = []string{"GraphQL", "api"}
-	file.Keywords.ReasoningKeywords = []string{"tradeoffs", "step by step"}
-	file.Keywords.TechnicalKeywords = []string{"latency", "kubernetes"}
+	file.Keywords.MediumKeywords = []string{"GraphQL", "api", "latency", "kubernetes"}
+	file.Keywords.ComplexKeywords = []string{"tradeoffs", "step by step"}
 	file.Keywords.SimpleKeywords = []string{"hello", "thanks"}
 
 	merged, err := MergeComplexityAnalyzerConfig(base, file)
@@ -217,41 +282,39 @@ func TestMergeComplexityAnalyzerConfigAddsKeywordsAndOverlaysBoundaries(t *testi
 	require.NotNil(t, merged)
 
 	assert.Equal(t, file.TierBoundaries, merged.TierBoundaries)
-	assert.Equal(t, []string{"api", "function", "graphql"}, merged.Keywords.CodeKeywords)
-	assert.Equal(t, []string{"step by step", "tradeoffs"}, merged.Keywords.ReasoningKeywords)
-	assert.Equal(t, []string{"kubernetes", "latency"}, merged.Keywords.TechnicalKeywords)
+	assert.Equal(t, []string{"api", "function", "graphql", "kubernetes", "latency"}, merged.Keywords.MediumKeywords)
+	assert.Equal(t, []string{"step by step", "tradeoffs"}, merged.Keywords.ComplexKeywords)
 	assert.Equal(t, []string{"hello", "thanks"}, merged.Keywords.SimpleKeywords)
 }
 
 func TestMergeComplexityAnalyzerConfigByHashesOnlyAppliesChangedSections(t *testing.T) {
 	base := testComplexityAnalyzerConfig()
 	base.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-1",
-		CodeKeywords:      "code-hash-1",
-		ReasoningKeywords: "reason-hash-1",
-		TechnicalKeywords: "tech-hash-1",
-		SimpleKeywords:    "simple-hash-1",
+		TierBoundaries:  "tier-hash-1",
+		SimpleKeywords:  "simple-hash-1",
+		MediumKeywords:  "medium-hash-1",
+		ComplexKeywords: "complex-hash-1",
 	}
 	base.TierBoundaries.SimpleMedium = 0.12
-	base.Keywords.CodeKeywords = []string{"ui-code"}
-	base.Keywords.ReasoningKeywords = []string{"ui-reason"}
+	base.Keywords.MediumKeywords = []string{"ui-medium"}
+	base.Keywords.ComplexKeywords = []string{"ui-complex"}
 
 	file := testComplexityAnalyzerConfig()
 	file.ConfigHashes = base.ConfigHashes
-	file.ConfigHashes.CodeKeywords = "code-hash-2"
+	file.ConfigHashes.MediumKeywords = "medium-hash-2"
 	file.TierBoundaries.SimpleMedium = 0.20
-	file.Keywords.CodeKeywords = []string{"file-code"}
-	file.Keywords.ReasoningKeywords = []string{"file-reason"}
+	file.Keywords.MediumKeywords = []string{"file-medium"}
+	file.Keywords.ComplexKeywords = []string{"file-complex"}
 
 	merged, err := MergeComplexityAnalyzerConfigByHashes(base, file)
 	require.NoError(t, err)
 	require.NotNil(t, merged)
 
 	assert.Equal(t, 0.12, merged.TierBoundaries.SimpleMedium)
-	assert.Equal(t, []string{"file-code", "ui-code"}, merged.Keywords.CodeKeywords)
-	assert.Equal(t, []string{"ui-reason"}, merged.Keywords.ReasoningKeywords)
-	assert.Equal(t, "code-hash-2", merged.ConfigHashes.CodeKeywords)
-	assert.Equal(t, "reason-hash-1", merged.ConfigHashes.ReasoningKeywords)
+	assert.Equal(t, []string{"file-medium", "ui-medium"}, merged.Keywords.MediumKeywords)
+	assert.Equal(t, []string{"ui-complex"}, merged.Keywords.ComplexKeywords)
+	assert.Equal(t, "medium-hash-2", merged.ConfigHashes.MediumKeywords)
+	assert.Equal(t, "complex-hash-1", merged.ConfigHashes.ComplexKeywords)
 }
 
 func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *testing.T) {
@@ -260,11 +323,10 @@ func TestRDBConfigStore_GetGovernanceConfigIncludesComplexityAnalyzerConfig(t *t
 
 	cfg := testComplexityAnalyzerConfig()
 	cfg.ConfigHashes = ComplexityAnalyzerConfigHashes{
-		TierBoundaries:    "tier-hash-2",
-		CodeKeywords:      "code-hash-2",
-		ReasoningKeywords: "reason-hash-2",
-		TechnicalKeywords: "tech-hash-2",
-		SimpleKeywords:    "simple-hash-2",
+		TierBoundaries:  "tier-hash-2",
+		SimpleKeywords:  "simple-hash-2",
+		MediumKeywords:  "medium-hash-2",
+		ComplexKeywords: "complex-hash-2",
 	}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, cfg))
 
@@ -321,21 +383,15 @@ func TestRDBConfigStore_UpdateComplexityAnalyzerConfigRejectsInvalidConfig(t *te
 			},
 		},
 		{
-			name: "empty code keywords",
+			name: "empty medium keywords",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.CodeKeywords = nil
+				cfg.Keywords.MediumKeywords = nil
 			},
 		},
 		{
-			name: "empty reasoning keywords",
+			name: "empty complex keywords",
 			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.ReasoningKeywords = nil
-			},
-		},
-		{
-			name: "empty technical keywords",
-			mutate: func(cfg *ComplexityAnalyzerConfig) {
-				cfg.Keywords.TechnicalKeywords = nil
+				cfg.Keywords.ComplexKeywords = nil
 			},
 		},
 		{

@@ -199,7 +199,11 @@ type ConfigData struct {
 	// the removed "complex_reasoning" tier boundary (REASONING merged into
 	// COMPLEX), so config load can surface a deprecation notice.
 	hasLegacyComplexReasoningBoundary bool
-	SkillsRegistry                    *SkillsRegistryConfig `json:"skills_registry,omitempty"`
+	// legacyComplexityMediumKeywordsHash preserves the source identity of
+	// separate legacy Code/Technical lists after they are merged into Medium.
+	// An empty value means config.json uses the canonical keyword shape.
+	legacyComplexityMediumKeywordsHash string
+	SkillsRegistry                     *SkillsRegistryConfig `json:"skills_registry,omitempty"`
 }
 
 // SkillsRegistryConfig defines declarative skill definitions in config.json.
@@ -480,6 +484,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.FeatureFlags = temp.FeatureFlags
 	cd.presentGovernanceSections = nil
 	cd.hasLegacyComplexReasoningBoundary = false
+	cd.legacyComplexityMediumKeywordsHash = ""
 	if rawGovernance, ok := raw["governance"]; ok && len(rawGovernance) > 0 {
 		var rawGovernanceFields map[string]json.RawMessage
 		if err := json.Unmarshal(rawGovernance, &rawGovernanceFields); err == nil {
@@ -488,11 +493,34 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 				cd.presentGovernanceSections[key] = true
 			}
 			if rawComplexity, ok := rawGovernanceFields["complexity_analyzer_config"]; ok {
-				var rawBoundaries struct {
+				var rawComplexityFields struct {
 					TierBoundaries map[string]json.RawMessage `json:"tier_boundaries"`
+					Keywords       map[string]json.RawMessage `json:"keywords"`
 				}
-				if err := json.Unmarshal(rawComplexity, &rawBoundaries); err == nil {
-					_, cd.hasLegacyComplexReasoningBoundary = rawBoundaries.TierBoundaries["complex_reasoning"]
+				if err := json.Unmarshal(rawComplexity, &rawComplexityFields); err == nil {
+					_, cd.hasLegacyComplexReasoningBoundary = rawComplexityFields.TierBoundaries["complex_reasoning"]
+					_, hasCode := rawComplexityFields.Keywords["code_keywords"]
+					_, hasReasoning := rawComplexityFields.Keywords["reasoning_keywords"]
+					_, hasTechnical := rawComplexityFields.Keywords["technical_keywords"]
+					if hasCode || hasReasoning || hasTechnical {
+						var legacyCodeKeywords []string
+						if rawCode, ok := rawComplexityFields.Keywords["code_keywords"]; ok {
+							if err := json.Unmarshal(rawCode, &legacyCodeKeywords); err != nil {
+								return fmt.Errorf("failed to unmarshal legacy complexity code keywords: %w", err)
+							}
+						}
+						var legacyTechnicalKeywords []string
+						if rawTechnical, ok := rawComplexityFields.Keywords["technical_keywords"]; ok {
+							if err := json.Unmarshal(rawTechnical, &legacyTechnicalKeywords); err != nil {
+								return fmt.Errorf("failed to unmarshal legacy complexity technical keywords: %w", err)
+							}
+						}
+						legacyMediumHash, err := configstore.GenerateLegacyComplexityMediumKeywordsHash(legacyCodeKeywords, legacyTechnicalKeywords)
+						if err != nil {
+							return fmt.Errorf("failed to hash legacy complexity keywords: %w", err)
+						}
+						cd.legacyComplexityMediumKeywordsHash = legacyMediumHash
+					}
 				}
 			}
 		}
@@ -3381,6 +3409,9 @@ func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.Comp
 	if configData.hasLegacyComplexReasoningBoundary {
 		logger.Warn("config.json sets governance.complexity_analyzer_config.tier_boundaries.complex_reasoning, which no longer exists: the REASONING tier was merged into COMPLEX. The value is ignored; remove it from config.json")
 	}
+	if configData.legacyComplexityMediumKeywordsHash != "" {
+		logger.Warn("config.json uses deprecated complexity keyword fields code_keywords, technical_keywords, and reasoning_keywords; use medium_keywords and complex_keywords. The legacy fields remain supported and are not rewritten")
+	}
 	fileConfig, err := complexity.ValidateAndNormalize(configData.Governance.ComplexityAnalyzerConfig)
 	if err != nil {
 		logger.Error("invalid complexity analyzer config in config file: %v", err)
@@ -3390,6 +3421,9 @@ func complexityAnalyzerConfigFromFile(configData *ConfigData) (*configstore.Comp
 	if err != nil {
 		logger.Warn("failed to generate complexity analyzer config hashes: %v", err)
 		return nil, configstore.ComplexityAnalyzerConfigHashes{}, false
+	}
+	if configData.legacyComplexityMediumKeywordsHash != "" {
+		fileHashes.MediumKeywords = configData.legacyComplexityMediumKeywordsHash
 	}
 	fileConfig.ConfigHashes = fileHashes
 	return fileConfig, fileHashes, true
