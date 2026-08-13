@@ -55,6 +55,52 @@ func TestIncompleteTerminalReachesAnthropicSurface(t *testing.T) {
 	require.NotNil(t, messageStop, "message_stop must be emitted on truncation")
 }
 
+// TestIncompleteTerminalWithoutStopReasonDefaultsToMaxTokens covers the
+// defensive default: a response.incomplete terminal event whose Response
+// carries no StopReason (a shape FinalizeBedrockStream never produces, but
+// the chat-completions bridge or another producer could) must still surface
+// max_tokens on both output surfaces instead of end_turn.
+func TestIncompleteTerminalWithoutStopReasonDefaultsToMaxTokens(t *testing.T) {
+	terminal := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeIncomplete,
+		Response: &schemas.BifrostResponsesResponse{
+			Status: schemas.Ptr(schemas.ResponsesResponseStatusIncomplete),
+			IncompleteDetails: &schemas.ResponsesResponseIncompleteDetails{
+				Reason: schemas.ResponsesResponseIncompleteReasonMaxOutputTokens,
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	events := anthropic.ToAnthropicResponsesStreamResponse(ctx, terminal)
+	require.NotEmpty(t, events)
+	var messageDelta *anthropic.AnthropicStreamEvent
+	for _, ev := range events {
+		if ev.Type == anthropic.AnthropicStreamEventTypeMessageDelta {
+			messageDelta = ev
+		}
+	}
+	require.NotNil(t, messageDelta)
+	require.NotNil(t, messageDelta.Delta)
+	require.NotNil(t, messageDelta.Delta.StopReason)
+	assert.Equal(t, anthropic.AnthropicStopReasonMaxTokens, *messageDelta.Delta.StopReason,
+		"missing StopReason on an incomplete terminal must default to max_tokens, not end_turn")
+
+	event, err := bedrock.ToBedrockConverseStreamResponse(terminal)
+	require.NoError(t, err)
+	require.NotNil(t, event)
+	require.NotNil(t, event.StopReason)
+	assert.Equal(t, "max_tokens", *event.StopReason)
+
+	// Same default must hold with no IncompleteDetails either.
+	terminal.Response.IncompleteDetails = nil
+	event, err = bedrock.ToBedrockConverseStreamResponse(terminal)
+	require.NoError(t, err)
+	require.NotNil(t, event)
+	require.NotNil(t, event.StopReason)
+	assert.Equal(t, "max_tokens", *event.StopReason)
+}
+
 // Regression for #6081 (Bedrock-native ConverseStream surface): the sibling
 // encoder had the same gap, dropping the terminal frame so clients never
 // received messageStop{stopReason:"max_tokens"} + metadata usage.
