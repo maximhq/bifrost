@@ -497,7 +497,11 @@ func extractSupportedParams(parsed *modelParametersParseResult) []string {
 		case "web_search":
 			addParam("web_search_options") // chat-path param
 			addParam("web_search")         // responses-path server tool
-		case "stop_sequences":
+		// Anthropic rows spell it stop_sequences; Bedrock's Nova/Titan rows carry the
+		// Converse camelCase stopSequences. Both mean the neutral "stop" parameter that
+		// compat's dropUnsupportedParams gates on — without the camelCase spelling those
+		// 81 models silently lose stop, and the provider runs to end_turn instead.
+		case "stop_sequences", "stopSequences":
 			addParam("stop")
 		case "promptTools", "image_detail", "stream":
 			// skip — not top-level request parameters

@@ -2280,6 +2280,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				if itemID != "" {
 					item.ID = &itemID
 				}
+				var itemIDPtr *string
+				if itemID != "" {
+					itemIDPtr = &itemID
+				}
 
 				// Emit output_item.added for the text message
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
@@ -2288,6 +2292,72 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
 					Item:           item,
+				})
+
+				// Emit the same content_part / output_text events an ordinary text
+				// block emits. Without them a consumer that reads the incremental
+				// events rather than the item snapshot — the Gemini /genai stream
+				// converter, the OpenAI Responses SDK — sees a stream with no text
+				// in it, which is how a schema-constrained request to a tool-based
+				// structured-output provider (Vertex, Bedrock Mantle, Azure) came
+				// back empty while the same request without a schema streamed fine.
+				//
+				// The whole document goes out in one delta rather than replaying the
+				// input_json_delta fragments: a tool call's arguments are only valid
+				// JSON once complete, so forwarding `{"text":` as a text delta would
+				// hand a parse error to any client decoding deltas as they arrive.
+				emptyText := ""
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					ItemID:         itemIDPtr,
+					Part: &schemas.ResponsesMessageContentBlock{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &emptyText,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
+					},
+				})
+
+				deltaText := textContent
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					ItemID:         itemIDPtr,
+					Delta:          &deltaText,
+				})
+
+				doneText := textContent
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					ItemID:         itemIDPtr,
+					Text:           &doneText,
+				})
+
+				partText := textContent
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					ItemID:         itemIDPtr,
+					Part: &schemas.ResponsesMessageContentBlock{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &partText,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
+					},
 				})
 
 				// Emit output_item.done

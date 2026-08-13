@@ -20,7 +20,7 @@ import { readFileSync, existsSync } from "node:fs";
 import {
   backoffSeconds,
   shouldRetry,
-  isRateLimited,
+  isRetryable,
   DEFAULT_POLICY,
 } from "./lib/rate-limit-retry.mjs";
 
@@ -64,7 +64,11 @@ const failed = (e) =>
 
 if (QUERY === "only-rate-limited") {
   const failures = executions.filter(failed);
-  say(failures.length > 0 && failures.every(isRateLimited) ? 1 : 0);
+  // Retryable, not rate-limited-only: this query decides whether a clean retry may CLEAR a shard's
+  // verdict, and a shard whose only failures were 503/529 has as much claim to that as one whose
+  // only failures were 429s. Both are the provider saying "not now"; neither is a defect the sweep
+  // found. A shard that also failed an assertion still stays failed, which is the part that matters.
+  say(failures.length > 0 && failures.every(isRetryable) ? 1 : 0);
 }
 
 if (!shouldRetry(report)) say(0);

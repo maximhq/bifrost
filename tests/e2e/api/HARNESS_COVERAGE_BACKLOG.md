@@ -29,6 +29,7 @@ Sources:
 - [x] Tool choice forced (`tool_choice: "required"`)
 - [x] Structured output (`response_format: json_schema`)
 - [x] Reasoning effort (`reasoning_effort: "high"` for gpt-5/o3)
+- [x] Reasoning effort forwarded to xAI (grok-4.5 / grok-4.6 / grok-4.20-multi-agent) — folder 50
 - [ ] **Tool choice: specific function** (`tool_choice: { type: "function", function: { name: "x" } }`)
 - [ ] **Parallel tool calls** (`parallel_tool_calls: true/false`)
 - [ ] **Response format JSON object** (`response_format: { type: "json_object" }`)
@@ -396,7 +397,7 @@ should be re-tested through passthrough since the translation layer is bypassed.
 - [ ] **OpenAI passthrough w/ web_search**
 - [ ] **OpenAI passthrough w/ code_interpreter**
 - [ ] **Anthropic passthrough w/ computer_use** (verify auth header strip + beta header injection)
-- [ ] **Anthropic passthrough w/ extended thinking**
+- [~] **Anthropic passthrough w/ extended thinking** (folder 51 sends `thinking: { type: "enabled", budget_tokens }` through `/anthropic/v1/messages` and pins the encrypted-reasoning fail-soft's raw rewrite against Anthropic's "latest assistant message cannot be modified" rule — PR #6110; a fresh non-replay request asserting a `thinking` block comes back through passthrough, and the streaming variant, are still open)
 - [ ] **Anthropic passthrough w/ prompt caching**
 - [ ] **Anthropic passthrough w/ web_search_20260209**
 - [ ] **GenAI passthrough w/ googleSearch**

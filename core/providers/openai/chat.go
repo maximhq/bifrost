@@ -255,10 +255,10 @@ func (req *OpenAIChatRequest) applyXAICompatibility(model string) {
 		req.ChatParameters.Stop = nil
 	}
 
-	// Only grok-3-mini supports reasoning_effort
+	// Strip reasoning_effort only for the models known to reject it; current-generation
+	// models (grok-4.5, grok-4.6, grok-4.20-*) accept it. See SupportsGrokReasoningEffort.
 	if req.ChatParameters.Reasoning != nil &&
-		!strings.Contains(model, "grok-3-mini") {
-		// Clear reasoning_effort for non-grok-3-mini models
+		!schemas.SupportsGrokReasoningEffort(model) {
 		req.ChatParameters.Reasoning.Effort = nil
 	}
 }

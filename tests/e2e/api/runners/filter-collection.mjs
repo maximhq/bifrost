@@ -17,7 +17,16 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
 import { buildHaystack } from "./lib/haystack.mjs";
 import { walkRequests, buildProducerIndex, chainedDependencies } from "./lib/chained-vars.mjs";
-import { rateLimitedNames } from "./lib/rate-limit-retry.mjs";
+import { retryableNames } from "./lib/rate-limit-retry.mjs";
+import {
+  DEFAULT_TARGET_SECONDS,
+  MIN_COVERAGE,
+  cellCost,
+  coverage,
+  loadTimings,
+  sliceByCost,
+  subshardCount,
+} from "./lib/shard-cost.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -69,7 +78,24 @@ const CLASS = (args.class || "").toLowerCase();
 // is stable for a given source collection and set of filters, which keeps the slices a partition,
 // and the round-robin below spreads a contiguous block of expensive rows (the criss-cross grids are
 // emitted in provider order) across every slice instead of dropping it whole into one.
+//
+// With --timings the split balances measured COST instead of row count (see lib/shard-cost.mjs).
+// Position-based round-robin remains the fallback whenever no usable timing table is available, so
+// the two paths differ in how good the balance is, never in which rows exist.
 const SHARD = (args.shard || "").trim();
+// --timings <path> supplies the measured per-request cost table that lib/shard-cost.mjs uses to
+// size and fill shards. Deliberately explicit rather than defaulted to a well-known path: the
+// slicing tests assert the exact round-robin output, and an implicit lookup would make them pass or
+// fail on whether a previous sweep happened to leave a file in the working directory.
+const TIMINGS = args.timings && args.timings !== "true" ? args.timings : "";
+// --plan prints the sub-shard grid instead of writing a collection: one "<provider> <class> <n>"
+// line per non-empty cell, which the Makefile's launch loop reads in place of the hand-written
+// HARNESS_SUBSHARDS table. It lives here rather than in its own script because sizing a cell means
+// selecting it first, and every predicate that does the selecting is already in this file.
+const PLAN = args.plan === "true";
+const PLAN_PROVIDERS = (args.providers || "").trim().split(/[\s,]+/).filter(Boolean);
+const PLAN_CLASSES = (args.classes || "").trim().split(/[\s,]+/).filter(Boolean);
+const PLAN_TARGET = Number(args.target) > 0 ? Number(args.target) : DEFAULT_TARGET_SECONDS;
 let SHARD_INDEX = 0;
 let SHARD_COUNT = 0;
 if (SHARD && SHARD !== "true") {
@@ -96,11 +122,17 @@ const REPORT = args.report || "tmp/newman-report.json";
 // is the only mechanism that can reach them.
 const SMOKE = args.smoke && args.smoke !== "true" ? args.smoke : "";
 
-if (!SOURCE || !OUT) {
+// --plan writes its grid to stdout, so it needs a source but no --out. Requiring one anyway would
+// mean inventing a path for a file the planner never writes.
+if (!SOURCE || (!OUT && !PLAN)) {
   console.error("[filter-collection] --source and --out are required");
   process.exit(2);
 }
-if (!PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE) {
+if (PLAN && (!PLAN_PROVIDERS.length || !PLAN_CLASSES.length)) {
+  console.error("[filter-collection] --plan needs --providers and --classes");
+  process.exit(2);
+}
+if (!PLAN && !PROVIDER && !FEATURE_PARTS.length && !FEATURE_ANY_PARTS.length && !EXCLUDE_FEATURE_ANY_PARTS.length && !FOLDER && !CLASS && !SHARD_COUNT && !RERUN_FAILED && !RERUN_RATE_LIMITED && !SMOKE) {
   console.error(
     "[filter-collection] need at least one of: --provider, --feature, --feature-any, --exclude-feature-any, --folder, --class, --shard, --rerun-failed, --rerun-rate-limited, --smoke"
   );
@@ -117,6 +149,7 @@ const PROVIDER_KEYWORDS = {
   azure: ["azure", "deployments"],
   passthrough: ["_passthrough"],
   openrouter: ["openrouter"],
+  xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
 };
 
@@ -216,9 +249,12 @@ const classifyItem = (item, ancestorNames) => {
   return CLASS_OTHER;
 };
 
-const itemMatchesClass = (item, ancestorNames) => {
-  if (!CLASS) return true;
-  return classifyItem(item, ancestorNames) === CLASS;
+// The `cls` override exists for --plan, which has to ask "which class would this row land in?" for
+// every class in the roster rather than only for the one --class named. Defaulting to the global
+// keeps every normal call site unchanged.
+const itemMatchesClass = (item, ancestorNames, cls = CLASS) => {
+  if (!cls) return true;
+  return classifyItem(item, ancestorNames) === cls;
 };
 
 const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
@@ -228,34 +264,38 @@ const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
   return aliases.some((alias) => haystack.includes(alias));
 };
 
-const itemMatchesProvider = (item, ancestorNames) => {
-  if (!PROVIDER) return true;
-  const keywords = PROVIDER_KEYWORDS[PROVIDER] || [PROVIDER];
+// The `provider` override exists for --plan, which sizes every (provider, class) cell in one pass
+// and so must evaluate this predicate once per provider in the roster. Defaulting to the global
+// keeps every normal call site unchanged, and routing the collision rules through the parameter
+// rather than the global is what keeps the planner's cells identical to the shards' own selection.
+const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
+  if (!provider) return true;
+  const keywords = PROVIDER_KEYWORDS[provider] || [provider];
   const haystack = buildHaystack(item, ancestorNames);
   // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
   // gpt-/claude-/gemini, so they'd otherwise be claimed by the openai/anthropic/gemini
   // partitions too. Route them exclusively to the openrouter partition.
   const isOpenRouter = haystack.includes("openrouter");
-  if (PROVIDER === "openrouter") return isOpenRouter;
+  if (provider === "openrouter") return isOpenRouter;
   if (isOpenRouter) return false;
   // Bedrock Mantle rows (model "bedrock_mantle/...") contain the substring "bedrock", so they'd
   // otherwise be claimed by the bedrock partition too. Route them exclusively to bedrock_mantle.
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
-  if (PROVIDER === "bedrock_mantle") return isMantle;
+  if (provider === "bedrock_mantle") return isMantle;
   if (isMantle) return false;
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
   // Route them exclusively to vertex.
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
-  if (PROVIDER === "vertex") return isVertex;
-  if (isVertex && (PROVIDER === "gemini" || PROVIDER === "anthropic")) return false;
+  if (provider === "vertex") return isVertex;
+  if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route
   // them exclusively to bedrock (they already match PROVIDER_KEYWORDS.bedrock's "bedrock"
   // keyword with no extra logic needed for that direction).
   const isBedrockOpenai = haystack.includes("bedrock_openai");
-  if (isBedrockOpenai && PROVIDER === "openai") return false;
+  if (isBedrockOpenai && provider === "openai") return false;
   return keywords.some((k) => haystack.includes(k));
 };
 
@@ -305,20 +345,24 @@ const itemMatchesSmoke = (item, ancestorNames) => {
 // retry pass's selector, and is deliberately narrower than --rerun-failed: replaying a shard's
 // assertion failures would burn quota re-confirming a real defect and would turn a deterministic
 // failure into a flaky-looking one. Pairs with rate-limit-backoff.mjs, which decides the wait.
-let rateLimitedNameSet = null;
+// The flag keeps its --rerun-rate-limited spelling, but the set it selects is every RETRYABLE
+// status (429 plus the 503/529 overload codes - see RETRYABLE_CODES). Selecting only the 429s here
+// would leave a 503 shard replaying an empty collection, which the launcher reads as "nothing to
+// retry" and the shard would keep its original failed verdict.
+let retryableNameSet = null;
 const itemMatchesRateLimited = (item) => {
   if (!RERUN_RATE_LIMITED) return true;
-  if (rateLimitedNameSet === null) {
+  if (retryableNameSet === null) {
     if (!existsSync(REPORT)) {
       console.error(`[filter-collection] --rerun-rate-limited requires ${REPORT}`);
       process.exit(2);
     }
-    rateLimitedNameSet = rateLimitedNames(readReport(REPORT));
+    retryableNameSet = retryableNames(readReport(REPORT));
     console.error(
-      `[filter-collection] rerun-rate-limited: ${rateLimitedNameSet.size} rate-limited item(s) from ${REPORT}`
+      `[filter-collection] rerun-rate-limited: ${retryableNameSet.size} retryable item(s) (429/503/529) from ${REPORT}`
     );
   }
-  return rateLimitedNameSet.has(item.name);
+  return retryableNameSet.has(item.name);
 };
 
 let failedNames = null;
@@ -347,14 +391,18 @@ const itemIsExcluded = (item, ancestorNames) => {
   return EXCLUDE_FEATURE_ANY_PARTS.some((p) => matchesKeyword(item, ancestorNames, haystack, p));
 };
 
-const passes = (item, ancestorNames) => {
+// `overrides` lets --plan re-evaluate the same predicate stack once per (provider, class) cell.
+// The planner MUST go through this function rather than reimplementing the two predicates it
+// varies: the sub-shard count it prints is only correct if the cell it measured is byte-for-byte
+// the set the corresponding shard will later select for itself.
+const passes = (item, ancestorNames, overrides = {}) => {
   if (!item.request) return true; // folders pass; we filter their items below
   if (itemIsExcluded(item, ancestorNames)) return false;
-  return itemMatchesProvider(item, ancestorNames) &&
+  return itemMatchesProvider(item, ancestorNames, overrides.provider ?? PROVIDER) &&
     itemMatchesFeature(item, ancestorNames) &&
     itemMatchesFeatureAny(item, ancestorNames) &&
     itemMatchesFolder(item, ancestorNames) &&
-    itemMatchesClass(item, ancestorNames) &&
+    itemMatchesClass(item, ancestorNames, overrides.cls ?? CLASS) &&
     itemMatchesSmoke(item, ancestorNames) &&
     itemMatchesRateLimited(item) &&
     itemMatchesRerunFailed(item);
@@ -410,15 +458,68 @@ const expandWithProducers = (selected, entries) => {
 
 const collection = JSON.parse(readFileSync(SOURCE, "utf8"));
 const entries = walkRequests(collection.item || []);
+const timings = loadTimings(TIMINGS);
+if (TIMINGS && !timings) {
+  // Loud on stderr, but not fatal: the sweep ran without a timing table before this existed and
+  // still has to. Silence here would let a sweep quietly go back to round-robin and read as a
+  // regression in the harness rather than as a missing cache file.
+  console.error(`[filter-collection] no usable timings at ${TIMINGS} - falling back to round-robin slicing`);
+}
+
+// --plan: size every (provider, class) cell and print the grid, then stop. Nothing below runs,
+// because the planner writes no collection.
+if (PLAN) {
+  // No timings means no opinion, and the planner must say so by writing NOTHING rather than by
+  // sizing every cell at 1. A grid of ones is not a neutral answer - it is one shard per class,
+  // which is strictly worse than the hand-written HARNESS_SUBSHARDS table it would be overriding.
+  // An empty plan file is what tells the Makefile to keep using that table.
+  if (!timings) {
+    console.error("[filter-collection] plan: no timings available - emitting no plan so the static sub-shard table stands");
+    process.exit(0);
+  }
+  const lines = [];
+  const skipped = [];
+  for (const provider of PLAN_PROVIDERS) {
+    for (const cls of PLAN_CLASSES) {
+      const cell = entries
+        .filter(({ item, ancestors }) => passes(item, ancestors, { provider, cls }))
+        .map(({ item }) => item);
+      if (!cell.length) continue;
+      // A cell the last sweep barely measured gets no opinion at all. Its estimate would be mostly
+      // the fallback cost applied to itself, and the way that fails is asymmetric: an under-priced
+      // cell is under-sharded, which puts back the exact tail this planner exists to remove.
+      // Omitting it hands it to the static HARNESS_SUBSHARDS table, which has run the sweep before.
+      const cov = coverage(cell, timings);
+      if (cov < MIN_COVERAGE) {
+        skipped.push(`${provider}/${cls} (${Math.round(cov * 100)}% measured)`);
+        continue;
+      }
+      const cost = cellCost(cell, timings);
+      const n = subshardCount(cost, PLAN_TARGET, { rowCount: cell.length });
+      lines.push(`${provider} ${cls} ${n} ${cell.length} ${Math.round(cost / 1000)}`);
+    }
+  }
+  process.stdout.write(lines.map((l) => `${l}\n`).join(""));
+  console.error(
+    `[filter-collection] plan: ${lines.length} cell(s), ${lines.reduce((s, l) => s + Number(l.split(" ")[2]), 0)} shard(s) at a ${PLAN_TARGET}s target (timings=${timings.size} rows)`
+  );
+  // Named rather than counted. "12 cells fell back" reads as a tuning detail; naming them shows a
+  // reader WHICH slices of the sweep are still unbalanced, which is the actionable half.
+  if (skipped.length) {
+    console.error(
+      `[filter-collection] plan: ${skipped.length} cell(s) below ${Math.round(MIN_COVERAGE * 100)}% coverage keep their static sub-shard count: ${skipped.join(", ")}`
+    );
+  }
+  process.exit(0);
+}
+
 const matched = entries.filter(({ item, ancestors }) => passes(item, ancestors)).map(({ item }) => item);
 // Sliced BEFORE expandWithProducers, never after: a chained consumer that lands in slice 3 still
 // needs its producer to run inside slice 3's newman process, because collection variables do not
 // survive across invocations. Slicing afterwards would cut producers away from the consumers that
 // were just given them. The cost is that a producer shared by consumers in two slices runs in
 // both, which is the same duplication --class sharding already accepts for the same reason.
-const selected = SHARD_COUNT
-  ? matched.filter((_, i) => i % SHARD_COUNT === SHARD_INDEX - 1)
-  : matched;
+const selected = SHARD_COUNT ? sliceByCost(matched, SHARD_COUNT, SHARD_INDEX, timings) : matched;
 const keep = expandWithProducers(selected, entries);
 const filtered = { ...collection, item: filterTree(collection.item || [], keep) };
 const totalAfter = JSON.stringify(filtered).match(/"request":/g)?.length || 0;

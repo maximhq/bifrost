@@ -196,9 +196,118 @@ for (const bad of ["0/3", "4/3", "2/0", "abc", "2", "-1/3"]) {
   });
 }
 
+// ----- --timings: the same axis, balanced by cost ------------------------------------------------
+
+// lib/shard-cost.test.mjs covers the cost model as a pure function. These cover it through the CLI,
+// because the partition property is what the whole axis rests on and cost-aware slicing is a new
+// way to break it: the n sub-shards each recompute the assignment in a SEPARATE process and keep
+// only their own slice, so any disagreement between them silently drops rows and duplicates others.
+const TIMINGS = join(WORK, "timings.json");
+writeFileSync(
+  TIMINGS,
+  // Adversarial for round-robin on purpose: the expensive rows all sit at the same parity, so a
+  // positional split lands every one of them in the same slice.
+  JSON.stringify(Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`row-${i + 1}`, i % 4 === 0 ? 40000 : 800])))
+);
+
+test("cost-aware slices are still a partition of the unsharded set", () => {
+  const whole = runFilter(["--provider", "anthropic"], { source: PLAIN_SOURCE });
+  const seen = new Map();
+  for (const k of [1, 2, 3, 4]) {
+    for (const n of runFilter(["--provider", "anthropic", "--shard", `${k}/4`, "--timings", TIMINGS], { source: PLAIN_SOURCE })) {
+      seen.set(n, (seen.get(n) || 0) + 1);
+    }
+  }
+  assert.deepEqual([...seen.keys()].sort(), [...whole].sort(), "the cost-aware slices are not the unsharded set");
+  assert.deepEqual([...seen.entries()].filter(([, c]) => c > 1), [], "a row landed in more than one slice");
+});
+
+test("--timings balances slice cost where the positional split does not", () => {
+  const cost = JSON.parse(readFileSync(TIMINGS, "utf8"));
+  const load = (slice) => slice.reduce((s, n) => s + (cost[n] || 0), 0);
+  const of = (flags) => [1, 2, 3, 4].map((k) => load(runFilter(["--provider", "anthropic", "--shard", `${k}/4`, ...flags], { source: PLAIN_SOURCE })));
+
+  const positional = of([]);
+  const balanced = of(["--timings", TIMINGS]);
+  const spread = (a) => Math.max(...a) - Math.min(...a);
+
+  assert.ok(spread(positional) > 100000, `fixture is not adversarial: ${positional.join(", ")}`);
+  assert.ok(
+    spread(balanced) < spread(positional) / 4,
+    `--timings did not flatten the slices: ${balanced.join(", ")} vs ${positional.join(", ")}`
+  );
+});
+
+// The failure mode that has to stay non-fatal. The table is written by the PREVIOUS run, so a crash
+// mid-write breaks the NEXT sweep - and a sweep that refuses to start because a cache file is
+// truncated has turned a performance feature into an outage.
+test("a corrupt or missing timings file falls back to round-robin instead of failing", () => {
+  const corrupt = join(WORK, "corrupt-timings.json");
+  writeFileSync(corrupt, "{not json");
+  const expected = runFilter(["--provider", "anthropic", "--shard", "1/4"], { source: PLAIN_SOURCE });
+  for (const path of [corrupt, join(WORK, "absent.json")]) {
+    assert.deepEqual(
+      runFilter(["--provider", "anthropic", "--shard", "1/4", "--timings", path], { source: PLAIN_SOURCE }),
+      expected
+    );
+  }
+});
+
+// A chained consumer must keep its producer whichever way the slice was chosen. Cost-aware slicing
+// reorders which rows land together, so the producer expansion has to still run after it.
+test("a cost-sliced consumer keeps its producer in the same slice", () => {
+  const slices = [1, 2, 3].map((k) => runFilter(["--provider", "anthropic", "--shard", `${k}/3`, "--timings", TIMINGS]));
+  const holder = slices.find((s) => s.includes("consumer"));
+  assert.ok(holder, "no slice contains the consumer");
+  assert.ok(holder.includes("producer"), "the consumer's slice is missing its producer");
+});
+
 test("--shard alone is a sufficient filter", () => {
   const names = runFilter(["--shard", "1/2"]);
   assert.ok(names.length > 0, "--shard on its own selected nothing");
+});
+
+// ----- --plan: sizing the grid from measurement ---------------------------------------------------
+
+// Runs the real planner CLI and returns its stdout lines as [provider, class, shards, rows, secs].
+function runPlan(extraArgs, { source = PLAIN_SOURCE } = {}) {
+  const out = execFileSync(
+    "node",
+    [FILTER, "--source", source, "--plan", "--providers", "anthropic", "--classes", "chat", ...extraArgs],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  return out.trim().split("\n").filter(Boolean).map((l) => l.split(" "));
+}
+
+test("--plan sizes a cell from its measured cost", () => {
+  const p = join(WORK, "plan-timings.json");
+  // 20 rows at 30s each = 600s of work, which is 4 shards against a 150s target.
+  writeFileSync(p, JSON.stringify(Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`row-${i + 1}`, 30000]))));
+  const [cell] = runPlan(["--timings", p, "--target", "150"]);
+  assert.deepEqual(cell.slice(0, 4), ["anthropic", "chat", "4", "20"]);
+});
+
+test("--target trades shard count against shard length", () => {
+  const p = join(WORK, "plan-timings.json");
+  assert.equal(runPlan(["--timings", p, "--target", "300"])[0][2], "2");
+  assert.equal(runPlan(["--timings", p, "--target", "75"])[0][2], "8");
+});
+
+// The planner must write NOTHING rather than a grid of 1s: a 1 is not a neutral answer, it is one
+// shard per class, which is strictly worse than the static table it would be overriding.
+test("--plan writes no plan at all when there are no timings", () => {
+  assert.deepEqual(runPlan([]), []);
+  assert.deepEqual(runPlan(["--timings", join(WORK, "absent.json")]), []);
+});
+
+// The guard that stops a barely-measured cell from being sized. Its estimate would be mostly the
+// fallback cost applied to itself, and an under-priced cell is under-sharded - which is the exact
+// tail the planner exists to remove, reintroduced by the planner itself.
+test("--plan omits a cell it has barely measured", () => {
+  const thin = join(WORK, "thin-timings.json");
+  // 3 of 20 rows measured: 15% coverage, well under the bar.
+  writeFileSync(thin, JSON.stringify({ "row-1": 30000, "row-2": 30000, "row-3": 30000 }));
+  assert.deepEqual(runPlan(["--timings", thin, "--target", "150"]), []);
 });
 
 // ----- the Makefile's launch loop ------------------------------------------------------------------
@@ -222,32 +331,82 @@ function recipeBlock(startsWith, endsWith) {
 const SUBSHARDS_FN = recipeBlock("subshards_for() {", "printf '%s' \"$$SS_N\"; \\").concat("\n};");
 
 // Runs the REAL subshards_for from the recipe, with HARNESS_SUBSHARDS substituted the way make
-// would substitute it.
-function subshardsFor(cls, { SUBSHARDS = "" } = {}) {
+// would substitute it. `plan` writes a shard-plan file and points SHARD_PLAN at it, which is the
+// measured path; omitting it leaves SHARD_PLAN unset, which is the static-table fallback.
+function subshardsFor(provider, cls, { SUBSHARDS = "", plan = null } = {}) {
   const roster = (makefile.match(/^HARNESS_SUBSHARDS := (.*)$/m) || [])[1];
   assert.ok(roster, "HARNESS_SUBSHARDS is not defined in the Makefile");
   const body = SUBSHARDS_FN.replace(/\$\(SUBSHARDS\)/g, SUBSHARDS).replace(/\$\(HARNESS_SUBSHARDS\)/g, roster);
-  return execFileSync("bash", ["-c", `set -u\n${body}\nsubshards_for "${cls}"`], { encoding: "utf8" }).trim();
+  let prelude = "";
+  if (plan !== null) {
+    const p = join(WORK, `plan-${Math.abs(hash(plan))}.txt`);
+    writeFileSync(p, plan);
+    prelude = `SHARD_PLAN=${JSON.stringify(p)}\n`;
+  }
+  return execFileSync("bash", ["-c", `set -u\n${prelude}${body}\nsubshards_for "${provider}" "${cls}"`], {
+    encoding: "utf8",
+  }).trim();
 }
 
 test("the slow classes carry a sub-shard count and the cheap ones do not", () => {
-  assert.equal(subshardsFor("reasoning"), "4");
-  assert.equal(subshardsFor("tools"), "3");
-  assert.equal(subshardsFor("audio"), "1");
-  assert.equal(subshardsFor("image-gen"), "1");
+  assert.equal(subshardsFor("openai", "reasoning"), "4");
+  assert.equal(subshardsFor("openai", "tools"), "3");
+  assert.equal(subshardsFor("openai", "audio"), "1");
+  assert.equal(subshardsFor("openai", "image-gen"), "1");
 });
 
 test("SUBSHARDS=0 collapses the axis for every class", () => {
   for (const c of ["reasoning", "tools", "chat", "audio"]) {
-    assert.equal(subshardsFor(c, { SUBSHARDS: "0" }), "1", `${c} still split under SUBSHARDS=0`);
+    assert.equal(subshardsFor("openai", c, { SUBSHARDS: "0" }), "1", `${c} still split under SUBSHARDS=0`);
   }
+});
+
+// ----- the measured plan overrides the static table --------------------------------------------
+
+// The whole point of the planner: one count per CLASS cannot fit eight providers, because the same
+// class costs openai ~30 minutes and another provider seconds. A plan file says so per cell.
+test("a plan entry wins over the static table, per provider", () => {
+  const plan = "openai reasoning 11 161 1580\nanthropic reasoning 7 172 980\n";
+  assert.equal(subshardsFor("openai", "reasoning", { plan }), "11");
+  assert.equal(subshardsFor("anthropic", "reasoning", { plan }), "7");
+});
+
+// A plan is written only for cells that exist. A cell the planner did not emit (a provider added
+// since the last measured sweep, a class with no rows under the current filters) has to keep
+// working, and the static table is the answer that was already there.
+test("a cell missing from the plan falls back to the static table", () => {
+  const plan = "openai reasoning 11 161 1580\n";
+  assert.equal(subshardsFor("gemini", "reasoning", { plan }), "4");
+  assert.equal(subshardsFor("openai", "tools", { plan }), "3");
+});
+
+// An empty plan file is what filter-collection.mjs --plan writes when no timings are available. It
+// must read as "no opinion", not as "zero shards" or as an error under set -u.
+test("an empty plan file leaves the static table standing", () => {
+  assert.equal(subshardsFor("openai", "reasoning", { plan: "" }), "4");
+});
+
+// Matching on BOTH columns, not just the class. Matching the class alone would let the first
+// provider in the file set every provider's count - which is the static table's bug, reintroduced
+// in the mechanism built to remove it.
+test("the plan is keyed on provider and class together", () => {
+  const plan = "anthropic reasoning 7 172 980\n";
+  assert.equal(subshardsFor("openai", "reasoning", { plan }), "4", "openai took anthropic's row");
+});
+
+test("SUBSHARDS=0 beats the plan too", () => {
+  const plan = "openai reasoning 11 161 1580\n";
+  assert.equal(subshardsFor("openai", "reasoning", { SUBSHARDS: "0", plan }), "1");
 });
 
 // CLASS_SHARDS=0 sets CLASSES to the single sentinel "-", which must not be looked up as a class
 // name: collapsing the class axis has to collapse this one with it, or the recipe would fork n
 // sub-shards of a fork that was explicitly asked to stay whole.
 test('the "-" sentinel from CLASS_SHARDS=0 is not sub-sharded', () => {
-  assert.equal(subshardsFor("-"), "1");
+  // "-" goes in the CLASS slot, which is where CLASS_SHARDS=0 puts it. Passing it as the provider
+  // left cls undefined, so the helper asked for the class literally named "undefined" and got 1
+  // from the unknown-class fallback: green, but never touching the sentinel path this row names.
+  assert.equal(subshardsFor("openai", "-"), "1");
 });
 
 // A class named in HARNESS_SUBSHARDS but absent from HARNESS_CLASSES would split a shard that is
