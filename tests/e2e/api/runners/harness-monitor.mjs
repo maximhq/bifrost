@@ -51,6 +51,7 @@ import {
   readSync,
   closeSync,
   appendFileSync,
+  readdirSync,
 } from "node:fs";
 import { join } from "node:path";
 import { resolveCiIntervalMs } from "./lib/ci-interval.mjs";
@@ -114,6 +115,21 @@ const CI_INTERVAL_MS = resolveCiIntervalMs(args["ci-interval"]);
 const CI_REPRINT_TABLE =
   args["ci-reprint-table"] === "true" || args["ci-reprint-table"] === "1";
 
+// Report each shard's own totals the moment it finishes, instead of only folding them into the
+// provider row. With the sweep split into ~80 (provider x class) shards, "openai is at 812/34"
+// does not say which slice is in trouble, and the answer is otherwise only recoverable by reading
+// 80 separate tmp/newman-cli-*.log files after the run.
+//
+// Deliberately per SHARD, not per request: a line per request is ~3300 lines of interleaved output
+// for a full sweep, which buries the failures it exists to surface. ~80 lines does not.
+//
+// These join the live table rather than replacing it. Interactively they are rendered INSIDE the
+// frame (see renderFrame) because the table is drawn by homing the cursor over the alt-screen
+// buffer, so anything printed alongside it would be wiped on the next redraw. In CI, where the log
+// is append-only, they are emitted as they happen.
+const SHARD_LINES = args["shard-lines"] !== "0" && args["shard-lines"] !== "false";
+const ALT_SCREEN = !CI;
+
 if (PROVIDERS.length === 0) {
   console.error("[harness-monitor] --providers is required");
   process.exit(2);
@@ -145,9 +161,6 @@ const state = {
         doneRequests: 0,
         pass: 0,
         fail: 0,
-        currentRequest: null,
-        currentRequestDone: false,
-        currentRequestHadFail: false,
       },
     ])
   ),
@@ -183,21 +196,54 @@ function setPassTotal(provider, passIndex, count) {
 }
 
 function loadDenominatorsForPass(pass) {
-  // A parallel pass already has the split done for it on disk: one filtered
-  // collection per provider fork, so counting leaves is enough.
+  // A parallel pass already has the split done for it on disk, so counting leaves is enough. A
+  // provider's fork is now SEVERAL files though - harness-filtered-<provider>--<class>.json, one
+  // per modality shard - so its denominator is their sum. Reading only the unsharded
+  // harness-filtered-<provider>.json leaves every total at 0, which shows up as "187/0 done" and
+  // an ETA that never resolves, because the ETA needs a denominator to project against.
   if (pass.mode === "parallel" && !pass.collection) {
     let sawAny = false;
+    let filesRead = 0;
+    let names = [];
+    try {
+      names = readdirSync(TMP_DIR);
+    } catch {
+      return false; // tmp/ not populated yet; the retry timer picks it up.
+    }
     for (const p of PROVIDERS) {
-      const path = join(TMP_DIR, `harness-filtered-${p}.json`);
-      if (!existsSync(path)) continue;
-      try {
-        const data = JSON.parse(readFileSync(path, "utf8"));
-        setPassTotal(p, pass.index, countLeaves(data));
+      const prefix = `harness-filtered-${p}`;
+      const shardFiles = names.filter(
+        (n) =>
+          n.endsWith(".json") &&
+          // Retry collections are a SUBSET replay of rows already counted in their shard's own
+          // file. Counting them would inflate the denominator and make the run look like it had
+          // more to do than it did, which the ETA would then chase.
+          !/-retry\d+\.json$/.test(n) &&
+          // Exact match covers CLASS_SHARDS=0; the "--" form covers the class shards. The
+          // separator is required so "bedrock" cannot claim "bedrock_mantle"'s files.
+          (n === `${prefix}.json` || n.startsWith(`${prefix}--`))
+      );
+      if (!shardFiles.length) continue;
+      let total = 0;
+      let ok = false;
+      for (const f of shardFiles) {
+        try {
+          total += countLeaves(JSON.parse(readFileSync(join(TMP_DIR, f), "utf8")));
+          filesRead += 1;
+          ok = true;
+        } catch {
+          // Partially-written file mid-fork; the retry timer picks it up.
+        }
+      }
+      if (ok) {
+        setPassTotal(p, pass.index, total);
         sawAny = true;
-      } catch {
-        // Partially-written file mid-fork; the retry timer picks it up.
       }
     }
+    // Not final until every launched shard's collection has been read. Shards are filtered inside
+    // the launch loop, so the files appear progressively; latching after the first readable one
+    // would freeze the denominator at whatever fraction happened to exist on that tick.
+    if (pass.launched && filesRead < pass.launched) return false;
     return sawAny;
   }
 
@@ -270,7 +316,7 @@ function endPass(id) {
     // Only close a tail no still-open pass is reading.
     const stillUsed = passes.some((p) => !p.ended && p.tailPaths.includes(path));
     if (h && !stillUsed) {
-      if (h.seqProvider) finalizeRequest(state.providers[h.seqProvider]);
+      if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
       tails.delete(path);
     }
   }
@@ -300,11 +346,27 @@ function pollManifest() {
 
 const tails = new Map(); // path -> handle
 
+// The shard this log belongs to ("openai--tools", or plain "openai" under CLASS_SHARDS=0), used
+// only as the streaming feed's line prefix. Derived from the filename because the shard label is
+// the Makefile's own naming and never reaches the monitor any other way.
+const shardOfLogPath = (path) => {
+  const base = path.split("/").pop() || path;
+  const m = base.match(/^newman-cli-(.+)\.log$/);
+  return m ? m[1] : base;
+};
+
 function ensureTail(path, { provider, mode }) {
   if (tails.has(path)) return;
   tails.set(path, {
     provider,
     mode,
+    shard: shardOfLogPath(path),
+    // A 429 retry pass replays rows the main pass ALREADY counted. Its log is still tailed - that
+    // keeps lastByteAt fresh so the run does not look idle mid-retry - but its requests must not
+    // increment any counter, or a recovered row lands as an extra pass while its original fail
+    // stays put and pass+fail drifts above the shard's real total. lib/newman-merge.jq performs
+    // the equivalent supersession for the final report by keeping the last attempt per item id.
+    retry: /-retry\d+$/.test(shardOfLogPath(path)),
     offset: 0,
     buf: "",
     // Sequential attribution state, held per tail rather than per process.
@@ -314,7 +376,55 @@ function ensureTail(path, { provider, mode }) {
     seqProvider: null,
     seqPendingName: null,
     seqFolder: null,
+    // Per-shard tallies, so a shard can report its own totals on completion.
+    pass: 0,
+    fail: 0,
+    // Deferred per-request commit state, per stream. See finalizeRequest.
+    currentRequest: null,
+    currentRequestDone: false,
+    currentRequestHadFail: false,
   });
+}
+
+// Every log a provider's forks write this run: the unsharded newman-cli-<p>.log plus one
+// newman-cli-<p>--<class>.log per class shard. Matched with an explicit "--" separator so
+// provider names that prefix one another cannot cross-claim (there are none today, but the
+// roster is a Makefile variable and "gemini" / "gemini_v2" is one edit away). Returns the
+// unsharded path even when nothing exists yet, so a tail is registered before the fork's
+// first byte lands and the "log has not appeared" case stays identical to before.
+function shardLogsFor(provider) {
+  const plain = `newman-cli-${provider}.log`;
+  const found = new Set([plain]);
+  try {
+    for (const name of readdirSync(TMP_DIR)) {
+      // A single "-" after the provider, not "--": that covers both the class shards
+      // (newman-cli-openai--tools.log) and the 429 retry passes
+      // (newman-cli-openai--tools-retry1.log, and newman-cli-openai-retry1.log under
+      // CLASS_SHARDS=0, which the "--" form would have missed). The separator is still
+      // required so "bedrock" cannot claim a differently-named provider's log.
+      if (name.startsWith(`newman-cli-${provider}-`) && name.endsWith(".log")) found.add(name);
+    }
+  } catch {
+    // tmp/ not created yet - the unsharded fallback below is enough to start with.
+  }
+  return [...found].map((name) => join(TMP_DIR, name));
+}
+
+// Shards are launched over time, not all at once: HARNESS_JOBS caps concurrency, so a shard's
+// log file can appear minutes after its pass started. Re-scanning each tick is what keeps those
+// late shards counted; ensureTail is idempotent, so re-registering an existing tail is a no-op
+// and offsets are never rewound.
+function refreshParallelTails() {
+  for (const pass of passes) {
+    if (pass.ended || pass.mode !== "parallel") continue;
+    for (const p of PROVIDERS) {
+      for (const path of shardLogsFor(p)) {
+        if (tails.has(path)) continue;
+        ensureTail(path, { provider: p, mode: "parallel" });
+        pass.tailPaths.push(path);
+      }
+    }
+  }
 }
 
 // A parallel pass writes one prefixed log per provider fork; a sequential pass
@@ -322,9 +432,16 @@ function ensureTail(path, { provider, mode }) {
 function setupTailsForPass(pass) {
   if (pass.mode === "parallel") {
     for (const p of PROVIDERS) {
-      const path = join(TMP_DIR, `newman-cli-${p}.log`);
-      ensureTail(path, { provider: p, mode: "parallel" });
-      pass.tailPaths.push(path);
+      // A provider fork is sharded again by modality class, so its output is spread over
+      // newman-cli-<provider>--<class>.log rather than a single newman-cli-<provider>.log.
+      // Every shard is tailed under the SAME provider label, which is what keeps the status
+      // table provider-keyed: the class axis is a scheduling detail, not something the run
+      // summary should grow a dimension for. The unsharded name is still matched, so
+      // CLASS_SHARDS=0 and any older tmp/ layout keep working unchanged.
+      for (const path of shardLogsFor(p)) {
+        ensureTail(path, { provider: p, mode: "parallel" });
+        pass.tailPaths.push(path);
+      }
     }
     return;
   }
@@ -403,19 +520,110 @@ function inferProviderFromLine(line, h) {
 // summary, then ✓ pass-assertions, then numbered fail lines. So we can't commit
 // pass/fail at the summary line - we'd miss subsequent fail lines. Instead we
 // defer commit until the next ↳ / ❏ / finalizeAll().
-function finalizeRequest(ps) {
-  if (!ps.currentRequest) return;
-  if (ps.currentRequestDone) {
-    if (ps.currentRequestHadFail) ps.fail += 1;
-    else ps.pass += 1;
+//
+// The in-flight cursor lives on the TAIL (h), not on the provider: a provider is now covered by
+// several concurrent newman shards, all feeding one provider row, so a "↳" from the tools shard
+// would otherwise commit the vision shard's half-read request and the pass/fail counts would
+// drift. Counters stay on the provider (ps) because the table is per provider; only the
+// "which request am I mid-way through" state is per stream, which is where it was always
+// conceptually anchored - the sequential path already kept its own per-tail attribution state
+// for exactly this reason.
+function finalizeRequest(h, ps) {
+  if (!h || !ps || !h.currentRequest) return;
+  if (h.currentRequestDone) {
+    // Provider totals skip retry tails: a retry replays rows the main pass already scored, so
+    // counting them again would report more requests than the collection holds.
+    if (!h.retry) {
+      if (h.currentRequestHadFail) ps.fail += 1;
+      else ps.pass += 1;
+    }
+    // Counted per stream as well as per provider, so a shard can report its own totals when it
+    // finishes. Incremented here rather than at the "done" line because the verdict is not known
+    // until now: newman prints the [status, size, duration] summary BEFORE its numbered assertion
+    // failures, so a request that looks done can still turn into a fail two lines later.
+    //
+    // Deliberately OUTSIDE the !h.retry guard above, unlike the provider counters. A retry tail's
+    // outcome is exactly what recordShardCompletion needs to move a recovered row out of the
+    // shard's fail column; while these were gated too, every retry tail held 0 pass / 0 fail and
+    // that migration could never fire.
+    if (h.currentRequestHadFail) h.fail += 1;
+    else h.pass += 1;
   }
-  ps.currentRequest = null;
-  ps.currentRequestDone = false;
-  ps.currentRequestHadFail = false;
+  h.currentRequest = null;
+  h.currentRequestDone = false;
+  h.currentRequestHadFail = false;
 }
 
+// Shards that have reported a verdict, oldest first: {shard, total, pass, fail}.
+const completedShards = [];
+const completedShardIds = new Set();
+
+// A shard's denominator, read from the filtered collection the Makefile wrote for it. Counting
+// the '"request":' keys is the same cheap check the Makefile's own zero-item guard uses, and it
+// avoids parsing a collection that can run to tens of megabytes. Falls back to pass+fail, which
+// is right whenever the file is unreadable and never claims MORE coverage than was observed.
+function shardTotal(shard, observed) {
+  try {
+    const raw = readFileSync(join(TMP_DIR, `harness-filtered-${shard}.json`), "utf8");
+    return (raw.match(/"request":/g) || []).length || observed;
+  } catch {
+    return observed;
+  }
+}
+
+const SHARD_LABEL_WIDTH = 24;
+const fmtShardLine = ({ shard, total, pass, fail }) =>
+  `${`[${shard}]`.padEnd(SHARD_LABEL_WIDTH)} ${String(total).padStart(4)} total  ` +
+  `${String(pass).padStart(4)} pass  ${String(fail).padStart(4)} fail`;
+
+// Called once per shard, when its status line lands. Sums the tails belonging to that shard: a
+// shard's 429 retry pass writes a SECOND log (newman-cli-<shard>-retry1.log), and its requests
+// belong to the same shard's totals.
+//
+// A retry tail is NOT simply added in, because its rows are replays of rows the main tail already
+// counted - adding both would report each retried request twice. What a retry row carries is a
+// CORRECTION: the Makefile replays only rows that came back 429 (--rerun-rate-limited), so every
+// row that passes on retry is one the main tail booked as a failure. Moving it across the columns
+// is what makes this line agree with the Makefile's shard verdict and with newman-merge.jq, which
+// supersedes the 429 with its successful retry. Before this, a shard that recovered still printed
+// "0 pass 1 fail" while the other two views called it passed.
+function recordShardCompletion(shard) {
+  if (!SHARD_LINES || completedShardIds.has(shard)) return;
+  completedShardIds.add(shard);
+  let pass = 0;
+  let fail = 0;
+  let recovered = 0;
+  for (const [path, h] of tails) {
+    const owner = shardOfLogPath(path);
+    if (owner === shard) {
+      pass += h.pass;
+      fail += h.fail;
+    } else if (owner.startsWith(`${shard}-retry`)) {
+      // Summed across every attempt, which does not double-count: attempt N+1 replays only the
+      // rows still failing after attempt N, so a row can pass at most once across the whole chain.
+      recovered += h.pass;
+    }
+  }
+  // Clamped to the failures actually on the books. The subset property above should make this a
+  // no-op, but a shard whose main log was rotated or partially read must never print a negative
+  // fail count.
+  recovered = Math.min(recovered, fail);
+  pass += recovered;
+  fail -= recovered;
+  const record = { shard, total: shardTotal(shard, pass + fail), pass, fail };
+  completedShards.push(record);
+  // In CI the log is append-only, so emit now. Interactively the frame renders the list instead,
+  // because a redraw would immediately overwrite anything printed here.
+  if (CI) process.stdout.write(`[harness] ${fmtShardLine(record)}\n`);
+}
+
+// Drains every open stream rather than every provider: with N shards per provider there can be N
+// in-flight requests for one provider row, and a provider-keyed loop would commit only one.
 function finalizeAll() {
-  for (const p of PROVIDERS) finalizeRequest(state.providers[p]);
+  for (const h of tails.values()) {
+    const p = h.mode === "parallel" ? h.provider : h.seqProvider;
+    if (p) finalizeRequest(h, state.providers[p]);
+  }
 }
 
 function handleLine(line, h) {
@@ -435,7 +643,7 @@ function handleLine(line, h) {
     let m;
     if ((m = t.match(RE_FOLDER))) {
       h.seqFolder = m[1].trim();
-      if (h.seqProvider) finalizeRequest(state.providers[h.seqProvider]);
+      if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
       // A heading that names a provider re-points attribution immediately,
       // so the first row under it is attributed even before its URL line.
       const fromFolder = providerOfLogLine("", h.seqFolder, matchProvider);
@@ -448,7 +656,7 @@ function handleLine(line, h) {
     // on, so deferring attribution until that line is what keeps pass+fail from
     // exceeding a provider's own total.
     if ((m = t.match(RE_REQUEST))) {
-      if (h.seqProvider) finalizeRequest(state.providers[h.seqProvider]);
+      if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
       h.seqPendingName = m[1].trim();
       return;
     }
@@ -458,14 +666,13 @@ function handleLine(line, h) {
         (h.seqPendingName ? inferProviderFromLine(h.seqPendingName, h) : null);
       if (inferred && inferred !== h.seqProvider) {
         // Commit the outgoing provider's deferred request before handing over.
-        if (h.seqProvider) finalizeRequest(state.providers[h.seqProvider]);
+        if (h.seqProvider) finalizeRequest(h, state.providers[h.seqProvider]);
         h.seqProvider = inferred;
       }
-      const target = state.providers[h.seqProvider];
-      if (target && h.seqPendingName) {
-        target.currentRequest = h.seqPendingName;
-        target.currentRequestDone = false;
-        target.currentRequestHadFail = false;
+      if (state.providers[h.seqProvider] && h.seqPendingName) {
+        h.currentRequest = h.seqPendingName;
+        h.currentRequestDone = false;
+        h.currentRequestHadFail = false;
         h.seqPendingName = null;
       }
     }
@@ -481,37 +688,39 @@ function handleLine(line, h) {
 
   let m;
   if (RE_FOLDER.test(trimmed)) {
-    finalizeRequest(ps);
+    finalizeRequest(h, ps);
     return;
   }
   if (h.mode === "parallel" && (m = trimmed.match(RE_REQUEST))) {
-    finalizeRequest(ps);
-    ps.currentRequest = m[1].trim();
-    ps.currentRequestDone = false;
-    ps.currentRequestHadFail = false;
+    finalizeRequest(h, ps);
+    h.currentRequest = m[1].trim();
+    h.currentRequestDone = false;
+    h.currentRequestHadFail = false;
     return;
   }
   // Disambiguate request-done summary from assertion-fail; check done first.
   if (RE_REQUEST_DONE.test(trimmed)) {
-    if (ps.currentRequest && !ps.currentRequestDone) {
-      ps.currentRequestDone = true;
-      ps.doneRequests += 1;
+    if (h.currentRequest && !h.currentRequestDone) {
+      h.currentRequestDone = true;
+      // Not for a retry tail: those rows were already counted done by the main pass, and the ETA
+      // divides doneRequests by a denominator that has no retry rows in it.
+      if (!h.retry) ps.doneRequests += 1;
     }
     return;
   }
   if (RE_REQUEST_ERRORED.test(trimmed)) {
-    if (ps.currentRequest && !ps.currentRequestDone) {
-      ps.currentRequestDone = true;
-      ps.currentRequestHadFail = true;
-      ps.doneRequests += 1;
+    if (h.currentRequest && !h.currentRequestDone) {
+      h.currentRequestDone = true;
+      h.currentRequestHadFail = true;
+      if (!h.retry) ps.doneRequests += 1;
     }
     return;
   }
   // Failure text is not rendered anywhere - it belongs to tmp/harness-failures.md
   // (analyze-failures.mjs) and the per-provider CLI logs. All the table needs is
   // that this request failed.
-  if (RE_ASSERT_FAIL.test(trimmed) && ps.currentRequest) {
-    ps.currentRequestHadFail = true;
+  if (RE_ASSERT_FAIL.test(trimmed) && h.currentRequest) {
+    h.currentRequestHadFail = true;
     return;
   }
 }
@@ -531,25 +740,34 @@ function readStatusFiles() {
     const lines = content.trim().split("\n").filter(Boolean);
     seen += lines.length;
     for (const ln of lines) {
-      const [p, v] = ln.split(":");
+      const [shard, v] = ln.split(":");
+      // Lines are keyed by shard ("openai--tools"), but the table is keyed by provider. Fold the
+      // class axis away here so a provider is green only when every one of its shards finished
+      // clean: "fail" is sticky via failedAnyPass, and the guard below stops a later passing
+      // shard from repainting a provider that already had one fail.
+      const p = shard.split("--")[0];
       const ps = state.providers[p];
       if (!ps) continue;
-      const prev = ps.status;
-      if (v === "pass") ps.status = "pass";
-      else if (v === "fail") {
+      if (v === "pass") {
+        if (!ps.failedAnyPass) ps.status = "pass";
+      } else if (v === "fail") {
         ps.status = "fail";
         // Remembered separately because a later pass will flip status back to
         // "running" the moment that provider emits its first line, and the
         // final table must still show the fork that failed as failed.
         ps.failedAnyPass = true;
       }
-      // A status-file line is only written after that provider's newman process
-      // exited, so its log is complete - commit the trailing deferred request
-      // now, otherwise a finished provider sits one request short of its total
-      // in every subsequent frame.
-      if (ps.status !== prev && (ps.status === "pass" || ps.status === "fail")) {
-        finalizeRequest(ps);
-      }
+      // A status-file line is only written after THAT SHARD's newman process exited, so its log
+      // is complete - commit its trailing deferred request now, otherwise a finished shard sits
+      // one request short of its total in every subsequent frame. Scoped to the shard's own tail
+      // rather than the provider: the provider's other shards are very likely still running, and
+      // draining their in-flight requests here would commit them before their verdict lines
+      // arrive, turning failures into passes.
+      // Idempotent: finalizeRequest returns immediately once the cursor is null, and this line is
+      // re-read every tick because the status file is append-only.
+      finalizeRequest(tails.get(join(TMP_DIR, `newman-cli-${shard}.log`)), ps);
+      // Ordered after the finalize so the shard's last request is included in its own totals.
+      recordShardCompletion(shard);
     }
   }
   return { lines: seen };
@@ -693,6 +911,26 @@ function renderFrame() {
   );
   out.push(sep("└", "┴", "┘"));
 
+  // Completed shards, newest last. Only the tail is shown: a full sweep finishes ~80 of them and
+  // the frame is clamped to the terminal height by draw(), so an unbounded list would push the
+  // table itself off the top - the opposite of what this section is for.
+  // Not in CI: there the lines were already emitted one at a time as each shard finished, and
+  // repeating all ~80 in the final frame is exactly the append-only log bloat the one-line
+  // heartbeat replaced.
+  if (SHARD_LINES && !CI && completedShards.length) {
+    const budget = Math.max(0, (process.stdout.rows || 40) - out.length - 3);
+    const shown = completedShards.slice(-Math.max(1, budget));
+    const hidden = completedShards.length - shown.length;
+    out.push("");
+    out.push(
+      `${C.dim}Completed shards (${completedShards.length})` +
+        `${hidden > 0 ? `, showing last ${shown.length}` : ""}${C.reset}`
+    );
+    for (const record of shown) {
+      out.push(record.fail > 0 ? `${C.red}${fmtShardLine(record)}${C.reset}` : fmtShardLine(record));
+    }
+  }
+
   return out;
 }
 
@@ -804,9 +1042,12 @@ function shouldExit() {
   } else {
     // Sequential mode: rely on signals from the Makefile. Also exit when the
     // log shows the newman "failures" summary block AND we've been idle.
-    // lastRenderLines only advances in interactive mode (CI never calls draw()),
-    // so in CI use "we have seen at least one log byte" as the equivalent guard.
-    const started = CI ? sawBytes : lastRenderLines > 0;
+    // lastRenderLines only advances when draw() runs, which is the alt-screen path alone: CI
+    // never calls it, and the streaming feed replaces the periodic frame with per-request lines.
+    // Both of those use "we have seen at least one log byte" as the equivalent guard - without
+    // this the streaming path would never satisfy `started` and the monitor would hang forever
+    // on a sequential pass.
+    const started = ALT_SCREEN ? lastRenderLines > 0 : sawBytes;
     if (Date.now() - lastByteAt > IDLE_EXIT_MS * 2 && started) {
       const allDone = PROVIDERS.every(
         (p) => state.providers[p].totalRequests === 0 ||
@@ -846,7 +1087,7 @@ process.on("SIGHUP", () => teardown(0));
 // canvas with a known origin so cursor-home redraws are deterministic and
 // the preamble (boot logs, launch messages) is preserved on the main screen.
 // Skipped in CI, where there is no terminal to take over.
-if (!CI) process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?25l");
+if (ALT_SCREEN) process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?25l");
 
 // Legacy single-pass invocation: the flags describe exactly one newman run, so
 // synthesize the one-entry manifest they stand for. Everything downstream then
@@ -868,6 +1109,7 @@ setInterval(loadDenominators, 1000);
 
 setInterval(() => {
   pollManifest();
+  refreshParallelTails();
   readNewBytes();
   readStatusFiles();
 }, TAIL_INTERVAL_MS);

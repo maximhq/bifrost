@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -666,12 +667,23 @@ type realtimeClientConn struct {
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 	done      chan struct{}
+
+	// pingInterval is the heartbeat period. It is a field rather than a constant
+	// so tests can drive the heartbeat without waiting out realtimeWSPingInterval.
+	pingInterval time.Duration
+
+	// heartbeatStarted guards heartbeatDone: waiting on it is only valid once the
+	// heartbeat goroutine exists to close it.
+	heartbeatStarted atomic.Bool
+	heartbeatDone    chan struct{}
 }
 
 func newRealtimeClientConn(conn *ws.Conn) *realtimeClientConn {
 	return &realtimeClientConn{
-		conn: conn,
-		done: make(chan struct{}),
+		conn:          conn,
+		done:          make(chan struct{}),
+		pingInterval:  realtimeWSPingInterval,
+		heartbeatDone: make(chan struct{}),
 	}
 }
 
@@ -699,8 +711,14 @@ func (c *realtimeClientConn) startHeartbeat() {
 	c.installPongHandler()
 	c.refreshReadDeadline()
 
+	if !c.heartbeatStarted.CompareAndSwap(false, true) {
+		return
+	}
+
 	go func() {
-		ticker := time.NewTicker(realtimeWSPingInterval)
+		defer close(c.heartbeatDone)
+
+		ticker := time.NewTicker(c.pingInterval)
 		defer ticker.Stop()
 
 		for {
@@ -717,8 +735,20 @@ func (c *realtimeClientConn) startHeartbeat() {
 	}()
 }
 
+// stopHeartbeat signals the heartbeat goroutine and waits for it to exit.
+//
+// The wait is what makes it safe for the upgrade handler to return afterwards.
+// fasthttp recycles the hijacked connection as soon as that handler returns,
+// nilling the net.Conn underneath it, and a ping already inside WriteMessage
+// would dereference it. Unlike the /ws broadcast path there is no recover here,
+// so that panic would take the whole process down.
+//
+// A ping in flight can hold this up for at most realtimeWSPingWriteTimeout.
 func (c *realtimeClientConn) stopHeartbeat() {
 	c.closeDone()
+	if c.heartbeatStarted.Load() {
+		<-c.heartbeatDone
+	}
 }
 
 func (c *realtimeClientConn) installPongHandler() {

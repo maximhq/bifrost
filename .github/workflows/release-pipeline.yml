@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-skip: ${{ steps.check.outputs.should-skip }}
+      skip-core-test: ${{ steps.check.outputs.skip-core-test }}
       skip-tests: ${{ steps.skip_tests.outputs.skip-tests }}
     steps:
       - name: Harden Runner
@@ -40,11 +41,37 @@ jobs:
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
+          # head_commit is only populated on push. On workflow_dispatch this is
+          # empty, so both flags read false there - the dispatch equivalent is the
+          # admin-gated skip_tests input below.
           FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n 1)
           if [[ "$FIRST_LINE" == *"--skip-ci"* ]]; then
             echo "should-skip=true" >> $GITHUB_OUTPUT
           else
             echo "should-skip=false" >> $GITHUB_OUTPUT
+          fi
+
+          # --skip-core-test drops ONLY the test-core job (the ~90 minute provider
+          # harness that makes live calls to every upstream). Every other test job
+          # still runs, including test-core-unit and test-core-integrations, so the
+          # release is still gated on the whole suite minus the one job that depends
+          # on eight third-party APIs being healthy at that moment.
+          #
+          # Skipping it does not cascade: every downstream release job already
+          # accepts `needs.test-core.result == 'skipped'` alongside 'success' (the
+          # same path a bifrost-http-only release takes when test-core never runs).
+          #
+          # Distinct from --skip-ci, which skips the entire pipeline including the
+          # release, and from skip_tests, which drops every test job and is admin-only.
+          # This one is deliberately NOT permission-gated: it still ships a release
+          # whose unit, integration, migration, docker and API-integration coverage all
+          # passed. Use it when a provider outage is blocking a release that has
+          # nothing to do with that provider - not to get a red harness out the door.
+          if [[ "$FIRST_LINE" == *"--skip-core-test"* ]]; then
+            echo "::warning::--skip-core-test found in the commit subject: the provider harness (test-core) will not run for this release. All other test jobs still gate it."
+            echo "skip-core-test=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip-core-test=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Validate admin permission for skip_tests
@@ -140,6 +167,104 @@ jobs:
           chmod +x .github/workflows/scripts/validate-schema-sync.sh
           .github/workflows/scripts/validate-schema-sync.sh
 
+  # Builds the UI and the bifrost-http binary ONCE, and publishes the binary as
+  # an artifact for every test job that just needs a runnable gateway.
+  #
+  # Before this job existed, nine jobs each built it themselves. Measured on a
+  # cli-harness leg: `make build-ui` ~54s, `go build` on bifrost-http ~2m30s -
+  # so ~3.5 minutes x 9 jobs, ~30 runner-minutes of duplicated work per run.
+  # Consumers now download this artifact and pass SKIP_GATEWAY_BUILD=1, which
+  # every build helper honours (harness-gateway.sh, test-api-integrations.sh,
+  # cost-accuracy-test.sh, run-migration-tests.sh; load-test.sh already skips
+  # when tmp/bifrost-http is present).
+  #
+  # test-core deliberately does NOT depend on this job. It is the pipeline's
+  # longest job (~54m) and therefore its critical path, so making it wait for a
+  # build it can do concurrently would push the whole run out by ~4 minutes.
+  # It keeps its inline harness_build_gateway call.
+  #
+  # Gating is the union of the consumers' own conditions - if it were narrower,
+  # a consumer could run with no artifact to download and fail at the download
+  # step rather than falling back to building.
+  build-gateway:
+    needs: [check-skip, detect-changes]
+    if: |
+      needs.check-skip.outputs.should-skip != 'true' &&
+      needs.check-skip.outputs.skip-tests != 'true' &&
+      (
+        needs.detect-changes.outputs.core-needs-release == 'true' ||
+        needs.detect-changes.outputs.framework-needs-release == 'true' ||
+        needs.detect-changes.outputs.plugins-need-release == 'true' ||
+        needs.detect-changes.outputs.bifrost-http-needs-release == 'true' ||
+        needs.detect-changes.outputs.docker-needs-release == 'true'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: block
+          # Build-only: the Go module proxy, the npm registry and the Node/Go
+          # toolchain downloads. No provider hosts - nothing is executed here.
+          allowed-endpoints: >
+            api.github.com:443
+            azure.archive.ubuntu.com:80
+            esm.ubuntu.com:443
+            fonts.googleapis.com:443
+            fonts.gstatic.com:443
+            github.com:443
+            iojs.org:443
+            nodejs.org:443
+            objects.githubusercontent.com:443
+            proxy.golang.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.26.5"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      - name: Build UI and bifrost-http binary
+        run: |
+          # The workspace must exist before the build so the transport resolves
+          # core/framework/plugins from the checkout rather than the proxy.
+          source ./.github/workflows/scripts/setup-go-workspace.sh
+          echo "🎨 Building UI..."
+          make build-ui
+          echo "🔨 Building bifrost-http binary..."
+          mkdir -p tmp
+          (cd transports/bifrost-http && go build -o ../../tmp/bifrost-http .)
+          ls -lh tmp/bifrost-http
+
+      - name: Upload bifrost-http binary
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp/bifrost-http
+          # Consumed within the same run only; no reason to keep it around.
+          retention-days: 1
+          if-no-files-found: error
+          # A ~100MB Go binary compresses poorly, and the CPU spent on level 6
+          # costs more than the bytes it saves on the intra-run round trip.
+          compression-level: 1
+
   # Run all tests in parallel before any releases
   #
   # test-core no longer runs the core module's `go test` suite. It validates the
@@ -157,6 +282,7 @@ jobs:
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
+      needs.check-skip.outputs.skip-core-test != 'true' &&
       (
         needs.detect-changes.outputs.core-needs-release == 'true' ||
         needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
@@ -194,6 +320,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.tokenfactory.nebius.com:443
             api.x.ai:443
             azure.archive.ubuntu.com:80
             esm.ubuntu.com:443
@@ -305,6 +432,8 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
           BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/test-core.sh
 
       - name: Upload provider harness reports
@@ -352,7 +481,7 @@ jobs:
             tmp/provider-harness-report
 
   test-core-integrations:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.core-needs-release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -381,6 +510,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.tokenfactory.nebius.com:443
             api.x.ai:443
             azure.archive.ubuntu.com:80
             esm.ubuntu.com:443
@@ -429,8 +559,24 @@ jobs:
         with:
           node-version: "25"
 
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
+      # Backs config.json's sse_mcp client, which test-integrations.sh starts on
+      # localhost:3012. Replaces the decommissioned hosted endpoint that config
+      # used to reference through MCP_SSE_URL.
+      - name: Build MCP test servers
+        run: make setup-mcp-tests
+
       - name: Run core integration tests
         env:
+          SKIP_GATEWAY_BUILD: "1"
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
@@ -466,6 +612,8 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: ./.github/workflows/scripts/test-integrations.sh
 
   test-core-unit:
@@ -489,6 +637,26 @@ jobs:
         with:
           go-version: "1.26.5"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "25"
+
+      # core/internal/mcptests drives real STDIO MCP servers as child processes.
+      # fixtures.go's InitMCPServerPaths only computes their paths
+      # (examples/mcps/<name>/bin/<name>, .../dist/index.js) - nothing builds
+      # them. Without this step every STDIO-backed case fails with "MCP client
+      # ... is disconnected", and the agent permission tests fail one step
+      # removed, counting an un-executed tool as still pending approval.
+      - name: Build MCP test servers
+        run: make setup-mcp-tests
+
+      # No MCP_HTTP_URL / MCP_SSE_URL here on purpose. The remote-transport
+      # cases boot examples/mcps/remote-test-server in-process (TestMain in
+      # core/internal/mcptests/remoteserver_test.go) and point themselves at
+      # localhost, so this job needs no secret and no extra egress entry.
+      # Setting those vars here would do nothing - the local server wins unless
+      # MCP_USE_REMOTE=1 is also set.
       - name: Run core unit tests
         working-directory: core
         run: |
@@ -634,7 +802,7 @@ jobs:
   # total/done/pass/fail); each suite's verbose output is redirected to
   # tmp/cli-harness-<cli>.log and uploaded with the reports below.
   test-cli-harness:
-    needs: [check-skip, detect-changes, resolve-cli-versions]
+    needs: [check-skip, detect-changes, resolve-cli-versions, build-gateway]
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
@@ -681,8 +849,16 @@ jobs:
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             api.anthropic.com:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
             api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
             api.openai.com:443
+            api.parasail.io:443
+            api.tokenfactory.nebius.com:443
             azure.archive.ubuntu.com:80
             esm.ubuntu.com:443
             bedrock-runtime.us-east-1.amazonaws.com:443
@@ -690,10 +866,12 @@ jobs:
             bifrost-gateway-resource.openai.azure.com:443
             fonts.googleapis.com:443
             fonts.gstatic.com:443
+            generativelanguage.googleapis.com:443
             getbifrost.ai:443
             github.com:443
             iojs.org:443
             files.pythonhosted.org:443
+            openrouter.ai:443
             pypi.org:443
             models.dev:443
             nodejs.org:443
@@ -727,8 +905,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
+      # Built once by build-gateway. All three legs share the same binary, so a
+      # regression can never be blamed on one leg having linked a different one.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      # upload-artifact does not preserve the executable bit.
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run CLI harness
         env:
+          # Tells harness_build_gateway to use tmp/bifrost-http as-is.
+          SKIP_GATEWAY_BUILD: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Azure serves both the GPT and the Claude legs of the matrix from one
@@ -752,6 +944,24 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           # Resolved fresh by resolve-cli-versions on every run; the constants
           # in test-cli-harness.sh only apply if that job had to fall back.
           CLAUDE_CODE_VERSION: ${{ matrix.claude }}
@@ -816,14 +1026,24 @@ jobs:
           allowed-endpoints: >
             _grpc_config.cluster.qdrant.io:443
             _grpc_config.localhost:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
             api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.parasail.io:443
+            api.tokenfactory.nebius.com:443
             auth.docker.io:443
             cluster.qdrant.io:443
             cluster.weaviate.network:443
             codecov.io:443
             dl-cdn.alpinelinux.org:443
+            generativelanguage.googleapis.com:443
             ghcr.io:443
             github.com:443
+            openrouter.ai:443
             pkg-containers.githubusercontent.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
@@ -895,6 +1115,13 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-framework.sh
 
   test-plugins:
@@ -915,6 +1142,16 @@ jobs:
             _https._tcp.dl.google.com:443
             _https._tcp.motd.ubuntu.com:443
             _https._tcp.packages.microsoft.com:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.parasail.io:443
+            api.tokenfactory.nebius.com:443
+            generativelanguage.googleapis.com:443
+            openrouter.ai:443
             production.cloudfront.docker.com:443
             dl.google.com:443
             api.github.com:443
@@ -1003,10 +1240,17 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
   test-bifrost-http:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -1029,6 +1273,15 @@ jobs:
             172.38.0.11:5432
             172.38.0.12:8080
             172.38.0.12:8301
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.parasail.io:443
+            api.tokenfactory.nebius.com:443
+            generativelanguage.googleapis.com:443
             iojs.org:443
             api.github.com:443
             auth.docker.io:443
@@ -1041,6 +1294,7 @@ jobs:
             getbifrost.ai:443
             github.com:443
             nodejs.org:443
+            openrouter.ai:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1082,8 +1336,22 @@ jobs:
             docker compose version
           fi
 
+      # This job still compiles the transports module itself (`go build ./...`
+      # and `go test --race`) - those are real gates, not duplicated work. The
+      # artifact only replaces the final integration binary, and lets the script
+      # stub the embedded ui/ directory instead of running a full npm build.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run bifrost-http tests
         env:
+          SKIP_GATEWAY_BUILD: "1"
           MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
           MAXIM_LOGGER_ID: ${{ secrets.MAXIM_LOG_REPO_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -1092,7 +1360,7 @@ jobs:
 
   # Migration tests - validates database migrations from previous versions
   test-migrations:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -1116,13 +1384,23 @@ jobs:
             172.38.0.12:8080
             172.38.0.12:8301
             api.anthropic.com:443
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
             api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
             api.openai.com:443
+            api.parasail.io:443
+            api.tokenfactory.nebius.com:443
             auth.docker.io:443
             downloads.getmaxim.ai:443
+            generativelanguage.googleapis.com:443
             getbifrost.ai:443
             github.com:443
             nodejs.org:443
+            openrouter.ai:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1161,7 +1439,20 @@ jobs:
             docker compose version
           fi
 
+      # Only the "current version" binary comes from here; the previous-version
+      # binaries this job migrates from are still downloaded per release.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run migration tests
+        env:
+          SKIP_GATEWAY_BUILD: "1"
         run: |
           chmod +x ./.github/workflows/scripts/run-migration-tests.sh
           ./.github/workflows/scripts/run-migration-tests.sh postgres
@@ -1169,7 +1460,7 @@ jobs:
   # API integrations tests - compiles bifrost-http, runs against Postgres with
   # tests/config.json, executes the api-management newman collection.
   test-api-integrations:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -1195,6 +1486,7 @@ jobs:
             172.38.0.11:5432
             172.38.0.12:8080
             172.38.0.12:8301
+            api.tokenfactory.nebius.com:443
             iojs.org:443
             api.anthropic.com:443
             api.cerebras.ai:443
@@ -1270,9 +1562,19 @@ jobs:
             docker compose version
           fi
 
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run API integrations test
         env:
           CI: "1"
+          SKIP_GATEWAY_BUILD: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -1302,6 +1604,8 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-api-integrations.sh
           ./.github/workflows/scripts/test-api-integrations.sh
@@ -1316,7 +1620,7 @@ jobs:
 
   # Cost accuracy test - validates logged LLM costs against provider usage
   test-cost-accuracy:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
@@ -1340,12 +1644,22 @@ jobs:
             127.0.0.1:8000
             127.0.0.1:8080
             172.38.0.11:5432
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
             api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.parasail.io:443
+            api.tokenfactory.nebius.com:443
             auth.docker.io:443
             codeload.github.com:443
+            generativelanguage.googleapis.com:443
             getbifrost.ai:443
             github.com:443
             objects.githubusercontent.com:443
+            openrouter.ai:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1374,8 +1688,20 @@ jobs:
         with:
           go-version: "1.26.5"
 
+      # This job still builds the mocker/hitter binaries from
+      # bifrost-benchmarking itself - only bifrost-http comes prebuilt.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
+
       - name: Run cost accuracy test
         env:
+          SKIP_GATEWAY_BUILD: "1"
           BENCHMARK_DIR: ${{ github.workspace }}/bifrost-benchmarking
         run: |
           chmod +x ./.github/workflows/scripts/cost-accuracy-test.sh
@@ -1391,7 +1717,7 @@ jobs:
 
   # Non-blocking load performance test - runs streaming and non-streaming load flows
   test-load-performance:
-    needs: [check-skip, detect-changes]
+    needs: [check-skip, detect-changes, build-gateway]
     if: |
       needs.check-skip.outputs.should-skip != 'true' &&
       needs.check-skip.outputs.skip-tests != 'true' &&
@@ -1415,13 +1741,23 @@ jobs:
           allowed-endpoints: >
             127.0.0.1:8000
             127.0.0.1:8080
+            api.cerebras.ai:443
+            api.cohere.ai:443
+            api.deepseek.com:443
+            api.elevenlabs.io:443
             api.github.com:443
+            api.groq.com:443
+            api.mistral.ai:443
+            api.parasail.io:443
+            api.tokenfactory.nebius.com:443
             bedrock.us-east-1.amazonaws.com:443
             codeload.github.com:443
+            generativelanguage.googleapis.com:443
             getbifrost.ai:443
             github.com:443
             huggingface.co:443
             objects.githubusercontent.com:443
+            openrouter.ai:443
             proxy.golang.org:443
             release-assets.githubusercontent.com:443
             storage.googleapis.com:443
@@ -1446,6 +1782,17 @@ jobs:
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.26.5"
+
+      # load-test.sh's build_bifrost_http already no-ops when tmp/bifrost-http
+      # is present, so this download is all that is needed here.
+      - name: Download prebuilt bifrost-http binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: bifrost-http-binary
+          path: tmp
+
+      - name: Make bifrost-http executable
+        run: chmod +x tmp/bifrost-http
 
       - name: Run load performance test
         env:
@@ -1498,6 +1845,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1506,6 +1854,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.tokenfactory.nebius.com:443
             api.x.ai:443
             auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
@@ -1588,6 +1937,9 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/amd64
@@ -1626,6 +1978,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.deepseek.com:443
             api.elevenlabs.io:443
             api.github.com:443
             api.groq.com:443
@@ -1634,6 +1987,7 @@ jobs:
             api.parasail.io:443
             api.perplexity.ai:443
             api.replicate.com:443
+            api.tokenfactory.nebius.com:443
             api.x.ai:443
             auth.docker.io:443
             bedrock-mantle.us-east-1.api.aws:443
@@ -1716,6 +2070,9 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
           AWS_ARN: ${{ secrets.AWS_ARN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+          RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
         run: |
           chmod +x ./.github/workflows/scripts/test-docker-image.sh
           ./.github/workflows/scripts/test-docker-image.sh linux/arm64

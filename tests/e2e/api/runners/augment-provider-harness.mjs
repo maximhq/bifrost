@@ -8,7 +8,7 @@ import { buildPromptCachingHitVerificationItems } from "./lib/prompt-caching-ext
 import { buildMidConvSystemCacheParityFolder } from "./lib/midconv-system-cache-parity.mjs";
 import { buildCrossProviderCacheMatrixFolder } from "./lib/crossprovider-cache-matrix.mjs";
 import { buildDirectCacheParityFolder } from "./lib/direct-cache-parity.mjs";
-import { injectChainedBodyGuards } from "./lib/chained-vars.mjs";
+import { injectChainedVarGuards } from "./lib/chained-vars.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -370,13 +370,14 @@ const CACHING_PREFIX = "Prompt caching hit-verification:";
 cachingFolder.item = (cachingFolder.item || []).filter((entry) => !(entry.name || "").startsWith(CACHING_PREFIX));
 cachingFolder.item.push(...cachingItems);
 
-// Last pass, over hand-written and generated items alike: any request whose raw body drops in a
-// variable that an EARLIER request's test script computed gets a pre-request guard. Without it an
-// unset variable leaves the literal "{{var}}" in the body and the provider answers 400 "Invalid
-// JSON", which reads as a defect in the consumer rather than in whatever actually broke upstream.
+// Last pass, over hand-written and generated items alike: any request whose raw body OR URL drops
+// in a variable that an EARLIER request's test script computed gets a pre-request guard. Without
+// it an unset variable leaves the literal "{{var}}" in place - a 400 "Invalid JSON" from a body,
+// or a percent-encoded "%7B%7Bid%7D%7D" path segment the provider rejects as a malformed id -
+// which reads as a defect in the consumer rather than in whatever actually broke upstream.
 // See lib/chained-vars.mjs.
-const guardedCount = injectChainedBodyGuards(collection);
+const guardedCount = injectChainedVarGuards(collection);
 
 writeFileSync(out, `${JSON.stringify(collection, null, 2)}\n`);
 const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0) + cachingItems.length;
-console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests, ${guardedCount} chained-body guards`);
+console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests, ${guardedCount} chained-var guards`);

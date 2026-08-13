@@ -2,11 +2,15 @@
 //
 // Several flows in this collection pass state between requests through collection variables:
 // one request's TEST script computes a value and pm.collectionVariables.set()s it, and a LATER
-// request drops it into its raw body as a bare {{var}} (see the token parity matrix's
-// _r2body/_r3body rounds, the reasoning-replay pairs, the Vertex batch upload -> create pair).
+// request drops it in as a bare {{var}} - either in its raw body (the token parity matrix's
+// _r2body/_r3body rounds, the reasoning-replay pairs, the Vertex batch upload -> create pair)
+// or in its URL (the Responses lifecycle rows, whose create captures a resp_ id that the
+// retrieve/stream-retrieve/delete rows carry in the path; those are GET/DELETE with no body
+// at all, so a body-only scan sees no dependency and leaves the chain unguarded and splittable).
 //
-// Postman has no notion of that link, and an unset variable is not an error: the literal
-// "{{var}}" simply stays in the body and the provider answers 400 "Invalid JSON" in ~1ms. That
+// Postman has no notion of that link, and an unset variable is not an error. In a body the
+// literal "{{var}}" stays put and the provider answers 400 "Invalid JSON" in ~1ms; in a URL it
+// is percent-encoded into a valid-looking path and the provider rejects the id itself. Either
 // failure names the CONSUMER, not the producer that actually broke, so one upstream 404 shows up
 // as three parity failures. Two callers use this module to make the link explicit:
 //
@@ -45,6 +49,21 @@ export function rawBodyOf(item) {
   return typeof raw === "string" ? raw : "";
 }
 
+// Every string on a request that Postman resolves {{var}} templates in, as one array to scan.
+// A URL is either a plain string or an object, and the object form carries a pre-joined `raw`
+// alongside exploded host/path/query. Neither half is load-bearing: hand-written rows in the
+// collection tend to have both, programmatically built ones may have only the exploded parts,
+// and the two can disagree. Scanning all of them and de-duplicating by variable name (the
+// caller keys a Map) is cheaper than deciding which one to trust.
+export function templateSourcesOf(item) {
+  const url = item.request?.url;
+  if (typeof url === "string") return [rawBodyOf(item), url];
+  const query = (url?.query || []).flatMap((q) => [q?.key, q?.value]);
+  return [rawBodyOf(item), url?.raw, ...(url?.host || []), ...(url?.path || []), ...query].filter(
+    (s) => typeof s === "string"
+  );
+}
+
 // Variables this item's scripts write. Used both to build the producer index and to exclude
 // self-references: a request that sets and reads the same variable is not chained to anything.
 export function varsSetBy(item) {
@@ -72,7 +91,7 @@ export function buildProducerIndex(entries) {
   return index;
 }
 
-// Variables this item's raw body drops in that are produced by ANOTHER request's script.
+// Variables this item drops into its body or URL that are produced by ANOTHER request's script.
 // Returns [{ variable, producer, producerItem }] sorted by variable name for stable output,
 // where `producer` is the producing request's name (for logs and guard messages) and
 // `producerItem` is the request itself. Callers that need to act on the producer - pulling it
@@ -81,14 +100,16 @@ export function buildProducerIndex(entries) {
 //
 // The self-check compares object identity rather than names for the same reason: a different
 // request that merely shares this one's name is a real dependency, not self-reference.
-export function bodyDependencies(item, producerIndex) {
+export function chainedDependencies(item, producerIndex) {
   const own = varsSetBy(item);
   const deps = new Map();
-  for (const m of rawBodyOf(item).matchAll(TEMPLATE_RE)) {
-    const name = m[1];
-    if (own.has(name)) continue;
-    const producer = producerIndex.get(name);
-    if (producer && producer !== item) deps.set(name, producer);
+  for (const source of templateSourcesOf(item)) {
+    for (const m of source.matchAll(TEMPLATE_RE)) {
+      const name = m[1];
+      if (own.has(name)) continue;
+      const producer = producerIndex.get(name);
+      if (producer && producer !== item) deps.set(name, producer);
+    }
   }
   return [...deps.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -97,29 +118,29 @@ export function bodyDependencies(item, producerIndex) {
 
 // Marker on the injected pre-request script, so re-running the augment step over a collection
 // that already carries guards replaces them instead of stacking a second copy.
-const GUARD_MARKER = "// [chained-body-guard]";
+const GUARD_MARKER = "// [chained-var-guard]";
 
-// The guard itself. It cannot live in the request body (a raw body is a dumb string
-// substitution with no failure mode), so it runs as a pre-request script: if any variable the
-// body needs is still missing or still template-shaped, record ONE clearly-named failed
-// assertion naming the producer, then skip the request instead of shipping "{{var}}" to a
-// provider as if it were JSON. Asserting rather than silently skipping is deliberate - a
-// chain that never ran must not let the suite go green.
+// The guard itself. It cannot live in the body or URL (both are dumb string substitutions with
+// no failure mode), so it runs as a pre-request script: if any variable the request needs is
+// still missing or still template-shaped, record ONE clearly-named failed assertion naming the
+// producer, then skip the request instead of shipping "{{var}}" to a provider as if it were a
+// real value. Asserting rather than silently skipping is deliberate - a chain that never ran
+// must not let the suite go green.
 function guardScript(deps, itemName) {
   const vars = JSON.stringify(deps.map((d) => d.variable));
   const producers = JSON.stringify(deps.map((d) => `${d.variable} <- "${d.producer}"`).join("; "));
-  const label = JSON.stringify(`${itemName}: skipped - prerequisite request did not set its body variable`);
+  const label = JSON.stringify(`${itemName}: skipped - prerequisite request did not set its chained variable`);
   return [
     GUARD_MARKER,
     `var __cbgMissing = ${vars}.filter(function (name) {`,
     "  var v = pm.collectionVariables.get(name);",
     // A leading "{{" means a prior pass wrote the template back, or the value is itself
-    // unresolved - either way the body cannot be valid JSON.
+    // unresolved - either way the request cannot be well formed.
     '  return v === undefined || v === null || v === "" || /^\\s*\\{\\{/.test(String(v));',
     "});",
     "if (__cbgMissing.length) {",
     `  pm.test(${label}, function () {`,
-    `    pm.expect(__cbgMissing, "unresolved body variable(s); produced by: " + ${producers}).to.eql([]);`,
+    `    pm.expect(__cbgMissing, "unresolved chained variable(s); produced by: " + ${producers}).to.eql([]);`,
     "  });",
     // Feature-detected the same way the model-catalog collection does it - older sandboxes
     // have no pm.execution, and there the request still goes out; the assertion above is what
@@ -129,15 +150,15 @@ function guardScript(deps, itemName) {
   ];
 }
 
-// Injects a guard on every request whose raw body consumes another request's script-set
+// Injects a guard on every request whose body or URL consumes another request's script-set
 // variable. Returns the number of requests guarded.
-export function injectChainedBodyGuards(collection) {
+export function injectChainedVarGuards(collection) {
   const entries = walkRequests(collection.item);
   const producerIndex = buildProducerIndex(entries);
   let guarded = 0;
 
   for (const { item } of entries) {
-    const deps = bodyDependencies(item, producerIndex);
+    const deps = chainedDependencies(item, producerIndex);
     if (!deps.length) continue;
 
     // Prepend to any existing pre-request script rather than adding a second prerequest event:

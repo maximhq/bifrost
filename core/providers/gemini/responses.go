@@ -2625,28 +2625,54 @@ func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.Respon
 		return nil
 	}
 
-	toolChoice := &schemas.ResponsesToolChoiceStruct{
-		Type: schemas.ResponsesToolChoiceTypeFunction,
-	}
+	// Type must describe the KIND of choice. It was hardcoded to "function", which tells every
+	// downstream converter "a specific function is being forced" and makes them demand a name -
+	// so AUTO, NONE and a nameless ANY all produced
+	// "Missing required parameter: 'tool_choice.name'". Mode and Type are also mutually
+	// exclusive downstream: emitting both on a forced function yields
+	// "Unknown parameter: 'tool_choice.mode'". See toolconfigforcedchoice_test.go.
+	toolChoice := &schemas.ResponsesToolChoiceStruct{}
+	names := toolConfig.FunctionCallingConfig.AllowedFunctionNames
 
 	switch toolConfig.FunctionCallingConfig.Mode {
-	case FunctionCallingConfigModeAuto:
-		toolChoice.Mode = schemas.Ptr("auto")
 	case FunctionCallingConfigModeAny:
 		toolChoice.Mode = schemas.Ptr("required")
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeRequired
 	case FunctionCallingConfigModeNone:
 		toolChoice.Mode = schemas.Ptr("none")
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeNone
+	case FunctionCallingConfigModeAuto:
+		toolChoice.Mode = schemas.Ptr("auto")
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeAuto
 	default:
 		toolChoice.Mode = schemas.Ptr("auto")
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeAuto
 	}
 
-	if toolConfig.FunctionCallingConfig.AllowedFunctionNames != nil {
-		for _, functionName := range toolConfig.FunctionCallingConfig.AllowedFunctionNames {
+	if names != nil {
+		for _, functionName := range names {
 			toolChoice.Tools = append(toolChoice.Tools, schemas.ResponsesToolChoiceAllowedToolDef{
 				Type: string(schemas.ResponsesToolTypeFunction),
 				Name: schemas.Ptr(functionName),
 			})
 		}
+		// Under ANY the names compel a call; under AUTO they only restrict what MAY be called,
+		// so only ANY narrows the type away from a bare mode.
+		if toolConfig.FunctionCallingConfig.Mode == FunctionCallingConfigModeAny {
+			toolChoice.Type = schemas.ResponsesToolChoiceTypeAllowedTools
+		}
+	}
+
+	// Mode ANY with exactly one allowed name is Gemini's spelling of "you must call this
+	// function", which is a named forced choice rather than an allowed-tools list. Mode is
+	// cleared here because a forced function carries a name instead of a mode.
+	if toolConfig.FunctionCallingConfig.Mode == FunctionCallingConfigModeAny && len(names) == 1 {
+		toolChoice.Type = schemas.ResponsesToolChoiceTypeFunction
+		toolChoice.Name = schemas.Ptr(names[0])
+		// A forced function carries a name instead of a mode, and instead of an allowed-tools
+		// list: sending both yields "Unknown parameter: 'tool_choice.tools'".
+		toolChoice.Mode = nil
+		toolChoice.Tools = nil
 	}
 
 	return &schemas.ResponsesToolChoice{
@@ -3401,11 +3427,24 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 			}
 		}
 
+		// Name and Tools describe the SAME allowed set - Name is the forced single function,
+		// Tools the allowed list - and a forced choice legitimately carries both (allowed set
+		// {X}, forced X). Appending them blindly duplicated the name, so collect through a seen
+		// set and keep first-seen order.
+		seen := make(map[string]struct{}, len(ext.Tools)+1)
+		appendAllowed := func(name string) {
+			if _, dup := seen[name]; dup {
+				return
+			}
+			seen[name] = struct{}{}
+			funcConfig.AllowedFunctionNames = append(funcConfig.AllowedFunctionNames, name)
+		}
+
 		if ext.Name != nil {
 			if ext.Mode == nil {
 				funcConfig.Mode = FunctionCallingConfigModeAny
 			}
-			funcConfig.AllowedFunctionNames = []string{*ext.Name}
+			appendAllowed(*ext.Name)
 		}
 
 		if len(ext.Tools) > 0 {
@@ -3414,7 +3453,7 @@ func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice)
 			}
 			for _, tool := range ext.Tools {
 				if tool.Name != nil {
-					funcConfig.AllowedFunctionNames = append(funcConfig.AllowedFunctionNames, *tool.Name)
+					appendAllowed(*tool.Name)
 				}
 			}
 		}
@@ -3949,10 +3988,13 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock,
 
 			// Handle FileURL (URI-based file)
 			if fileBlock.FileURL != nil {
-				// Only set MIMEType when the caller provided one
+				// Prefer the caller's MIMEType; otherwise take whatever the URI itself states.
+				// Vertex rejects a fileData with no mimeType outright - see mimeTypeFromURI.
 				fileData := &FileData{FileURI: *fileBlock.FileURL}
 				if fileBlock.FileType != nil {
 					fileData.MIMEType = *fileBlock.FileType
+				} else {
+					fileData.MIMEType = mimeTypeFromURI(*fileBlock.FileURL)
 				}
 				return &Part{FileData: fileData}, nil
 			}

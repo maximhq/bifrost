@@ -1791,6 +1791,72 @@ var grokReasoningModels = []string{
 	"grok-code-fast-1",
 }
 
+// grokDateSuffixRe matches xAI's 4-digit MMDD release suffix, e.g. "grok-4-0709".
+// SplitModelAndVersion does not cover this: it only knows 8-digit Anthropic dates
+// and "v"-prefixed tags, both of which deliberately skip bare 4-digit segments.
+var grokDateSuffixRe = regexp.MustCompile(`-\d{4}$`)
+
+// normalizeGrokModel reduces a model id to the bare xAI model name so it can be
+// compared exactly rather than by substring. Substring matching is what made the
+// reasoning_effort rule misfire: "grok-4" is a prefix of "grok-4.5", "grok-4.6"
+// and "grok-4.20-*", so a rule written for the grok-4 leaf silently captured the
+// entire later lineup.
+func normalizeGrokModel(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	// Drop any routing prefix, e.g. "xai/grok-4.6" or "openrouter/x-ai/grok-4.6".
+	if idx := strings.LastIndex(m, "/"); idx != -1 {
+		m = m[idx+1:]
+	}
+	m = strings.TrimSuffix(m, "-latest")
+	return grokDateSuffixRe.ReplaceAllString(m, "")
+}
+
+// grokModelsWithoutReasoningEffort lists the Grok reasoning models that do NOT
+// accept reasoning_effort. This is a deny-list on purpose: xAI ships new models
+// far faster than this list can be maintained, and the two failure modes are not
+// symmetric. Sending effort to a model that rejects it surfaces as a 400 the
+// caller can see and act on; silently dropping it yields a successful response at
+// the wrong reasoning depth, wrong cost and wrong latency, with no signal at all.
+// Fail open, and only list models we have positively confirmed reject it.
+//
+// Confirmed to SUPPORT reasoning_effort (https://docs.x.ai/docs/guides/reasoning):
+//   - grok-4.6            low | medium | high (default) | xhigh
+//   - grok-4.5            low | medium | high (default); xhigh is coerced to high upstream
+//   - grok-4.20-multi-agent  low | medium | high | xhigh (selects agent count, not depth)
+var grokModelsWithoutReasoningEffort = map[string]struct{}{
+	"grok-3":                  {}, // not a reasoning model; xAI lists it separately from them
+	"grok-4":                  {},
+	"grok-4-fast-reasoning":   {},
+	"grok-4-1-fast-reasoning": {},
+	"grok-code-fast-1":        {},
+}
+
+// SupportsGrokReasoningEffort reports whether a Grok model accepts reasoning_effort.
+// Unknown models are allowed through; see grokModelsWithoutReasoningEffort.
+func SupportsGrokReasoningEffort(model string) bool {
+	_, denied := grokModelsWithoutReasoningEffort[normalizeGrokModel(model)]
+	return !denied
+}
+
+// grokModelsWithXHighReasoningEffort lists the Grok models that accept the "xhigh"
+// effort tier. Unlike the deny-list above this is an allow-list, because the safe
+// fallback here is a real value ("high") rather than dropping the field: a model
+// that does not know "xhigh" would 400 on it.
+//
+// grok-4.5 is deliberately absent. xAI documents it as accepting "xhigh" but
+// treating it as "high", so downgrading locally matches upstream behaviour exactly
+// while keeping the request honest about what it asked for.
+var grokModelsWithXHighReasoningEffort = map[string]struct{}{
+	"grok-4.6":              {},
+	"grok-4.20-multi-agent": {},
+}
+
+// SupportsGrokXHighReasoningEffort reports whether a Grok model accepts effort "xhigh".
+func SupportsGrokXHighReasoningEffort(model string) bool {
+	_, ok := grokModelsWithXHighReasoningEffort[normalizeGrokModel(model)]
+	return ok
+}
+
 // IsGrokReasoningModel checks if the given model is a grok reasoning model
 func IsGrokReasoningModel(model string) bool {
 	// Check if the model matches any of the reasoning models

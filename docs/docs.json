@@ -1757,17 +1757,18 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v1.6.10",
               "changelogs/v1.6.9",
               "changelogs/v1.6.8",
               {
                 "group": "July 2026",
                 "pages": [
+                  "changelogs/v2.0.0-prerelease2",
+                  "changelogs/v2.0.0-prerelease1",
                   "changelogs/v1.6.7",
                   "changelogs/v1.6.6",
-                  "changelogs/v2.0.0-prerelease2",
-                  "changelogs/v1.6.5-opus-5",
                   "changelogs/v1.6.5",
-                  "changelogs/v2.0.0-prerelease1",
+                  "changelogs/v1.6.5-opus-5",
                   "changelogs/v1.6.4",
                   "changelogs/v1.6.3",
                   "changelogs/v1.6.2"
@@ -1965,6 +1966,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v1.5.10",
               "changelogs/ent-v1.5.9",
               "changelogs/ent-v1.5.8",
               {
