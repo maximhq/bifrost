@@ -16,6 +16,14 @@ func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider s
 	return mc.datasheet.GetCapabilityEntry(model, provider)
 }
 
+// GetCatalogPricingOverrides returns the scoped pricing overrides relevant to
+// a management-catalog row: the global/provider-scope winner for mode (the
+// pricing the UI shows as overridden) plus every override matching
+// (model, provider) for informational display.
+func (mc *ModelCatalog) GetCatalogPricingOverrides(model string, provider schemas.ModelProvider, mode string) CatalogPricingOverrides {
+	return mc.datasheet.CatalogPricingOverrides(model, provider, mode)
+}
+
 // IsRequestTypeSupported preserves the historical (model, provider,
 // requestType) signature; provider is ignored (the underlying datasheet
 // index is keyed by model only).
