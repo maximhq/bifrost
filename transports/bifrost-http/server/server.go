@@ -1984,6 +1984,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if governanceEmbeddingPlugin, ok := plugin.(governance.EmbeddingExecutorSetter); ok {
 		governanceEmbeddingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
+	if governanceWarmupObserverPlugin, ok := plugin.(governance.WarmupEmbedUsageObserverSetter); ok {
+		governanceWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.observeWarmupRoutingEmbedding)
+	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
@@ -2241,6 +2244,19 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		handlers.SendError(ctx, fasthttp.StatusNotFound, "Route not found: "+string(ctx.Path()))
 	}
 	return nil
+}
+
+// observeWarmupRoutingEmbedding forwards semantic-routing warmup embedding
+// usage from the governance plugin to the telemetry plugin's routing overhead
+// counters. The telemetry plugin is resolved per call (warmup is rare — boot
+// and config changes only) so a reloaded telemetry instance, with its fresh
+// registry, is picked up without re-wiring governance.
+func (s *BifrostHTTPServer) observeWarmupRoutingEmbedding(provider, model string, inputTokens int) {
+	plugin, err := lib.FindPluginAs[*telemetry.PrometheusPlugin](s.Config, telemetry.PluginName)
+	if err != nil || plugin == nil {
+		return
+	}
+	plugin.ObserveWarmupRoutingEmbedding(provider, model, inputTokens)
 }
 
 // RegisterUIRoutes registers the UI handler with the specified router
@@ -2603,6 +2619,13 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	governanceEmbeddingPlugin, err := lib.FindPluginAs[governance.EmbeddingExecutorSetter](s.Config, s.getGovernancePluginName())
 	if err == nil && governanceEmbeddingPlugin != nil {
 		governanceEmbeddingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
+	// Route semantic-routing warmup embedding usage to the telemetry counters.
+	// Warmup embeds have no request/response, so they cannot ride the
+	// RoutingDebug stamp path that per-request classification embeds use.
+	governanceWarmupObserverPlugin, err := lib.FindPluginAs[governance.WarmupEmbedUsageObserverSetter](s.Config, s.getGovernancePluginName())
+	if err == nil && governanceWarmupObserverPlugin != nil {
+		governanceWarmupObserverPlugin.SetWarmupEmbedUsageObserver(s.observeWarmupRoutingEmbedding)
 	}
 
 	// Initialize Sidekiq runner for background jobs

@@ -1,11 +1,17 @@
 package governance
 
 import (
+	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +55,7 @@ func TestGenerateEmbeddingDecodesAllEncodings(t *testing.T) {
 
 			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 			defer ctx.Cancel()
-			vector, tokens, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "hello")
+			vector, tokens, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "hello", requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, vector)
 			assert.Equal(t, 42, tokens)
@@ -78,7 +84,7 @@ func TestGenerateEmbeddingRequestShape(t *testing.T) {
 	callerDeadline := before.Add(50 * cfg.Timeout)
 	ctx := schemas.NewBifrostContext(t.Context(), callerDeadline)
 	defer ctx.Cancel()
-	_, _, err := plugin.generateEmbedding(ctx, cfg, "classify me")
+	_, _, err := plugin.generateEmbedding(ctx, cfg, "classify me", requestEmbeddingTimeout(cfg))
 	require.NoError(t, err)
 
 	require.NotNil(t, gotReq)
@@ -116,7 +122,7 @@ func TestGenerateEmbeddingsBatchesAndRestoresInputOrder(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	defer ctx.Cancel()
-	embeddings, tokens, err := plugin.generateEmbeddings(ctx, testEmbeddingSemanticConfig(), []string{"first", "second"})
+	embeddings, tokens, err := plugin.generateEmbeddings(ctx, testEmbeddingSemanticConfig(), []string{"first", "second"}, requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 	require.NoError(t, err)
 	assert.Equal(t, [][]float32{{1, 0}, {0, 1}}, embeddings)
 	assert.Equal(t, 7, tokens)
@@ -132,7 +138,7 @@ func TestGenerateEmbeddingsSignalsUnsupportedBatchShape(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	defer ctx.Cancel()
-	_, _, err := plugin.generateEmbeddings(ctx, testEmbeddingSemanticConfig(), []string{"first", "second"})
+	_, _, err := plugin.generateEmbeddings(ctx, testEmbeddingSemanticConfig(), []string{"first", "second"}, requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, complexity.ErrBatchEmbeddingsUnsupported))
 }
@@ -156,7 +162,7 @@ func TestGenerateEmbeddingTimeoutCancelsCall(t *testing.T) {
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	defer ctx.Cancel()
 	start := time.Now()
-	_, _, err := plugin.generateEmbedding(ctx, cfg, "slow")
+	_, _, err := plugin.generateEmbedding(ctx, cfg, "slow", requestEmbeddingTimeout(cfg))
 	require.Error(t, err)
 	// Tolerant of scheduler jitter, but still tight enough that only the 20ms
 	// configuration can satisfy it — a second-scale budget would not.
@@ -208,11 +214,71 @@ func TestGenerateEmbeddingDistinguishesTimeoutFromOtherFailures(t *testing.T) {
 
 			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 			defer ctx.Cancel()
-			_, _, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "classify me")
+			_, _, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "classify me", requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 			require.Error(t, err)
 			assert.Equal(t, tt.wantTimeout, errors.Is(err, ErrEmbeddingTimeout))
 		})
 	}
+}
+
+// TestWarmupEmbedsDoNotInheritTheRequestTimeout is a regression guard: warmup
+// used to run through semantic.Timeout, the hot-path budget (100ms by default).
+// A 32-exemplar batch cannot finish in that window, so every warmup failed with
+// a 504 and semantic routing silently served its fallback forever.
+func TestWarmupEmbedsDoNotInheritTheRequestTimeout(t *testing.T) {
+	semantic := testEmbeddingSemanticConfig()
+	semantic.Timeout = 10 * time.Millisecond
+
+	t.Run("batch warmup", func(t *testing.T) {
+		plugin := &GovernancePlugin{}
+		var deadline time.Time
+		plugin.SetEmbeddingRequestExecutor(func(ctx *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+			deadline, _ = ctx.Deadline()
+			return &schemas.BifrostEmbeddingResponse{
+				Data: []schemas.EmbeddingData{
+					{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1}}},
+					{Index: 1, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{2}}},
+				},
+				Usage: &schemas.BifrostLLMUsage{TotalTokens: 2},
+			}, nil
+		})
+
+		before := time.Now()
+		_, err := plugin.embedComplexityTexts(context.Background(), semantic, []string{"a", "b"})
+		require.NoError(t, err)
+		assert.Greater(t, deadline.Sub(before), time.Second, "warmup batch must not run on the hot-path budget")
+	})
+
+	t.Run("single-input warmup fallback", func(t *testing.T) {
+		plugin := &GovernancePlugin{}
+		var deadline time.Time
+		plugin.SetEmbeddingRequestExecutor(func(ctx *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+			deadline, _ = ctx.Deadline()
+			return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1}}, 1), nil
+		})
+
+		// A plain context is what the classifier passes during warmup.
+		before := time.Now()
+		_, err := plugin.embedComplexityText(context.Background(), semantic, "exemplar")
+		require.NoError(t, err)
+		assert.Greater(t, deadline.Sub(before), time.Second, "warmup fallback must not run on the hot-path budget")
+	})
+
+	t.Run("request classification still honors the configured budget", func(t *testing.T) {
+		plugin := &GovernancePlugin{}
+		var deadline time.Time
+		plugin.SetEmbeddingRequestExecutor(func(ctx *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+			deadline, _ = ctx.Deadline()
+			return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1}}, 1), nil
+		})
+
+		requestCtx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		defer requestCtx.Cancel()
+		before := time.Now()
+		_, err := plugin.embedComplexityText(requestCtx, semantic, "classify me")
+		require.NoError(t, err)
+		assert.LessOrEqual(t, deadline.Sub(before), 100*time.Millisecond, "a live request must stay on its configured budget")
+	})
 }
 
 func TestGenerateEmbeddingGuards(t *testing.T) {
@@ -224,7 +290,7 @@ func TestGenerateEmbeddingGuards(t *testing.T) {
 		plugin := &GovernancePlugin{}
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		defer ctx.Cancel()
-		_, _, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "x")
+		_, _, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "x", requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 		require.ErrorContains(t, err, "executor is not configured")
 	})
 
@@ -233,7 +299,7 @@ func TestGenerateEmbeddingGuards(t *testing.T) {
 		plugin.SetEmbeddingRequestExecutor(okExecutor)
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		defer ctx.Cancel()
-		_, _, err := plugin.generateEmbedding(ctx, nil, "x")
+		_, _, err := plugin.generateEmbedding(ctx, nil, "x", requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 		require.ErrorContains(t, err, "not configured")
 	})
 
@@ -244,7 +310,7 @@ func TestGenerateEmbeddingGuards(t *testing.T) {
 		})
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		defer ctx.Cancel()
-		_, _, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "x")
+		_, _, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "x", requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 		require.ErrorContains(t, err, "no embeddings returned")
 	})
 
@@ -254,9 +320,286 @@ func TestGenerateEmbeddingGuards(t *testing.T) {
 		plugin.SetEmbeddingRequestExecutor(nil)
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		defer ctx.Cancel()
-		_, _, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "x")
+		_, _, err := plugin.generateEmbedding(ctx, testEmbeddingSemanticConfig(), "x", requestEmbeddingTimeout(testEmbeddingSemanticConfig()))
 		require.ErrorContains(t, err, "executor is not configured")
 	})
+}
+
+func TestEmbedComplexityTextRecordsRoutingUsage(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 42), nil
+	})
+
+	cfg := testEmbeddingSemanticConfig()
+	cfg.CountTowardBudgets = true
+
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	_, err := plugin.embedComplexityText(ctx, cfg, "classify me")
+	require.NoError(t, err)
+
+	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	require.True(t, ok, "classification embed must record usage on the request context")
+	assert.Equal(t, "openai", usage.Provider)
+	assert.Equal(t, "text-embedding-3-small", usage.Model)
+	assert.Equal(t, 42, usage.InputTokens)
+	assert.True(t, usage.CountTowardBudgets)
+}
+
+// A provider that reports a negative token count must not have it recorded:
+// the stamp feeds cost calculation and warmup budget attribution, where a
+// negative count would subtract from billed usage.
+func TestEmbedComplexityTextDropsNegativeProviderUsage(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, -42), nil
+	})
+
+	cfg := testEmbeddingSemanticConfig()
+	cfg.CountTowardBudgets = true
+
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	_, err := plugin.embedComplexityText(ctx, cfg, "classify me")
+	require.NoError(t, err)
+
+	usage, ok := ctx.Value(routingEmbedUsageContextKey).(*routingEmbedUsage)
+	require.True(t, ok)
+	assert.Equal(t, 0, usage.InputTokens, "negative provider usage must not reach budget accounting")
+}
+
+// warmupObservation captures one WarmupEmbedUsageObserver invocation.
+type warmupObservation struct {
+	Provider    string
+	Model       string
+	InputTokens int
+}
+
+func TestEmbedComplexityTextWarmupPathObservesInsteadOfRecording(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 42), nil
+	})
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	// Warmup's single-input fallback runs on plain background contexts, never a
+	// *schemas.BifrostContext — its embeds go to the warmup observer, not to
+	// request attribution.
+	_, err := plugin.embedComplexityText(t.Context(), testEmbeddingSemanticConfig(), "warmup exemplar")
+	require.NoError(t, err)
+	require.Len(t, observed, 1)
+	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 42}, observed[0])
+}
+
+func TestEmbedComplexityTextWarmupPathWithoutObserver(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 42), nil
+	})
+
+	// No observer wired (SDK usage, or before the server wires it): the warmup
+	// path must still work and must not panic.
+	_, err := plugin.embedComplexityText(t.Context(), testEmbeddingSemanticConfig(), "warmup exemplar")
+	require.NoError(t, err)
+}
+
+func TestEmbedComplexityTextsObservesWarmupNeverRecordsRoutingUsage(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data: []schemas.EmbeddingData{
+				{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}},
+				{Index: 1, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}},
+			},
+			Usage: &schemas.BifrostLLMUsage{TotalTokens: 7},
+		}, nil
+	})
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	// Batch embeds are warmup-only: even on a request context they observe as
+	// warmup and never attribute usage — only per-request classification
+	// embeds do.
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	_, err := plugin.embedComplexityTexts(ctx, testEmbeddingSemanticConfig(), []string{"a", "b"})
+	require.NoError(t, err)
+	assert.Nil(t, ctx.Value(routingEmbedUsageContextKey))
+	require.Len(t, observed, 1)
+	assert.Equal(t, warmupObservation{"openai", "text-embedding-3-small", 7}, observed[0])
+}
+
+func TestRequestClassificationEmbedDoesNotObserveWarmup(t *testing.T) {
+	plugin := &GovernancePlugin{}
+	plugin.SetEmbeddingRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return embeddingResponse(schemas.EmbeddingStruct{EmbeddingArray: []float64{1, 0}}, 42), nil
+	})
+	var observed []warmupObservation
+	plugin.SetWarmupEmbedUsageObserver(func(provider, model string, inputTokens int) {
+		observed = append(observed, warmupObservation{provider, model, inputTokens})
+	})
+
+	// A classification embed on a request context records usage for the
+	// RoutingDebug stamp; it must NOT also fire the warmup observer, or the
+	// request phase would double-count in telemetry.
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	_, err := plugin.embedComplexityText(ctx, testEmbeddingSemanticConfig(), "classify me")
+	require.NoError(t, err)
+	assert.NotNil(t, ctx.Value(routingEmbedUsageContextKey))
+	assert.Empty(t, observed)
+}
+
+func TestStampRoutingDebug(t *testing.T) {
+	newCtxWithUsage := func(t *testing.T, countTowardBudgets bool) *schemas.BifrostContext {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		t.Cleanup(ctx.Cancel)
+		ctx.SetValue(routingEmbedUsageContextKey, &routingEmbedUsage{
+			Provider:           "openai",
+			Model:              "text-embedding-3-small",
+			InputTokens:        42,
+			CountTowardBudgets: countTowardBudgets,
+		})
+		return ctx
+	}
+	newChatResult := func() *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	}
+
+	t.Run("stamps regardless of budget flag", func(t *testing.T) {
+		for _, flag := range []bool{false, true} {
+			result := newChatResult()
+			stampRoutingDebug(newCtxWithUsage(t, flag), result, schemas.ChatCompletionRequest, false)
+
+			rd := result.GetExtraFields().RoutingDebug
+			require.NotNil(t, rd, "routing debug must be stamped whenever a routing embed ran (flag=%v)", flag)
+			require.NotNil(t, rd.ProviderUsed)
+			assert.Equal(t, "openai", *rd.ProviderUsed)
+			require.NotNil(t, rd.ModelUsed)
+			assert.Equal(t, "text-embedding-3-small", *rd.ModelUsed)
+			require.NotNil(t, rd.InputTokens)
+			assert.Equal(t, 42, *rd.InputTokens)
+			assert.Equal(t, flag, rd.CountTowardBudgets)
+		}
+	})
+
+	t.Run("stream stamps only the final chunk", func(t *testing.T) {
+		ctx := newCtxWithUsage(t, false)
+
+		intermediate := newChatResult()
+		stampRoutingDebug(ctx, intermediate, schemas.ChatCompletionStreamRequest, false)
+		assert.Nil(t, intermediate.GetExtraFields().RoutingDebug)
+
+		final := newChatResult()
+		stampRoutingDebug(ctx, final, schemas.ChatCompletionStreamRequest, true)
+		assert.NotNil(t, final.GetExtraFields().RoutingDebug)
+	})
+
+	t.Run("no usage recorded means no stamp", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		result := newChatResult()
+		stampRoutingDebug(ctx, result, schemas.ChatCompletionRequest, false)
+		assert.Nil(t, result.GetExtraFields().RoutingDebug)
+	})
+
+	t.Run("nil result is a no-op", func(t *testing.T) {
+		stampRoutingDebug(newCtxWithUsage(t, true), nil, schemas.ChatCompletionRequest, false)
+	})
+
+	// The stamp feeds cost calculation, so a negative token count must never
+	// leave this function — it would price to a negative routing charge and
+	// subtract from the request's budget attribution.
+	t.Run("negative input tokens are rejected", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		ctx.SetValue(routingEmbedUsageContextKey, &routingEmbedUsage{
+			Provider:           "openai",
+			Model:              "text-embedding-3-small",
+			InputTokens:        -42,
+			CountTowardBudgets: true,
+		})
+
+		result := newChatResult()
+		stampRoutingDebug(ctx, result, schemas.ChatCompletionRequest, false)
+
+		rd := result.GetExtraFields().RoutingDebug
+		require.NotNil(t, rd, "the embed still ran, so it stays observable")
+		require.NotNil(t, rd.InputTokens)
+		assert.Equal(t, 0, *rd.InputTokens)
+	})
+}
+
+// newOfflinePricingCatalog builds a ModelCatalog from the committed pricing
+// testdata via a file:// URL (no network). The testdata includes
+// text-embedding-3-small at $0.00000002 per input token.
+func newOfflinePricingCatalog(t *testing.T) *modelcatalog.ModelCatalog {
+	t.Helper()
+	abs, err := filepath.Abs("../../framework/modelcatalog/datasheet/testdata/pricing.json")
+	require.NoError(t, err)
+	ds := datasheet.New(nil, NewMockLogger(), datasheet.Config{URL: "file://" + abs})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+}
+
+// newWarmupBudgetFixture wires a plugin over a store whose "openai" provider
+// carries a provider-level budget — the admin-owned ledger warmup embeds are
+// attributed to when count_toward_budgets is on.
+func newWarmupBudgetFixture(t *testing.T) (*GovernancePlugin, GovernanceStore) {
+	t.Helper()
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("provider-budget", 1000.0, 0.0, "1d")
+	budgetID := budget.ID
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Budgets:   []configstoreTables.TableBudget{*budget},
+		Providers: []configstoreTables.TableProvider{{Name: "openai", BudgetID: &budgetID}},
+	}, nil)
+	require.NoError(t, err)
+	plugin := &GovernancePlugin{
+		ctx:          context.Background(),
+		store:        store,
+		modelCatalog: newOfflinePricingCatalog(t),
+		logger:       logger,
+	}
+	return plugin, store
+}
+
+func TestSettleWarmupEmbedUsageAttributesProviderBudget(t *testing.T) {
+	plugin, store := newWarmupBudgetFixture(t)
+	cfg := testEmbeddingSemanticConfig()
+	cfg.CountTowardBudgets = true
+
+	plugin.settleWarmupEmbedUsage(cfg, 1000)
+
+	// 1000 tokens × $0.00000002/token (text-embedding-3-small in testdata).
+	usage := store.GetGovernanceData(context.Background()).Budgets["provider-budget"].CurrentUsage
+	assert.InDelta(t, 0.00002, usage, 1e-12)
+}
+
+func TestSettleWarmupEmbedUsageFlagOffLeavesBudgetsUntouched(t *testing.T) {
+	plugin, store := newWarmupBudgetFixture(t)
+
+	// count_toward_budgets defaults to off: warmup cost stays telemetry-only.
+	plugin.settleWarmupEmbedUsage(testEmbeddingSemanticConfig(), 1000)
+
+	usage := store.GetGovernanceData(context.Background()).Budgets["provider-budget"].CurrentUsage
+	assert.Equal(t, 0.0, usage)
+}
+
+func TestSettleWarmupEmbedUsageWithoutStoreOrCatalog(t *testing.T) {
+	// Bare plugin (no store, no catalog, no observer): flag on must be a
+	// harmless no-op, not a panic — SDK callers may never wire these.
+	plugin := &GovernancePlugin{}
+	cfg := testEmbeddingSemanticConfig()
+	cfg.CountTowardBudgets = true
+	plugin.settleWarmupEmbedUsage(cfg, 1000)
 }
 
 func TestCanClassifySemantically(t *testing.T) {
