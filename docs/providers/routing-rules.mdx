@@ -119,7 +119,7 @@ request > 90               // Switch providers when request limit near max
 #### Complexity Routing
 
 ```cel
-complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", "COMPLEX", or "REASONING"
+complexity_tier   // Automatically-classified request tier: "SIMPLE", "MEDIUM", or "COMPLEX"
 ```
 
 Bifrost analyzes each request's prompt content and assigns a tier before routing rules are evaluated. This lets you route cheap/fast requests to small models and deep reasoning tasks to frontier models with no application-side changes.
@@ -130,10 +130,10 @@ If complexity analysis is unavailable for a request (e.g. unparseable body), `co
 
 **Examples:**
 ```cel
-complexity_tier == "REASONING"                              // Only frontier-worthy tasks
-complexity_tier in ["COMPLEX", "REASONING"]                 // Complex and above
-!(complexity_tier in ["SIMPLE", "MEDIUM"])                  // Same as above, negated form
-complexity_tier == "REASONING" && team_name == "research"   // Scoped to a team
+complexity_tier == "COMPLEX"                                // Only frontier-worthy tasks
+complexity_tier in ["MEDIUM", "COMPLEX"]                    // Medium and above
+!(complexity_tier in ["SIMPLE", "MEDIUM"])                  // Complex only, negated form
+complexity_tier == "COMPLEX" && team_name == "research"     // Scoped to a team
 ```
 
 See [Complexity Router](/features/governance/complexity-router) for how tiers are computed and how to tune the thresholds and keyword lists.

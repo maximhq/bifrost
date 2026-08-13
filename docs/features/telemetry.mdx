@@ -73,6 +73,8 @@ Base Labels:
 - `routing_engine_used`: Comma-separated routing engines used (`routing-rule`, `governance`, `loadbalancing`, `model-catalog`, `core`). `core` is emitted when the Bifrost orchestrator itself makes a routing decision — i.e. a fallback transition or a retry transition.
 - `routing_rule_id`: Routing rule ID that matched the request
 - `routing_rule_name`: Routing rule name that matched the request
+- `complexity_tier`: Complexity tier used for routing (`SIMPLE` / `MEDIUM` / `COMPLEX`); empty when no routing rule referenced `complexity_tier`
+- `complexity_mechanism`: How the complexity tier was classified (`lexical`, or `skipped` when classification was demanded but produced no tier). The raw complexity score is deliberately not a label — unbounded cardinality; it lives only in the request logs
 - `selected_key_id`: ID of the key that successfully served the request (empty string `""` on final errors)
 - `selected_key_name`: Name of the key that successfully served the request (empty string `""` on final errors)
 - `fallback_index`: Fallback index (0 for first attempt, 1 for second attempt, etc.)
