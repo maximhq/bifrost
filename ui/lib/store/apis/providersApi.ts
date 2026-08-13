@@ -9,7 +9,7 @@ import {
 	UpdateProviderRequest,
 	UpdateProviderKeyRequest,
 } from "@/lib/types/config";
-import { DBKey } from "@/lib/types/governance";
+import { DBKey, PricingOverrideMatchType, PricingOverridePatch, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
 function sortProviders(a: ModelProvider, b: ModelProvider) {
@@ -49,11 +49,46 @@ export interface ModelDetails {
 	architecture?: unknown;
 	additional_attributes?: Record<string, string>;
 	accessible_by_keys?: string[];
+	// Post-override value of each displayed cost, present only for the fields
+	// the applied override actually changes — render those struck through.
+	overridden_pricing?: ModelOverriddenPricing;
+	// Which override produced overridden_pricing.
+	applied_override_id?: string;
+	// Every override matching this model, including virtual-key/user/provider-key
+	// scoped ones that do NOT affect overridden_pricing (shown informationally).
+	// Resolve against ListModelDetailsResponse.pricing_overrides.
+	pricing_override_ids?: string[];
+}
+
+export interface ModelOverriddenPricing {
+	input_cost_per_token?: number;
+	output_cost_per_token?: number;
+	cache_creation_input_token_cost?: number;
+	cache_read_input_token_cost?: number;
+}
+
+// ModelPricingOverrideSummary mirrors PricingOverride but carries the patch
+// already parsed — /api/models/details returns an object where the governance
+// API returns a JSON string.
+export interface ModelPricingOverrideSummary {
+	id: string;
+	name: string;
+	scope_kind: PricingOverrideScopeKind;
+	user_id?: string;
+	virtual_key_id?: string;
+	provider_id?: string;
+	provider_key_id?: string;
+	match_type: PricingOverrideMatchType;
+	pattern: string;
+	request_types?: string[];
+	patch: PricingOverridePatch;
 }
 
 export interface ListModelDetailsResponse {
 	models: ModelDetails[];
 	total: number;
+	// Overrides referenced by any row, keyed by ID and deduplicated.
+	pricing_overrides?: Record<string, ModelPricingOverrideSummary>;
 }
 
 // ModelPricingAttributesEntry is the body element for PUT /api/models/catalog.
@@ -109,7 +144,9 @@ export interface ListBaseModelsResponse {
 	total: number;
 }
 
-type UpdateProviderMutationArg = UpdateProviderRequest & { name: ModelProviderName };
+type UpdateProviderMutationArg = UpdateProviderRequest & {
+	name: ModelProviderName;
+};
 
 const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 	mode: "chat",
@@ -267,7 +304,11 @@ export const providersApi = baseApi.injectEndpoints({
 						providersApi.util.updateQueryData("getAllKeys", undefined, (draft) => {
 							const index = draft.findIndex((k) => k.key_id === keyId);
 							if (index !== -1) {
-								draft[index] = { ...draft[index], name: updatedKey.name, models: updatedKey.models ?? [] };
+								draft[index] = {
+									...draft[index],
+									name: updatedKey.name,
+									models: updatedKey.models ?? [],
+								};
 							}
 						}),
 					);
@@ -442,7 +483,13 @@ export const providersApi = baseApi.injectEndpoints({
 		// size (under 1500 rows).
 		getModelDetails: builder.query<
 			ListModelDetailsResponse,
-			{ query?: string; provider?: string; limit?: number; offset?: number; unfiltered?: boolean }
+			{
+				query?: string;
+				provider?: string;
+				limit?: number;
+				offset?: number;
+				unfiltered?: boolean;
+			}
 		>({
 			query: ({ query, provider, limit, offset, unfiltered }) => {
 				const params = new URLSearchParams();

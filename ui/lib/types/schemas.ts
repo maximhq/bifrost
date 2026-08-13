@@ -151,6 +151,15 @@ export const batchS3ConfigSchema = z.object({
 	buckets: z.array(s3BucketConfigSchema).optional(),
 });
 
+// Interface VPC endpoint hosts, one per AWS endpoint service Bifrost dials for Bedrock.
+export const bedrockEndpointsSchema = z.object({
+	runtime: secretVarSchema.optional(),
+	control_plane: secretVarSchema.optional(),
+	mantle: secretVarSchema.optional(),
+	agent_runtime: secretVarSchema.optional(),
+	s3: secretVarSchema.optional(),
+});
+
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
@@ -166,6 +175,7 @@ export const bedrockKeyConfigSchema = z
 		arn: secretVarSchema.optional(),
 		project_id: secretVarSchema.optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
+		endpoints: bedrockEndpointsSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -207,6 +217,7 @@ export const bedrockMantleKeyConfigSchema = z
 		external_id: secretVarSchema.optional(),
 		session_name: secretVarSchema.optional(),
 		project_id: secretVarSchema.optional(),
+		endpoints: bedrockEndpointsSchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.region), {
 		message: "Region is required",
@@ -1208,6 +1219,7 @@ export const mcpClientUpdateSchema = z
 		token_exchange: z
 			.object({
 				audience: z.string().trim().min(1, "Audience is required"),
+				use_idp_credentials: z.boolean().optional(),
 				client_id: secretVarSchema.optional(),
 				client_secret: secretVarSchema.optional(),
 				authorization_server_url: z

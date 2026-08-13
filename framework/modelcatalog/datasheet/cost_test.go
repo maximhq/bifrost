@@ -1951,6 +1951,29 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 	assert.InDelta(t, 0.08, cost, 1e-12)
 }
 
+// TestCalculateCost_ChatCompletion_CostPerRequest verifies the flat per-request
+// fee is billed once, additive on top of the usual token-based cost.
+func TestCalculateCost_ChatCompletion_CostPerRequest(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken:  bifrost.Ptr(0.000005),
+			OutputCostPerToken: bifrost.Ptr(0.000015),
+			CostPerRequest:     bifrost.Ptr(0.01),
+		},
+	})
+
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+
+	cost := s.CalculateCost(resp, nil)
+	// 10000*0.000005 + 2000*0.000015 + 0.01 (flat) = 0.08 + 0.01 = 0.09
+	assert.InDelta(t, 0.09, cost, 1e-12)
+}
+
 func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 	// Claude 3.5 Sonnet (Bedrock): $3/M input, $15/M output, cache_read=$0.3/M, cache_creation=$3.75/M
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{

@@ -48,10 +48,19 @@ export interface MCPTLSConfig {
 export interface MCPTokenExchangeConfig {
 	audience: string; // Resource identifier at the identity provider, e.g. "api://jira-mcp"
 	// Identity-provider application authorized to perform exchanges for this
-	// audience — a dedicated registration carrying the token-exchange (or
-	// on-behalf-of) grant, not the SSO login application. Redacted on GET.
-	client_id: SecretVar;
-	client_secret?: SecretVar; // Omit for public clients. Redacted on GET.
+	// audience — typically a dedicated registration carrying the
+	// token-exchange (or on-behalf-of) grant, separate from the SSO login
+	// application. Required unless use_idp_credentials is true. Redacted on
+	// GET.
+	client_id?: SecretVar;
+	client_secret?: SecretVar; // Omit for public clients. Ignored when use_idp_credentials is true. Redacted on GET.
+	// When true, performs the exchange as the SSO login application itself
+	// instead of client_id/client_secret above, which are then ignored. Some
+	// providers require this — Microsoft Entra ID's on-behalf-of grant only
+	// accepts an assertion audienced to the exchanging application, and the
+	// SSO login flow always requests a token self-audienced to itself, so a
+	// separate exchange application can never receive a usable one.
+	use_idp_credentials?: boolean;
 	// Optional scopes on the exchanged token. Include "offline_access" (where
 	// the identity provider supports it) so the retained admin discovery
 	// credential gets a refresh token and stays self-renewing.

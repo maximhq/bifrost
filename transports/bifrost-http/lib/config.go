@@ -2022,6 +2022,16 @@ func rotateMCPTokenExchangeConfigFromFile(ctx context.Context, store configstore
 	if fileBlock.Audience != "" {
 		resolved.Audience = fileBlock.Audience
 	}
+	// Unlike Audience/ClientID/ClientSecret above, a plain bool has no
+	// "not declared" signal to distinguish from a genuine false — and
+	// mcpClientConfigToTable(fileClient), called by this reconciliation's
+	// caller before this function runs, already persists fileBlock's literal
+	// value regardless of what's computed here. So this must mirror that:
+	// take the file's value unconditionally, or the diff below would miss a
+	// true->false transition that's already been written to the stored row,
+	// leaving a stale admin credential (minted under the old IdP identity)
+	// un-reauthenticated.
+	resolved.UseIdPCredentials = fileBlock.UseIdPCredentials
 	if fileBlock.ClientID.IsSet() {
 		if fileBlock.ClientID.GetValue() != "" {
 			resolved.ClientID = fileBlock.ClientID

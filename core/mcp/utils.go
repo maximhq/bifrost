@@ -848,8 +848,8 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {
 			return fmt.Errorf("token_exchange.audience is required (non-empty) for token_exchange auth type in client '%s'", config.Name)
 		}
-		if strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" && !config.TokenExchange.ClientID.IsFromSecret() {
-			return fmt.Errorf("token_exchange.client_id is required (non-empty) for token_exchange auth type in client '%s'", config.Name)
+		if !config.TokenExchange.UseIdPCredentials && strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" && !config.TokenExchange.ClientID.IsFromSecret() {
+			return fmt.Errorf("token_exchange.client_id is required (non-empty) for token_exchange auth type in client '%s' unless use_idp_credentials is set", config.Name)
 		}
 		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
 			return fmt.Errorf("oauth_config_id must not be set for token_exchange auth type in client '%s'", config.Name)

@@ -154,6 +154,52 @@ func TestGetExchangedAccessTokenJWTBearerOBOForm(t *testing.T) {
 	}
 }
 
+// TestGetExchangedAccessTokenJWTBearerOBOOfflineAccessCombinesWithDefault
+// pins the one case where a configured scope must combine with, not replace,
+// the audience-derived default: "offline_access" alone. Per Microsoft's own
+// OBO docs, ".default" cannot be combined with other delegated scopes except
+// offline_access — and our own docs recommend adding exactly that scope for
+// a self-renewing admin credential, so silently dropping resource access in
+// that one case would be a footgun of our own making.
+func TestGetExchangedAccessTokenJWTBearerOBOOfflineAccessCombinesWithDefault(t *testing.T) {
+	var form url.Values
+	server := tokenEndpointStub(t, new(atomic.Int64), &form, "exchanged-offline", 3600)
+	defer server.Close()
+
+	config := exchangeTestClientConfig()
+	config.TokenExchange.Scopes = []string{"offline_access"}
+
+	p := newExchangeProvider(t, server.URL, schemas.TokenExchangeGrantJWTBearerOBO)
+	if _, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), config); err != nil {
+		t.Fatalf("GetExchangedAccessToken returned error: %v", err)
+	}
+	if got, want := form.Get("scope"), "api://client-1/.default offline_access"; got != want {
+		t.Errorf("scope = %q, want %q (default combined with offline_access, not replaced)", got, want)
+	}
+}
+
+// TestGetExchangedAccessTokenJWTBearerOBOCustomScopeReplacesDefault pins the
+// opposite case: any scope other than exactly ["offline_access"] means the
+// caller opted into naming custom scopes, and the audience-derived default
+// must NOT be added alongside it — Microsoft's docs forbid combining
+// .default with arbitrary delegated scopes (AADSTS70011).
+func TestGetExchangedAccessTokenJWTBearerOBOCustomScopeReplacesDefault(t *testing.T) {
+	var form url.Values
+	server := tokenEndpointStub(t, new(atomic.Int64), &form, "exchanged-custom", 3600)
+	defer server.Close()
+
+	config := exchangeTestClientConfig()
+	config.TokenExchange.Scopes = []string{"api://client-1/access_as_user"}
+
+	p := newExchangeProvider(t, server.URL, schemas.TokenExchangeGrantJWTBearerOBO)
+	if _, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), config); err != nil {
+		t.Fatalf("GetExchangedAccessToken returned error: %v", err)
+	}
+	if got, want := form.Get("scope"), "api://client-1/access_as_user"; got != want {
+		t.Errorf("scope = %q, want %q (custom scope must fully replace the default, not combine with it)", got, want)
+	}
+}
+
 func TestGetExchangedAccessTokenCachesUntilExpiry(t *testing.T) {
 	var hits atomic.Int64
 	server := tokenEndpointStub(t, &hits, nil, "exchanged-3", 3600)
@@ -534,5 +580,92 @@ func TestValidateExchangeConfig(t *testing.T) {
 	noClientID.TokenExchange.ClientID = nil
 	if _, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), noClientID); err == nil {
 		t.Fatal("expected error for missing client_id")
+	}
+}
+
+// useIdPCredentialsClientConfig builds a client that reuses the SSO login
+// application's credentials instead of a dedicated exchange app — audience
+// only, no client_id/client_secret of its own (validateExchangeConfig allows
+// this; the resolved IdP is expected to supply the client ID instead).
+func useIdPCredentialsClientConfig() *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{
+		ID:       "client-idp",
+		Name:     "IdP-Credentialed Exchange Client",
+		AuthType: schemas.MCPAuthTypeTokenExchange,
+		TokenExchange: &schemas.MCPTokenExchangeConfig{
+			Audience:          "api://client-idp",
+			UseIdPCredentials: true,
+		},
+	}
+}
+
+// TestGetExchangedAccessTokenUseIdPCredentialsMissingClientID pins the
+// subject-token exchange path (GetExchangedAccessToken -> rawExchange) to a
+// clear, actionable error — not a request sent upstream with client_id=
+// (empty) — when UseIdPCredentials is set but the resolved IdP has no client
+// ID configured.
+func TestGetExchangedAccessTokenUseIdPCredentialsMissingClientID(t *testing.T) {
+	var hits atomic.Int64
+	server := tokenEndpointStub(t, &hits, nil, "unused", 3600)
+	defer server.Close()
+
+	p := NewOAuth2Provider(nil, nil)
+	p.retryBaseDelay = time.Millisecond
+	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
+		available: true,
+		idp: &schemas.TokenExchangeIdP{
+			TokenEndpoint: server.URL,
+			GrantShape:    schemas.TokenExchangeGrantRFC8693,
+			// IdPClientID deliberately left empty.
+		},
+	})
+
+	config := useIdPCredentialsClientConfig()
+	if _, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), config); err == nil {
+		t.Fatal("expected error when use_idp_credentials is set but the resolved IdP has no client ID")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("token endpoint hits = %d, want 0 (must fail before sending client_id= empty)", got)
+	}
+}
+
+// TestRefreshExchangeAdminTokenUseIdPCredentialsMissingClientID mirrors the
+// above for the refresh-token renewal path (refreshExchangeAdminToken), the
+// other caller of exchangeClientCredentials.
+func TestRefreshExchangeAdminTokenUseIdPCredentialsMissingClientID(t *testing.T) {
+	var hits atomic.Int64
+	server := tokenEndpointStub(t, &hits, nil, "unused", 3600)
+	defer server.Close()
+
+	store := newTestConfigStore()
+	config := useIdPCredentialsClientConfig()
+	store.mcpClients = map[string]*schemas.MCPClientConfig{config.ID: config}
+
+	p := NewOAuth2Provider(store, nil)
+	p.retryBaseDelay = time.Millisecond
+	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
+		available: true,
+		idp: &schemas.TokenExchangeIdP{
+			TokenEndpoint: server.URL,
+			GrantShape:    schemas.TokenExchangeGrantRFC8693,
+			// IdPClientID deliberately left empty.
+		},
+	})
+
+	if err := p.RetainExchangeAdminCredential(context.Background(), config, &schemas.OAuth2TokenExchangeResponse{
+		AccessToken:  "retained-idp",
+		RefreshToken: "refresh-idp",
+		TokenType:    "Bearer",
+		ExpiresIn:    1,
+	}); err != nil {
+		t.Fatalf("RetainExchangeAdminCredential returned error: %v", err)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	if _, err := p.GetAdminAccessToken(context.Background(), config.ID); err == nil {
+		t.Fatal("expected error renewing when use_idp_credentials is set but the resolved IdP has no client ID")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("token endpoint hits = %d, want 0 (must fail before sending client_id= empty)", got)
 	}
 }

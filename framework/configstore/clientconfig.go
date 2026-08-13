@@ -609,6 +609,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
 			}
+			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
+			if key.BedrockKeyConfig.Endpoints != nil {
+				bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints
+			}
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
 
@@ -635,6 +639,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			// Project ID is an identifier, not a credential — surface it in plaintext.
 			if key.BedrockMantleKeyConfig.ProjectID != nil {
 				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID
+			}
+			// VPC endpoint hosts are network addresses, not credentials — surface them in plaintext.
+			if key.BedrockMantleKeyConfig.Endpoints != nil {
+				mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints
 			}
 			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
 		}

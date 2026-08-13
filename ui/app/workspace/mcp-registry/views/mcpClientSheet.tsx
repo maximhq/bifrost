@@ -28,7 +28,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
 import { useSheetNavigation } from "@/hooks/useSheetNavigation";
-import { MCP_STATUS_COLORS } from "@/lib/constants/config";
+import { IS_ENTERPRISE, MCP_STATUS_COLORS } from "@/lib/constants/config";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
 import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient, MCPVKConfig } from "@/lib/types/mcp";
@@ -36,6 +36,7 @@ import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/s
 import { parseArrayFromText } from "@/lib/utils/array";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -190,6 +191,16 @@ export default function MCPClientSheet({
 	);
 	const supportsOAuthCredentialUpdate = mcpClient.config.auth_type === "oauth" || mcpClient.config.auth_type === "per_user_oauth";
 	const supportsTokenExchangeCredentialUpdate = mcpClient.config.auth_type === "token_exchange";
+	// Entra's on-behalf-of grant requires use_idp_credentials — see the
+	// Prerequisites warning in docs/mcp/auth/token-exchange.mdx for why a
+	// dedicated exchange app structurally can't work there.
+	const { data: scimProviders } = useGetSCIMProvidersQuery(undefined, { skip: !IS_ENTERPRISE || !supportsTokenExchangeCredentialUpdate });
+	const enabledScimProvider = scimProviders?.find((p) => (p as { enabled?: boolean }).enabled) as { name?: string } | undefined;
+	// Matches the create form's idpConfigured gate: without an enabled
+	// provider there's nothing for use_idp_credentials to resolve against at
+	// runtime, so the picker shouldn't offer that option at all here either.
+	const idpConfigured = !!enabledScimProvider;
+	const isEntraIdp = ["entra", "azure", "azuread"].includes((enabledScimProvider?.name ?? "").toLowerCase());
 
 	const addVKConfig = ({ value: vkId, label }: { value: string; label: string }) => {
 		setLocalVKNames((prev) => ({ ...prev, [vkId]: label }));
@@ -254,6 +265,7 @@ export default function MCPClientSheet({
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
 					audience: mcpClient.config.token_exchange?.audience,
+					use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
 					client_id: mcpClient.config.token_exchange?.client_id,
 					client_secret: mcpClient.config.token_exchange?.client_secret,
 					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
@@ -304,6 +316,7 @@ export default function MCPClientSheet({
 			token_exchange: supportsTokenExchangeCredentialUpdate
 				? {
 					audience: mcpClient.config.token_exchange?.audience,
+					use_idp_credentials: mcpClient.config.token_exchange?.use_idp_credentials,
 					client_id: mcpClient.config.token_exchange?.client_id,
 					client_secret: mcpClient.config.token_exchange?.client_secret,
 					authorization_server_url: mcpClient.config.token_exchange?.authorization_server_url,
@@ -343,6 +356,7 @@ export default function MCPClientSheet({
 	// be sent whole, not just the changed field).
 	const tokenExchangeCredentialsDirty = !!(
 		form.formState.dirtyFields.token_exchange?.audience ||
+		form.formState.dirtyFields.token_exchange?.use_idp_credentials ||
 		form.formState.dirtyFields.token_exchange?.client_id ||
 		form.formState.dirtyFields.token_exchange?.client_secret ||
 		form.formState.dirtyFields.token_exchange?.authorization_server_url ||
@@ -448,8 +462,9 @@ export default function MCPClientSheet({
 					token_exchange: shouldUpdateTokenExchange
 						? {
 							audience: data.token_exchange?.audience?.trim() || "",
-							client_id: data.token_exchange?.client_id ?? { value: "", ref: "" },
-							client_secret: data.token_exchange?.client_secret,
+							use_idp_credentials: data.token_exchange?.use_idp_credentials ?? false,
+							client_id: data.token_exchange?.use_idp_credentials ? undefined : (data.token_exchange?.client_id ?? { value: "", ref: "" }),
+							client_secret: data.token_exchange?.use_idp_credentials ? undefined : data.token_exchange?.client_secret,
 							authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
 							scopes: tokenExchangeScopes,
 						}
@@ -1204,7 +1219,19 @@ export default function MCPClientSheet({
 																			)
 																		}
 																		audienceLabel="Audience"
+																		audienceTooltip={
+																			isEntraIdp
+																				? "The resource app's Application (client) ID at your identity provider - a bare GUID, not the api://... Application ID URI shown under Expose an API. Exchanged tokens are scoped to it."
+																				: "The resource identifier this server is registered as at your identity provider. Exchanged tokens are scoped to it."
+																		}
 																		audienceTestId="mcpclient-input-token-exchange-audience"
+																		useIdPCredentialsLabel={idpConfigured ? "Exchange application" : undefined}
+																		useIdPCredentialsDedicatedDescription="A separate identity-provider app, scoped only to this server. Recommended for most providers."
+																		useIdPCredentialsIdPDescription="Reuses your SSO login application's own credentials. Required for Microsoft Entra ID."
+																		useIdPCredentialsRequiredWarning={
+																			isEntraIdp && "Your identity provider is Microsoft Entra ID - a dedicated application might not be available, switch to Identity provider application."
+																		}
+																		useIdPCredentialsTestId="mcpclient-input-token-exchange-use-idp-credentials"
 																		clientIdLabel="Exchange Client ID"
 																		clientIdPlaceholder="bifrost-exchange or env.EXCHANGE_CLIENT_ID"
 																		clientIdTestId="mcpclient-input-token-exchange-client-id"
@@ -1223,7 +1250,9 @@ export default function MCPClientSheet({
 																			value: tokenExchangeScopesRaw,
 																			onChange: setTokenExchangeScopesRaw,
 																			label: "Scopes",
-																			helperText: "Comma-separated.",
+																			helperText: isEntraIdp
+																				? "Comma-separated. offline_access alone combines with the audience's default access - any other scope replaces it entirely instead of adding to it."
+																				: "Comma-separated.",
 																			testId: "mcpclient-input-token-exchange-scopes",
 																			disabled: !hasUpdateMCPClientAccess,
 																		}}

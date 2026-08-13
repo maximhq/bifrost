@@ -4136,6 +4136,38 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "endpoints": {
+                  "type": "object",
+                  "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+                  "properties": {
+                    "runtime": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-runtime service, which serves all inference (can use env. prefix)"
+                    },
+                    "control_plane": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock service, which serves model listing and batch jobs (can use env. prefix)"
+                    },
+                    "mantle": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-mantle service, which serves mantle-routed models (can use env. prefix)"
+                    },
+                    "agent_runtime": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-agent-runtime service, which serves rerank (can use env. prefix)"
+                    },
+                    "s3": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the s3 service, which serves batch file I/O. Must carry the literal \"bucket.\" prefix, since Bifrost prepends the bucket name to build the virtual-hosted URL. A Gateway endpoint needs no value here (can use env. prefix)"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": ["region"],
@@ -4187,6 +4219,18 @@
                 "project_id": {
                   "type": "string",
                   "description": "Bedrock project ID scoping inference and model listing. Sent as the OpenAI-Project header on the OpenAI-compatible surface and the anthropic-workspace-id header on the native-Anthropic (Claude) surface. When empty, AWS routes to the account's default project (can use env. prefix)."
+                },
+                "endpoints": {
+                  "type": "object",
+                  "description": "Interface VPC endpoint (AWS PrivateLink) hosts to dial instead of the public regional endpoints. Use the endpoint's DNS name from the VPC console, not the endpoint ID — AWS appends a random string that cannot be derived. Region is still required: it sets the SigV4 credential scope.",
+                  "properties": {
+                    "mantle": {
+                      "type": "string",
+                      "pattern": "\\.",
+                      "description": "Host for the bedrock-mantle service (can use env. prefix)"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "required": ["region"],
@@ -4905,14 +4949,22 @@
               "minLength": 1,
               "description": "Resource identifier the exchanged token is scoped to at the identity provider (e.g. 'api://jira-mcp')"
             },
+            "use_idp_credentials": {
+              "type": "boolean",
+              "description": "When true, performs the exchange as the SSO login application itself instead of client_id/client_secret below, which are then ignored. Some providers require this: Microsoft Entra ID's on-behalf-of grant only accepts an assertion audienced to the exchanging application, and Bifrost's SSO login flow always requests a token self-audienced to the SSO application, so a separate exchange application can never receive a usable one."
+            },
             "client_id": {
               "type": "string",
               "minLength": 1,
-              "description": "Identity-provider application authorized to perform exchanges for this audience — a dedicated registration carrying the token-exchange (or on-behalf-of) grant, not the SSO login application. Can use env. or vault. prefix."
+              "description": "Identity-provider application authorized to perform exchanges for this audience — typically a dedicated registration carrying the token-exchange (or on-behalf-of) grant, separate from the SSO login application. Required unless use_idp_credentials is true. Can use env. or vault. prefix."
             },
             "client_secret": {
               "type": "string",
-              "description": "Secret for the exchange application; omit for public clients. Can use env. or vault. prefix."
+              "description": "Secret for the exchange application; omit for public clients. Ignored when use_idp_credentials is true. Can use env. or vault. prefix."
+            },
+            "authorization_server_url": {
+              "type": "string",
+              "description": "Overrides where the exchange request is sent, for identity providers that bind an audience to a specific authorization server distinct from the one used for SSO login (e.g. Okta's per-resource Custom Authorization Servers). Leave empty to use the deployment's SSO login issuer, which is correct for providers with one tenant-wide token endpoint (Entra, Auth0)."
             },
             "scopes": {
               "type": "array",
@@ -4922,7 +4974,25 @@
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' (where the identity provider supports it) so exchanges issue refresh tokens, keeping the retained admin discovery credential self-renewing."
             }
           },
-          "required": ["audience", "client_id"],
+          "required": ["audience"],
+          "allOf": [
+            {
+              "$comment": "client_id is required unless use_idp_credentials is true, in which case the exchange uses the SSO login application's own credentials instead.",
+              "if": {
+                "not": {
+                  "properties": {
+                    "use_idp_credentials": {
+                      "const": true
+                    }
+                  },
+                  "required": ["use_idp_credentials"]
+                }
+              },
+              "then": {
+                "required": ["client_id"]
+              }
+            }
+          ],
           "additionalProperties": false
         },
         "oauth_config": {

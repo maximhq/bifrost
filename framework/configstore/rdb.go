@@ -227,6 +227,14 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 			s := string(data)
 			dbKey.BedrockBatchS3ConfigJSON = &s
 		}
+		if key.BedrockKeyConfig.Endpoints != nil {
+			data, err := sonic.Marshal(key.BedrockKeyConfig.Endpoints)
+			if err != nil {
+				return tables.TableKey{}, err
+			}
+			s := string(data)
+			dbKey.BedrockEndpointsJSON = &s
+		}
 	}
 
 	return dbKey, nil
@@ -771,8 +779,17 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 					s := string(data)
 					dbKey.BedrockBatchS3ConfigJSON = &s
 				}
+				if key.BedrockKeyConfig.Endpoints != nil {
+					data, err := sonic.Marshal(key.BedrockKeyConfig.Endpoints)
+					if err != nil {
+						return err
+					}
+					s := string(data)
+					dbKey.BedrockEndpointsJSON = &s
+				}
 			} else {
 				dbKey.BedrockBatchS3ConfigJSON = nil
+				dbKey.BedrockEndpointsJSON = nil
 			}
 
 			dbKeys = append(dbKeys, dbKey)
@@ -1005,6 +1022,16 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			} else {
 				dbKey.BedrockBatchS3ConfigJSON = nil
 			}
+			if key.BedrockKeyConfig.Endpoints != nil {
+				data, err := sonic.Marshal(key.BedrockKeyConfig.Endpoints)
+				if err != nil {
+					return err
+				}
+				s := string(data)
+				dbKey.BedrockEndpointsJSON = &s
+			} else {
+				dbKey.BedrockEndpointsJSON = nil
+			}
 		}
 
 		// Check if this key already exists
@@ -1144,6 +1171,16 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 				dbKey.BedrockBatchS3ConfigJSON = &s
 			} else {
 				dbKey.BedrockBatchS3ConfigJSON = nil
+			}
+			if key.BedrockKeyConfig.Endpoints != nil {
+				data, err := sonic.Marshal(key.BedrockKeyConfig.Endpoints)
+				if err != nil {
+					return err
+				}
+				s := string(data)
+				dbKey.BedrockEndpointsJSON = &s
+			} else {
+				dbKey.BedrockEndpointsJSON = nil
 			}
 		}
 
@@ -2763,6 +2800,7 @@ var pricingSyncUpdateColumns = []string{
 	// Costs - Other
 	"search_context_cost_per_query",
 	"code_interpreter_cost_per_session",
+	"cost_per_request",
 	// Costs - OCR
 	"ocr_cost_per_page",
 	"annotation_cost_per_page",
