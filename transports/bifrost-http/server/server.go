@@ -32,10 +32,11 @@ import (
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/framework/webhooks"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/governance/complexity"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/otel"
 	"github.com/maximhq/bifrost/plugins/prompts"
+	"github.com/maximhq/bifrost/plugins/routing"
+	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
@@ -488,8 +489,17 @@ func (s *BifrostHTTPServer) markPluginDisabled(name string) error {
 
 // getGovernancePluginName returns the governance plugin name from context or default
 func (s *BifrostHTTPServer) getGovernancePluginName() string {
-	if name, ok := s.Ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
-		return name
+	return governancePluginNameFromContext(s.Ctx)
+}
+
+// governancePluginNameFromContext returns the governance plugin name carried on ctx, falling
+// back to the built-in name. Used where only a context is available, such as built-in plugin
+// instantiation.
+func governancePluginNameFromContext(ctx context.Context) string {
+	if ctx != nil {
+		if name, ok := ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
+			return name
+		}
 	}
 	return governance.PluginName
 }
@@ -1026,60 +1036,50 @@ func (s *BifrostHTTPServer) GetGovernanceData(ctx context.Context) *governance.G
 	return governancePlugin.GetGovernanceStore().GetGovernanceData(ctx)
 }
 
-// ReloadComplexityAnalyzerConfig reloads the complexity analyzer config into the governance plugin.
+// getRoutingPlugin safely retrieves the routing plugin, or an error.
+//
+// The lookup must name *RoutingPlugin: Init registers a pointer, and FindPluginAs
+// type-asserts against its type parameter, which the compiler cannot check when that
+// parameter is generic. Asserting against the value type builds fine and fails at runtime.
+func (s *BifrostHTTPServer) getRoutingPlugin() (*routing.RoutingPlugin, error) {
+	return lib.FindPluginAs[*routing.RoutingPlugin](s.Config, routing.PluginName)
+}
+
+// ReloadComplexityAnalyzerConfig reloads the complexity analyzer config into the routing plugin.
 func (s *BifrostHTTPServer) ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error {
-	governancePlugin, err := s.getGovernancePlugin()
+	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
-		return fmt.Errorf("governance plugin not found: %w", err)
+		return fmt.Errorf("routing plugin not found: %w", err)
 	}
-	reloader, ok := governancePlugin.(interface {
-		ReloadComplexityAnalyzerConfig(config *complexity.AnalyzerConfig)
-	})
-	if !ok {
-		return fmt.Errorf("governance plugin does not support complexity analyzer config reload")
-	}
-	reloader.ReloadComplexityAnalyzerConfig(config)
+	routingPlugin.ReloadComplexityAnalyzerConfig(config)
 	return nil
 }
 
-// ReloadRoutingRule reloads a routing rule from the database into the governance store
+// ReloadRoutingRule reloads a routing rule from the database into the routing plugin's rule cache
 func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) error {
-	governancePluginName := governance.PluginName
-	if name, ok := s.Ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
-		governancePluginName = name
-	}
-	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, governancePluginName)
+	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
-		return fmt.Errorf("governance plugin not found: %w", err)
+		return fmt.Errorf("routing plugin not found: %w", err)
 	}
-	// Get the governance store from the plugin
-	store := governancePlugin.GetGovernanceStore()
 	rule, err := s.Config.ConfigStore.GetRoutingRule(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to get routing rule from config store: %w", err)
 	}
-	// Update the rule in the store (this updates the in-memory cache)
-	if err := store.UpdateRoutingRuleInMemory(ctx, rule); err != nil {
-		return fmt.Errorf("failed to update routing rule in store: %w", err)
+	// Update the rule in the rule cache
+	if err := routingPlugin.GetRuleStore().UpsertRule(ctx, rule); err != nil {
+		return fmt.Errorf("failed to update routing rule in rule store: %w", err)
 	}
 	return nil
 }
 
-// RemoveRoutingRule removes a routing rule from the governance store
+// RemoveRoutingRule removes a routing rule from the routing plugin's rule cache
 func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) error {
-	governancePluginName := governance.PluginName
-	if name, ok := s.Ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
-		governancePluginName = name
-	}
-	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, governancePluginName)
+	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
-		return fmt.Errorf("governance plugin not found: %w", err)
+		return fmt.Errorf("routing plugin not found: %w", err)
 	}
-	// Get the governance store from the plugin
-	store := governancePlugin.GetGovernanceStore()
-	// Delete the rule from the store (this removes from in-memory cache)
-	if err := store.DeleteRoutingRuleInMemory(ctx, id); err != nil {
-		return fmt.Errorf("failed to delete routing rule from store: %w", err)
+	if err := routingPlugin.GetRuleStore().DeleteRule(ctx, id); err != nil {
+		return fmt.Errorf("failed to delete routing rule from rule store: %w", err)
 	}
 	return nil
 }
