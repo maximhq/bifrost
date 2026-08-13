@@ -126,8 +126,10 @@ type ServerCallbacks interface {
 	OnKeyDeleted(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 	RefreshLiveModelsForKey(ctx context.Context, provider schemas.ModelProvider, keyID string) error
 	RefreshLiveModelsForAllKeys(ctx context.Context, provider schemas.ModelProvider) error
+	// Routing related callbacks
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
+	ReloadComplexityAnalyzerConfig(ctx context.Context, config *complexity.AnalyzerConfig) error
 	// Webhook related callbacks
 	ReloadWebhookEndpoint(ctx context.Context, id string) error
 	RemoveWebhookEndpoint(ctx context.Context, id string) error
@@ -2085,6 +2087,17 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}
 	}
+	// Routing rules and the complexity analyzer config live in the config store, so these
+	// endpoints have nothing to serve when persistence is disabled (initStores leaves
+	// ConfigStore nil for config_store.enabled=false). Skip them rather than failing, which
+	// would abort registration for every other API route too.
+	var routingHandler *handlers.RoutingHandler
+	if s.Config.ConfigStore != nil {
+		routingHandler, err = handlers.NewRoutingHandler(callbacks, s.Config.ConfigStore)
+		if err != nil {
+			return fmt.Errorf("failed to initialize routing handler: %v", err)
+		}
+	}
 	// Resolve the semantic_cache plugin per request so plugin reloads via
 	// /api/plugins are honored — the previous boot-time capture left stale
 	// references and (worse) skipped route registration entirely when the
@@ -2174,6 +2187,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			overrides = provider.GetGovernanceRouteOverrides(ctx)
 		}
 		governanceHandler.RegisterRoutesWithOverrides(s.Router, overrides, middlewares...)
+	}
+	if routingHandler != nil {
+		routingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)

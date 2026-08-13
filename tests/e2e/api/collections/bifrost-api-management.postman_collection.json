@@ -3752,14 +3752,14 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules",
+              "raw": "{{base_url}}/api/routing/rules",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules"
+                "routing",
+                "rules"
               ]
             }
           }
@@ -3770,14 +3770,14 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules",
+                "routing",
+                "rules",
                 "{{rule_id}}"
               ]
             }
@@ -3815,14 +3815,14 @@
               "raw": "{\"name\":\"TestRoutingRule\",\"description\":\"E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0}"
             },
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules",
+              "raw": "{{base_url}}/api/routing/rules",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules"
+                "routing",
+                "rules"
               ]
             }
           }
@@ -3833,14 +3833,14 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules",
+                "routing",
+                "rules",
                 "{{rule_id}}"
               ]
             }
@@ -3861,14 +3861,14 @@
               "raw": "{\"name\":\"UpdatedRoutingRule\",\"description\":\"Updated E2E test rule\",\"enabled\":true,\"cel_expression\":\"true\",\"targets\":[{\"provider\":\"openai\",\"weight\":1}],\"scope\":\"global\",\"priority\":0}"
             },
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules",
+                "routing",
+                "rules",
                 "{{rule_id}}"
               ]
             }
@@ -3880,14 +3880,14 @@
             "method": "DELETE",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/routing-rules/{{rule_id}}",
+              "raw": "{{base_url}}/api/routing/rules/{{rule_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
-                "routing-rules",
+                "routing",
+                "rules",
                 "{{rule_id}}"
               ]
             }
@@ -4162,13 +4162,13 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/complexity-analyzer-config",
+              "raw": "{{base_url}}/api/routing/complexity-analyzer-config",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
+                "routing",
                 "complexity-analyzer-config"
               ]
             }
@@ -4201,13 +4201,13 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/governance/complexity-analyzer-config",
+              "raw": "{{base_url}}/api/routing/complexity-analyzer-config",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
+                "routing",
                 "complexity-analyzer-config"
               ]
             },
@@ -4256,13 +4256,13 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/governance/complexity-analyzer-config/reset",
+              "raw": "{{base_url}}/api/routing/complexity-analyzer-config/reset",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
-                "governance",
+                "routing",
                 "complexity-analyzer-config",
                 "reset"
               ]
