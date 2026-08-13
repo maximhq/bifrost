@@ -3625,7 +3625,7 @@ func TestAnthropicForceFixedBudgetThinkingOverride(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			const wireModelID = "v9xyf4o111s5" // opaque Bedrock resource id (like the incident)
+			const wireModelID = "a1b2c3d4e5f6" // opaque Bedrock resource id (like the incident)
 			bifrostReq := &schemas.BifrostChatRequest{
 				Model: wireModelID,
 				Input: []schemas.ChatMessage{
