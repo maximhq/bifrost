@@ -222,7 +222,7 @@ func DecodeComplexityAnalyzerConfig(data []byte) (*ComplexityAnalyzerConfig, err
 
 	var record complexityAnalyzerConfigRecord
 	if err := json.Unmarshal(data, &record); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal complexity analyzer config: %w", err)
+		return nil, fmt.Errorf("%w: failed to unmarshal complexity analyzer config: %w", ErrConfigUnreadable, err)
 	}
 
 	cfg := ComplexityAnalyzerConfig{
@@ -232,7 +232,7 @@ func DecodeComplexityAnalyzerConfig(data []byte) (*ComplexityAnalyzerConfig, err
 	}
 	normalized := cfg.Normalized()
 	if err := normalized.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid complexity analyzer config: %w", err)
+		return nil, fmt.Errorf("%w: invalid complexity analyzer config: %w", ErrConfigUnreadable, err)
 	}
 	return &normalized, nil
 }
