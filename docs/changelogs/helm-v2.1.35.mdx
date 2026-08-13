@@ -1,0 +1,22 @@
+---
+title: "v2.1.35"
+description: "Helm v2.1.35 changelog - 2026-08-13"
+---
+
+<Update label="Bifrost Helm" description="v2.1.35">
+
+## Changelog
+
+- **OTEL metrics-only profiles.** Set `traces_enabled: false` on an OTEL profile (or the single-profile config) to export metrics without traces — `collector_url` is no longer required in that case.
+- **Per-signal OTEL headers.** New `trace_headers` and `metrics_headers` are overlaid on the shared `headers` for the trace and metrics endpoints respectively, so you can send a header (e.g. a Databricks table name) to only one endpoint.
+- **First-admin bootstrap token.** New `bifrost.setupToken` provisions the secret required to create the very first admin account. Supports `env.`/`vault.` references and the `BIFROST_SETUP_TOKEN` environment variable.
+- **Trusted internal plugin hosts.** New `bifrost.server.pluginDownloadPrivateAllowlist` lets custom plugin (`.so`) downloads reach trusted internal hosts that resolve to private/loopback addresses, which are blocked by default to prevent SSRF.
+- **HTTP/2 keepalive for providers.** New per-provider `network_config.http2_ping_interval_in_seconds` sends keepalive PINGs on idle HTTP/2 streams (applies only when `enforce_http2` is set).
+- **Inline OAuth for MCP servers.** MCP client configs now accept an inline `oauthConfig` block (client ID/secret, authorize/token/registration URLs, scopes) for the `oauth` and `per_user_oauth` auth types — you no longer need to pre-create an OAuth config and reference it. Any missing values are auto-discovered during admin verification. (`oauthConfigId` is now managed by Bifrost and no longer set here.)
+- **Delegated token exchange for MCP servers (Enterprise).** The new `token_exchange` auth type with a `tokenExchange` block exchanges each caller's identity-provider token for a short-lived token scoped to the MCP server's audience.
+- **Per-caller vs shared MCP connections.** New `needsSessionStickiness` (HTTP servers only) chooses between one persistent connection reused across callers and a fresh connection per call.
+- **AWS PrivateLink for Bedrock.** The `bedrock` and `bedrock_mantle` key examples now document `endpoints` for routing through interface VPC endpoints.
+- **Quarterly budgets.** Governance budgets now support quarterly resets (`reset_duration: "1Q"`) with `reset_config.quarter_start_month` to align to a fiscal year.
+- **Guardrail execution target.** Governance guardrail rules now accept a `target` (`llm`, the default, or `mcp`).
+
+</Update>

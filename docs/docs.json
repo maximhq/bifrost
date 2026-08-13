@@ -2078,6 +2078,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.35",
               "changelogs/helm-v2.1.34",
               {
                 "group": "July 2026",
