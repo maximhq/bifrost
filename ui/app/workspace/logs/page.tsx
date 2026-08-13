@@ -90,6 +90,8 @@ export default function LogsPage() {
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			apps: parseAsSafeArrayOf.withDefault([]),
 			user_agents: parseAsSafeArrayOf.withDefault([]),
+			complexity_tiers: parseAsSafeArrayOf.withDefault([]),
+			complexity_mechanisms: parseAsSafeArrayOf.withDefault([]),
 			user_ids: parseAsSafeArrayOf.withDefault([]),
 			team_ids: parseAsSafeArrayOf.withDefault([]),
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
@@ -139,6 +141,8 @@ export default function LogsPage() {
 			routing_engine_used: urlState.routing_engine_used,
 			apps: urlState.apps,
 			user_agents: urlState.user_agents,
+			complexity_tiers: urlState.complexity_tiers,
+			complexity_mechanisms: urlState.complexity_mechanisms,
 			user_ids: urlState.user_ids,
 			team_ids: urlState.team_ids,
 			customer_ids: urlState.customer_ids,
@@ -177,6 +181,8 @@ export default function LogsPage() {
 			urlState.routing_engine_used,
 			urlState.apps,
 			urlState.user_agents,
+			urlState.complexity_tiers,
+			urlState.complexity_mechanisms,
 			urlState.user_ids,
 			urlState.team_ids,
 			urlState.customer_ids,
@@ -211,8 +217,7 @@ export default function LogsPage() {
 			// period mode `newFilters` carries no start/end, so only touch time when an
 			// explicit range is actually provided — otherwise we'd wipe the active period/range.
 			const hasExplicitTime = !!newFilters.start_time && !!newFilters.end_time;
-			const timeChanged =
-				hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
+			const timeChanged = hasExplicitTime && (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time);
 			if (timeChanged) {
 				userModifiedTimeRange.current = true;
 			}
@@ -237,6 +242,8 @@ export default function LogsPage() {
 				routing_engine_used: newFilters.routing_engine_used || [],
 				apps: newFilters.apps || [],
 				user_agents: newFilters.user_agents || [],
+				complexity_tiers: newFilters.complexity_tiers || [],
+				complexity_mechanisms: newFilters.complexity_mechanisms || [],
 				user_ids: newFilters.user_ids || [],
 				team_ids: newFilters.team_ids || [],
 				customer_ids: newFilters.customer_ids || [],
