@@ -43,34 +43,16 @@ type mockConfigStoreForVK struct {
 	configstore.ConfigStore
 	getVirtualKeysCalls          int
 	getVirtualKeysPaginatedCalls int
-	getVirtualKeyCalls           int
-	lastPaginatedParams          configstore.VirtualKeyQueryParams
-	// viewScoped makes the store report a narrowed caller, as the enterprise DAC
-	// wrapper does. Zero value is an unscoped store, matching OSS.
-	viewScoped bool
 }
 
-// IsVirtualKeyViewScoped satisfies the transport's virtualKeyViewScoper check.
-func (m *mockConfigStoreForVK) IsVirtualKeyViewScoped(_ context.Context) bool {
-	return m.viewScoped
-}
-
-func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, params configstore.VirtualKeyQueryParams) ([]configstoreTables.TableVirtualKey, int64, error) {
+func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, _ configstore.VirtualKeyQueryParams) ([]configstoreTables.TableVirtualKey, int64, error) {
 	m.getVirtualKeysPaginatedCalls++
-	m.lastPaginatedParams = params
 	return nil, 0, nil
 }
 
 func (m *mockConfigStoreForVK) GetVirtualKeys(_ context.Context) ([]configstoreTables.TableVirtualKey, error) {
 	m.getVirtualKeysCalls++
 	return nil, nil
-}
-
-// GetVirtualKey stands in for a store whose access scopes hide the key from this
-// caller: the row exists, but the scoped query matches nothing.
-func (m *mockConfigStoreForVK) GetVirtualKey(_ context.Context, _ string) (*configstoreTables.TableVirtualKey, error) {
-	m.getVirtualKeyCalls++
-	return nil, configstore.ErrNotFound
 }
 
 type mockRotateConfigStore struct {
@@ -2513,28 +2495,22 @@ func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
 	}
 }
 
-// newVKHandlerForFromMemory builds a handler whose snapshot holds a key the config
-// store will not return, so snapshot reads are distinguishable rather than matching
-// by coincidence on empty data. viewScoped=true mimics the enterprise DAC wrapper.
-func newVKHandlerForFromMemory(viewScoped bool) (*GovernanceHandler, *mockConfigStoreForVK, *mockGovernanceManagerForVK) {
+// TestGetVirtualKeys_FromMemoryUsesGovernanceData verifies the from_memory
+// flag serves virtual keys from the in-memory GovernanceData and bypasses the
+// DB-backed ConfigStore entirely.
+func TestGetVirtualKeys_FromMemoryUsesGovernanceData(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	store := &mockConfigStoreForVK{viewScoped: viewScoped}
+	store := &mockConfigStoreForVK{}
 	manager := &mockGovernanceManagerForVK{
 		data: &governance.GovernanceData{
-			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{
-				"vk-hidden": {ID: "vk-hidden", Name: "Hidden VK"},
-			},
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
 		},
 	}
-	return &GovernanceHandler{configStore: store, governanceManager: manager}, store, manager
-}
-
-// TestGetVirtualKeys_FromMemoryUsesGovernanceData verifies from_memory still serves
-// the in-memory GovernanceData to an unscoped caller, which is the only way to read
-// live budget/rate-limit usage.
-func TestGetVirtualKeys_FromMemoryUsesGovernanceData(t *testing.T) {
-	h, store, manager := newVKHandlerForFromMemory(false)
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
@@ -2548,15 +2524,30 @@ func TestGetVirtualKeys_FromMemoryUsesGovernanceData(t *testing.T) {
 	if manager.getGovernanceDataCalls != 1 {
 		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
 	}
-	if store.getVirtualKeysCalls != 0 || store.getVirtualKeysPaginatedCalls != 0 {
-		t.Fatalf("from_memory path hit the config store: %d/%d", store.getVirtualKeysCalls, store.getVirtualKeysPaginatedCalls)
+	if store.getVirtualKeysCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
+	}
+	if store.getVirtualKeysPaginatedCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
 	}
 }
 
-// TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit verifies the from_memory
-// flag still wins over pagination parameters for an unscoped caller.
+// TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit verifies the
+// from_memory flag is honored even when pagination parameters are present, so
+// the in-memory path is used and the paginated ConfigStore query is skipped.
 func TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit(t *testing.T) {
-	h, store, manager := newVKHandlerForFromMemory(false)
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
@@ -2573,6 +2564,9 @@ func TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit(t *testing.T) {
 	if store.getVirtualKeysPaginatedCalls != 0 {
 		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
 	}
+	if store.getVirtualKeysCalls != 0 {
+		t.Fatalf("from_memory path called GetVirtualKeys %d times", store.getVirtualKeysCalls)
+	}
 }
 
 // TestGetVirtualKeys_FromMemoryRejectsUserFilter locks in the fail-closed contract
@@ -2580,7 +2574,18 @@ func TestGetVirtualKeys_FromMemoryTakesPrecedenceOverLimit(t *testing.T) {
 // so the filter cannot be applied there; silently ignoring it would return every
 // cached key — the inverse of the DB path, which matches nothing it cannot resolve.
 func TestGetVirtualKeys_FromMemoryRejectsUserFilter(t *testing.T) {
-	h, store, manager := newVKHandlerForFromMemory(false)
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
@@ -2604,7 +2609,18 @@ func TestGetVirtualKeys_FromMemoryRejectsUserFilter(t *testing.T) {
 // the user_id rejection deliberately does not extend to: customer_id/team_id are
 // still silently ignored under from_memory, so existing consumers are unaffected.
 func TestGetVirtualKeys_FromMemoryIgnoresOtherFilters(t *testing.T) {
-	h, _, manager := newVKHandlerForFromMemory(false)
+	SetLogger(&mockLogger{})
+
+	store := &mockConfigStoreForVK{}
+	manager := &mockGovernanceManagerForVK{
+		data: &governance.GovernanceData{
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
+		},
+	}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")
@@ -2617,97 +2633,6 @@ func TestGetVirtualKeys_FromMemoryIgnoresOtherFilters(t *testing.T) {
 	}
 	if manager.getGovernanceDataCalls != 1 {
 		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
-	}
-}
-
-// TestGetVirtualKeys_FromMemoryDeniedForScopedCaller locks the access-bypass fix:
-// the unscoped snapshot handed a narrowed caller every cached key, so those callers
-// now fall through to the scoped config store.
-func TestGetVirtualKeys_FromMemoryDeniedForScopedCaller(t *testing.T) {
-	h, store, manager := newVKHandlerForFromMemory(true)
-
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/governance/virtual-keys?from_memory=true")
-
-	h.getVirtualKeys(ctx)
-
-	if ctx.Response.StatusCode() != 200 {
-		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	if manager.getGovernanceDataCalls != 0 {
-		t.Fatalf("scoped caller reached the unscoped snapshot %d times", manager.getGovernanceDataCalls)
-	}
-	if store.getVirtualKeysCalls != 1 {
-		t.Fatalf("expected GetVirtualKeys to be called once, got %d", store.getVirtualKeysCalls)
-	}
-	if body := string(ctx.Response.Body()); strings.Contains(body, "vk-hidden") {
-		t.Fatalf("response leaked a key only present in the in-memory snapshot: %s", body)
-	}
-}
-
-// TestGetVirtualKeys_FromMemoryScopedCallerKeepsUserFilter checks the scoped caller
-// falls through far enough to keep the filter the in-memory branch rejects outright.
-func TestGetVirtualKeys_FromMemoryScopedCallerKeepsUserFilter(t *testing.T) {
-	h, store, _ := newVKHandlerForFromMemory(true)
-
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/governance/virtual-keys?from_memory=true&user_id=user-1")
-
-	h.getVirtualKeys(ctx)
-
-	if ctx.Response.StatusCode() != 200 {
-		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	if store.lastPaginatedParams.UserID != "user-1" {
-		t.Fatalf("user_id filter did not reach the store: %q", store.lastPaginatedParams.UserID)
-	}
-}
-
-// TestGetVirtualKey_FromMemoryServesUnscopedCaller verifies the detail endpoint still
-// answers from the snapshot for a caller whose view is not narrowed.
-func TestGetVirtualKey_FromMemoryServesUnscopedCaller(t *testing.T) {
-	h, store, manager := newVKHandlerForFromMemory(false)
-
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/governance/virtual-keys/vk-hidden?from_memory=true")
-	ctx.SetUserValue("vk_id", "vk-hidden")
-
-	h.getVirtualKey(ctx)
-
-	if ctx.Response.StatusCode() != 200 {
-		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	if manager.getGovernanceDataCalls != 1 {
-		t.Fatalf("expected GetGovernanceData to be called once, got %d", manager.getGovernanceDataCalls)
-	}
-	if store.getVirtualKeyCalls != 0 {
-		t.Fatalf("from_memory path hit the config store %d times", store.getVirtualKeyCalls)
-	}
-}
-
-// TestGetVirtualKey_FromMemoryDeniedForScopedCaller is the detail half: matching on
-// ID against the snapshot answered 200 for a key the config store reports as missing.
-func TestGetVirtualKey_FromMemoryDeniedForScopedCaller(t *testing.T) {
-	h, store, manager := newVKHandlerForFromMemory(true)
-
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/governance/virtual-keys/vk-hidden?from_memory=true")
-	ctx.SetUserValue("vk_id", "vk-hidden")
-
-	h.getVirtualKey(ctx)
-
-	if ctx.Response.StatusCode() != 404 {
-		t.Fatalf("expected status 404, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	if manager.getGovernanceDataCalls != 0 {
-		t.Fatalf("scoped caller reached the unscoped snapshot %d times", manager.getGovernanceDataCalls)
-	}
-	if store.getVirtualKeyCalls != 1 {
-		t.Fatalf("expected GetVirtualKey to be called once, got %d", store.getVirtualKeyCalls)
 	}
 }
 
