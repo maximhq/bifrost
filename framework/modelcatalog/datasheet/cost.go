@@ -1650,12 +1650,17 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 		input.containerIdentifierString = su.ContainerIdentifier
 	}
 	// Provider-reported exact cost wins over datasheet estimation; attach it to usage.Cost so the
-	// provider-cost short-circuit in computeCost returns it verbatim.
+	// provider-cost short-circuit in computeCost returns it verbatim. input.usage may alias the
+	// caller's su.LLMUsage, so copy before assigning Cost to preserve the pure-read invariant (see
+	// the DeepCopy in the ImageGenerationResponse branch above).
 	if su.Cost != nil {
 		if input.usage == nil {
-			input.usage = &schemas.BifrostLLMUsage{}
+			input.usage = &schemas.BifrostLLMUsage{Cost: su.Cost}
+		} else {
+			usageCopy := *input.usage
+			usageCopy.Cost = su.Cost
+			input.usage = &usageCopy
 		}
-		input.usage.Cost = su.Cost
 	}
 	return input
 }

@@ -1938,6 +1938,25 @@ func TestCalculateCost_PassthroughProviderComputedCost(t *testing.T) {
 	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
 }
 
+// passthroughUsageToCostInput must not mutate the caller's usage when attaching a provider-reported
+// cost — the cost path is read-only (mirrors the DeepCopy invariant in extractCostInput). Without
+// the defensive copy, assigning Cost would write back onto the shared response's LLMUsage.
+func TestPassthroughUsageToCostInput_DoesNotMutateSourceUsage(t *testing.T) {
+	su := &schemas.BifrostPassthroughUsage{
+		LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 100},
+		Cost:     &schemas.BifrostCost{TotalCost: 0.5},
+	}
+
+	input := passthroughUsageToCostInput(su)
+
+	// The returned input carries the provider-reported cost...
+	require.NotNil(t, input.usage)
+	require.NotNil(t, input.usage.Cost)
+	assert.Equal(t, 0.5, input.usage.Cost.TotalCost)
+	// ...but the caller's source usage must be left untouched.
+	assert.Nil(t, su.LLMUsage.Cost, "passthroughUsageToCostInput must not mutate su.LLMUsage")
+}
+
 // Without a reported cost the datasheet still prices the request.
 func TestCalculateCost_ImageFallsBackToDatasheetWithoutReportedCost(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
