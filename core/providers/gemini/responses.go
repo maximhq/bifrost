@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -153,7 +154,7 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools, includeServerSideToolInvocations)
+			geminiReq.Tools, err = convertResponsesToolsToGemini(bifrostReq.Params.Tools, includeServerSideToolInvocations, bifrostReq.Provider, bifrostReq.Model)
 			if err != nil {
 				return nil, err
 			}
@@ -3864,15 +3865,57 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 	return config, nil
 }
 
+// modelSupportsToolCombination reports whether a model can accept built-in tools (Google
+// Search) and function declarations in the same request. Tool combination arrived with
+// Gemini 3; 2.x and older reject the mix with
+// "Multiple tools are supported only when they are all search tools".
+//
+// Unknown or non-Gemini model names return false on purpose. Guessing "capable" costs a
+// hard 400, guessing "not capable" costs only the built-in tool, so the safe default is to
+// drop rather than to send.
+func modelSupportsToolCombination(model string) bool {
+	name := strings.ToLower(model)
+	// Strip a provider prefix ("vertex/gemini-3.6-flash") and any publisher path.
+	if idx := strings.LastIndex(name, "/"); idx != -1 {
+		name = name[idx+1:]
+	}
+	const prefix = "gemini-"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	// Read the leading major version: "3-flash-preview" -> 3, "2.5-pro" -> 2.
+	rest := name[len(prefix):]
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return false
+	}
+	major, err := strconv.Atoi(rest[:end])
+	if err != nil {
+		return false
+	}
+	return major >= 3
+}
+
 // convertResponsesToolsToGemini converts Responses tools to Gemini tools.
-// includeServerSideToolInvocations opts into Gemini's tool combination mode; without it
-// Gemini rejects function declarations sent alongside Google Search, so one of the two has
-// to go. Function declarations win: they carry the caller's (or the MCP gateway's) tools,
-// which the model cannot invoke at all if they never reach the wire, whereas losing Google
-// Search only costs grounding. Set includeServerSideToolInvocations to send both.
-func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool) ([]Tool, error) {
+// The Gemini Developer API rejects function declarations sent alongside Google Search
+// unless includeServerSideToolInvocations opts into tool combination mode, so without it
+// one of the two has to go. Function declarations win: they carry the caller's (or the MCP
+// gateway's) tools, which the model cannot invoke at all if they never reach the wire,
+// whereas losing Google Search only costs grounding.
+//
+// Vertex AI accepts the combination without the flag, but only on models that support tool
+// combination at all — Gemini 3 and newer. Sending both kinds to an older Vertex model is
+// rejected outright with "Multiple tools are supported only when they are all search tools",
+// so the drop still applies there: a degraded answer beats a 400.
+func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool, provider schemas.ModelProvider, model string) ([]Tool, error) {
 	var functionDeclarations []*FunctionDeclaration
 	var googleSearch *GoogleSearch
+
+	allowsMixedTools := includeServerSideToolInvocations ||
+		(provider == schemas.Vertex && modelSupportsToolCombination(model))
 
 	hasFunctionTool := false
 
@@ -3883,7 +3926,7 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 		}
 	}
 
-	dropGoogleSearch := hasFunctionTool && !includeServerSideToolInvocations
+	dropGoogleSearch := hasFunctionTool && !allowsMixedTools
 
 	for _, tool := range tools {
 		if tool.Type == schemas.ResponsesToolTypeFunction {

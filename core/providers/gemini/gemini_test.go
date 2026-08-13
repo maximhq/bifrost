@@ -4856,6 +4856,98 @@ func TestIncludeServerSideToolInvocations(t *testing.T) {
 		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
 	})
 
+	t.Run("vertex sends both without the flag", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Provider = schemas.Vertex
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 2, "vertex accepts built-in and function tools together")
+		require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+		assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
+		assert.NotNil(t, out.Tools[1].GoogleSearch)
+	})
+
+	// Tool combination arrived with Gemini 3. Sending both tool kinds to an older model
+	// makes Vertex reject the whole request with
+	// "Multiple tools are supported only when they are all search tools", so the
+	// declarations-win drop still has to apply there -- a degraded answer beats a 400.
+	t.Run("vertex drops google search for models without tool combination", func(t *testing.T) {
+		for _, model := range []string{"gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"} {
+			t.Run(model, func(t *testing.T) {
+				req := responsesReq(nil)
+				req.Provider = schemas.Vertex
+				req.Model = model
+				out, err := gemini.ToGeminiResponsesRequest(nil, req)
+				require.NoError(t, err)
+				require.Len(t, out.Tools, 1, "pre-Gemini-3 models cannot combine tool kinds")
+				assert.Nil(t, out.Tools[0].GoogleSearch)
+				require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+				assert.Equal(t, "get_weather", out.Tools[0].FunctionDeclarations[0].Name)
+			})
+		}
+	})
+
+	t.Run("vertex sends both for gemini 3 and newer", func(t *testing.T) {
+		for _, model := range []string{"gemini-3-flash-preview", "gemini-3.6-flash", "gemini-4-pro"} {
+			t.Run(model, func(t *testing.T) {
+				req := responsesReq(nil)
+				req.Provider = schemas.Vertex
+				req.Model = model
+				out, err := gemini.ToGeminiResponsesRequest(nil, req)
+				require.NoError(t, err)
+				require.Len(t, out.Tools, 2, "gemini 3+ accepts both tool kinds on vertex")
+				require.Len(t, out.Tools[0].FunctionDeclarations, 1)
+				assert.NotNil(t, out.Tools[1].GoogleSearch)
+			})
+		}
+	})
+
+	// An unrecognised model must not be assumed capable: dropping google search yields a
+	// degraded answer, sending both yields a hard 400.
+	t.Run("vertex drops google search for unrecognised models", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Provider = schemas.Vertex
+		req.Model = "some-tuned-endpoint"
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 1)
+		assert.Nil(t, out.Tools[0].GoogleSearch)
+	})
+
+	t.Run("vertex keeps search localization alongside declarations", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Provider = schemas.Vertex
+		req.Params.Tools[0].ResponsesToolWebSearch = &schemas.ResponsesToolWebSearch{
+			UserLocation: &schemas.ResponsesToolWebSearchUserLocation{
+				Latitude:  schemas.Ptr(48.85),
+				Longitude: schemas.Ptr(2.35),
+			},
+		}
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		require.Len(t, out.Tools, 2)
+		require.NotNil(t, out.ToolConfig)
+		require.NotNil(t, out.ToolConfig.RetrievalConfig)
+		require.NotNil(t, out.ToolConfig.RetrievalConfig.LatLng)
+		require.NotNil(t, out.ToolConfig.RetrievalConfig.LatLng.Latitude)
+		assert.Equal(t, 48.85, *out.ToolConfig.RetrievalConfig.LatLng.Latitude)
+		// Both coordinates have to survive: a half-populated LatLng points at the wrong
+		// place rather than at no place, which Gemini accepts without complaint.
+		require.NotNil(t, out.ToolConfig.RetrievalConfig.LatLng.Longitude)
+		assert.Equal(t, 2.35, *out.ToolConfig.RetrievalConfig.LatLng.Longitude)
+	})
+
+	t.Run("vertex does not force the server-side invocation flag on", func(t *testing.T) {
+		req := responsesReq(nil)
+		req.Provider = schemas.Vertex
+		out, err := gemini.ToGeminiResponsesRequest(nil, req)
+		require.NoError(t, err)
+		if out.ToolConfig != nil {
+			assert.Nil(t, out.ToolConfig.IncludeServerSideToolInvocations,
+				"vertex needs no opt-in; the flag must not be synthesized")
+		}
+	})
+
 	t.Run("surviving declarations carry the tool choice through", func(t *testing.T) {
 		req := responsesReq(nil)
 		req.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("required")}
