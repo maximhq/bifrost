@@ -1901,6 +1901,62 @@ func TestCalculateCost_ImageProviderComputedCostPassthrough(t *testing.T) {
 	assert.Equal(t, 0.02, s.CalculateCost(resp, nil))
 }
 
+// Video/3D provider-reported cost hangs off VideoGenerationResponse.Usage.Cost. Runware reports an
+// exact per-task price (and 3D has no datasheet rate), so the reported cost must win verbatim.
+func TestCalculateCost_VideoProviderComputedCostPassthrough(t *testing.T) {
+	s := testStoreWithPricing(nil) // no datasheet entry on purpose — 3D has no rate
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Usage: &schemas.VideoUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
+// Passthrough responses can carry a provider-reported cost (e.g. Runware's per-task cost read from
+// the raw body). It must win verbatim, with no datasheet entry required.
+func TestCalculateCost_PassthroughProviderComputedCost(t *testing.T) {
+	s := testStoreWithPricing(nil) // no datasheet entry — raw passthrough has no rate
+
+	resp := &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{Cost: &schemas.BifrostCost{TotalCost: 0.5}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:     schemas.PassthroughRequest,
+				PassthroughPath: "/v1",
+				RoutingInfo:     routingInfoFor(schemas.Runware, "tripo:v3.1@0"),
+			},
+		},
+	}
+
+	assert.Equal(t, 0.5, s.CalculateCost(resp, nil))
+}
+
+// passthroughUsageToCostInput must not mutate the caller's usage when attaching a provider-reported
+// cost — the cost path is read-only (mirrors the DeepCopy invariant in extractCostInput). Without
+// the defensive copy, assigning Cost would write back onto the shared response's LLMUsage.
+func TestPassthroughUsageToCostInput_DoesNotMutateSourceUsage(t *testing.T) {
+	su := &schemas.BifrostPassthroughUsage{
+		LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 100},
+		Cost:     &schemas.BifrostCost{TotalCost: 0.5},
+	}
+
+	input := passthroughUsageToCostInput(su)
+
+	// The returned input carries the provider-reported cost...
+	require.NotNil(t, input.usage)
+	require.NotNil(t, input.usage.Cost)
+	assert.Equal(t, 0.5, input.usage.Cost.TotalCost)
+	// ...but the caller's source usage must be left untouched.
+	assert.Nil(t, su.LLMUsage.Cost, "passthroughUsageToCostInput must not mutate su.LLMUsage")
+}
+
 // Without a reported cost the datasheet still prices the request.
 func TestCalculateCost_ImageFallsBackToDatasheetWithoutReportedCost(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{

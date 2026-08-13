@@ -5,3 +5,32 @@
 - fix: keep `reasoning_effort: "xhigh"` for `grok-4.6` and `grok-4.20-multi-agent` - the shared OpenAI-dialect normalizer downgraded it to "high" before the xAI compat pass ran, so the value was lost even with the deny-list corrected. `grok-4.5` still downgrades on purpose, matching xAI's documented upstream coercion
 - fix: emit `content_part.added`, `output_text.delta`, `output_text.done` and `content_part.done` when a tool-based structured-output call is reassembled into a message on the Responses streaming path - only `output_item.added`/`done` were emitted, so every consumer reading incremental events rather than the item snapshot saw a stream with no text at all. A schema-constrained `streamGenerateContent` to Bedrock Mantle returned `{"candidates":[{"content":{"role":"model"},"finishReason":"STOP"}]}` with tokens billed. Affects Vertex, Bedrock Mantle and Azure Claude, the three providers that emulate structured output with a forced tool call
 - feat: inline URL-sourced images and documents for AWS-hosted Claude on the native-Anthropic path - Bedrock Mantle rejects `{"source":{"type":"url"}}` with "URL content sources are not yet supported for this model". Fetches go through the SSRF-safe dialer with a size cap, and a failed fetch aborts the request rather than silently dropping an attachment. Brings the native-Anthropic surface to parity with Bedrock's Converse path
+- feat: bedrock vpc endpoints support (#6064)
+- feat: add `use_idp_credentials` to token-exchange config so SSO login app credentials can be reused for providers like Microsoft Entra ID (#6068)
+- feat: add w3c trace id to context (#5945)
+- feat: persist and resync MCP tool discoveries uniformly across all client types via a hash-gated core callback
+- feat: add per user oauth mcp support for config.json
+- feat: add a context path for skipping auth resolution on trusted internal callers
+- feat: cost accounting for prompt guardrails (#4931)
+- fix: path normalization auth bypass (#5763)
+- fix: preserve minimal reasoning effort for GPT-5-family OpenAI models (thanks [@jitokim](https://github.com/jitokim)!) (#6046)
+- fix: map truncated Gemini responses to the MAX_TOKENS finish reason (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5979)
+- fix: omit absent tool-call function name on streaming deltas instead of emitting null (thanks [@AdityaPainuli](https://github.com/AdityaPainuli)!) (#5966)
+- fix: bedrock files handling in inference (#5947)
+- fix: cost in usd ticks for xai usage (#5950)
+- fix: add anthropic error branch when stripping encrypted reasoning content
+- fix: discover tools synchronously for per-call MCP clients, fix shared-OAuth reconnect and verify errors
+- fix: break lock-order inversion in ConnectionCheckerManager, close a data race in the performCheck test
+- fix: rebuild ephemeral client fresh across the whole connect+init retry
+- fix: preserve last-known tool maps across close-first reconnects
+- fix: bind MCP connect attempts to entry identity and guard AddClient's discovery path
+- fix: pin needs_session_stickiness across config.json reconciliation so an unrelated file edit cannot revert it to per-call
+- fix: restrict Reauthorize to shared OAuth clients
+- fix: reject inactive tokens in ValidateToken, document the shared vs per-identity oauth token lookup contract
+- fix: don't silently drop stored oauth scopes on decode failure, skip rotation instead
+- fix: gate SSE OnConnectionLost on connection identity
+- fix: close the verify-headers double-submit race, preserve TLS, timeout and per-user-header fields on OAuth-completion updates
+- fix: repair shared connections regardless of destructive hint, fail closed on missing tool annotations, dedupe background reconnect
+- fix: configure bounded http.Server timeouts and a request-body limit
+- fix: guard nil ConfigStore, propagate resource, surface pending-bootstrap cleanup failure
+- chore: dependabot dependency updates (#6040)

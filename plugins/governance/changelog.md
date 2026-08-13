@@ -1,0 +1,3 @@
+- fix: skip list models call for budgets and rate-limits (#6051)
+- feat: honor the auth-skip context path in the governance resolver
+- chore: upgraded core to v1.7.11 and framework to v1.5.9
