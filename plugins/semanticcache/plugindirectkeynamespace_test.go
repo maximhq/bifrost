@@ -9,6 +9,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// directKeyNamespaceContext returns a test context carrying the supplied
+// Direct Key value.
 func directKeyNamespaceContext(rawKey string) *schemas.BifrostContext {
 	ctx := newBaseTestContext()
 	ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{
@@ -18,6 +20,8 @@ func directKeyNamespaceContext(rawKey string) *schemas.BifrostContext {
 	return ctx
 }
 
+// directKeyNamespaceConfig builds a cache config that references the named
+// environment variable without embedding its secret value.
 func directKeyNamespaceConfig(t *testing.T, envName string) *Config {
 	t.Helper()
 	var config Config
@@ -28,6 +32,8 @@ func directKeyNamespaceConfig(t *testing.T, envName string) *Config {
 	return &config
 }
 
+// TestResolveCacheKey_DirectKeyUsesStableHMAC verifies deterministic, opaque
+// SHA-256 namespaces for repeated use of the same Direct Key.
 func TestResolveCacheKey_DirectKeyUsesStableHMAC(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET", "namespace-secret-at-least-32-bytes")
 	plugin := &Plugin{config: directKeyNamespaceConfig(t, "TEST_DIRECT_KEY_CACHE_SECRET")}
@@ -55,6 +61,8 @@ func TestResolveCacheKey_DirectKeyUsesStableHMAC(t *testing.T) {
 	}
 }
 
+// TestResolveCacheKey_DirectKeySeparatesKeys verifies that distinct Direct
+// Keys cannot share a cache namespace.
 func TestResolveCacheKey_DirectKeySeparatesKeys(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET", "namespace-secret-at-least-32-bytes")
 	plugin := &Plugin{config: directKeyNamespaceConfig(t, "TEST_DIRECT_KEY_CACHE_SECRET")}
@@ -72,6 +80,8 @@ func TestResolveCacheKey_DirectKeySeparatesKeys(t *testing.T) {
 	}
 }
 
+// TestResolveCacheKey_DirectKeySeparatesSecrets verifies that rotating the
+// server secret produces a distinct cache namespace.
 func TestResolveCacheKey_DirectKeySeparatesSecrets(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET_A", "namespace-secret-a-at-least-32-bytes")
 	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET_B", "namespace-secret-b-at-least-32-bytes")
@@ -89,6 +99,8 @@ func TestResolveCacheKey_DirectKeySeparatesSecrets(t *testing.T) {
 	}
 }
 
+// TestResolveCacheKey_DirectKeyOverridesClientAndDefaultKeys verifies that a
+// server-derived Direct Key namespace takes precedence over untrusted keys.
 func TestResolveCacheKey_DirectKeyOverridesClientAndDefaultKeys(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET", "namespace-secret-at-least-32-bytes")
 	plugin := &Plugin{config: directKeyNamespaceConfig(t, "TEST_DIRECT_KEY_CACHE_SECRET")}
@@ -107,6 +119,8 @@ func TestResolveCacheKey_DirectKeyOverridesClientAndDefaultKeys(t *testing.T) {
 	}
 }
 
+// TestResolveCacheKey_DirectKeyWithoutSecretFailsClosed verifies that an unset
+// namespace secret disables caching for Direct Key requests.
 func TestResolveCacheKey_DirectKeyWithoutSecretFailsClosed(t *testing.T) {
 	const envName = "BIFROST_TEST_MISSING_DIRECT_KEY_SECRET"
 	previous, existed := os.LookupEnv(envName)
@@ -131,6 +145,8 @@ func TestResolveCacheKey_DirectKeyWithoutSecretFailsClosed(t *testing.T) {
 	}
 }
 
+// TestResolveCacheKey_DirectKeyWithoutConfigFailsClosed verifies that missing
+// namespace configuration disables caching for Direct Key requests.
 func TestResolveCacheKey_DirectKeyWithoutConfigFailsClosed(t *testing.T) {
 	plugin := &Plugin{config: &Config{DefaultCacheKey: "shared-default"}}
 	ctx := directKeyNamespaceContext("sk-user-a")
@@ -142,6 +158,8 @@ func TestResolveCacheKey_DirectKeyWithoutConfigFailsClosed(t *testing.T) {
 	}
 }
 
+// TestResolveCacheKey_DirectKeyWithShortSecretFailsClosed verifies that a weak
+// namespace secret disables caching for Direct Key requests.
 func TestResolveCacheKey_DirectKeyWithShortSecretFailsClosed(t *testing.T) {
 	t.Setenv("TEST_SHORT_DIRECT_KEY_CACHE_SECRET", "too-short")
 	plugin := &Plugin{config: directKeyNamespaceConfig(t, "TEST_SHORT_DIRECT_KEY_CACHE_SECRET")}
@@ -154,6 +172,8 @@ func TestResolveCacheKey_DirectKeyWithShortSecretFailsClosed(t *testing.T) {
 	}
 }
 
+// TestResolveCacheKey_EmptyDirectKeyFailsClosed verifies that an empty Direct
+// Key cannot fall back to a shared cache namespace.
 func TestResolveCacheKey_EmptyDirectKeyFailsClosed(t *testing.T) {
 	t.Setenv("TEST_DIRECT_KEY_CACHE_SECRET", "namespace-secret-at-least-32-bytes")
 	plugin := &Plugin{config: directKeyNamespaceConfig(t, "TEST_DIRECT_KEY_CACHE_SECRET")}
@@ -166,6 +186,8 @@ func TestResolveCacheKey_EmptyDirectKeyFailsClosed(t *testing.T) {
 	}
 }
 
+// TestResolveCacheKey_NonDirectRequestKeepsExistingPrecedence verifies that
+// ordinary requests retain the existing per-request cache-key behavior.
 func TestResolveCacheKey_NonDirectRequestKeepsExistingPrecedence(t *testing.T) {
 	plugin := &Plugin{config: directKeyNamespaceConfig(t, "UNUSED_DIRECT_KEY_CACHE_SECRET")}
 	ctx := newBaseTestContext()
@@ -177,6 +199,8 @@ func TestResolveCacheKey_NonDirectRequestKeepsExistingPrecedence(t *testing.T) {
 	}
 }
 
+// TestConfig_DirectKeyCacheSecretEnvDoesNotSerializeSecret verifies that only
+// the environment variable name, never its secret value, is serialized.
 func TestConfig_DirectKeyCacheSecretEnvDoesNotSerializeSecret(t *testing.T) {
 	t.Setenv("BIFROST_CACHE_NAMESPACE_SECRET", "must-not-be-serialized")
 	config := directKeyNamespaceConfig(t, "BIFROST_CACHE_NAMESPACE_SECRET")

@@ -6,10 +6,12 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// boolPointer returns a pointer to value for nullable boolean test fields.
 func boolPointer(value bool) *bool {
 	return &value
 }
 
+// basicCacheableChatRequest returns a minimal plain-text chat request.
 func basicCacheableChatRequest() *schemas.BifrostRequest {
 	return &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -17,6 +19,7 @@ func basicCacheableChatRequest() *schemas.BifrostRequest {
 	}
 }
 
+// basicCacheableResponsesRequest returns a minimal stateless Responses request.
 func basicCacheableResponsesRequest() *schemas.BifrostRequest {
 	return &schemas.BifrostRequest{
 		RequestType: schemas.ResponsesRequest,
@@ -27,6 +30,8 @@ func basicCacheableResponsesRequest() *schemas.BifrostRequest {
 	}
 }
 
+// TestPreRequestHook_MarksUnsafeRequestsForFullBypass verifies that unsafe
+// requests skip both cache reads and writes.
 func TestPreRequestHook_MarksUnsafeRequestsForFullBypass(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -127,6 +132,8 @@ func TestPreRequestHook_MarksUnsafeRequestsForFullBypass(t *testing.T) {
 	}
 }
 
+// TestPreRequestHook_LeavesPlainTextInferenceCacheable verifies that ordinary
+// stateless text inference remains eligible for caching.
 func TestPreRequestHook_LeavesPlainTextInferenceCacheable(t *testing.T) {
 	for _, req := range []*schemas.BifrostRequest{
 		basicCacheableChatRequest(),
@@ -143,6 +150,8 @@ func TestPreRequestHook_LeavesPlainTextInferenceCacheable(t *testing.T) {
 	}
 }
 
+// TestPreLLMHook_BypassSkipsLookupState verifies that bypassed requests create
+// neither cache hits nor per-request cache state.
 func TestPreLLMHook_BypassSkipsLookupState(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	plugin.config.DefaultCacheKey = "shared-default"

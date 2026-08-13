@@ -80,6 +80,8 @@ func TestConvertToBifrostContext_ReusesSharedContext(t *testing.T) {
 	}
 }
 
+// TestConvertToBifrostContext_SecondCallReturnsSameSharedContext verifies that
+// repeated conversion reuses both the context and its cancel function.
 func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
@@ -99,6 +101,8 @@ func TestConvertToBifrostContext_SecondCallReturnsSameSharedContext(t *testing.T
 	}
 }
 
+// TestConvertToBifrostContext_CacheBypassHeader verifies the accepted true
+// values and false behavior of the cache-bypass HTTP header.
 func TestConvertToBifrostContext_CacheBypassHeader(t *testing.T) {
 	tests := []struct {
 		name  string

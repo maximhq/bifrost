@@ -488,6 +488,8 @@ func (plugin *Plugin) resolveCacheKey(ctx *schemas.BifrostContext) (string, bool
 	return "", false
 }
 
+// resolveDirectKeyCacheKey derives an HMAC namespace for a Direct Key request
+// and reports whether the request was handled and remains cacheable.
 func (plugin *Plugin) resolveDirectKeyCacheKey(ctx *schemas.BifrostContext) (string, bool, bool) {
 	directKey, isDirect := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
 	if !isDirect {
@@ -506,6 +508,8 @@ func (plugin *Plugin) resolveDirectKeyCacheKey(ctx *schemas.BifrostContext) (str
 	return directKeyCacheNamespacePrefix + hex.EncodeToString(mac.Sum(nil)), true, true
 }
 
+// shouldBypassCache reports whether a request depends on state or external
+// capabilities that make replaying a cached response unsafe.
 func (plugin *Plugin) shouldBypassCache(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
 	if bypass, _ := ctx.Value(CacheBypassKey).(bool); bypass {
 		return true
@@ -521,6 +525,9 @@ func (plugin *Plugin) shouldBypassCache(ctx *schemas.BifrostContext, req *schema
 	}
 	return false
 }
+
+// shouldBypassChatCache reports whether a chat request contains stateful,
+// tool-driven, or non-text input that is unsafe to cache.
 func shouldBypassChatCache(req *schemas.BifrostChatRequest) bool {
 	if req.Params != nil {
 		params := req.Params
@@ -552,6 +559,8 @@ func shouldBypassChatCache(req *schemas.BifrostChatRequest) bool {
 	return false
 }
 
+// shouldBypassResponsesCache reports whether a Responses request contains
+// stateful, tool-driven, or non-text input that is unsafe to cache.
 func shouldBypassResponsesCache(req *schemas.BifrostResponsesRequest) bool {
 	if req.Params != nil {
 		params := req.Params
@@ -587,10 +596,13 @@ func shouldBypassResponsesCache(req *schemas.BifrostResponsesRequest) bool {
 	return false
 }
 
+// boolIsTrue reports whether a nullable boolean is explicitly true.
 func boolIsTrue(value *bool) bool {
 	return value != nil && *value
 }
 
+// hasUnsafeCacheExtraParams reports whether provider-specific parameters can
+// invoke stateful tools or external data sources.
 func hasUnsafeCacheExtraParams(params map[string]interface{}) bool {
 	for name := range params {
 		switch strings.ToLower(name) {

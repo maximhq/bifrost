@@ -760,6 +760,8 @@ func TestParseOffsetCursor(t *testing.T) {
 	}
 }
 
+// TestBuildRedisQueryCondition_NumericEquality verifies numeric range syntax
+// and escaped tag equality syntax for Redis search filters.
 func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
 	fieldTypes := map[string]VectorStorePropertyType{
 		"size":      VectorStorePropertyTypeInteger,

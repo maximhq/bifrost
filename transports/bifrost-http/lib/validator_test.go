@@ -1203,6 +1203,8 @@ func TestValidateConfigSchema_SemanticCachePlugin_ProviderWithoutEmbeddingModel(
 	}
 }
 
+// TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid verifies that a
+// direct-only cache requires neither a provider nor an embedding model.
 func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) {
 	validConfig := `{
 		"plugins": [
@@ -1222,6 +1224,8 @@ func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) 
 	}
 }
 
+// TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithDirectKeySecretEnvValid
+// verifies that direct-only cache configuration accepts an HMAC secret variable.
 func TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithDirectKeySecretEnvValid(t *testing.T) {
 	validConfig := `{
 		"plugins": [
