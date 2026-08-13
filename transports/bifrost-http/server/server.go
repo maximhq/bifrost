@@ -1946,6 +1946,9 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 	if semanticCachePlugin, ok := plugin.(*semanticcache.Plugin); ok {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
+	if governanceEmbeddingPlugin, ok := plugin.(governance.EmbeddingExecutorSetter); ok {
+		governanceEmbeddingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
 	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
@@ -2555,6 +2558,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	semanticCachePlugin, err := lib.FindPluginAs[*semanticcache.Plugin](s.Config, semanticcache.PluginName)
 	if err == nil && semanticCachePlugin != nil {
 		semanticCachePlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
+	}
+	// Add governance plugin embedding request executor if it exists (used for
+	// semantic complexity classification).
+	governanceEmbeddingPlugin, err := lib.FindPluginAs[governance.EmbeddingExecutorSetter](s.Config, s.getGovernancePluginName())
+	if err == nil && governanceEmbeddingPlugin != nil {
+		governanceEmbeddingPlugin.SetEmbeddingRequestExecutor(s.Client.EmbeddingRequest)
 	}
 
 	// Initialize Sidekiq runner for background jobs
