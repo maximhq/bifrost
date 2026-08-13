@@ -157,6 +157,14 @@ var (
 	}
 )
 
+// Bifrost-format stop reasons (post-convertBedrockStopReason) that map to a
+// content-filtered outcome: "content_filtered" is remapped to "content_filter",
+// while "guardrail_intervened" has no Bifrost equivalent and passes through as-is.
+const (
+	bedrockStopReasonContentFilter       = "content_filter"
+	bedrockStopReasonGuardrailIntervened = "guardrail_intervened"
+)
+
 // convertBedrockStopReason converts a Bedrock stop reason to Bifrost format.
 func convertBedrockStopReason(stopReason string) string {
 	if reason, ok := bedrockFinishReasonToBifrost[stopReason]; ok {
