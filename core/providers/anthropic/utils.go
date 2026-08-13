@@ -1401,8 +1401,17 @@ func computerUseBaseTool(toolType string) string {
 // MapBifrostEffortToAnthropic maps a Bifrost effort level to an Anthropic effort level.
 // Anthropic supports "low", "medium", "high", "max"; Bifrost also has "minimal" which maps to "low".
 func MapBifrostEffortToAnthropic(effort string) string {
-	if effort == "minimal" {
+	switch effort {
+	case "minimal":
 		return "low"
+	case "adaptive":
+		// "Don't pass `adaptive` as an `effort` value: `adaptive` is a thinking mode,
+		// not an effort level." An inbound dialect that puts it in reasoning.effort
+		// must not have it forwarded into output_config.effort, where Anthropic would
+		// reject it. "high" is the safe landing: the docs state that setting effort to
+		// "high" behaves exactly like omitting the parameter, so the thinking mode the
+		// caller was reaching for is left to the thinking parameter to express.
+		return "high"
 	}
 	return effort
 }

@@ -2060,10 +2060,14 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 					} else if block.File != nil {
 						// Handle file blocks - use FileURL if available (uploaded file)
 						if block.File.FileURL != nil && *block.File.FileURL != "" {
-							// Only set MIMEType when the caller actually provided one
+							// Prefer the caller's MIMEType; otherwise take whatever the URI itself
+							// states. Vertex rejects a fileData with no mimeType outright, and the
+							// OpenAI dialect has no field to carry one - see mimeTypeFromURI.
 							fileData := &FileData{FileURI: *block.File.FileURL}
 							if block.File.FileType != nil {
 								fileData.MIMEType = *block.File.FileType
+							} else {
+								fileData.MIMEType = mimeTypeFromURI(*block.File.FileURL)
 							}
 							parts = append(parts, &Part{FileData: fileData})
 						} else if block.File.FileData != nil {
@@ -2998,4 +3002,68 @@ func ConvertGeminiLogprobsResultToBifrost(result *LogprobsResult) *schemas.Bifro
 		}
 	}
 	return &schemas.BifrostLogProbs{Content: content}
+}
+
+// mimeTypeFromURI returns the IANA MIME type a URI's own file extension declares, or "" when the
+// URI does not state one.
+//
+// Vertex rejects a fileData part that carries no mimeType ("Unable to submit request because it
+// has an empty mimeType parameter in fileData"), while the Gemini API infers it. The OpenAI
+// dialect has no field for a file's type, so a PDF referenced by URL through /openai reached
+// Vertex typeless and 400'd - with a body byte-identical to the one gemini accepted.
+//
+// Deliberately NOT a default. Bifrost previously stamped every typeless fileData as
+// application/pdf, which sent a lie upstream for non-PDF content; filedata_mime_test.go pins that
+// bug shut. Reading an extension the caller already wrote is not the same as inventing a type, so
+// an extensionless URI - notably the Files API form https://.../v1beta/files/abc - still yields "".
+//
+// The table is explicit rather than mime.TypeByExtension because that consults the host's
+// /etc/mime.types and appends charset parameters, making the wire format depend on the machine
+// Bifrost happens to run on.
+var uriExtensionMIMETypes = map[string]string{
+	".pdf":  "application/pdf",
+	".txt":  "text/plain",
+	".csv":  "text/csv",
+	".md":   "text/markdown",
+	".html": "text/html",
+	".json": "application/json",
+	".xml":  "application/xml",
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".webp": "image/webp",
+	".gif":  "image/gif",
+	".heic": "image/heic",
+	".heif": "image/heif",
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".ogg":  "audio/ogg",
+	".flac": "audio/flac",
+	".aac":  "audio/aac",
+	".mp4":  "video/mp4",
+	".mov":  "video/quicktime",
+	".webm": "video/webm",
+	".avi":  "video/x-msvideo",
+	".mpeg": "video/mpeg",
+}
+
+func mimeTypeFromURI(uri string) string {
+	if uri == "" {
+		return ""
+	}
+	// Strip query and fragment first: "report.pdf?sig=abc" must still resolve, and a "." inside a
+	// query value must not be mistaken for the extension.
+	if i := strings.IndexAny(uri, "?#"); i >= 0 {
+		uri = uri[:i]
+	}
+	// Only the LAST path segment can carry the extension. Without this, a versioned directory such
+	// as "/v1.2/files/abc" would look like an ".2/files/abc" extension.
+	if i := strings.LastIndex(uri, "/"); i >= 0 {
+		uri = uri[i+1:]
+	}
+	dot := strings.LastIndex(uri, ".")
+	if dot < 0 {
+		return ""
+	}
+	return uriExtensionMIMETypes[strings.ToLower(uri[dot:])]
 }

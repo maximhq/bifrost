@@ -130,6 +130,9 @@ func ApplyModelInfo(model *schemas.Model, entry *PricingEntry) {
 	if entry.SearchContextCostPerQuery != nil {
 		pricing.WebSearch = new(formatCost(*entry.SearchContextCostPerQuery))
 	}
+	if entry.CostPerRequest != nil {
+		pricing.Request = new(formatCost(*entry.CostPerRequest))
+	}
 	model.Pricing = pricing
 }
 

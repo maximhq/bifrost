@@ -20,6 +20,19 @@ const bedrockSigningService = "bedrock"
 // credential scope; using "bedrock" will cause signature verification failures.
 const bedrockMantleSigningService = "bedrock-mantle"
 
+// bedrockService identifies an AWS endpoint service Bifrost dials. The value doubles as the
+// host prefix of the public regional endpoint. It is distinct from the SigV4 signing service
+// above: bedrock-runtime and bedrock-agent-runtime both sign as "bedrock".
+type bedrockService string
+
+const (
+	bedrockServiceRuntime      bedrockService = "bedrock-runtime"
+	bedrockServiceControlPlane bedrockService = "bedrock"
+	bedrockServiceMantle       bedrockService = "bedrock-mantle"
+	bedrockServiceAgentRuntime bedrockService = "bedrock-agent-runtime"
+	bedrockServiceS3           bedrockService = "s3"
+)
+
 const MinimumReasoningMaxTokens = 1
 const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
 

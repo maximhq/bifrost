@@ -192,6 +192,13 @@ func supportsOpenAIXHighReasoningEffort(model string) bool {
 		model = parsedModel
 	}
 	modelLower := strings.ToLower(model)
+	// This normalizer is shared by every OpenAI-dialect provider, not just OpenAI, so
+	// non-OpenAI families that support the tier have to be recognised here too -
+	// otherwise their "xhigh" is silently downgraded to "high" before the
+	// provider-specific compat pass ever runs.
+	if schemas.SupportsGrokXHighReasoningEffort(modelLower) {
+		return true
+	}
 	return strings.HasPrefix(modelLower, "gpt-5.2") ||
 		strings.HasPrefix(modelLower, "gpt-5.3-codex") ||
 		strings.HasPrefix(modelLower, "gpt-5.4") ||

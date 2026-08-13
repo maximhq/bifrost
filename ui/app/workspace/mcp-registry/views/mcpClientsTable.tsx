@@ -703,9 +703,13 @@ export default function MCPClientsTable({
 								}
 							/>
 							<div className="min-w-0 space-y-0.5">
-								<DialogTitle className="text-sm leading-snug font-medium">Re-verify as me</DialogTitle>
+								<DialogTitle className="text-sm leading-snug font-medium">
+									{exchangeVerifyClient?.state === "pending_verification" ? "Verify as me" : "Re-verify as me"}
+								</DialogTitle>
 								<DialogDescription className="text-xs leading-relaxed">
-									Renew Bifrost&apos;s own discovery credential using your identity.
+									{exchangeVerifyClient?.state === "pending_verification"
+										? "Establish Bifrost's discovery credential using your identity."
+										: "Renew Bifrost's own discovery credential using your identity."}
 								</DialogDescription>
 							</div>
 						</div>
@@ -713,14 +717,22 @@ export default function MCPClientsTable({
 					<div className="space-y-3 px-5 py-4">
 						<InfoBox icon={<KeyRound className="size-4" />}>
 							<p>
-								This exchanges your own signed-in identity to renew Bifrost&apos;s discovery credential for{" "}
+								This exchanges your own signed-in identity to{" "}
+								{exchangeVerifyClient?.state === "pending_verification" ? "establish" : "renew"} Bifrost&apos;s discovery credential for{" "}
 								<strong>{exchangeVerifyClient?.config.name}</strong>.
 							</p>
-							<p className="text-muted-foreground/80 text-xs">
-								That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
-								are exchanged automatically on every request. You only need this if the credential badge shows it&apos;s expired, but
-								running it any time is safe.
-							</p>
+							{exchangeVerifyClient?.state === "pending_verification" ? (
+								<p className="text-muted-foreground/80 text-xs">
+									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose
+									tokens are exchanged automatically on every request.
+								</p>
+							) : (
+								<p className="text-muted-foreground/80 text-xs">
+									That credential is only used to periodically fetch this server&apos;s tool list, not for real user requests, whose tokens
+									are exchanged automatically on every request. You only need this if the credential badge shows it&apos;s expired, but
+									running it any time is safe.
+								</p>
+							)}
 						</InfoBox>
 						<div className="flex justify-end gap-2">
 							<Button

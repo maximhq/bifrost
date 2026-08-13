@@ -41,20 +41,52 @@ cleanup() {
     wait "$BIFROST_PID" 2>/dev/null || true
   fi
 
-  rm -f "${LOG_FILE:-}" 2>/dev/null || true
+  if [ -n "${MCP_SERVER_PID:-}" ]; then
+    echo "   Stopping MCP test server (PID: $MCP_SERVER_PID)..."
+    kill "$MCP_SERVER_PID" 2>/dev/null || true
+    wait "$MCP_SERVER_PID" 2>/dev/null || true
+  fi
+
+  # :- guards both: cleanup is defined before either variable is assigned.
+  rm -f "${LOG_FILE:-}" "${MCP_SERVER_LOG_FILE:-}" 2>/dev/null || true
 
   exit $exit_code
 }
 trap cleanup EXIT
 
-# Step 1: Build bifrost-http from source
+# Step 1: Obtain the bifrost-http binary
 echo ""
-echo "🔨 Building bifrost-http from source..."
 cd "$REPO_ROOT"
 
-# Build the UI first, then the binary
-make build-ui
-make build
+# CI's build-gateway job supplies the binary as an artifact; only build it here
+# when running locally (or if CI ever drops that job).
+#
+# The local build calls `go build` directly rather than `make build`: the
+# Makefile passes GOWORK=off unless LOCAL is set, which discards the workspace
+# setup-go-workspace.sh just wrote and sends the transport to the module proxy
+# for core/framework/plugins. That resolves published versions, so any change
+# spanning transports and an unreleased framework fails to compile here while
+# building fine on a developer machine.
+if [ "${SKIP_GATEWAY_BUILD:-0}" = "1" ]; then
+  if [ ! -x "$REPO_ROOT/tmp/bifrost-http" ]; then
+    echo "❌ SKIP_GATEWAY_BUILD=1 but no executable binary at $REPO_ROOT/tmp/bifrost-http" >&2
+    exit 1
+  fi
+  echo "⏭️  Using prebuilt bifrost-http binary at $REPO_ROOT/tmp/bifrost-http"
+else
+  echo "🔨 Building UI + bifrost-http binary..."
+  mkdir -p "$REPO_ROOT/tmp"
+  # `make build`, not a bare `go build`: the Makefile target carries the build contract
+  # (CGO_ENABLED=1, the sqlite_static tag, version ldflags, GOOS/GOARCH resolution, and
+  # Linux static linking). Reproducing it here by hand means the integration suite can
+  # certify a binary that differs from the artifact CI actually ships.
+  #
+  # LOCAL=1 keeps the go.work this script's caller just wrote. Without it the target sets
+  # GOWORK=off and resolves core/framework/plugins from the module proxy, which fails to
+  # build any change that spans transports and an unreleased framework - the same reason
+  # the SKIP_GATEWAY_BUILD branch above exists.
+  (cd "$REPO_ROOT" && make LOCAL=1 build)
+fi
 
 if [ ! -f "$REPO_ROOT/tmp/bifrost-http" ]; then
   echo "❌ Error: bifrost-http binary not found at $REPO_ROOT/tmp/bifrost-http"
@@ -62,6 +94,43 @@ if [ ! -f "$REPO_ROOT/tmp/bifrost-http" ]; then
 fi
 
 echo "✅ Build complete: $REPO_ROOT/tmp/bifrost-http"
+
+# Step 1b: Start the local MCP fixture backing config.json's sse_mcp client.
+#
+# That client used to point at a hosted Composio endpoint via MCP_SSE_URL and
+# friends. When the endpoint was decommissioned the config kept referencing it,
+# so the gateway spent its startup retrying a dead host. examples/mcps/remote-test-server
+# serves the same MCP protocol over SSE on 3012 with no auth, which is all the
+# sse_mcp client needs - and it costs no secret and no egress allowlist entry.
+#
+# Non-fatal if missing: an unreachable MCP client makes the gateway log and move
+# on, exactly as it did with the dead remote, and none of the provider
+# integration tests assert on MCP.
+MCP_TEST_SERVER="$REPO_ROOT/examples/mcps/remote-test-server/bin/remote-test-server"
+if [ -x "$MCP_TEST_SERVER" ]; then
+  echo ""
+  echo "🔌 Starting local MCP test server (SSE on 3012)..."
+  # mktemp rather than a fixed /tmp path, matching LOG_FILE above: a predictable name in a
+  # world-writable directory can be pre-created as a symlink by another local process, and this
+  # redirect would then truncate whatever it points at with the runner's permissions.
+  if ! MCP_SERVER_LOG_FILE="$(mktemp /tmp/mcp-test-server.XXXXXX.log)"; then
+    echo "❌ Failed to create MCP test server log file" >&2
+    exit 1
+  fi
+  MCP_HTTP_PORT=3011 MCP_SSE_PORT=3012 "$MCP_TEST_SERVER" > "$MCP_SERVER_LOG_FILE" 2>&1 &
+  MCP_SERVER_PID=$!
+  for _ in $(seq 1 40); do
+    if nc -z localhost 3012 2>/dev/null; then break; fi
+    sleep 0.25
+  done
+  if nc -z localhost 3012 2>/dev/null; then
+    echo "   ✅ MCP test server ready (PID: $MCP_SERVER_PID)"
+  else
+    echo "   ⚠️  MCP test server did not come up; sse_mcp client will be unreachable"
+  fi
+else
+  echo "⚠️  MCP test server not built at $MCP_TEST_SERVER; sse_mcp client will be unreachable"
+fi
 
 # Step 2: Start Bifrost server with Python integration test config
 echo ""
@@ -83,6 +152,16 @@ BIFROST_PID=$!
 echo "   Started with PID: $BIFROST_PID"
 
 
+# The gateway's own stdout/stderr goes to $LOG_FILE, which cleanup() deletes on exit. A
+# bootstrap failure (bad config path, unopenable store, port in use) is therefore invisible
+# in CI - the job reports only "process died unexpectedly". Dump the tail before exiting.
+dump_server_log() {
+  echo ""
+  echo "----- last 50 lines of bifrost server log ($LOG_FILE) -----"
+  tail -n 50 "$LOG_FILE" 2>/dev/null || echo "   (log file unreadable)"
+  echo "-----------------------------------------------------------"
+}
+
 # Wait for server to be ready
 echo "⏳ Waiting for Bifrost to be ready..."
 MAX_WAIT=30
@@ -99,6 +178,7 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   # Check if server process is still running
   if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
     echo "❌ Bifrost process died unexpectedly"
+    dump_server_log
     exit 1
   fi
   
@@ -108,6 +188,7 @@ done
 
 if [ "$SERVER_READY" = false ]; then
   echo "❌ Bifrost failed to start within ${MAX_WAIT}s"
+  dump_server_log
   exit 1
 fi
 

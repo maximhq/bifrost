@@ -278,7 +278,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	region := resolveBedrockRegion(ctx, key, model)
 
 	// Create the request with the JSON body
-	requestURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
@@ -394,7 +394,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 		region = config.Region.GetValue()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://bedrock-agent-runtime.%s.amazonaws.com%s", region, path), bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://%s%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceAgentRuntime, region), path), bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
 			IsBifrostError: true,
@@ -486,7 +486,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
 
 	// Create HTTP request for streaming
-	requestURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
 	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
 	if reqErr != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", reqErr)
@@ -784,7 +784,7 @@ func signAWSRequest(
 // for this GET). Best-effort: returns nil on any failure so the foundation-model list is
 // still returned.
 func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, key schemas.Key, region string, unfiltered bool) *schemas.BifrostListModelsResponse {
-	mURL := mantleOpenAIURL(region, "", "models")
+	mURL := mantleOpenAIURL(bedrockEndpoints(key.BedrockKeyConfig), region, "", "models")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mURL, nil)
 	if err != nil {
 		provider.logger.Warn("failed to build mantle list-models request: %v", err)
@@ -848,7 +848,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// List models endpoint uses the bedrock service (not bedrock-runtime)
-	url := fmt.Sprintf("https://bedrock.%s.amazonaws.com/foundation-models?%s", region, params.Encode())
+	url := fmt.Sprintf("https://%s/foundation-models?%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceControlPlane, region), params.Encode())
 
 	// Create the GET request without a body
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -2545,7 +2545,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 
 	// Build S3 PUT request URL
 	// Escape each path segment individually to handle special characters while preserving "/"
-	reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(s3Key))
+	reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(s3Key))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, reqURL, bytes.NewReader(request.File))
 	if err != nil {
@@ -2678,7 +2678,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 		params.Set("continuation-token", nativeCursor)
 	}
 
-	requestURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/?%s", bucketName, region, params.Encode())
+	requestURL := fmt.Sprintf("https://%s.%s/?%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), params.Encode())
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -2788,7 +2788,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Build S3 HEAD request
 		// Escape each path segment individually to handle special characters while preserving "/"
-		reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(s3Key))
+		reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(s3Key))
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodHead, reqURL, nil)
 		if err != nil {
@@ -2886,7 +2886,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		// Build S3 DELETE request
 		// Escape each path segment individually to handle special characters while preserving "/"
-		reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(s3Key))
+		reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(s3Key))
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
 		if err != nil {
@@ -2967,7 +2967,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 
 		// Build S3 GET request
 		// Escape each path segment individually to handle special characters while preserving "/"
-		reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(s3Key))
+		reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(s3Key))
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
@@ -3179,7 +3179,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Create HTTP request
-	reqURL := fmt.Sprintf("https://bedrock.%s.amazonaws.com/model-invocation-job", region)
+	reqURL := fmt.Sprintf("https://%s/model-invocation-job", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error creating request", err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -3300,7 +3300,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 		params.Set("nextToken", nativeCursor)
 	}
 
-	reqURL := fmt.Sprintf("https://bedrock.%s.amazonaws.com/model-invocation-jobs", region)
+	reqURL := fmt.Sprintf("https://%s/model-invocation-jobs", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region))
 	if len(params) > 0 {
 		reqURL += "?" + params.Encode()
 	}
@@ -3421,7 +3421,7 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 	}
 
 	// Build S3 GET request
-	reqURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucketName, region, escapeS3KeyForURL(manifestKey))
+	reqURL := fmt.Sprintf("https://%s.%s/%s", bucketName, resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceS3, region), escapeS3KeyForURL(manifestKey))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -3481,7 +3481,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 
 		// URL encode the job ARN
 		encodedJobArn := url.PathEscape(request.BatchID)
-		reqURL := fmt.Sprintf("https://bedrock.%s.amazonaws.com/model-invocation-job/%s", region, encodedJobArn)
+		reqURL := fmt.Sprintf("https://%s/model-invocation-job/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region), encodedJobArn)
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
@@ -3625,7 +3625,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 
 		// URL encode the job ARN
 		encodedJobArn := url.PathEscape(request.BatchID)
-		reqURL := fmt.Sprintf("https://bedrock.%s.amazonaws.com/model-invocation-job/%s/stop", region, encodedJobArn)
+		reqURL := fmt.Sprintf("https://%s/model-invocation-job/%s/stop", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceControlPlane, region), encodedJobArn)
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
 		if err != nil {

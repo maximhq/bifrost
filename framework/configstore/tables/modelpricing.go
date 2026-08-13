@@ -111,6 +111,8 @@ type TableModelPricing struct {
 	CodeInterpreterCostPerSession *float64 `gorm:"default:null;column:code_interpreter_cost_per_session" json:"code_interpreter_cost_per_session,omitempty"`
 	// Data-residency multiplier scaling all token/cache costs when Anthropic serves inference_geo:"us" (1.1x); nil = no multiplier.
 	InferenceGeoUSMultiplier *float64 `gorm:"default:null;column:inference_geo_us_multiplier" json:"inference_geo_us_multiplier,omitempty"`
+	// CostPerRequest is a flat fee added once per billed request, regardless of request type or usage.
+	CostPerRequest *float64 `gorm:"default:null;column:cost_per_request" json:"cost_per_request,omitempty"`
 
 	// Costs - OCR
 	OCRCostPerPage        *float64 `gorm:"default:null;column:ocr_cost_per_page" json:"ocr_cost_per_page,omitempty"`

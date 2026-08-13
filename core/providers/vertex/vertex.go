@@ -516,12 +516,15 @@ func inlineDocumentURLsResponses(ctx *schemas.BifrostContext, request *schemas.B
 func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	var jsonBody []byte
 	var bifrostErr *schemas.BifrostError
+	// Vertex resolves URL-source documents server-side, and no model family can rely on
+	// that: Claude-on-Vertex rejects URL sources outright, and Gemini-on-Vertex defers to a
+	// crawler that fails intermittently ("Cannot fetch content from the provided URL" on
+	// harness 47.10 -> vertex/gemini-2.5-flash). Inline for every model so the bytes travel
+	// with the request, as Bedrock already does.
+	if err := inlineRemoteURLSources(ctx, request); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex", err)
+	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Anthropic-on-Vertex doesn't accept URL-source document or image blocks.
-		// Inline any URL documents/images to base64 before the converter runs.
-		if err := inlineRemoteURLSources(ctx, request); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex/claude", err)
-		}
 		jsonBody, bifrostErr = anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
@@ -818,12 +821,17 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
 
+	// Vertex resolves URL-source documents server-side, and no model family can rely on
+	// that: Claude-on-Vertex rejects URL sources outright, and Gemini-on-Vertex defers to a
+	// crawler that fails intermittently ("Cannot fetch content from the provided URL" on
+	// harness 47.10 -> vertex/gemini-2.5-flash). Inline for every model so the bytes travel
+	// with the request, as Bedrock already does.
+	if err := inlineRemoteURLSources(ctx, request); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex", err)
+	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Use Anthropic-style streaming for Claude models.
 		// Anthropic-on-Vertex doesn't accept URL-source document or image blocks; inline first.
-		if err := inlineRemoteURLSources(ctx, request); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex/claude", err)
-		}
 		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
@@ -1045,12 +1053,15 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 // Responses performs a responses request to the Vertex API.
 func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// Vertex resolves URL-source documents server-side, and no model family can rely on
+	// that: Claude-on-Vertex rejects URL sources outright, and Gemini-on-Vertex defers to a
+	// crawler that fails intermittently ("Cannot fetch content from the provided URL" on
+	// harness 47.10 -> vertex/gemini-2.5-flash). Inline for every model so the bytes travel
+	// with the request, as Bedrock already does.
+	if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
+	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
-		// Inline any URL documents to base64 before the converter runs.
-		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
-		}
 		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
@@ -1339,6 +1350,14 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 // ResponsesStream performs a streaming responses request to the Vertex API.
 func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// Vertex resolves URL-source documents server-side, and no model family can rely on
+	// that: Claude-on-Vertex rejects URL sources outright, and Gemini-on-Vertex defers to a
+	// crawler that fails intermittently ("Cannot fetch content from the provided URL" on
+	// harness 47.10 -> vertex/gemini-2.5-flash). Inline for every model so the bytes travel
+	// with the request, as Bedrock already does.
+	if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
+	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		region := resolveVertexRegion(ctx, key)
 		if region == "" {
@@ -1350,11 +1369,6 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, providerUtils.NewConfigurationError("project ID is not set")
 		}
 
-		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
-		// Inline any URL documents to base64 before the converter runs.
-		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
-		}
 		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,
@@ -4060,12 +4074,15 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		bifrostErr *schemas.BifrostError
 	)
 
+	// Vertex resolves URL-source documents server-side, and no model family can rely on
+	// that: Claude-on-Vertex rejects URL sources outright, and Gemini-on-Vertex defers to a
+	// crawler that fails intermittently ("Cannot fetch content from the provided URL" on
+	// harness 47.10 -> vertex/gemini-2.5-flash). Inline for every model so the bytes travel
+	// with the request, as Bedrock already does.
+	if err := inlineDocumentURLsResponses(ctx, request); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
+	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Anthropic-on-Vertex doesn't accept URL-source document blocks.
-		// Inline any URL documents to base64 before the converter runs.
-		if err := inlineDocumentURLsResponses(ctx, request); err != nil {
-			return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex/claude", err)
-		}
 		jsonBody, bifrostErr = anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
 			Provider:                  schemas.Vertex,
 			Model:                     request.Model,

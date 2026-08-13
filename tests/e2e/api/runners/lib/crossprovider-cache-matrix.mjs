@@ -423,12 +423,19 @@ ${
   // this assertion exists to prevent.`
     : `  try { series = JSON.parse(pm.collectionVariables.get(${J(seriesVar)}) || '[]'); } catch (e) { series = []; }`
 }
-  series.push(hitRate);
+  // Each round records its counters, not just its rate. The reported hitRate is the best round's,
+  // so carrying only rates forced the report to pair that rate with the LAST round's counters -
+  // and the two disagree whenever the best round isn't the last one. gemini-2.5-pro/control
+  // rendered as "Read 0 | Uncached 15748 | Hit rate 77.8% | PASS", a row that reads as a
+  // contradiction and undercuts every honest row next to it.
+  series.push({ h: hitRate, r: read, w: write, u: uncached });
   pm.collectionVariables.set(${J(seriesVar)}, JSON.stringify(series));
 ${
   isLast
-    ? `  var best = series.reduce(function (a, b) { return b > a ? b : a; }, 0);
-  var pcts = series.map(function (h) { return (h * 100).toFixed(0) + '%'; }).join(' ');
+    ? `  var bestRound = series.reduce(function (a, b) { return b.h > a.h ? b : a; }, series[0]);
+  var best = bestRound.h;
+  var rates = series.map(function (x) { return x.h; });
+  var pcts = rates.map(function (h) { return (h * 100).toFixed(0) + '%'; }).join(' ');
   console.log('CACHE_MATRIX_REPORT', JSON.stringify({
     cell: ${J(cellId)},
     provider: ${J(cell.provider)},
@@ -437,10 +444,12 @@ ${
     shape: ${J(cell.shape)},
     mechanism: ${J(cell.mechanism)},
     arm: ${J(arm.key)},
-    read: read, write: write, uncached: uncached,
+    // The best round's counters, matching the hitRate below. The renderer prints these side by
+    // side, and a row is only readable if both halves describe the same round.
+    read: bestRound.r, write: bestRound.w, uncached: bestRound.u,
     // Implicit cells assert only "cached at least once", so the renderer scores hitRate > 0 for
     // them; hitRateFloor is carried anyway so the report can show the bar that was applied.
-    hitRate: best, series: series, hitRateFloor: 0
+    hitRate: best, series: rates, hitRateFloor: 0
   }));
   // Deliberately only "caching engaged at least once". Implicit caching is best-effort and
   // non-deterministic at the provider — measured directly against Google, byte-identical repeats

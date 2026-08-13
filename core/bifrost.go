@@ -6454,7 +6454,7 @@ func executeRequestWithRetries[T any](
 		// only instead of failing outright. Runs once per request.
 		lastWasEncryptedContentStrip = false
 		if !shouldRetry && !strippedEncryptedContent && isEncryptedReasoningRejection(bifrostError) &&
-			stripResponsesEncryptedContent(ctx, req) {
+			stripUnverifiableReasoning(ctx, req) {
 			strippedEncryptedContent = true
 			lastWasEncryptedContentStrip = true
 			extraAttempts++

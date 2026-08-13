@@ -126,11 +126,22 @@ const (
 
 // TokenExchangeIdP is the identity-provider side of one delegated token
 // exchange call: where to send it and which grant shape to use. The client
-// credentials authorized to perform the exchange live on each MCP client's
-// own token_exchange block, not here.
+// credentials authorized to perform the exchange normally live on each MCP
+// client's own token_exchange block, not here — IdPClientID/IdPClientSecret
+// below are the one exception.
 type TokenExchangeIdP struct {
 	TokenEndpoint string
 	GrantShape    TokenExchangeGrantShape
+	// IdPClientID and IdPClientSecret are the SSO login application's own
+	// credentials, from the deployment's identity-provider integration.
+	// Populated only to satisfy MCPTokenExchangeConfig.UseIdPCredentials —
+	// see that field's doc comment for why some providers (Microsoft Entra
+	// ID) require reusing the SSO application itself rather than a
+	// dedicated exchange application. Resolver implementations may leave
+	// these empty if UseIdPCredentials is never set to true for any client
+	// they serve.
+	IdPClientID     string
+	IdPClientSecret string
 }
 
 // TokenExchangeIdPResolver supplies the identity-provider details for

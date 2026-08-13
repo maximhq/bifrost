@@ -105,7 +105,7 @@ func (p *OAuth2Provider) GetExchangedAccessToken(ctx *schemas.BifrostContext, co
 		return cached.accessToken, nil
 	}
 	filled, err := p.userTokens.Fill(ctx, key, func() (cachedUserToken, error) {
-		return p.performExchange(ctx, config, func(idp *schemas.TokenExchangeIdP) url.Values {
+		return p.performExchange(ctx, config, func(idp *schemas.TokenExchangeIdP) (url.Values, error) {
 			return buildSubjectExchangeForm(idp, config.TokenExchange, subjectToken)
 		})
 	})
@@ -128,7 +128,7 @@ func (p *OAuth2Provider) ExchangeAdminCredential(ctx context.Context, config *sc
 	if subjectToken == "" {
 		return nil, schemas.ErrExchangeSubjectTokenMissing
 	}
-	return p.rawExchange(ctx, config, func(idp *schemas.TokenExchangeIdP) url.Values {
+	return p.rawExchange(ctx, config, func(idp *schemas.TokenExchangeIdP) (url.Values, error) {
 		return buildSubjectExchangeForm(idp, config.TokenExchange, subjectToken)
 	})
 }
@@ -193,8 +193,11 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 	if strings.TrimSpace(token.RefreshToken) == "" {
 		return p.markExchangeAdminNeedsReauth(token, fmt.Errorf("admin exchange credential has no refresh token to renew with"))
 	}
-	form := func(_ *schemas.TokenExchangeIdP) url.Values {
-		clientID, clientSecret := exchangeClientCredentials(clientConfig.TokenExchange)
+	form := func(idp *schemas.TokenExchangeIdP) (url.Values, error) {
+		clientID, clientSecret, err := exchangeClientCredentials(idp, clientConfig.TokenExchange)
+		if err != nil {
+			return nil, err
+		}
 		data := url.Values{}
 		data.Set("grant_type", "refresh_token")
 		data.Set("refresh_token", token.RefreshToken)
@@ -202,7 +205,7 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 		if clientSecret != "" {
 			data.Set("client_secret", clientSecret)
 		}
-		return data
+		return data, nil
 	}
 
 	response, err := p.rawExchange(ctx, clientConfig, form)
@@ -270,7 +273,7 @@ func subjectTokenFingerprint(subjectToken string) string {
 }
 
 // performExchange adapts performExchangeCtx to the BifrostContext request path.
-func (p *OAuth2Provider) performExchange(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) url.Values) (cachedUserToken, error) {
+func (p *OAuth2Provider) performExchange(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (cachedUserToken, error) {
 	return p.performExchangeCtx(ctx, config, form)
 }
 
@@ -278,7 +281,7 @@ func (p *OAuth2Provider) performExchange(ctx *schemas.BifrostContext, config *sc
 // form. Provider rejections (PermanentOAuthError) surface as
 // *schemas.TokenExchangeRejectedError so callers can distinguish "fix the
 // credential" from transient failures.
-func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (*schemas.OAuth2TokenExchangeResponse, error) {
 	resolver := p.tokenExchangeIdPResolver()
 	if resolver == nil || !resolver.Available() {
 		return nil, schemas.ErrTokenExchangeUnavailable
@@ -291,7 +294,11 @@ func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPCli
 		return nil, schemas.ErrTokenExchangeUnavailable
 	}
 
-	response, err := p.callTokenEndpoint(ctx, idp.TokenEndpoint, form(idp))
+	formValues, err := form(idp)
+	if err != nil {
+		return nil, err
+	}
+	response, err := p.callTokenEndpoint(ctx, idp.TokenEndpoint, formValues)
 	if err != nil {
 		var permanent *PermanentOAuthError
 		if errors.As(err, &permanent) {
@@ -327,7 +334,7 @@ func sanitizeTokenExchangeRejection(rawBody string) string {
 // performExchangeCtx shapes a rawExchange result into a cache entry, with the
 // expiry safety margin applied so a token about to lapse mid-call reads as a
 // miss.
-func (p *OAuth2Provider) performExchangeCtx(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) url.Values) (cachedUserToken, error) {
+func (p *OAuth2Provider) performExchangeCtx(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (cachedUserToken, error) {
 	response, err := p.rawExchange(ctx, config, form)
 	if err != nil {
 		return cachedUserToken{}, err
@@ -352,27 +359,45 @@ func validateExchangeConfig(config *schemas.MCPClientConfig) error {
 	if config.TokenExchange == nil || config.TokenExchange.Audience == "" {
 		return fmt.Errorf("MCP client %s is missing its token_exchange audience", config.Name)
 	}
+	if config.TokenExchange.UseIdPCredentials {
+		return nil
+	}
 	if strings.TrimSpace(config.TokenExchange.ClientID.GetValue()) == "" {
 		return fmt.Errorf("MCP client %s is missing its token_exchange client_id", config.Name)
 	}
 	return nil
 }
 
-// exchangeClientCredentials resolves the exchange application's credentials
-// from the client's token_exchange block (validateExchangeConfig guarantees
-// a client ID is present).
-func exchangeClientCredentials(cfg *schemas.MCPTokenExchangeConfig) (clientID, clientSecret string) {
+// exchangeClientCredentials resolves the exchange application's credentials.
+// When cfg.UseIdPCredentials is true, this is the SSO login application's
+// own client ID/secret (idp.IdPClientID/IdPClientSecret) — see that field's
+// doc comment for why some providers require this. Otherwise it's the
+// client's own token_exchange block (validateExchangeConfig guarantees a
+// client ID is present in that case). Returns an error when
+// UseIdPCredentials is true but the resolver couldn't supply a client ID —
+// without this check the caller would silently send client_id= (empty) to
+// the identity provider instead of a clear, actionable failure.
+func exchangeClientCredentials(idp *schemas.TokenExchangeIdP, cfg *schemas.MCPTokenExchangeConfig) (clientID, clientSecret string, err error) {
+	if cfg.UseIdPCredentials {
+		if idp == nil || strings.TrimSpace(idp.IdPClientID) == "" {
+			return "", "", fmt.Errorf("token_exchange.use_idp_credentials is set, but the identity-provider integration has no client ID configured")
+		}
+		return strings.TrimSpace(idp.IdPClientID), strings.TrimSpace(idp.IdPClientSecret), nil
+	}
 	clientID = strings.TrimSpace(cfg.ClientID.GetValue())
 	if cfg.ClientSecret != nil {
 		clientSecret = strings.TrimSpace(cfg.ClientSecret.GetValue())
 	}
-	return clientID, clientSecret
+	return clientID, clientSecret, nil
 }
 
 // buildSubjectExchangeForm builds the delegated-exchange request body for the
 // identity provider's grant shape.
-func buildSubjectExchangeForm(idp *schemas.TokenExchangeIdP, cfg *schemas.MCPTokenExchangeConfig, subjectToken string) url.Values {
-	clientID, clientSecret := exchangeClientCredentials(cfg)
+func buildSubjectExchangeForm(idp *schemas.TokenExchangeIdP, cfg *schemas.MCPTokenExchangeConfig, subjectToken string) (url.Values, error) {
+	clientID, clientSecret, err := exchangeClientCredentials(idp, cfg)
+	if err != nil {
+		return nil, err
+	}
 	data := url.Values{}
 	data.Set("client_id", clientID)
 	if clientSecret != "" {
@@ -397,19 +422,45 @@ func buildSubjectExchangeForm(idp *schemas.TokenExchangeIdP, cfg *schemas.MCPTok
 			data.Set("scope", scope)
 		}
 	}
-	return data
+	return data, nil
 }
 
 // scopeParam joins the configured scopes for the OAuth scope parameter.
 // When defaultToAudience is set and no scopes are configured, it falls back
 // to "<audience>/.default" (the resource-wide form used by grant shapes that
 // have no separate audience parameter).
+//
+// One narrow case combines both instead of choosing one: per Microsoft's own
+// OBO documentation, ".default" cannot be combined with other delegated
+// scopes (AADSTS70011) *except* "offline_access" —
+//
+//	"you must not combine .default with other delegated scopes like
+//	User.Read, Mail.Read, profile, or User.ReadWrite.All in the same
+//	request. This will result in AADSTS70011 errors... offline_access is
+//	sometimes accepted with .default to enable refresh tokens, but should
+//	not be combined with any additional delegated scopes."
+//	— https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow
+//
+// So when the configured scopes are exactly ["offline_access"] — the shape
+// our own docs recommend adding for a self-renewing admin discovery
+// credential — the audience-derived default is prepended rather than
+// replaced. Without this, that recommendation would silently drop resource
+// access entirely: a defaultToAudience grant shape has no separate audience
+// parameter, so "scope=offline_access" alone requests nothing but a refresh
+// token, for no resource. Any other configured scope is left as a full
+// replacement, not combined: Microsoft's rule above forbids combining
+// .default with genuinely custom scopes, so the caller has opted into
+// naming exactly what they want and .default must not be added alongside it.
 func scopeParam(cfg *schemas.MCPTokenExchangeConfig, defaultToAudience bool) string {
+	audienceDefault := strings.TrimSuffix(cfg.Audience, "/") + "/.default"
+	if defaultToAudience && len(cfg.Scopes) == 1 && strings.TrimSpace(cfg.Scopes[0]) == "offline_access" {
+		return audienceDefault + " offline_access"
+	}
 	if len(cfg.Scopes) > 0 {
 		return strings.Join(cfg.Scopes, " ")
 	}
 	if defaultToAudience {
-		return strings.TrimSuffix(cfg.Audience, "/") + "/.default"
+		return audienceDefault
 	}
 	return ""
 }

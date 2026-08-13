@@ -231,14 +231,24 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				if !isReasoning && !isCompactionMessage {
 					message.ResponsesReasoning.EncryptedContent = nil
 				}
-				// OpenAI types reasoning.content as an array of reasoning_text blocks, so a
-				// string value is rejected ("expected an array ... got a string"). Replayed
-				// reasoning items can arrive with content as a string (e.g. an empty "" round-tripped
-				// through the response path). message is a value copy, so reassign its Content pointer
-				// without mutating the caller's input: drop empty strings, promote non-empty ones to a block.
+				// Only gpt-oss carries its reasoning in reasoning_text content blocks. Every
+				// other OpenAI/Azure reasoning model keeps its retained state in summary +
+				// encrypted_content and caps reasoning.content at zero entries, rejecting a
+				// populated array with "Invalid 'input[N].content': array too long. Expected
+				// an array with maximum length 0". Replayed items reach us with content anyway:
+				// Anthropic thinking blocks translate into reasoning_text blocks (with Anthropic
+				// signatures attached), and the response path can round-trip content as a string.
+				// message is a value copy, so reassign its Content pointer without mutating the
+				// caller's input.
 				if message.Content != nil {
 					switch {
+					case !isGptOss:
+						// Summary and encrypted_content already carry everything OpenAI will accept.
+						message.Content = nil
 					case message.Content.ContentStr != nil:
+						// OpenAI types reasoning.content as an array of reasoning_text blocks, so a
+						// string value is rejected ("expected an array ... got a string"): drop empty
+						// strings, promote non-empty ones to a block.
 						if text := *message.Content.ContentStr; text == "" {
 							message.Content = nil
 						} else {
@@ -331,11 +341,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 
 			// Handle xAI-specific parameter filtering
-			// Only grok-3-mini supports reasoning_effort
+			// Strip reasoning_effort only for the models known to reject it; current-generation
+			// models (grok-4.5, grok-4.6, grok-4.20-*) accept it.
 			if bifrostReq.Provider == schemas.XAI &&
 				schemas.IsGrokReasoningModel(capModel) &&
-				!strings.Contains(capModel, "grok-3-mini") {
-				// Clear reasoning_effort for non-grok-3-mini xAI reasoning models
+				!schemas.SupportsGrokReasoningEffort(capModel) {
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
 

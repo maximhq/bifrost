@@ -3,7 +3,7 @@
 // report suitable for CI artifact upload or eyeball triage.
 //
 // Categories:
-//   provider_not_configured | model_not_found | auth_invalid | rate_limit
+//   provider_not_configured | model_not_found | auth_invalid | rate_limit | service_unavailable
 //   request_shape_mismatch  | network_or_timeout | unknown
 //
 // Usage:
@@ -33,15 +33,31 @@ const FIX_HINTS = {
   model_not_found: "Update the model identifier in the collection - check the upstream provider's `/models` endpoint or docs for the canonical id at the time of testing. Common cause: model names in the harness are 2026-vintage placeholders that may not be deployed in your provider account yet.",
   auth_invalid: "Re-source secrets via `INFISICAL=1` or update `.env`; verify the key matches the project/path your Bifrost config references. If the key is correct, check the provider account's quota/restrictions.",
   rate_limit: "Backoff/retry; not a harness bug. Either reduce concurrency, lift quota, or rerun later.",
+  service_unavailable: "The provider was overloaded (503 = OpenAI 'engine is currently overloaded', 529 = Anthropic overloaded_error); not a harness bug and not your quota. The run already replayed these up to RETRY_429 times, so surviving rows mean the provider stayed down for the whole backoff - rerun later. Persistent 529 on anthropic/bedrock during a wide sweep can also be self-inflicted: lower HARNESS_JOBS.",
   request_shape_mismatch: "Inspect the response body for the schema error and adjust the request JSON in the collection. Bedrock Converse and GenAI generateContent schemas are strict.",
   network_or_timeout: "Check Bifrost is still up (`curl /health`) and that the upstream provider isn't blocking egress. Also possible: the upstream provider is unreachable from your network.",
   unknown: "Open a bug; attach the bifrost-dev.log excerpt below. Check the response body for a more specific error string.",
 };
 
+// Head length newman-merge.jq keeps when it caps a stream (see its `trimstream`). Everything after
+// this point in a truncatedMiddle buffer is the TAIL, spliced directly onto the head.
+const STREAM_HEAD_ELEMENTS = 12000;
+
 const bufToString = (b) => {
   if (!b) return "";
   if (typeof b === "string") return b;
-  if (b.type === "Buffer" && Array.isArray(b.data)) return Buffer.from(b.data).toString("utf8");
+  if (b.type === "Buffer" && Array.isArray(b.data)) {
+    // A capped stream is head+tail with the middle removed, so decoding it as one string yields a
+    // payload that READS as a continuous SSE stream: a half-frame at the seam parses as though it
+    // followed the frame before it. Mark the boundary so anything scanning this text - and anyone
+    // reading it in a failure dump - sees that the two halves are not adjacent.
+    if (b.truncatedMiddle && b.data.length > STREAM_HEAD_ELEMENTS) {
+      const head = Buffer.from(b.data.slice(0, STREAM_HEAD_ELEMENTS)).toString("utf8");
+      const tail = Buffer.from(b.data.slice(STREAM_HEAD_ELEMENTS)).toString("utf8");
+      return `${head}\n...[middle of stream dropped by newman-merge.jq]...\n${tail}`;
+    }
+    return Buffer.from(b.data).toString("utf8");
+  }
   return String(b);
 };
 
@@ -49,6 +65,24 @@ const truncate = (s, n) => {
   if (!s) return "";
   return s.length > n ? s.slice(0, n) + "...(truncated)" : s;
 };
+
+// Rows tagged [EXPECT-4XX] assert an upstream rejection on purpose: they send a
+// deliberately invalid field value so the provider's 4xx proves the field actually
+// reached it (a 2xx would mean Bifrost silently dropped it). For those rows a 4xx is
+// the success path, so HTTP status alone must not mark them failed - only a real
+// assertion failure can. The collection-level status gate already fails them on a
+// 2xx, which is the case that actually matters. 5xx is still a failure: that is
+// infrastructure, not the rejection the row asked for.
+const isExpected4xx = (name, code) =>
+  code >= 400 && code <= 499 && String(name || "").indexOf("[EXPECT-4XX]") !== -1;
+
+// Single definition of "this execution failed", shared by the coverage matrix pass
+// and the failure-listing pass so the two can never disagree about a row.
+const isFailedExecution = (name, code, assertFailCount, hasResponse) =>
+  assertFailCount > 0 ||
+  code === 0 ||
+  !hasResponse ||
+  (code >= 400 && !isExpected4xx(name, code));
 
 const categorize = (code, body, bifrostLines) => {
   // Check body content first - Bifrost's "failed to get config for provider" can manifest as
@@ -68,6 +102,13 @@ const categorize = (code, body, bifrostLines) => {
   if (code === 0 || code == null) return "network_or_timeout";
   if (code === 401 || code === 403) return "auth_invalid";
   if (code === 429) return "rate_limit";
+  // Split out from "unknown" because the two ask for opposite things from a reader. 503 (OpenAI's
+  // "engine is currently overloaded") and 529 (Anthropic's overloaded_error) are the provider
+  // saying "come back later", and the retry pass already replays them - see RETRYABLE_CODES in
+  // lib/rate-limit-retry.mjs. Reporting them as "unknown / open a bug" sends someone to write up
+  // an upstream capacity blip as a Bifrost defect. Kept separate from rate_limit because the fix
+  // hints differ: a 429 is the account's quota, a 503/529 is the provider's capacity.
+  if (code === 503 || code === 529) return "service_unavailable";
 
   // 404 from Anthropic ("type":"not_found_error" with model: ...) is a real model-name miss.
   if (code === 404) {
@@ -454,7 +495,7 @@ const buildCoverageMatrix = (execs, folderMap) => {
     const model = detectModel(url, body);
     const code = e.response?.code ?? 0;
     const assertFails = (e.assertions || []).filter((a) => !!a.error);
-    const isFail = assertFails.length > 0 || code === 0 || code >= 400 || !e.response;
+    const isFail = isFailedExecution(itemName, code, assertFails.length, !!e.response);
 
     if (!provider || !byProvider[provider]) {
       untagged.push({ name: itemName, folder, url });
@@ -623,12 +664,12 @@ const main = () => {
     const body = bufToString(e.response?.stream);
     const assertions = e.assertions || [];
     const assertFails = assertions.filter((a) => !!a.error);
-    const isFail = assertFails.length > 0 || code === 0 || code >= 400 || !e.response;
+    const itemName = e.item?.name || "(unnamed)";
+    const isFail = isFailedExecution(itemName, code, assertFails.length, !!e.response);
     if (!isFail) continue;
     const url = reconstructUrl(e.request?.url);
     const bifrostLines = grepBifrostForUrl(logText, url);
     const category = categorize(code, body, bifrostLines);
-    const itemName = e.item?.name || "(unnamed)";
     const itemId = e.item?.id;
     const folder = (itemId && folderMap.byId.get(itemId)) || folderMap.byName.get(itemName) || "(root)";
     failed.push({
@@ -652,7 +693,25 @@ const main = () => {
   for (const f of failed) {
     (grouped[f.category] ||= []).push(f);
   }
-  const orderedCats = ["provider_not_configured", "auth_invalid", "model_not_found", "request_shape_mismatch", "rate_limit", "network_or_timeout", "unknown"];
+  // Report order: most actionable first, "not a harness bug" (rate_limit, service_unavailable) near
+  // the end, "unknown" last.
+  const CATEGORY_ORDER = [
+    "provider_not_configured",
+    "auth_invalid",
+    "model_not_found",
+    "request_shape_mismatch",
+    "rate_limit",
+    "service_unavailable",
+    "network_or_timeout",
+    "unknown",
+  ];
+  // Anything categorize() can emit but this list forgot is APPENDED rather than dropped. The two
+  // loops below iterate this array to build the report, so a category missing from it vanishes from
+  // the output entirely - failures that silently do not appear in the failure report are the worst
+  // possible drift, because the report reads complete either way. Caught adding
+  // service_unavailable, which would otherwise have hidden every 503/529 instead of miscategorising
+  // it - strictly worse than the "unknown" bucket it was moved out of.
+  const orderedCats = [...CATEGORY_ORDER, ...Object.keys(grouped).filter((c) => !CATEGORY_ORDER.includes(c)).sort()];
 
   const lines = [];
   lines.push(`# Bifrost Provider Harness - Failure Report`);

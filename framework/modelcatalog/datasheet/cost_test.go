@@ -1951,6 +1951,29 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 	assert.InDelta(t, 0.08, cost, 1e-12)
 }
 
+// TestCalculateCost_ChatCompletion_CostPerRequest verifies the flat per-request
+// fee is billed once, additive on top of the usual token-based cost.
+func TestCalculateCost_ChatCompletion_CostPerRequest(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken:  bifrost.Ptr(0.000005),
+			OutputCostPerToken: bifrost.Ptr(0.000015),
+			CostPerRequest:     bifrost.Ptr(0.01),
+		},
+	})
+
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+
+	cost := s.CalculateCost(resp, nil)
+	// 10000*0.000005 + 2000*0.000015 + 0.01 (flat) = 0.08 + 0.01 = 0.09
+	assert.InDelta(t, 0.09, cost, 1e-12)
+}
+
 func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 	// Claude 3.5 Sonnet (Bedrock): $3/M input, $15/M output, cache_read=$0.3/M, cache_creation=$3.75/M
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
@@ -2099,6 +2122,31 @@ func TestGetPricing_DirectLookup(t *testing.T) {
 	})
 	p := s.resolvePricing(schemas.RoutingInfo{Provider: "openai", Model: "gpt-4o"}, schemas.ChatCompletionRequest, LookupScopes{Provider: "openai"})
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
+}
+
+func TestCalculateCost_TogetherAliasUsesTogetherAIPricingWithCache(t *testing.T) {
+	const model = "zai-org/GLM-5.2"
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(model, "together_ai", "chat"): {
+			Model:                   model,
+			Provider:                "together_ai",
+			Mode:                    "chat",
+			InputCostPerToken:       bifrost.Ptr(1.40 / 1_000_000),
+			CacheReadInputTokenCost: bifrost.Ptr(0.26 / 1_000_000),
+			OutputCostPerToken:      bifrost.Ptr(4.40 / 1_000_000),
+		},
+	})
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     36_807_862,
+		CompletionTokens: 54_932,
+		TotalTokens:      36_862_794,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens: 33_829_760,
+		},
+	}
+
+	cost := s.CalculateCost(makeChatResponse("together", model, usage), nil)
+	assert.InDelta(t, 13.2067812, cost, 1e-9)
 }
 
 func TestGetPricing_GeminiFallsBackToVertex(t *testing.T) {

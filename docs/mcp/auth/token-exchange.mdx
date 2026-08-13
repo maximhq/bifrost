@@ -35,14 +35,25 @@ This auth type is only valid for **HTTP** and **SSE** connections.
 
 ## Prerequisites
 
-Token exchange needs a dedicated application registered at your identity provider — separate from the SSO login application — with the token-exchange (or on-behalf-of) grant enabled and permission to mint tokens for your MCP servers' audiences. Consult your IdP's documentation for how to register this application; the exact grant name and setup steps vary by vendor:
+Token exchange needs an application registered at your identity provider with the token-exchange (or on-behalf-of) grant enabled and permission to mint tokens for your MCP servers' audiences. Each MCP client picks which application performs its exchange via `token_exchange.use_idp_credentials`:
+
+- **`use_idp_credentials: false`** (default) — a **dedicated application**, separate from your SSO login application, configured per MCP client via `token_exchange.client_id`/`client_secret`. This is the right default for most providers: it keeps each MCP server's OBO grant scoped independently and limits what a leaked secret can reach.
+- **`use_idp_credentials: true`** — reuses your **SSO login application's own credentials** instead; `client_id`/`client_secret` are then ignored.
+
+Consult your IdP's documentation for how to register the exchange application; the exact grant name and setup steps vary by vendor:
 
 | Provider | Grant used |
 | --- | --- |
 | Okta, Keycloak, Auth0, generic OIDC | RFC 8693 Token Exchange |
 | Microsoft Entra ID | `jwt-bearer` grant with `requested_token_use=on_behalf_of` (Entra predates RFC 8693 and doesn't expose the standard grant) |
 
-Bifrost derives the token endpoint and picks the correct grant shape automatically from your enabled SCIM provider — you never configure an endpoint or grant type directly. The exchange application's own client ID / secret are configured per MCP client, not on the SCIM provider (see [Setup](#setup)).
+<Warning>
+**Microsoft Entra ID requires `use_idp_credentials: true`.** Entra's on-behalf-of grant only accepts an assertion whose audience matches the application performing the exchange, and Bifrost's SSO login flow always requests a token self-audienced to the SSO application. A dedicated exchange application — a different application than the one your admins signed into Bifrost with — can never receive an assertion it's allowed to use, so the exchange fails on every call. See [Microsoft Entra ID: known setup gotchas](#microsoft-entra-id-known-setup-gotchas) below.
+
+This isn't a Bifrost limitation: RFC 8693 servers (Okta, Auth0, Keycloak) authorize the *requesting client* for a target audience independently of whose token it presents — that's what lets a dedicated exchange app work there. Entra's OBO grant predates RFC 8693 and has no equivalent separate authorization step; it enforces the audience match directly on the assertion instead, so the requesting client and the token's original audience must be the same application. Microsoft's own OBO reference confirms this is enforced, not incidental: "This token must have an audience (`aud`) claim of the app making this OBO request... Applications can't redeem a token for a different app." ([Microsoft identity platform and OAuth2.0 On-Behalf-Of flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow))
+</Warning>
+
+Bifrost derives the token endpoint and picks the correct grant shape automatically from your enabled SCIM provider — you never configure an endpoint or grant type directly.
 
 <Warning>
 **Okta specifically** ties an audience to the Authorization Server that issues it — one Authorization Server, one audience. Okta's own documented best practice is a **dedicated Custom Authorization Server per protected resource**, separate from the one your SSO login uses. If that's your setup, three additional things are required beyond the app registration above — see [Okta: per-resource Authorization Server](#okta-per-resource-authorization-server) below. Entra and Auth0 don't have this constraint: both use a single tenant-wide token endpoint regardless of target resource, so nothing extra is needed for them.
@@ -58,6 +69,17 @@ Skip this section if your exchange application's audience is registered on the *
 
 Also check that Okta's **DPoP** (sender-constrained tokens) requirement is off for the exchange application — Bifrost's token exchange sends plain bearer tokens, not DPoP-proofed ones. If your org enforces DPoP by default, disable it specifically for this application under its General settings, or the token request fails with `invalid_dpop_proof: The DPoP proof JWT header is missing`.
 
+### Microsoft Entra ID: known setup gotchas
+
+Entra's OBO flow surfaces several sharp edges that don't show up with Okta/Auth0/Keycloak. All of these were hit while setting up a real tenant end-to-end; fix them in this order if you see the matching error.
+
+1. **Set `token_exchange.use_idp_credentials: true`.** This is not optional for Entra — see the warning in [Prerequisites](#prerequisites) above for why a dedicated exchange application structurally cannot work. `client_id`/`client_secret` are ignored once this is set; leave them unset.
+2. **Token issuer mismatch — `oidc: id token issued by a different provider`.** Whether an app's tokens use the v1 issuer (`https://sts.windows.net/<tenant>/`) or the v2 issuer (`https://login.microsoftonline.com/<tenant>/v2.0`) is controlled by the **resource app's manifest**, not by which endpoint you called. If your MCP server validates against the v2 issuer (the standard OIDC discovery shape) but gets v1 tokens, open the resource app's registration → **Manifest** → set `"requestedAccessTokenVersion": 2` under the `api` block → Save.
+3. **Audience mismatch — `oidc: expected audience "api://..." got ["..."]`.** Once an app issues v2 tokens, its access tokens carry the app's **client ID (bare GUID)** in `aud`, not the `api://...` Application ID URI you registered — even though you requested the scope using the URI form. Set `token_exchange.audience` (and the MCP server's own audience-validation config) to the bare GUID, not `api://<guid>`.
+4. **`AADSTS240002: Input id_token cannot be used as 'urn:ietf:params:oauth:grant-type:jwt-bearer' grant`.** The assertion Entra's OBO endpoint accepts must be an **access token**, never an `id_token`. Bifrost's SSO session already stores the right one for real caller traffic; this only bites when hand-crafting a token for manual testing — if you hit it, you grabbed the `id_token` instead of the `access_token`.
+5. **`AADSTS501461: AcceptMappedClaims is only supported for a token audience matching the application GUID...`.** If your SSO app has custom claims mapping enabled (`acceptMappedClaims: true` in its manifest — typically on if you're mapping `roles`/`groups` claims for SCIM attribute mappings), requesting an access token audienced to that app's own `api://<guid>` Application ID URI is rejected outright. This only comes up when manually minting a test token against the SSO app's own scope (e.g. `<client-id>/access_as_user`, not `api://<client-id>/access_as_user` — Entra treats an app's own client ID as an implicit alternate resource identifier alongside its App ID URI, and that form isn't subject to the same restriction); Bifrost's own runtime exchange isn't affected.
+6. **Adding a scope silently drops resource access.** Entra's `.default` scope (what `audience` builds by default) cannot be combined with other delegated scopes — Microsoft's own OBO docs are explicit about this (`AADSTS70011` otherwise). Bifrost handles the one documented exception automatically: `scopes: ["offline_access"]` combines with the default (`<audience>/.default offline_access`) rather than replacing it. Any other scope you configure fully replaces the default instead, per Entra's own rule — there is no way to request `.default` alongside a named custom scope in the same call. If you need narrower, specific permissions rather than everything `.default` grants, expose named scopes on the resource app (**Expose an API** → **Add a scope**) and list only those in `scopes`, without `.default` at all.
+
 ---
 
 ## Setup
@@ -67,19 +89,19 @@ Each MCP client scopes its own exchange: which resource (`audience`) the token i
 <Tabs>
 <Tab title="Web UI">
 
+![MCP client form with Auth Type set to Token Exchange, showing the audience, exchange client ID/secret, and scopes fields](/media/ui-mcp-token-exchange-setup.png)
+
 1. Navigate to **MCP Gateway** in the sidebar
 2. Click **New MCP Server**
 3. Pick **HTTP** or **SSE** as the connection type, fill in the **Connection URL**
 4. Set **Auth Type** to **Token Exchange (On-Behalf-Of)** — only shown when an identity provider is configured
 5. Fill in:
-   - **Audience** — the resource identifier this server is registered as at your identity provider (e.g. `api://jira-mcp`)
-   - **Exchange Client ID** — the dedicated IdP application authorized to exchange for this audience
-   - **Exchange Client Secret** (optional — omit for public clients)
+   - **Audience** — the resource identifier this server is registered as at your identity provider (e.g. `api://jira-mcp` for Okta/Auth0/Keycloak). **For Microsoft Entra ID**, this is the resource app's **Application (client) ID** — a bare GUID, not the `api://...` Application ID URI shown under "Expose an API"; see [Audience mismatch](#microsoft-entra-id-known-setup-gotchas) below for why
+   - **Exchange application** — **Dedicated application** (default) or **Identity provider application**. Pick the latter, which reuses your SSO login application's credentials, if your provider requires it — Microsoft Entra ID always does; see [Prerequisites](#prerequisites)
+   - **Exchange Client ID** (required) / **Exchange Client Secret** (optional for public clients) — only shown when **Dedicated application** is selected
    - **Authorization Server URL** (optional) — only needed if this audience is registered on a different Authorization Server than your SSO login uses; see [Okta: per-resource Authorization Server](#okta-per-resource-authorization-server)
-   - **Scopes** (optional, comma-separated) — include `offline_access` where your identity provider supports it
+   - **Scopes** (optional, comma-separated) — include `offline_access` where your identity provider supports it, so exchanges issue refresh tokens and the retained admin discovery credential stays self-renewing. For Microsoft Entra ID specifically: `offline_access` is the *only* additional scope that combines with the audience's default resource access — leave it as the sole entry to keep both; any other scope here replaces the default resource scope entirely rather than adding to it, and Entra rejects a `.default` + custom-scope combination outright — if you need narrower, specific permissions instead of the audience's default access, list only named resource scopes here (e.g. `api://jira-mcp/access_as_user`), with no `.default` entry at all
 6. Click **Create** — Bifrost exchanges *your own* signed-in identity token, verifies the upstream connection, and discovers tools
-
-![MCP client form with Auth Type set to Token Exchange, showing the audience, exchange client ID/secret, and scopes fields](/media/ui-mcp-token-exchange-setup.png)
 
 </Tab>
 
@@ -107,7 +129,16 @@ Each MCP client scopes its own exchange: which resource (`audience`) the token i
 }
 ```
 
-`audience` and `client_id` are required; `client_secret`, `authorization_server_url`, and `scopes` are optional. `client_id` and `client_secret` support `env.VAR_NAME` and `vault.path` references — plain values also work (encrypted at rest, redacted in API responses).
+`audience` is always required. `client_id` is required unless `use_idp_credentials` is `true`, in which case `client_id`/`client_secret` are ignored and the exchange runs as your SSO login application instead — required for Microsoft Entra ID:
+
+```json
+"token_exchange": {
+  "audience": "<entra-resource-app-client-id>",
+  "use_idp_credentials": true
+}
+```
+
+`client_id` and `client_secret` support `env.VAR_NAME` and `vault.path` references — plain values also work (encrypted at rest, redacted in API responses).
 
 At boot the client lands in **`pending_verification`** state. From the MCP Gateway UI, open the client and click **Verify as me** — see [Verification](#verification) below.
 
@@ -194,6 +225,7 @@ Sending both an identity token and a virtual key is fine — [`dual_credential_c
   "auth_type": "token_exchange",
   "token_exchange": {
     "audience": "api://jira-mcp",
+    "use_idp_credentials": false,
     "client_id": "***REDACTED***",
     "client_secret": "***REDACTED***",
     "authorization_server_url": "https://your-domain.okta.com/oauth2/your-auth-server-id",
@@ -204,11 +236,12 @@ Sending both an identity token and a virtual key is fine — [`dual_credential_c
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `audience` | string | Yes | Resource identifier this server is scoped to at the identity provider |
-| `client_id` | string | Yes | The dedicated exchange application's client ID (env./vault. references supported) |
-| `client_secret` | string | No | The exchange application's secret; omit for public clients (env./vault. references supported) |
+| `audience` | string | Yes | Resource identifier this server is scoped to at the identity provider. For Microsoft Entra ID, this is the resource app's Application (client) ID — a bare GUID, not its `api://...` Application ID URI. |
+| `use_idp_credentials` | boolean | No (default `false`) | When `true`, performs the exchange as the SSO login application itself instead of `client_id`/`client_secret`, which are then ignored. Required for Microsoft Entra ID — see [Prerequisites](#prerequisites) |
+| `client_id` | string | Yes, unless `use_idp_credentials` is `true` | The dedicated exchange application's client ID (env./vault. references supported) |
+| `client_secret` | string | No | The exchange application's secret; omit for public clients. Ignored when `use_idp_credentials` is `true` (env./vault. references supported) |
 | `authorization_server_url` | string | No | Overrides which Authorization Server the exchange is sent to. Only needed when `audience` is registered on a different Authorization Server than your SSO login uses — see [Okta: per-resource Authorization Server](#okta-per-resource-authorization-server). Leave unset for Entra and Auth0. |
-| `scopes` | string[] | No | Scopes requested on the exchanged token; include `offline_access` for a self-renewing admin discovery credential. For Okta, must include a custom scope defined on the target Authorization Server — standard OIDC scopes are not valid here |
+| `scopes` | string[] | No | Scopes requested on the exchanged token; include `offline_access` for a self-renewing admin discovery credential. For Okta, must include a custom scope defined on the target Authorization Server — standard OIDC scopes are not valid here. For Microsoft Entra ID, `offline_access` is the only scope Bifrost will combine with the audience's default resource access (`<audience>/.default offline_access`) — any other configured scope fully replaces the default instead of adding to it, matching Entra's own restriction on combining `.default` with other delegated scopes. |
 
 `client_id` and `client_secret` are redacted in API responses, same as other MCP credential fields.
 

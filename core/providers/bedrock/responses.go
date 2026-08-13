@@ -2063,6 +2063,16 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 						if summaryValue, ok := schemas.SafeExtractStringPointer(request.ExtraParams["reasoning_summary"]); ok {
 							summary = summaryValue
 						}
+						// Converse has no reasoning-summary field, so an OpenAI reasoning
+						// model routed through the /bedrock drop-in would never be asked
+						// for summaries and would return no reasoning text at all - and
+						// Converse usage has no reasoning-token field to fall back on, so
+						// the caller's reasoning_config would produce nothing observable.
+						// The gemini drop-in defaults the same way for the same reason
+						// (gemini/utils.go convertGenerationConfigToResponsesParameters).
+						if summary == nil && schemas.IsOpenAIModelFamily(ctx, bifrostReq.Model) {
+							summary = schemas.Ptr("auto")
+						}
 						var (
 							effortStr string
 							found     bool
@@ -2321,9 +2331,22 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				}
 				if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
 					if anthropic.IsAdaptiveOnlyThinkingModel(capModel) {
-						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+						thinkingConfig := map[string]any{
 							"type": "adaptive",
-						})
+						}
+						// Mirror the effort arm below: without an explicit display these
+						// models emit no visible thinking blocks, so a caller who asked
+						// for a reasoning budget would get a 200 carrying no reasoning.
+						if bifrostReq.Params.Reasoning.Summary != nil {
+							if *bifrostReq.Params.Reasoning.Summary == "none" {
+								thinkingConfig["display"] = "omitted"
+							} else {
+								thinkingConfig["display"] = "summarized"
+							}
+						} else {
+							thinkingConfig["display"] = "summarized"
+						}
+						bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 						// Preserve a co-present effort — these models support effort,
 						// and the budget is otherwise dropped.
 						if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
