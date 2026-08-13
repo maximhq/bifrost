@@ -49337,11 +49337,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-<<<<<<< HEAD
                   "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-=======
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
->>>>>>> d704af43c (fix: add anthropic error branch on stripping on encrypted content (#5960))
                   "pm.test('unverifiable encrypted reasoning degrades instead of 400ing', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'Anthropic rejection reached the client; the encrypted-reasoning fail-soft did not fire').to.not.include('redacted_thinking');",
@@ -49385,11 +49381,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-<<<<<<< HEAD
                   "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-=======
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
->>>>>>> d704af43c (fix: add anthropic error branch on stripping on encrypted content (#5960))
                   "pm.test('streaming turn degrades instead of erroring on unverifiable reasoning', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'Anthropic rejection surfaced in the stream; the fail-soft did not fire').to.not.include('redacted_thinking');",
@@ -49483,11 +49475,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-<<<<<<< HEAD
                   "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-=======
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
->>>>>>> 281017669 (encrypted content patch for encrytped content could not be verified (#6041))
                   "pm.test('compaction with unverifiable encrypted reasoning degrades instead of 400ing', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'upstream rejection reached the client; the fail-soft does not cover the compaction request shape').to.not.include('invalid_encrypted_content');",
@@ -49535,11 +49523,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-<<<<<<< HEAD
                   "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
-=======
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
->>>>>>> 281017669 (encrypted content patch for encrytped content could not be verified (#6041))
                   "pm.test('compaction with unverifiable encrypted reasoning degrades instead of 400ing', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(body, 'upstream rejection reached the client; the fail-soft does not cover the compaction request shape').to.not.include('invalid_encrypted_content');",
@@ -49580,7 +49564,6 @@
           }
         }
       ]
-<<<<<<< HEAD
     },
     {
       "name": "46. Reasoning × Tool-Call Multi-Turn Interleave (criss-cross)",
@@ -129101,8 +129084,6 @@
           }
         }
       ]
-=======
->>>>>>> 281017669 (encrypted content patch for encrytped content could not be verified (#6041))
     }
   ]
 }
