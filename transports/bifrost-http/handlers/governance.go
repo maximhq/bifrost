@@ -171,6 +171,21 @@ type GovernanceHandler struct {
 	externalQuotaBudgetResolver ExternalQuotaBudgetResolver
 }
 
+// virtualKeyViewScoper is implemented by config stores that narrow virtual key
+// reads per caller (the enterprise DAC wrapper); OSS stores do not.
+type virtualKeyViewScoper interface {
+	IsVirtualKeyViewScoped(ctx context.Context) bool
+}
+
+// mayServeVirtualKeysFromMemory reports whether the in-memory GovernanceData may
+// be served to this caller. It holds the live budget/rate-limit usage the database
+// only carries as of the last dump tick, but no principal — so narrowed callers
+// fall through to the scoped config store instead.
+func (h *GovernanceHandler) mayServeVirtualKeysFromMemory(ctx context.Context) bool {
+	scoper, ok := h.configStore.(virtualKeyViewScoper)
+	return !ok || !scoper.IsVirtualKeyViewScoped(ctx)
+}
+
 // GovernanceRouteRegistrar registers one replaceable governance route family.
 type GovernanceRouteRegistrar func(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware)
 
@@ -1560,7 +1575,7 @@ func (h *GovernanceHandler) reloadComplexityAnalyzerConfig(ctx context.Context, 
 func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
+	if fromMemory && h.mayServeVirtualKeysFromMemory(ctx) {
 		// The in-memory cache holds no VK↔user assignments (GovernanceData.Users carries
 		// only budget/rate-limit ids), so a user_id filter cannot be applied here. Reject
 		// the combination rather than silently dropping the filter: the database path
@@ -1926,7 +1941,7 @@ func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 	// Check if "from_memory" query parameter is set to true
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
-	if fromMemory {
+	if fromMemory && h.mayServeVirtualKeysFromMemory(ctx) {
 		data := h.governanceManager.GetGovernanceData(ctx)
 		if data == nil {
 			SendError(ctx, 500, "Governance data is not available")
