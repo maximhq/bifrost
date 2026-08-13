@@ -173,10 +173,19 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 				}
 			}
 
-			// Rebuild search localization from the web_search tool that carried it.
+			// Rebuild search localization from the web_search tool that carried it, but
+			// only when that tool survived conversion — localization without a search
+			// tool is meaningless and Gemini rejects it.
+			hasGoogleSearch := false
+			for _, tool := range geminiReq.Tools {
+				if tool.GoogleSearch != nil {
+					hasGoogleSearch = true
+					break
+				}
+			}
 			for _, tool := range bifrostReq.Params.Tools {
 				webSearch := tool.ResponsesToolWebSearch
-				if tool.Type != schemas.ResponsesToolTypeWebSearch || webSearch == nil || webSearch.UserLocation == nil {
+				if !hasGoogleSearch || tool.Type != schemas.ResponsesToolTypeWebSearch || webSearch == nil || webSearch.UserLocation == nil {
 					continue
 				}
 				if webSearch.UserLocation.Latitude == nil && webSearch.UserLocation.Longitude == nil {
@@ -2560,7 +2569,9 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 	var responsesTools []schemas.ResponsesTool
 
 	for _, tool := range tools {
-		// you cant use function declarations and google search together
+		// A single tools[] entry may legitimately carry both kinds (Gemini 3+). Convert
+		// everything it holds; convertResponsesToolsToGemini decides what survives on the
+		// way back out to the provider.
 		if tool.GoogleSearch != nil {
 			responsesTool := schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebSearch,
@@ -2589,7 +2600,8 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 				responsesTool.ResponsesToolWebSearch.SearchContentTypes = contentTypes
 			}
 			responsesTools = append(responsesTools, responsesTool)
-		} else if len(tool.FunctionDeclarations) > 0 {
+		}
+		if len(tool.FunctionDeclarations) > 0 {
 			for _, fn := range tool.FunctionDeclarations {
 				responsesTool := schemas.ResponsesTool{
 					Type:                  schemas.ResponsesToolTypeFunction,
@@ -3323,24 +3335,27 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 
 // convertResponsesToolsToGemini converts Responses tools to Gemini tools.
 // includeServerSideToolInvocations opts into Gemini's tool combination mode; without it
-// Gemini rejects function declarations sent alongside Google Search, so they are dropped.
+// Gemini rejects function declarations sent alongside Google Search, so one of the two has
+// to go. Function declarations win: they carry the caller's (or the MCP gateway's) tools,
+// which the model cannot invoke at all if they never reach the wire, whereas losing Google
+// Search only costs grounding. Set includeServerSideToolInvocations to send both.
 func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool) ([]Tool, error) {
 	var functionDeclarations []*FunctionDeclaration
 	var googleSearch *GoogleSearch
 
-	hasWebSearchTool := false
+	hasFunctionTool := false
 
 	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeWebSearch {
-			hasWebSearchTool = true
+		if tool.Type == schemas.ResponsesToolTypeFunction && tool.ResponsesToolFunction != nil && tool.Name != nil {
+			hasFunctionTool = true
 			break
 		}
 	}
 
-	dropFunctionDeclarations := hasWebSearchTool && !includeServerSideToolInvocations
+	dropGoogleSearch := hasFunctionTool && !includeServerSideToolInvocations
 
 	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeFunction && !dropFunctionDeclarations {
+		if tool.Type == schemas.ResponsesToolTypeFunction {
 			// Extract function information from ResponsesExtendedTool
 			if tool.ResponsesToolFunction != nil {
 				if tool.Name != nil && tool.ResponsesToolFunction != nil {
@@ -3364,7 +3379,7 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 				}
 			}
 		}
-		if tool.Type == schemas.ResponsesToolTypeWebSearch {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch && !dropGoogleSearch {
 			googleSearch = &GoogleSearch{}
 			if tool.ResponsesToolWebSearch != nil && tool.ResponsesToolWebSearch.Filters != nil {
 				if tool.ResponsesToolWebSearch.Filters.TimeRangeFilter != nil {
