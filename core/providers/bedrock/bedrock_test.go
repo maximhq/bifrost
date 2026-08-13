@@ -2544,6 +2544,41 @@ func TestGuardrailConfigRequestRoundTrip(t *testing.T) {
 	assert.Nil(t, result.ExtraParams, "ExtraParams should be nil after all keys are extracted")
 }
 
+// TestContentFilterMapsToIncomplete verifies that a Bedrock content-filter /
+// guardrail stop reason (which returns no output message and zero usage) is
+// surfaced as Responses status "incomplete" with incomplete_details.reason
+// "content_filter", instead of being normalized to a successful empty "completed"
+// result that downstream agents cannot distinguish from a genuine empty turn.
+func TestContentFilterMapsToIncomplete(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name             string
+		bedrockStop      string
+		expectStopReason string
+	}{
+		{"content_filtered", "content_filtered", "content_filter"},
+		{"guardrail_intervened", "guardrail_intervened", "guardrail_intervened"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := &bedrock.BedrockConverseResponse{
+				StopReason: tc.bedrockStop,
+			}
+
+			bifrostResp, err := original.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp.Status, "status must be set, not left to default to completed")
+			assert.Equal(t, schemas.ResponsesResponseStatusIncomplete, *bifrostResp.Status)
+			require.NotNil(t, bifrostResp.IncompleteDetails)
+			assert.Equal(t, schemas.ResponsesResponseIncompleteReasonContentFilter, bifrostResp.IncompleteDetails.Reason)
+			require.NotNil(t, bifrostResp.StopReason)
+			assert.Equal(t, tc.expectStopReason, *bifrostResp.StopReason)
+		})
+	}
+}
+
 // TestGuardrailTraceResponseRoundTrip verifies the full trace response round-trip:
 //
 //	BedrockConverseResponse.Trace
@@ -4826,9 +4861,9 @@ func TestBedrockStopReasonMappingResponsesPath(t *testing.T) {
 		{"MaxTokens", "max_tokens", "length", "incomplete", "max_output_tokens"},
 		{"StopSequence", "stop_sequence", "stop", "completed", ""},
 		{"ToolUse", "tool_use", "tool_calls", "completed", ""},
-		{"ContentFiltered", "content_filtered", "content_filter", "", ""},               // no clean mapping — passes through, no Status
-		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened", "", ""}, // no clean mapping — passes through, no Status
-		{"UnknownReason", "some_unknown_reason", "some_unknown_reason", "", ""},         // no clean mapping — passes through, no Status
+		{"ContentFiltered", "content_filtered", "content_filter", "incomplete", "content_filter"},               // filtered → incomplete + content_filter
+		{"GuardrailIntervened", "guardrail_intervened", "guardrail_intervened", "incomplete", "content_filter"}, // guardrail block → incomplete + content_filter
+		{"UnknownReason", "some_unknown_reason", "some_unknown_reason", "", ""},                                 // no clean mapping — passes through, no Status
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4917,12 +4952,12 @@ func TestFinalizeBedrockStream_CleanCompletionUnaffected(t *testing.T) {
 }
 
 // TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset keeps the streaming
-// path aligned with the non-streaming mapping: an unmapped stop reason (e.g.
-// content_filter) ends the stream as response.completed but must leave Status
-// unset rather than asserting "completed".
+// path aligned with the non-streaming mapping: an unmapped stop reason ends the
+// stream as response.completed but must leave Status unset rather than asserting
+// "completed".
 func TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset(t *testing.T) {
 	state := bedrock.NewBedrockResponsesStreamState()
-	state.StopReason = schemas.Ptr("content_filter")
+	state.StopReason = schemas.Ptr("some_unknown_reason")
 	usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 10, TotalTokens: 15}
 
 	finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
@@ -4933,6 +4968,33 @@ func TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset(t *testing.T) {
 	require.NotNil(t, terminal.Response)
 	assert.Nil(t, terminal.Response.Status, "unmapped stop reasons must leave Status unset, matching the non-streaming path")
 	assert.Nil(t, terminal.Response.IncompleteDetails)
+}
+
+// TestFinalizeBedrockStream_ContentFilterIncomplete guards the streaming
+// counterpart of the content-filter fix: when Bedrock's stopReason maps to
+// content_filter / guardrail_intervened, the terminal SSE event must be
+// response.incomplete carrying Status="incomplete" + IncompleteDetails.Reason
+// "content_filter", so streaming consumers can detect the filtered turn instead
+// of seeing a successful-looking response.completed.
+func TestFinalizeBedrockStream_ContentFilterIncomplete(t *testing.T) {
+	for _, stopReason := range []string{"content_filter", "guardrail_intervened"} {
+		t.Run(stopReason, func(t *testing.T) {
+			state := bedrock.NewBedrockResponsesStreamState()
+			state.StopReason = schemas.Ptr(stopReason)
+			usage := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 0, TotalTokens: 5}
+
+			finalResponses := bedrock.FinalizeBedrockStream(state, 0, usage, nil)
+			require.NotEmpty(t, finalResponses)
+
+			terminal := finalResponses[len(finalResponses)-1]
+			assert.Equal(t, schemas.ResponsesStreamResponseTypeIncomplete, terminal.Type)
+			require.NotNil(t, terminal.Response)
+			require.NotNil(t, terminal.Response.Status)
+			assert.Equal(t, schemas.ResponsesResponseStatusIncomplete, *terminal.Response.Status)
+			require.NotNil(t, terminal.Response.IncompleteDetails)
+			assert.Equal(t, schemas.ResponsesResponseIncompleteReasonContentFilter, terminal.Response.IncompleteDetails.Reason)
+		})
+	}
 }
 
 // TestBifrostToBedrockStopReasonReverseMapping tests the reverse conversion
