@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 1.7.13
+=======
+1.7.11
+>>>>>>> fa1b54bfb (adds path for skipping auth (#6124))
