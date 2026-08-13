@@ -1250,6 +1250,18 @@ type ResponsesMessage struct {
 	// reject the item type can hoist them into the top-level tools param.
 	AdditionalTools json.RawMessage `json:"-"`
 
+	// ProviderNativeParts carries a provider's own response fragment for this item when
+	// the canonical shape cannot hold it losslessly, so a native-surface integration can
+	// re-emit exactly what the provider sent. Currently Gemini's server-side
+	// toolCall/toolResponse parts: the web_search_call item keeps their queries, but not
+	// the raw tool response or the thoughtSignature bytes Gemini demands back on replay.
+	// The non-streaming path carries these on the response's ProviderExtraFields; a
+	// per-chunk stream item has no such field, which is what this one supplies.
+	//
+	// json:"-" like the two above: it rides the in-process item between a provider and an
+	// integration and is never part of the public wire shape.
+	ProviderNativeParts json.RawMessage `json:"-"`
+
 	*ResponsesToolMessage // For Tool calls and outputs
 
 	CacheControl *CacheControl `json:"cache_control,omitempty"` // Carries cache_control for function_call and function_call_output message types
