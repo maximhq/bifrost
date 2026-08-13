@@ -5,6 +5,7 @@ import ProgressProvider from "@/components/progressBar";
 import Sidebar from "@/components/sidebar";
 import { ThemeProvider } from "@/components/themeProvider";
 import TrialExpiryBanner from "@/components/trialExpiryBanner";
+import { Button } from "@/components/ui/button";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { useStoreSync } from "@/hooks/useStoreSync";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
@@ -12,6 +13,7 @@ import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabled
 import { BifrostConfig } from "@/lib/types/config";
 import { RbacProvider, useRbacContext } from "@enterprise/lib/contexts/rbacContext";
 import { useLocation, useMatches } from "@tanstack/react-router";
+import { RefreshCw, WifiOff } from "lucide-react";
 import { NuqsAdapter } from "nuqs/adapters/tanstack-router";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { CookiesProvider } from "react-cookie";
@@ -75,6 +77,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
 		data: bifrostConfig,
 		error,
 		isLoading,
+		isFetching,
+		refetch,
 	} = useGetCoreConfigQuery(
 		{},
 		{
@@ -125,7 +129,13 @@ function AppContent({ children }: { children: React.ReactNode }) {
 						</div>
 						<TrialExpiryBanner />
 						<main className="custom-scrollbar content-container-inner relative mx-auto flex h-[calc(100%-3rem)] min-h-0 flex-col overflow-y-hidden md:h-full md:p-4">
-							{isLoading ? <FullPageLoader /> : <FullPage config={bifrostConfig}>{children}</FullPage>}
+							{isLoading ? (
+								<FullPageLoader />
+							) : (
+								<FullPage config={bifrostConfig} hasError={!!error} isRetrying={isFetching} onRetry={refetch}>
+									{children}
+								</FullPage>
+							)}
 						</main>
 						{bifrostConfig?.is_db_connected && <OnboardingWidget />}
 					</div>
@@ -149,7 +159,19 @@ function MinimalShell({ children }: { children: React.ReactNode }) {
 	);
 }
 
-function FullPage({ config, children }: { config: BifrostConfig | undefined; children: React.ReactNode }) {
+function FullPage({
+	config,
+	hasError,
+	isRetrying,
+	onRetry,
+	children,
+}: {
+	config: BifrostConfig | undefined;
+	hasError: boolean;
+	isRetrying: boolean;
+	onRetry: () => void;
+	children: React.ReactNode;
+}) {
 	const pathname = useLocation({ select: (l) => l.pathname });
 	if (config && config.is_db_connected) {
 		return children;
@@ -157,7 +179,35 @@ function FullPage({ config, children }: { config: BifrostConfig | undefined; chi
 	if (config && config.is_logs_connected && pathname.startsWith("/workspace/logs")) {
 		return children;
 	}
+	if (hasError) {
+		return <ConfigUnreachable isRetrying={isRetrying} onRetry={onRetry} />;
+	}
 	return <NotAvailableBanner />;
+}
+
+function ConfigUnreachable({ isRetrying, onRetry }: { isRetrying: boolean; onRetry: () => void }) {
+	return (
+		<div className="h-base flex items-center justify-center p-4 sm:p-6" data-testid="config-unreachable">
+			<section className="bg-card w-full max-w-lg rounded-xl border p-6 shadow-sm sm:p-8" aria-labelledby="config-unreachable-title">
+				<div className="bg-muted text-muted-foreground flex size-11 items-center justify-center rounded-lg">
+					<WifiOff className="size-5" aria-hidden="true" />
+				</div>
+				<h1 id="config-unreachable-title" className="text-foreground mt-5 text-xl font-semibold tracking-tight">
+					We can&apos;t reach the dashboard
+				</h1>
+				<p className="text-muted-foreground mt-2 max-w-md text-sm leading-6">
+					Bifrost didn&apos;t return its configuration. This is usually a brief interruption, especially while Bifrost is being upgraded.
+				</p>
+				<div className="mt-6 flex items-center gap-3 border-t pt-5">
+					<Button size="sm" isLoading={isRetrying} disabled={isRetrying} data-testid="config-retry-btn" onClick={onRetry}>
+						{!isRetrying && <RefreshCw aria-hidden="true" />}
+						{isRetrying ? "Trying again…" : "Try again"}
+					</Button>
+					<p className="text-muted-foreground text-xs">Your settings and data are unaffected.</p>
+				</div>
+			</section>
+		</div>
+	);
 }
 
 export function ClientLayout({ children }: { children: React.ReactNode }) {
