@@ -1,0 +1,2 @@
+- feat: account for prompt guardrail cost in cache search (#4931)
+- chore: upgraded core to v1.7.11 and framework to v1.5.9
