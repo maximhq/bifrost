@@ -650,7 +650,7 @@ func TestToBifrostResponsesResponse_PrioritizesLengthAcrossChoices(t *testing.T)
 }
 
 func TestToBifrostResponsesResponse_UnknownFinishReasonLeavesStatusUnset(t *testing.T) {
-	unknown := "content_filter"
+	unknown := "some_unmapped_reason"
 	resp := (&BifrostChatResponse{
 		Choices: []BifrostResponseChoice{
 			{FinishReason: &unknown},
@@ -668,6 +668,32 @@ func TestToBifrostResponsesResponse_UnknownFinishReasonLeavesStatusUnset(t *test
 	}
 	if resp.StopReason != nil {
 		t.Fatalf("expected stop_reason to be nil, got %q", *resp.StopReason)
+	}
+}
+
+func TestToBifrostResponsesResponse_MapsContentFilterToIncomplete(t *testing.T) {
+	for _, finish := range []string{"content_filter", "guardrail_intervened"} {
+		t.Run(finish, func(t *testing.T) {
+			fr := finish
+			resp := (&BifrostChatResponse{
+				Choices: []BifrostResponseChoice{
+					{FinishReason: &fr},
+				},
+			}).ToBifrostResponsesResponse()
+
+			if resp == nil {
+				t.Fatal("expected non-nil response")
+			}
+			if resp.Status == nil || *resp.Status != ResponsesResponseStatusIncomplete {
+				t.Fatalf("expected status %q, got %v", ResponsesResponseStatusIncomplete, resp.Status)
+			}
+			if resp.IncompleteDetails == nil || resp.IncompleteDetails.Reason != ResponsesResponseIncompleteReasonContentFilter {
+				t.Fatalf("expected incomplete_details.reason %q, got %+v", ResponsesResponseIncompleteReasonContentFilter, resp.IncompleteDetails)
+			}
+			if resp.StopReason == nil || *resp.StopReason != finish {
+				t.Fatalf("expected stop_reason %q, got %v", finish, resp.StopReason)
+			}
+		})
 	}
 }
 
